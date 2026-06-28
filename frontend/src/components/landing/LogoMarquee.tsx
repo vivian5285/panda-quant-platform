@@ -1,6 +1,6 @@
 import { useI18n } from '../../i18n'
 
-const LOGOS = ['Binance', 'TradingView', 'USDT-M', 'WebSocket', 'OAuth 2.0', 'Redis', 'FastAPI', 'React']
+const LOGOS = ['Binance', 'On-Chain', 'USDT-M', 'WebSocket', 'OAuth 2.0', 'Redis', 'FastAPI', 'React']
 
 export default function LogoMarquee() {
   const t = useI18n(s => s.t)

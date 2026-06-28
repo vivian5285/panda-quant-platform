@@ -1,7 +1,7 @@
 import { useI18n } from '../../../i18n'
 import { PartnerBrandIcon, type PartnerBrandId } from './PartnerBrandIcons'
 
-const PARTNERS: PartnerBrandId[] = ['binance', 'tradingview', 'redis', 'fastapi']
+const PARTNERS: PartnerBrandId[] = ['binance', 'onchain', 'redis', 'fastapi']
 
 export default function FramerPartnerLogos() {
   const t = useI18n(s => s.t)

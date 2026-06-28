@@ -3,10 +3,14 @@ import GeminiLogo from '../GeminiLogo'
 
 type Slide = 'dashboard' | 'trading' | 'analytics'
 
+const ACCENT = '#3b82f6'
+const ACCENT_DIM = 'rgba(59,130,246,0.35)'
+const LOSS = '#EF4444'
+
 const CHART_PATH = 'M0,80 C40,70 60,40 100,35 S160,15 200,20 S280,5 320,8 S380,25 400,12'
 const CHART_AREA = `${CHART_PATH} L400,100 L0,100 Z`
 const BAR_HEIGHTS = [42, 58, 35, 72, 48, 65, 38, 55, 70, 45, 62, 50, 68, 44]
-const TICKER = ['LONG ETH +$42.10', 'CLOSE BTC +$18.30', 'LONG ETH +$12.00', 'TP ETH +$28.50', 'SIGNAL R3 · ETH']
+const TICKER = ['LONG ETH +$42.10', 'CLOSE BTC +$18.30', 'LONG ETH +$12.00', 'TP ETH +$28.50', 'AI R3 · ETH']
 
 interface Props {
   slide: Slide
@@ -52,15 +56,15 @@ export default function DashboardPreview({ slide, live = false }: Props) {
               <svg viewBox="0 0 400 100" preserveAspectRatio="none" className="preview-line-chart">
                 <defs>
                   <linearGradient id="previewGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="rgba(0,176,80,0.35)" />
-                    <stop offset="100%" stopColor="rgba(0,176,80,0)" />
+                    <stop offset="0%" stopColor={ACCENT_DIM} />
+                    <stop offset="100%" stopColor="rgba(59,130,246,0)" />
                   </linearGradient>
                 </defs>
                 <path d={CHART_AREA} fill="url(#previewGrad)" className="preview-chart-area" />
                 <path
                   d={CHART_PATH}
                   fill="none"
-                  stroke="#00B050"
+                  stroke={ACCENT}
                   strokeWidth="2"
                   className="preview-chart-line"
                   pathLength={100}
@@ -117,8 +121,8 @@ export default function DashboardPreview({ slide, live = false }: Props) {
                   transform={`translate(${8 + i * 16}, 0)`}
                   className={isLast && live ? 'preview-candle-live' : undefined}
                 >
-                  <line x1="4" y1={y - 8} x2="4" y2={y + h + 8} stroke={up ? '#00B050' : '#EF4444'} strokeWidth="1" />
-                  <rect x="1" y={y} width="6" height={h} fill={up ? '#00B050' : '#EF4444'} rx="1" />
+                  <line x1="4" y1={y - 8} x2="4" y2={y + h + 8} stroke={up ? ACCENT : LOSS} strokeWidth="1" />
+                  <rect x="1" y={y} width="6" height={h} fill={up ? ACCENT : LOSS} rx="1" />
                 </g>
               )
             })}
@@ -154,7 +158,7 @@ export default function DashboardPreview({ slide, live = false }: Props) {
               className="preview-bar preview-bar-grow"
               style={{
                 height: `${h}%`,
-                background: i % 4 === 1 ? '#EF4444' : '#00B050',
+                background: i % 4 === 1 ? LOSS : ACCENT,
                 animationDelay: live ? `${i * 0.05}s` : undefined,
               }}
             />

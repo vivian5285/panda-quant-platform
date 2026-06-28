@@ -1,5 +1,7 @@
+import framerZh from './framer-zh'
+
 export default {
-  brand: { name: '双子星AI量化', tagline: 'GEMINI AI · 交易所 API 合作' },
+  brand: { name: '双子星AI量化', tagline: 'GEMINI AI · AI Quant Decision Engine' },
   nav: {
     dashboard: '仪表盘', trading: '交易', strategies: '策略', signals: '信号', analytics: '分析',
     trades: '交易记录', logs: '操作日志', referrals: '推广中心',
@@ -141,19 +143,19 @@ export default {
     historyTitle: '提现记录', emptyHistory: '暂无记录', emailCodePrompt: '请输入邮箱验证码', phoneCodePrompt: '请输入手机验证码',
   },
   hero: {
-    badge: 'Global AI Quant · 币安 USDT-M · TradingView',
+    badge: 'Global AI Quant · 币安 USDT-M · AI 指标',
     titleMain: 'Trade Smarter. ',
     titleHighlight: 'Powered by AI Quant.',
-    subtitle: '全球 AI 量化托管 — 专注加密货币永续合约，TradingView 信号 + 币安 API，机构级 Cyber 体验。',
+    subtitle: '全球 AI 量化托管 — 专注加密货币永续合约，AI 指标与链上分析 + 币安 API，机构级 Cyber 体验。',
     ctaPrimary: '免费开始', ctaSecondary: '查看实时行情',
-    trust: { api: 'API 最小权限', tv: 'TradingView 原生', settle: '7/10 天透明结算' },
+    trust: { api: 'API 最小权限', tv: 'AI 多指标融合', settle: '7/10 天透明结算' },
   },
   legal: {
     privacy: {
       title: '隐私政策', updated: '最后更新：2026 年 6 月 28 日',
       sections: {
         intro: { title: '1. 概述', body: '双子星AI量化（GEMINI AI）尊重并保护您的个人信息。本政策说明我们如何收集、使用、存储和保护您在注册、绑定 API、交易托管及结算过程中产生的数据。' },
-        collect: { title: '2. 我们收集的信息', body: '包括：注册邮箱/手机号、昵称、UID、币安 API Key（加密存储）、交易与结算记录、Webhook 信号日志、IP 与设备信息（用于安全审计）、您主动提交的提现地址与支付凭证。' },
+        collect: { title: '2. 我们收集的信息', body: '包括：注册邮箱/手机号、昵称、UID、币安 API Key（加密存储）、交易与结算记录、AI 信号日志、IP 与设备信息（用于安全审计）、您主动提交的提现地址与支付凭证。' },
         use: { title: '3. 信息用途', body: '用于账户认证、合约跟单执行、盈亏统计、7/10 天结算分润、推广奖励发放、风控告警及法律合规要求。我们不会出售您的个人数据。' },
         security: { title: '4. 安全与 API 权限', body: 'API 密钥采用加密存储；平台要求 API 仅开启合约交易权限并关闭提现权限。敏感操作（改密、提现、绑定地址）需邮箱+手机双重验证。' },
         cookies: { title: '5. Cookie 与本地存储', body: '我们使用 localStorage 保存语言、主题与登录令牌；Cookie 仅用于维持会话与安全。您可在浏览器中清除，但可能影响登录体验。' },
@@ -165,7 +167,7 @@ export default {
       title: '服务条款', updated: '最后更新：2026 年 6 月 28 日',
       sections: {
         intro: { title: '1. 接受条款', body: '使用双子星AI量化即表示您同意本条款。若不同意，请停止使用本平台。' },
-        service: { title: '2. 服务说明', body: '本平台提供 AI 量化托管 SaaS：通过 TradingView Webhook 接收信号，在您的币安 USDT-M 合约账户内自动执行。平台不托管用户资金，资产始终留在您的交易所账户。' },
+        service: { title: '2. 服务说明', body: '本平台提供 AI 量化托管 SaaS：通过 AI 分析引擎 接收信号，在您的币安 USDT-M 合约账户内自动执行。平台不托管用户资金，资产始终留在您的交易所账户。' },
         api: { title: '3. API 绑定要求', body: '您须绑定有效的币安 API，开启合约交易权限，关闭提现权限。因 API 配置错误、权限不足或密钥泄露导致的损失，由用户自行承担。' },
         fees: { title: '4. 费用与结算', body: '盈利周期采用 7/10 天智能结算；平台对净盈利收取 25% 分成。用户须在结算单生成后按指引 USDT 付款并提交链上凭证。未按时支付可能影响后续托管服务。' },
         risk: { title: '5. 风险披露', body: '加密货币合约交易具有高风险，可能导致全部本金损失。历史业绩不代表未来收益。本平台不构成投资建议，您应独立评估风险承受能力。' },
@@ -178,8 +180,8 @@ export default {
   theme: { light: '切换至白天模式', dark: '切换至夜晚模式' },
   trading: { subtitle: '实时持仓、K 线与订单 — 币安 USDT-M 合约', leverage: '杠杆' },
   strategies: {
-    subtitle: '多策略组合 · TradingView Webhook 驱动', active: '运行中', details: '详情',
-    webhookTitle: 'Webhook 接入', webhookDesc: '在 TradingView 策略告警中配置平台 Webhook URL，信号将自动路由至 AI 引擎执行。',
+    subtitle: '多策略组合 · AI 分析引擎 驱动', active: '运行中', details: '详情',
+    webhookTitle: 'AI 信号接入', webhookDesc: '平台 AI 引擎融合多指标与链上数据生成交易信号，毫秒级路由至 Supervisor 执行。',
     versions: '历史版本',
     items: {
       trend: { desc: '趋势跟踪策略，适合单边行情。', sharpe: '1.82', win: '58%', mdd: '12%' },
@@ -188,9 +190,9 @@ export default {
       momentum: { desc: '动量加速，跟随强势品种。', sharpe: '1.73', win: '55%', mdd: '14%' },
     },
   },
-  signals: { subtitle: 'TradingView 信号全记录', total: '信号总数', successRate: '执行成功率', latency: '平均延迟', recent: '最近信号', event: '事件', message: '详情' },
+  signals: { subtitle: 'AI 指标与链上分析全记录', total: '信号总数', successRate: '执行成功率', latency: '平均延迟', recent: '最近信号', event: '事件', message: '详情' },
   analytics: { subtitle: '收益、风险与绩效深度分析', dailyPnl: '每日盈亏', grossProfit: '总盈利', grossLoss: '总亏损' },
-  help: { subtitle: '文档、FAQ 与技术支持', docs: 'API 文档', docsDesc: 'Webhook、Binance 绑定与结算流程说明。', support: '工单支持', supportDesc: '提交问题，团队 24h 内响应。', contact: '联系我们', contactDesc: 'support@gemini-quant.com' },
+  help: { subtitle: '文档、FAQ 与技术支持', docs: 'API 文档', docsDesc: 'AI 引擎、Binance 绑定与结算流程说明。', support: '工单支持', supportDesc: '提交问题，团队 24h 内响应。', contact: '联系我们', contactDesc: 'support@gemini-quant.com' },
   settings: {
     subtitle: '通知、安全与开放 API', saved: '设置已保存', notifications: '通知偏好',
     notify_email: '邮件通知', notify_in_app: '站内消息', notify_telegram: 'Telegram', notify_webhook: 'Webhook',
@@ -202,7 +204,7 @@ export default {
       badge: 'Global AI Quant Trading SaaS',
       title1: 'Trade Smarter. ',
       titleHighlight: 'Powered by AI Quant.',
-      subtitle: '全球领先 AI 量化托管平台 — 专注加密货币 USDT 永续，TradingView 信号 + 币安 API，机构级体验。',
+      subtitle: '全球领先 AI 量化托管平台 — 专注加密货币 USDT 永续，AI 指标与链上分析 + 币安 API，机构级体验。',
       ctaPrimary: 'Start Trading', ctaSecondary: 'Watch Demo',
     },
     bento: {
@@ -227,16 +229,16 @@ export default {
       kicker: 'REVIEWS', title: '用户评价',
       items: {
         a: { text: '界面专业得像 Binance Pro，绑定 API 后完全托管，省心。', name: 'Alex Chen', role: 'Crypto Trader' },
-        b: { text: 'TradingView 信号对接非常顺畅，结算透明，推广奖励到账快。', name: 'Sarah Wu', role: 'Quant Enthusiast' },
+        b: { text: 'AI 指标与链上分析对接非常顺畅，结算透明，推广奖励到账快。', name: 'Sarah Wu', role: 'Quant Enthusiast' },
         c: { text: 'AI 多策略组合在震荡和趋势行情都表现稳定，数据分析很全面。', name: 'Mike Zhang', role: 'Fund Manager' },
       },
     },
     faq: {
       title: '常见问题',
       items: {
-        what: { q: '双子星AI量化是什么？', a: '面向加密货币的 AI 量化托管平台，通过 TradingView 信号在您的币安账户内自动交易，API 合作模式、无订阅月费。' },
+        what: { q: '双子星AI量化是什么？', a: '面向加密货币的 AI 量化托管平台，通过 AI 指标与链上分析在您的币安账户内自动交易，API 合作模式、无订阅月费。' },
         safe: { q: '资金安全吗？', a: '平台不托管资金。API 仅需合约交易权限，必须关闭提现权限。' },
-        strategy: { q: '可以自定义策略吗？', a: '支持 TradingView Webhook 接入您自己的策略信号，AI 引擎负责执行与风控。' },
+        strategy: { q: '可以自定义策略吗？', a: '支持 AI 分析引擎 接入您自己的策略信号，AI 引擎负责执行与风控。' },
         settlement: { q: '如何结算？', a: '7 天优先结算，无盈利或仍有持仓延至 10 天；盈利时平台收取 25% 分成。' },
         fee: { q: '有哪些费用？', a: '仅 API 合作盈利分成（7/10 天周期，默认 25% 平台分成）。无月费、无订阅、无隐藏套餐。' },
       },
@@ -257,7 +259,7 @@ export default {
       prompt: '分析 ETHUSDT 持仓并在重启后重建止盈止损。',
       reply: '账户接管完成，雷达哨兵已启动。',
       replyItems: {
-        a: '持仓方向与 TradingView 信号一致',
+        a: '持仓方向与 AI 指标与链上分析一致',
         b: 'TP1/TP2/TP3 防线已重构',
         c: '结算周期已跟踪 — 无需人工干预',
       },
@@ -267,7 +269,7 @@ export default {
         supervisor: { label: '哨兵', value: '6s 雷达' },
       },
       items: {
-        signal: { title: '信号智能体', desc: '将 TradingView Webhook 毫秒级广播至所有活跃 Supervisor。', status: '正在执行 LONG · 12ms' },
+        signal: { title: '信号智能体', desc: '将 AI 分析引擎 毫秒级广播至所有活跃 Supervisor。', status: '正在执行 LONG · 12ms' },
         risk: { title: '风控智能体', desc: '监控人工加减仓、方向背离，必要时强制对齐。', status: '哨兵循环运行中' },
         settle: { title: '结算智能体', desc: '执行 7/10 天周期、本金重置与 USDT 账单准备。', status: '下一窗口 · 7 天' },
       },
@@ -277,7 +279,7 @@ export default {
       titleLine1: '下一代',
       titleHighlight: 'AI 量化',
       titleLine2: '托管平台',
-      subtitle: '深度整合 TradingView 信号与币安 USDT-M 合约，多策略组合、智能档位切换、7/10 天透明结算 —— 专业级量化体验，资产始终留在您的交易所账户。',
+      subtitle: '深度整合 AI 指标与链上分析与币安 USDT-M 合约，多策略组合、智能档位切换、7/10 天透明结算 —— 专业级量化体验，资产始终留在您的交易所账户。',
       ctaPrimary: '免费开始', ctaSecondary: '查看实时行情',
       live: '运行中',
       terminalTitle: 'GEMINI AI Engine',
@@ -296,7 +298,7 @@ export default {
       subtitle: '不是通用理财工具 —— 从信号接入、风控执行到周期结算，全链路为加密合约交易深度优化。',
       items: {
         ai: { title: 'AI 智能决策', desc: '多模型融合分析市场状态，动态识别趋势、震荡与突破，自动匹配最优策略组合。' },
-        strategy: { title: '策略组合权', desc: 'Trend / Breakout / Mean-Reversion / Momentum 自由组合，TradingView Webhook 即插即用。' },
+        strategy: { title: '策略组合权', desc: 'Trend / Breakout / Mean-Reversion / Momentum 自由组合，AI 分析引擎 即插即用。' },
         crypto: { title: '专注加密货币', desc: '深耕 BTC、ETH 及主流 alt 的 USDT 永续合约，7×24 小时不间断捕捉波动机会。' },
         execution: { title: '毫秒级执行', desc: '直连币安 API，单向持仓、杠杆校验、仓位 Supervisor 实时守护，跟单不延迟。' },
         settlement: { title: '透明智能结算', desc: '7 天优先结算，无盈利或仍有持仓延至 10 天；盈利分成清晰，推荐奖励自动入账。' },
@@ -306,11 +308,11 @@ export default {
     strategy: {
       kicker: 'STRATEGY STACK',
       title: '多策略组合 · 您掌控策略权',
-      lead: '平台不是黑盒 —— 通过 TradingView 接入您信任的策略信号，AI 引擎负责仓位管理、档位切换与风险控制，在币安账户内透明执行。',
+      lead: '平台不是黑盒 —— AI 融合十大指标与链上数据捕捉进出场，引擎负责仓位管理、档位切换与风险控制，在币安账户内透明执行。',
       points: {
         combo: { title: '自由策略组合', desc: '按市场 regime 自动切换策略权重，趋势与震荡行情各有最优解。' },
         regime: { title: '智能档位管理', desc: 'OPEN / TRAIL / CLOSE 全链路日志可追溯，每笔交易有据可查。' },
-        webhook: { title: 'TradingView 原生接入', desc: '标准 Webhook 信号驱动，与您的 TV 策略无缝衔接。' },
+        webhook: { title: 'AI 多指标融合', desc: 'Multi Kernel Regression、Market Structure 与链上数据实时融合，毫秒级驱动执行。' },
         risk: { title: '本金周期风控', desc: '结算确认后重置初始本金，新周期从零开始，盈亏边界清晰。' },
       },
       tags: { trend: '趋势跟踪', breakout: '突破策略', mean: '均值回归', momentum: '动量加速' },
@@ -320,7 +322,7 @@ export default {
     markets: {
       kicker: 'LIVE MARKETS',
       title: '主流加密货币 · 实时跳动',
-      subtitle: 'Powered by TradingView · 币安 USDT 永续行情同步更新，感受交易所级专业体验。',
+      subtitle: 'Powered by AI Indicators · 币安 USDT 永续行情同步更新，感受交易所级专业体验。',
       tabCrypto: '加密货币',
     },
     how: {
@@ -329,7 +331,7 @@ export default {
       steps: {
         register: { title: '注册账户', desc: '邮箱或手机验证码注册，可选填推荐码加入推广体系。' },
         bind: { title: '绑定币安 API', desc: '开启合约权限、关闭提现权限，平台验证后记载初始本金。' },
-        trade: { title: '自动跟单运行', desc: 'TradingView 信号触发，AI 引擎在您的币安账户内自动开平仓。' },
+        trade: { title: '自动跟单运行', desc: 'AI 指标与链上分析触发，AI 引擎在您的币安账户内自动开平仓。' },
         settle: { title: '周期结算分润', desc: '7/10 天智能结算，USDT 付款确认后重置本金，推广奖励同步入账。' },
       },
     },
@@ -356,203 +358,5 @@ export default {
       riskDisclaimer: '风险提示：加密货币交易具有高风险，过往业绩不代表未来收益。本平台不托管用户资金，不构成投资建议。请谨慎评估自身风险承受能力。',
     },
   },
-  framer: {
-    nav: {
-      product: '产品', agents: 'AI 智能体', platform: '平台', community: '社区', partners: '合作伙伴', security: '安全',
-      signup: '免费注册', console: '进入控制台',
-    },
-    hero: {
-      pill: 'GEMINI AI 3.0 · 最新发布',
-      titleLead: '双子星AI量化 —',
-      titleAccent: '为顶尖交易者打造的专业平台',
-      subtitle: '交易所 API 合作模式，无订阅月费。TradingView 信号、毫秒级执行、机构级安全。资金始终留在您的币安账户。',
-      ctaPrimary: '免费开始', ctaSecondary: '了解平台',
-      canvasLabel: '控制台 · 仪表盘 · 实时',
-      sidebar: { dashboard: '仪表盘', trading: '交易', signals: '信号', analytics: '分析', settlement: '结算' },
-      toolbar: { site: '控制台', branch: 'main', invite: '邀请', publish: '启动托管', pages: '页面' },
-      viewports: {
-        desktop: { label: '桌面端', size: '1200' },
-        tablet: { label: '平板', size: '810' },
-        agent: { label: '智能体', size: 'AI' },
-      },
-      agent: {
-        title: '智能体', model: 'GEMINI Supervisor',
-        prompt: '为 ETHUSDT 部署趋势策略，启用 ATR 档位校验与 6 秒哨兵。',
-        thinking: '分析信号链路…',
-        reply: '✓ 已更新 Supervisor 配置 · 12 个账户同步 · 18ms',
-        done: '变更已写入审计日志 · 可回滚',
-      },
-      recording: { live: '演示录制中', loading: '加载控制台演示…', demo: 'GEMINI AI · Console' },
-      dock: {
-        finder: 'Finder', safari: 'Safari', terminal: 'Terminal', gemini: 'GEMINI AI',
-        trading: 'Trading', dashboard: 'Dashboard', slack: 'Messages', settings: 'Settings',
-      },
-    },
-    shipped: {
-      kicker: 'GEMINI 产品矩阵',
-      title: '看看 GEMINI AI 能做什么',
-      cta: '查看产品矩阵 →',
-      customers: '认识我们的交易者',
-      items: { dashboard: '仪表盘总览', trading: '实时交易', signals: '信号引擎', analytics: '深度分析', settlement: '智能结算' },
-      itemsDesc: {
-        dashboard: '余额、盈亏、胜率一屏掌握',
-        trading: '合约持仓与 TV 图表联动',
-        signals: 'Webhook 毫秒级广播',
-        analytics: 'Sharpe / Sortino 专业指标',
-        settlement: '7/10 天透明盈利分成',
-      },
-    },
-    agents: {
-      kicker: '与您并肩',
-      title: '与您并肩工作的 AI 智能体，而非取代您',
-      subtitle: 'AI 监管员 24/7 监控信号、风控与结算 — 您通过交易所 API 保持完全控制权。',
-      cta: '从智能体开始',
-      learn: '从智能体开始',
-      table: { event: '事件', status: '状态', latency: '延迟' },
-      items: {
-        signal: {
-          kicker: '信号智能体', title: '用智能体执行交易',
-          desc: '专业信号智能体将 TradingView Webhook 毫秒级路由至每个活跃 Supervisor — 全程可见、可追溯、由您掌控。',
-          mockTitle: 'Webhook · LONG ETHUSDT',
-          mockLine1: '分析档位 · ATR 校验通过',
-          mockLine2: '✓ 已广播至 12 个 Supervisor · 18ms',
-        },
-        risk: {
-          kicker: '风控智能体', title: '用智能体守护风险',
-          desc: '重启后自动重建 TP/SL 防线，检测人工加减仓，方向背离时强制对齐 — 全程写入账户日志。',
-          rows: {
-            a: { event: '雷达哨兵', status: '运行中', latency: '6s' },
-            b: { event: '方向校验', status: '运行中', latency: '12ms' },
-            c: { event: '强制对齐', status: '运行中', latency: '890ms' },
-          },
-        },
-        settle: {
-          kicker: '结算智能体', title: '用智能体管理结算',
-          desc: '透明 7/10 天盈利分成 — 无月费订阅，纯 API 合作模式。',
-          winRate: '策略胜率', latency: '信号延迟', cycle: '结算周期',
-          note: '绩效因策略与市场环境而异，过往业绩不代表未来收益。',
-        },
-        strategy: {
-          kicker: '策略智能体', title: '用智能体配置策略',
-          desc: '策略智能体在控制台内生成档位参数、部署 Supervisor、同步多账户 — 每次变更可审计、可回滚。',
-          codeComment: '部署趋势策略',
-          codeResult: '✓ 3 账户已同步 · Regime trend · ATR 2.4x',
-        },
-      },
-    },
-    api: {
-      kicker: 'API 合作',
-      title: '连接任意终端 — 绑定交易所 API',
-      desc: '绑定币安 USDT-M 合约，仅需交易权限、关闭提现。平台不托管资金，仅在盈利周期按约定分成 — 零月费。',
-      cta: '通过 API 合作', terminalNote: '双子星AI量化 · Supervisor 已就绪',
-    },
-    platform: {
-      title: '不只是界面，而是完整平台',
-      performance: { title: '极致性能', grade: 'GOOD', desc: '信号分发亚秒级，控制台 Core Web Vitals 全绿。', lcp: '信号分发' },
-      security: { title: '机构级安全', desc: 'API 仅交易权限、禁止提现，敏感操作双重验证。' },
-      latency: { title: '极速执行', desc: '全球 Webhook 亚秒级路由至所有活跃 Supervisor。' },
-      signals: { title: '准确及时', desc: 'TradingView 原生信号，每笔下单前校验档位与 ATR。' },
-      winrate: { title: '策略胜率', desc: '多档位组合适配趋势与震荡，交易日志完全透明。' },
-      settlement: { title: '智能结算', desc: '7/10 天 USDT 盈利分成 — 无订阅套餐。' },
-      cms: {
-        title: '策略 CMS',
-        colStrategy: '策略', colStatus: '状态',
-        rows: {
-          a: { name: 'Trend R3 · ETH', status: '运行中' },
-          b: { name: 'Range R1 · BTC', status: '运行中' },
-          c: { name: 'Breakout R2', status: '草稿' },
-        },
-      },
-      compliance: { title: '合规披露', url: '路径', desc: '描述', descVal: '非托管 API 合作 · 不构成投资建议' },
-      collab: {
-        title: '协作审计',
-        branches: { main: 'main · 生产', risk: 'risk · 风控', settle: 'settle · 结算' },
-        times: { main: '1 分钟前', risk: '8 分钟前', settle: '10 分钟前' },
-      },
-      i18n: {
-        title: '国际化',
-        locales: {
-          zh: { name: '中文', pct: '100%' },
-          en: { name: 'English', pct: '100%' },
-          sg: { name: '新加坡', pct: '35%' },
-          jp: { name: '日本', pct: '90%' },
-        },
-      },
-      hosting: { title: '托管可用性', uptime: '可用性', desc: '多区域 VPS + Nginx 反代，Webhook 与控制台分离部署。' },
-      analytics: { title: '分析洞察', pageviews: '累计信号处理' },
-      ab: { title: '策略 A/B', variant: '变体', conversion: '转化率', lift: '提升', winner: 'R3 Trend · WINNER', control: 'R1 Range' },
-      partnership: { title: '100% API 合作模式', desc: '无 SaaS 订阅。连接交易所，盈利周期分成 — 这是我们的全部商业模式。' },
-    },
-    community: {
-      kicker: '全球交易者',
-      title: '建立在专业交易者社区之上',
-      subtitle: '邀请返佣、策略分享与透明日志 — 与顶尖量化团队一起成长。',
-      search: '搜索社区…',
-      nav: { explore: '探索', referrals: '邀请返佣', marketplace: '策略市场' },
-      posts: {
-        a: { author: 'Lee · Pro', meta: '邀请返佣 · 3 分钟前', body: '双子星 API 合作模式很清晰 — 无月费，盈利才分成。', likes: '30 赞', comments: '5 评论' },
-        b: { author: 'Alex · SG', meta: '策略分享 · 12 分钟前', body: 'R3 趋势档在 ETH 上跑了 30 天，日志完全透明。', likes: '23 赞', comments: '6 评论' },
-        c: { author: 'Ben · HK', meta: '风控 · 1 天前', body: '重启后 TP/SL 自动重建，Sentinel 6 秒循环很稳。', likes: '85 赞', comments: '12 评论' },
-        d: { author: 'Ren · JP', meta: '结算 · 1 周前', body: '7/10 天结算周期清晰，PDF 凭证齐全。', likes: '16 赞', comments: '6 评论' },
-      },
-    },
-    partners: {
-      kicker: '全球布局',
-      title: '深受量化团队信赖',
-      subtitle: '覆盖主流加密市场的基础设施与交易者网络。',
-      cta: '阅读案例 →',
-      logos: { binance: 'Binance', tradingview: 'TradingView', redis: 'Redis', fastapi: 'FastAPI' },
-      countries: { sg: '🇸🇬 新加坡', hk: '🇭🇰 香港', ae: '🇦🇪 阿联酋', jp: '🇯🇵 日本', uk: '🇬🇧 英国', us: '🇺🇸 美国', de: '🇩🇪 德国', au: '🇦🇺 澳大利亚' },
-      stories: {
-        read: '阅读案例',
-        atlas: {
-          company: 'Atlas Quant · 新加坡',
-          badge: 'API 合作',
-          metric: '58% 胜率 · 信号 <1s',
-          quote: '从 TradingView 到币安全链路托管，7/10 天结算透明可查。',
-        },
-        vertex: {
-          company: 'Vertex Capital · 香港',
-          badge: '机构风控',
-          metric: 'Sentinel 6s · 零方向偏离',
-          quote: '重启后 TP/SL 自动重建，人工改仓也能被监管员对齐。',
-        },
-        pulse: {
-          company: 'Pulse Trading · 东京',
-          badge: '多账户',
-          metric: '12 Supervisor · 18ms 广播',
-          quote: '一个 Webhook 同步 12 个账户，R3 趋势档在亚洲时段表现稳定。',
-        },
-        northstar: {
-          company: 'Northstar Desk · 伦敦',
-          badge: '全球团队',
-          metric: '中/英双语 · 24/7 日志',
-          quote: '国际化控制台与 PDF 结算凭证，满足跨境团队合规要求。',
-        },
-      },
-    },
-    security: {
-      kicker: '安全至上',
-      title: '您的资金，始终在交易所',
-      desc: '为 API 合作而生的机构级安全 — 非托管模式。',
-      points: {
-        api: { title: 'API 最小权限', desc: '仅合约交易，必须关闭提现。' },
-        dual: { title: '双重验证', desc: '改密、提现密码、地址簿需邮箱+短信。' },
-        audit: { title: '全链路审计', desc: '交易、日志、结算凭证完整留存。' },
-        nocustody: { title: '零托管', desc: '资产从不离开您的币安账户。' },
-      },
-    },
-    final: {
-      kicker: '立即开始',
-      title: '双子星AI量化 — 为顶尖交易者打造',
-      subtitle: 'GEMINI AI · 交易所 API 合作 · 无订阅月费',
-      cta: '免费开始',
-    },
-    footer: {
-      tagline: '双子星AI量化 · GEMINI AI · 交易所 API 合作',
-      product: '产品', company: '公司', legal: '法律', connect: '联系',
-      rights: '© 2026 双子星AI量化 · GEMINI AI. 保留所有权利。',
-      risk: '加密货币衍生品具有高风险，不构成投资建议。',
-    },
-  },
+  framer: framerZh,
 } as const

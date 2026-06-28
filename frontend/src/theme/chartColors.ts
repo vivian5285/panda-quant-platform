@@ -7,7 +7,7 @@ export const CHART = {
   goldDim: 'rgba(100,116,139,0.25)',
   red: '#dc2626',
   redDim: 'rgba(220,38,38,0.12)',
-  neutral: '#0a0a0a',
+  neutral: '#050816',
   neutralDark: '#fafafa',
   pie: ['#3b82f6', '#64748b', '#2563eb', '#94a3b8', '#1d4ed8', '#475569'],
   axisLine: (dark: boolean) => (dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)'),
@@ -22,6 +22,6 @@ export const CHART = {
 
 /** P&L semantic colors (industry convention) */
 export const PNL = {
-  up: '#16a34a',
+  up: '#60a5fa',
   down: '#dc2626',
 } as const

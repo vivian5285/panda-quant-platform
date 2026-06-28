@@ -11,17 +11,20 @@ export function BinanceLogo({ className = '' }: { className?: string }) {
   )
 }
 
-export function TradingViewLogo({ className = '' }: { className?: string }) {
+export function OnChainLogo({ className = '' }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 160 40" fill="none" aria-hidden>
+    <svg className={className} viewBox="0 0 160 48" fill="none" aria-hidden>
+      <circle cx="24" cy="24" r="18" stroke="#38bdf8" strokeWidth="2.5" fill="rgba(56,189,248,0.12)" />
       <path
-        fill="#2962FF"
-        d="M6 32V8l8.2 6.1L22 8l7.8 6.1L38 8v24H6Z"
+        d="M16 24h16M24 16v16"
+        stroke="#38bdf8"
+        strokeWidth="2"
+        strokeLinecap="round"
       />
-      <path fill="#131722" d="M14.2 8.8 22 13.8l7.8-5V32H14.2V8.8Z" opacity="0.9" />
+      <circle cx="24" cy="24" r="4" fill="#38bdf8" />
       <path
-        fill="#131722"
-        d="M48 12.5h5.2l8.4 12.1V12.5H67v19h-5.1L53.5 19.3V31.5H48V12.5Zm22.1 0h5v19h-5v-19Zm2.5 0c4.8 0 8.6 3.6 8.6 8.1 0 4.1-3.2 7.4-7.3 7.9l8.9 3h-5.9l-7.2-2.8v2.8h-5.1V12.5Zm-.3 4.2v7.5c2.8-.2 4.9-1.8 4.9-3.8 0-2-2-3.7-4.9-3.7Zm18.8-4.2h9.1c5.5 0 9.4 3.5 9.4 9.5s-3.9 9.5-9.4 9.5h-9.1V12.5Zm5 4.3v10.9h3.8c3.1 0 5.1-2 5.1-5.4 0-3.5-2-5.5-5.1-5.5h-3.8Z"
+        fill="#e5e5e5"
+        d="M52 34V14h6.8l7.2 12.4L73.2 14H80v20h-5.1L53.5 19.3V31.5H48V12.5Zm22.1 0h5v19h-5v-19Zm2.5 0c4.8 0 8.6 3.6 8.6 8.1 0 4.1-3.2 7.4-7.3 7.9l8.9 3h-5.9l-7.2-2.8v2.8h-5.1V12.5Zm-.3 4.2v7.5c2.8-.2 4.9-1.8 4.9-3.8 0-2-2-3.7-4.9-3.7Zm18.8-4.2h9.1c5.5 0 9.4 3.5 9.4 9.5s-3.9 9.5-9.4 9.5h-9.1V12.5Zm5 4.3v10.9h3.8c3.1 0 5.1-2 5.1-5.4 0-3.5-2-5.5-5.1-5.5h-3.8Z"
       />
     </svg>
   )
@@ -60,7 +63,7 @@ export function FastAPILogo({ className = '' }: { className?: string }) {
 
 const ICONS = {
   binance: BinanceLogo,
-  tradingview: TradingViewLogo,
+  onchain: OnChainLogo,
   redis: RedisLogo,
   fastapi: FastAPILogo,
 } as const

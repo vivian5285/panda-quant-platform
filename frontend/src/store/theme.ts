@@ -11,17 +11,17 @@ interface ThemeState {
 function applyTheme(theme: Theme) {
   document.documentElement.setAttribute('data-theme', theme)
   const meta = document.querySelector('meta[name="theme-color"]')
-  if (meta) meta.setAttribute('content', theme === 'light' ? '#ffffff' : '#0a0a0a')
+  if (meta) meta.setAttribute('content', theme === 'light' ? '#ffffff' : '#050816')
 }
 
 function detectTheme(): Theme {
   const saved = localStorage.getItem('theme') as Theme | null
   if (saved === 'light' || saved === 'dark') return saved
-  return 'light'
+  return 'dark'
 }
 
 export const useTheme = create<ThemeState>((set, get) => ({
-  theme: 'light',
+  theme: 'dark',
   setTheme: (theme) => {
     localStorage.setItem('theme', theme)
     applyTheme(theme)

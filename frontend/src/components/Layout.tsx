@@ -39,7 +39,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       { to: '/help', label: t('nav.help'), keywords: 'help faq docs' },
       { to: '/settings', label: t('nav.settings'), keywords: 'settings 2fa notification' },
       { to: '/strategies', label: t('nav.strategies'), keywords: 'strategy webhook' },
-      { to: '/signals', label: t('nav.signals'), keywords: 'tradingview signal' },
+      { to: '/signals', label: t('nav.signals'), keywords: 'ai indicator signal' },
       { to: '/analytics', label: t('nav.analytics'), keywords: 'sharpe analytics' },
     ]
     const seen = new Set(core.map(c => c.to))

@@ -65,53 +65,58 @@
 
 [data-theme="dark"] {
   color-scheme: dark;
-  --bg-primary: #0a0a0a;
-  --bg-secondary: #111111;
-  --bg-elevated: #141414;
-  --bg-glow-1: transparent;
-  --bg-glow-2: transparent;
-  --bg-glow-3: transparent;
-  --glass-bg: #141414;
-  --glass-bg-strong: #1a1a1a;
-  --glass-border: rgba(255, 255, 255, 0.1);
-  --glass-border-hover: rgba(255, 255, 255, 0.18);
-  --glass-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-  --glass-shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.5);
-  --accent: #ffffff;
-  --accent-hover: #e5e5e5;
-  --accent-blue: #ffffff;
-  --accent-gold: #a3a3a3;
-  --accent-success: #22c55e;
-  --accent-success-dim: rgba(34, 197, 94, 0.12);
-  --accent-success-glow: rgba(255, 255, 255, 0.06);
-  --text-primary: #fafafa;
-  --text-secondary: #a3a3a3;
-  --text-muted: #737373;
-  --surface-muted: #1a1a1a;
-  --surface-hover: #222222;
-  --sidebar-bg: #0f0f0f;
-  --input-bg: #1a1a1a;
-  --input-focus-bg: #1f1f1f;
+  /* Framer-aligned · GEMINI AI · #050816 palette */
+  --bg-primary: #050816;
+  --bg-secondary: #0a0f1e;
+  --bg-elevated: #0f172a;
+  --bg-glow-1: rgba(59, 130, 246, 0.08);
+  --bg-glow-2: rgba(139, 92, 246, 0.06);
+  --bg-glow-3: rgba(6, 182, 212, 0.05);
+  --glass-bg: #0f172a;
+  --glass-bg-strong: #111827;
+  --glass-border: rgba(148, 163, 184, 0.12);
+  --glass-border-hover: rgba(148, 163, 184, 0.22);
+  --glass-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  --glass-shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-blue: #3b82f6;
+  --accent-gold: #94a3b8;
+  --accent-purple: #8b5cf6;
+  --accent-success: #60a5fa;
+  --accent-success-dim: rgba(59, 130, 246, 0.12);
+  --accent-success-glow: rgba(59, 130, 246, 0.15);
+  --green: #3b82f6;
+  --green-dim: rgba(59, 130, 246, 0.12);
+  --green-glow: rgba(59, 130, 246, 0.15);
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --surface-muted: #0f172a;
+  --surface-hover: #1e293b;
+  --sidebar-bg: #0a0f1e;
+  --input-bg: #0f172a;
+  --input-focus-bg: #111827;
   --btn-ghost-bg: transparent;
-  --btn-ghost-hover: #1f1f1f;
-  --tab-active-bg: #1f1f1f;
-  --tab-hover-bg: #1a1a1a;
-  --table-head-bg: #141414;
-  --table-row-hover: #1a1a1a;
-  --table-border: rgba(255, 255, 255, 0.06);
-  --badge-green-text: #4ade80;
-  --badge-gray-bg: #1f1f1f;
-  --flash-text: #4ade80;
-  --overlay-bg: rgba(0, 0, 0, 0.75);
-  --scrollbar-thumb: rgba(255, 255, 255, 0.15);
-  --link-box-bg: #1a1a1a;
-  --stat-tile-bg: #141414;
-  --verify-panel-bg: #1a1a1a;
-  --toolbar-bg: rgba(10, 10, 10, 0.92);
-  --theme-track: #262626;
-  --theme-thumb: #404040;
-  --primary: #ffffff;
-  --secondary: #a3a3a3;
+  --btn-ghost-hover: #1e293b;
+  --tab-active-bg: #111827;
+  --tab-hover-bg: #0f172a;
+  --table-head-bg: #0f172a;
+  --table-row-hover: #111827;
+  --table-border: rgba(148, 163, 184, 0.08);
+  --badge-green-text: #93c5fd;
+  --badge-gray-bg: #1e293b;
+  --flash-text: #60a5fa;
+  --overlay-bg: rgba(5, 8, 22, 0.85);
+  --scrollbar-thumb: rgba(148, 163, 184, 0.2);
+  --link-box-bg: #0f172a;
+  --stat-tile-bg: #0f172a;
+  --verify-panel-bg: #0f172a;
+  --toolbar-bg: rgba(5, 8, 22, 0.92);
+  --theme-track: #1e293b;
+  --theme-thumb: #334155;
+  --primary: #f8fafc;
+  --secondary: #94a3b8;
   --danger: #f87171;
   --warning: #fbbf24;
 }
@@ -454,8 +459,13 @@ h1, h2, h3 {
 }
 
 [data-theme="dark"] .btn-primary {
-  color: #0a0a0a;
-  font-weight: 600;
+  background: #3b82f6;
+  color: #ffffff;
+  box-shadow: 0 4px 20px rgba(59, 130, 246, 0.35);
+}
+
+[data-theme="dark"] .btn-primary:hover {
+  background: #2563eb;
 }
 
 .btn-primary:active {
@@ -1866,7 +1876,7 @@ h1, h2, h3 {
 }
 
 .saas-gradient-text {
-  background: linear-gradient(135deg, #3B82F6 0%, #8B5CF6 50%, #22C55E 100%);
+  background: linear-gradient(135deg, #3B82F6 0%, #8B5CF6 50%, #06B6D4 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -2237,7 +2247,7 @@ h1, h2, h3 {
   padding: 14px 24px; border-bottom: 1px solid var(--glass-border);
   background: rgba(255, 255, 255, 0.92); backdrop-filter: blur(12px);
 }
-[data-theme="dark"] .framer-public-nav { background: rgba(10, 10, 10, 0.92); }
+[data-theme="dark"] .framer-public-nav { background: rgba(5, 8, 22, 0.92); }
 
 .lang-switch:hover { color: var(--text-primary); background: var(--surface-hover); }
 

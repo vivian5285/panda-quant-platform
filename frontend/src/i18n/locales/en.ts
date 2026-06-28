@@ -1,5 +1,7 @@
+import framerEn from './framer-en'
+
 export default {
-  brand: { name: 'GEMINI AI', tagline: 'GEMINI AI · Exchange API Partnership' },
+  brand: { name: 'GEMINI AI', tagline: 'GEMINI AI · AI Quant Decision Engine' },
   nav: {
     dashboard: 'Dashboard', trading: 'Trading', strategies: 'Strategies', signals: 'Signals', analytics: 'Analytics',
     trades: 'Trades', logs: 'Logs', referrals: 'Referrals',
@@ -141,12 +143,12 @@ export default {
     historyTitle: 'Withdrawal History', emptyHistory: 'No records', emailCodePrompt: 'Enter email verification code', phoneCodePrompt: 'Enter SMS verification code',
   },
   hero: {
-    badge: 'Global AI Quant · Binance USDT-M · TradingView',
+    badge: 'Global AI Quant · Binance USDT-M · AI Indicators',
     titleMain: 'Trade Smarter. ',
     titleHighlight: 'Powered by AI Quant.',
-    subtitle: 'Global AI quant hosting for crypto perpetuals — TradingView signals + Binance API, institutional cyber UX.',
+    subtitle: 'Global AI quant hosting for crypto perpetuals — AI indicator fusion + on-chain data + Binance API, institutional cyber UX.',
     ctaPrimary: 'Get Started', ctaSecondary: 'Live Markets',
-    trust: { api: 'Least-privilege API', tv: 'Native TradingView', settle: '7/10-day settlement' },
+    trust: { api: 'Least-privilege API', tv: 'Multi-indicator AI', settle: '7/10-day settlement' },
   },
   legal: {
     privacy: {
@@ -165,7 +167,7 @@ export default {
       title: 'Terms of Service', updated: 'Last updated: June 28, 2026',
       sections: {
         intro: { title: '1. Acceptance', body: 'By using GEMINI AI you agree to these terms. If you disagree, discontinue use of the platform.' },
-        service: { title: '2. Service Description', body: 'We provide AI quant hosting SaaS: TradingView webhooks trigger automated USDT-M futures execution in your Binance account. We never custody user funds.' },
+        service: { title: '2. Service Description', body: 'We provide AI quant hosting SaaS: our AI engine fuses multi-indicator analysis and on-chain data to trigger automated USDT-M futures execution in your Binance account. We never custody user funds.' },
         api: { title: '3. API Requirements', body: 'You must bind a valid Binance API with futures trading enabled and withdraw disabled. Losses from misconfiguration or key leakage are your responsibility.' },
         fees: { title: '4. Fees & Settlement', body: 'Profitable cycles settle on a smart 7/10-day schedule with a 25% platform share. Users pay via USDT and submit on-chain proof. Late payment may suspend hosting.' },
         risk: { title: '5. Risk Disclosure', body: 'Crypto derivatives are high risk and may result in total loss. Past performance does not guarantee future results. This is not investment advice.' },
@@ -178,8 +180,8 @@ export default {
   theme: { light: 'Switch to day mode', dark: 'Switch to night mode' },
   trading: { subtitle: 'Live positions, charts & orders — Binance USDT-M', leverage: 'Leverage' },
   strategies: {
-    subtitle: 'Multi-strategy stacks · TradingView webhooks', active: 'Active', details: 'Details',
-    webhookTitle: 'Webhook Integration', webhookDesc: 'Configure your TradingView alert webhook URL — signals route to the AI engine automatically.',
+    subtitle: 'Multi-strategy stacks · AI indicator engine', active: 'Active', details: 'Details',
+    webhookTitle: 'AI Signal Engine', webhookDesc: 'The GEMINI AI engine fuses indicator matrix + on-chain flows — signals route to supervisors automatically.',
     versions: 'Version History',
     items: {
       trend: { desc: 'Trend-following for directional markets.', sharpe: '1.82', win: '58%', mdd: '12%' },
@@ -188,9 +190,9 @@ export default {
       momentum: { desc: 'Momentum acceleration on strong movers.', sharpe: '1.73', win: '55%', mdd: '14%' },
     },
   },
-  signals: { subtitle: 'Full TradingView signal history', total: 'Total Signals', successRate: 'Success Rate', latency: 'Avg Latency', recent: 'Recent Signals', event: 'Event', message: 'Detail' },
+  signals: { subtitle: 'Full AI signal history', total: 'Total Signals', successRate: 'Success Rate', latency: 'Avg Latency', recent: 'Recent Signals', event: 'Event', message: 'Detail' },
   analytics: { subtitle: 'Deep performance & risk analytics', dailyPnl: 'Daily P&L', grossProfit: 'Gross Profit', grossLoss: 'Gross Loss' },
-  help: { subtitle: 'Docs, FAQ & support', docs: 'API Docs', docsDesc: 'Webhook, Binance bind & settlement guides.', support: 'Support Tickets', supportDesc: 'Submit issues — 24h response.', contact: 'Contact', contactDesc: 'support@gemini-quant.com' },
+  help: { subtitle: 'Docs, FAQ & support', docs: 'API Docs', docsDesc: 'Binance bind, AI engine & settlement guides.', support: 'Support Tickets', supportDesc: 'Submit issues — 24h response.', contact: 'Contact', contactDesc: 'support@gemini-quant.com' },
   settings: {
     subtitle: 'Notifications, security & open API', saved: 'Settings saved', notifications: 'Notifications',
     notify_email: 'Email', notify_in_app: 'In-app', notify_telegram: 'Telegram', notify_webhook: 'Webhook',
@@ -202,7 +204,7 @@ export default {
       badge: 'Global AI Quant Trading SaaS',
       title1: 'Trade Smarter. ',
       titleHighlight: 'Powered by AI Quant.',
-      subtitle: 'Global AI quant hosting — crypto USDT-M perpetuals, TradingView signals + Binance API, institutional-grade UX.',
+      subtitle: 'Global AI quant hosting — crypto USDT-M perpetuals, AI indicators + on-chain data + Binance API, institutional-grade UX.',
       ctaPrimary: 'Start Trading', ctaSecondary: 'Watch Demo',
     },
     bento: {
@@ -227,16 +229,16 @@ export default {
       kicker: 'REVIEWS', title: 'What traders say',
       items: {
         a: { text: 'Feels as pro as Binance — bind API and forget, fully automated.', name: 'Alex Chen', role: 'Crypto Trader' },
-        b: { text: 'TradingView integration is seamless. Transparent settlement and fast referral payouts.', name: 'Sarah Wu', role: 'Quant Enthusiast' },
+        b: { text: 'AI indicator fusion is seamless. Transparent settlement and fast referral payouts.', name: 'Sarah Wu', role: 'Quant Enthusiast' },
         c: { text: 'Multi-strategy AI stack works in both trend and range markets. Analytics are thorough.', name: 'Mike Zhang', role: 'Fund Manager' },
       },
     },
     faq: {
       title: 'FAQ',
       items: {
-        what: { q: 'What is GEMINI AI?', a: 'An AI quant hosting platform for crypto — TradingView signals execute in your Binance account via API partnership. No subscription.' },
+        what: { q: 'What is GEMINI AI?', a: 'An AI quant hosting platform for crypto — multi-indicator AI + on-chain analysis executes in your Binance account via API partnership. No subscription.' },
         safe: { q: 'Is it safe?', a: 'We never custody funds. API keys are trade-only with withdraw disabled.' },
-        strategy: { q: 'Custom strategies?', a: 'Connect your TradingView webhooks; our AI engine handles execution and risk.' },
+        strategy: { q: 'Custom strategies?', a: 'Configure indicator stacks in the DIY builder; our AI engine handles execution and risk.' },
         settlement: { q: 'How does settlement work?', a: '7-day priority cycles, extend to 10 when needed; 25% platform share on profits.' },
         fee: { q: 'What are the fees?', a: 'API partnership profit-share only (7/10-day cycles, 25% platform share by default). No monthly fees, no subscriptions, no hidden tiers.' },
       },
@@ -257,7 +259,7 @@ export default {
       prompt: 'Analyze ETHUSDT position and rebuild TP/SL after restart.',
       reply: 'Account takeover complete. Sentinel monitoring active.',
       replyItems: {
-        a: 'Direction aligned with TradingView signal',
+        a: 'Direction aligned with AI indicator consensus',
         b: 'TP1/TP2/TP3 defenses rebuilt',
         c: 'Settlement cycle tracked — no manual action needed',
       },
@@ -267,7 +269,7 @@ export default {
         supervisor: { label: 'Supervisor', value: '6s radar' },
       },
       items: {
-        signal: { title: 'Signal Agent', desc: 'Routes TradingView webhooks to every active supervisor with sub-second dispatch.', status: 'Dispatching LONG · 12ms' },
+        signal: { title: 'Signal Agent', desc: 'Routes AI analysis engine output to every active supervisor with sub-second dispatch.', status: 'Dispatching LONG · 12ms' },
         risk: { title: 'Risk Agent', desc: 'Watches manual adjustments, direction mismatch, and force-aligns when needed.', status: 'Sentinel loop active' },
         settle: { title: 'Settlement Agent', desc: 'Runs 7/10-day cycles, tracks principal resets, and prepares USDT invoices.', status: 'Next window · 7d' },
       },
@@ -277,7 +279,7 @@ export default {
       titleLine1: 'The Next-Gen ',
       titleHighlight: 'AI Quant',
       titleLine2: ' Platform',
-      subtitle: 'TradingView signals meet Binance USDT-M futures — multi-strategy stacks, smart regime switching, and transparent 7/10-day settlement. Institutional-grade quant, funds stay on your exchange.',
+      subtitle: 'AI indicators + on-chain data meet Binance USDT-M futures — multi-strategy stacks, smart regime switching, and transparent 7/10-day settlement. Institutional-grade quant, funds stay on your exchange.',
       ctaPrimary: 'Get Started', ctaSecondary: 'Live Markets',
       live: 'Live',
       terminalTitle: 'GEMINI AI Engine',
@@ -296,7 +298,7 @@ export default {
       subtitle: 'Not a generic wealth app — every layer is optimized for crypto futures from signal to settlement.',
       items: {
         ai: { title: 'AI-driven decisions', desc: 'Multi-model fusion reads market regimes and routes to the optimal strategy stack automatically.' },
-        strategy: { title: 'Strategy sovereignty', desc: 'Combine Trend, Breakout, Mean-Reversion & Momentum — TradingView webhooks plug in instantly.' },
+        strategy: { title: 'Strategy sovereignty', desc: 'Combine Trend, Breakout, Mean-Reversion & Momentum — ten-indicator AI matrix plugs in instantly.' },
         crypto: { title: 'Crypto-native focus', desc: 'BTC, ETH and major alts on USDT perpetuals — 24/7 volatility capture.' },
         execution: { title: 'Low-latency execution', desc: 'Direct Binance API, one-way mode checks, live position supervisor — no signal lag.' },
         settlement: { title: 'Transparent settlement', desc: '7-day priority cycles, extend to 10 when needed; clear profit share and referral credits.' },
@@ -306,21 +308,21 @@ export default {
     strategy: {
       kicker: 'STRATEGY STACK',
       title: 'Multi-strategy stacks · you own the edge',
-      lead: 'No black box — connect trusted TradingView signals; our AI engine handles sizing, regime shifts and risk inside your Binance account.',
+      lead: 'No black box — AI fuses indicator matrix + on-chain flows; our engine handles sizing, regime shifts and risk inside your Binance account.',
       points: {
         combo: { title: 'Flexible combinations', desc: 'Auto-adjust strategy weights by regime — trend and range each get their best fit.' },
         regime: { title: 'Smart regime control', desc: 'Full OPEN / TRAIL / CLOSE audit trail — every trade is traceable.' },
-        webhook: { title: 'Native TradingView', desc: 'Standard webhook signals bridge seamlessly to live execution.' },
+        webhook: { title: 'AI indicator engine', desc: 'Multi Kernel Regression, Market Structure, on-chain flows — fused for millisecond entries.' },
         risk: { title: 'Principal cycle risk', desc: 'Reset principal after settlement — clean P&L boundaries every cycle.' },
       },
       tags: { trend: 'Trend', breakout: 'Breakout', mean: 'Mean Reversion', momentum: 'Momentum' },
       flowMiddle: 'AI Engine',
-      note: 'Signal → validate → execute → supervise → settle — fully automated after API bind.',
+      note: 'Indicator fusion → validate → execute → supervise → settle — fully automated after API bind.',
     },
     markets: {
       kicker: 'LIVE MARKETS',
       title: 'Major crypto · live prices',
-      subtitle: 'Powered by TradingView · Binance USDT perpetuals update in real time — exchange-grade experience.',
+      subtitle: 'Powered by AI indicators · Binance USDT perpetuals update in real time — exchange-grade experience.',
       tabCrypto: 'Crypto',
     },
     how: {
@@ -329,7 +331,7 @@ export default {
       steps: {
         register: { title: 'Create account', desc: 'Sign up with email or SMS verification; optional referral code.' },
         bind: { title: 'Connect Binance API', desc: 'Enable futures, disable withdraw — we verify and record initial principal.' },
-        trade: { title: 'Auto execution', desc: 'TradingView signals trigger AI-managed entries and exits in your account.' },
+        trade: { title: 'Auto execution', desc: 'AI indicator + on-chain signals trigger managed entries and exits in your account.' },
         settle: { title: 'Cycle settlement', desc: 'Smart 7/10-day cycles, USDT payment proof, principal reset and referral credits.' },
       },
     },
@@ -356,203 +358,5 @@ export default {
       riskDisclaimer: 'Risk disclaimer: Crypto trading involves substantial risk. Past performance does not guarantee future results. We do not custody funds. Not investment advice.',
     },
   },
-  framer: {
-    nav: {
-      product: 'Product', agents: 'AI Agents', platform: 'Platform', community: 'Community', partners: 'Partners', security: 'Security',
-      signup: 'Sign up', console: 'Open Console',
-    },
-    hero: {
-      pill: 'GEMINI AI 3.0 · Everything we shipped',
-      titleLead: 'GEMINI AI —',
-      titleAccent: 'the quant platform for standout traders',
-      subtitle: 'Exchange API partnership — no subscriptions. TradingView signals, millisecond execution, institutional security. Your funds stay on Binance.',
-      ctaPrimary: 'Get started for free', ctaSecondary: 'See the platform',
-      canvasLabel: 'Console · Dashboard · Live',
-      sidebar: { dashboard: 'Dashboard', trading: 'Trading', signals: 'Signals', analytics: 'Analytics', settlement: 'Settlement' },
-      toolbar: { site: 'Console', branch: 'main', invite: 'Invite', publish: 'Go live', pages: 'Pages' },
-      viewports: {
-        desktop: { label: 'Desktop', size: '1200' },
-        tablet: { label: 'Tablet', size: '810' },
-        agent: { label: 'Agent', size: 'AI' },
-      },
-      agent: {
-        title: 'Agent', model: 'GEMINI Supervisor',
-        prompt: 'Deploy trend strategy on ETHUSDT with ATR regime check and 6s sentinel.',
-        thinking: 'Analyzing signal pipeline…',
-        reply: '✓ Supervisor updated · 12 accounts synced · 18ms',
-        done: 'Changes logged to audit trail · Reversible',
-      },
-      recording: { live: 'Demo recording', loading: 'Loading console demo…', demo: 'GEMINI AI · Console' },
-      dock: {
-        finder: 'Finder', safari: 'Safari', terminal: 'Terminal', gemini: 'GEMINI AI',
-        trading: 'Trading', dashboard: 'Dashboard', slack: 'Messages', settings: 'Settings',
-      },
-    },
-    shipped: {
-      kicker: 'SHIPPED WITH GEMINI',
-      title: 'See GEMINI AI in action',
-      cta: 'Browse product matrix →',
-      customers: 'Meet our traders',
-      items: { dashboard: 'Dashboard Overview', trading: 'Live Trading', signals: 'Signal Engine', analytics: 'Deep Analytics', settlement: 'Smart Settlement' },
-      itemsDesc: {
-        dashboard: 'Balance, PnL, win rate at a glance',
-        trading: 'Futures positions with TV chart sync',
-        signals: 'Sub-second webhook broadcast',
-        analytics: 'Sharpe, Sortino, professional metrics',
-        settlement: 'Transparent 7/10-day profit share',
-      },
-    },
-    agents: {
-      kicker: 'ALONGSIDE YOU',
-      title: 'Agents that work alongside you, not instead of you',
-      subtitle: 'AI supervisors monitor signals, risk, and settlement 24/7 — you keep full control via your exchange API.',
-      cta: 'Start with agents',
-      learn: 'Start with agents',
-      table: { event: 'Event', status: 'Status', latency: 'Latency' },
-      items: {
-        signal: {
-          kicker: 'SIGNAL AGENT', title: 'Execute with an agent',
-          desc: 'A professional signal agent routes TradingView webhooks to every active supervisor with sub-second dispatch — visible, traceable, under your control.',
-          mockTitle: 'Webhook · LONG ETHUSDT',
-          mockLine1: 'Analyzing regime · ATR validated',
-          mockLine2: '✓ Dispatched to 12 supervisors · 18ms',
-        },
-        risk: {
-          kicker: 'RISK AGENT', title: 'Protect with an agent',
-          desc: 'The risk agent rebuilds TP/SL defenses on restart, detects manual adjustments, and force-aligns direction mismatch — every event logged.',
-          rows: {
-            a: { event: 'Sentinel loop', status: 'Live', latency: '6s' },
-            b: { event: 'Direction check', status: 'Live', latency: '12ms' },
-            c: { event: 'Force align', status: 'Live', latency: '890ms' },
-          },
-        },
-        settle: {
-          kicker: 'SETTLEMENT AGENT', title: 'Settle with an agent',
-          desc: 'Transparent 7/10-day profit-share cycles — no monthly subscription. API partnership only.',
-          winRate: 'Win rate', latency: 'Signal latency', cycle: 'Settlement cycle',
-          note: 'Performance metrics vary by strategy and market conditions. Past results do not guarantee future returns.',
-        },
-        strategy: {
-          kicker: 'STRATEGY AGENT', title: 'Configure with an agent',
-          desc: 'The strategy agent generates regime parameters, deploys supervisors, and syncs multi-account configs — every change auditable and reversible.',
-          codeComment: 'Deploy trend stack',
-          codeResult: '✓ 3 accounts synced · Regime trend · ATR 2.4x',
-        },
-      },
-    },
-    api: {
-      kicker: 'API PARTNERSHIP',
-      title: 'Connect from any terminal — bind your exchange API',
-      desc: 'Bind Binance USDT-M with trade-only permissions. We never custody funds. Profit-share on winning cycles only — zero monthly fees.',
-      cta: 'Partner via API', terminalNote: 'GEMINI AI · Supervisor ready',
-    },
-    platform: {
-      title: 'Not just vibes, a full platform',
-      performance: { title: 'Performance', grade: 'GOOD', desc: 'Sub-second signal dispatch with green Core Web Vitals on the console.', lcp: 'Signal dispatch' },
-      security: { title: 'Security', desc: 'Trade-only API keys, withdraw disabled, dual-factor for sensitive actions.' },
-      latency: { title: 'Ultra-low latency', desc: 'Sub-second webhook routing to all active supervisors worldwide.' },
-      signals: { title: 'Timely & accurate signals', desc: 'TradingView-native webhooks with regime validation before every order.' },
-      winrate: { title: 'Strategy win rate', desc: 'Multi-regime stacks optimized for trend and range — transparent trade logs.' },
-      settlement: { title: 'Smart settlement', desc: '7/10-day cycles with USDT profit-share — no subscription tiers.' },
-      cms: {
-        title: 'Strategy CMS',
-        colStrategy: 'Strategy', colStatus: 'Status',
-        rows: {
-          a: { name: 'Trend R3 · ETH', status: 'Live' },
-          b: { name: 'Range R1 · BTC', status: 'Live' },
-          c: { name: 'Breakout R2', status: 'Draft' },
-        },
-      },
-      compliance: { title: 'Compliance', url: 'Path', desc: 'Description', descVal: 'Non-custodial API partnership · Not investment advice' },
-      collab: {
-        title: 'Collaboration',
-        branches: { main: 'main · production', risk: 'risk · guardrails', settle: 'settle · billing' },
-        times: { main: '1m ago', risk: '8m ago', settle: '10m ago' },
-      },
-      i18n: {
-        title: 'Localization',
-        locales: {
-          zh: { name: 'Chinese', pct: '100%' },
-          en: { name: 'English', pct: '100%' },
-          sg: { name: 'Singapore', pct: '35%' },
-          jp: { name: 'Japan', pct: '90%' },
-        },
-      },
-      hosting: { title: 'Hosting', uptime: 'uptime', desc: 'Multi-region VPS + Nginx reverse proxy — webhooks and console isolated.' },
-      analytics: { title: 'Analytics', pageviews: 'Signals processed' },
-      ab: { title: 'Strategy A/B', variant: 'Variant', conversion: 'Conversion', lift: 'Lift', winner: 'R3 Trend · WINNER', control: 'R1 Range' },
-      partnership: { title: '100% API partnership model', desc: 'No SaaS subscription. Connect your exchange, share profits on winning cycles — that is the entire commercial model.' },
-    },
-    community: {
-      kicker: 'GLOBAL TRADERS',
-      title: 'Built on a community that ships quant at scale',
-      subtitle: 'Referrals, strategy sharing, and transparent logs — grow with standout trading teams.',
-      search: 'Search community…',
-      nav: { explore: 'Explore', referrals: 'Referrals', marketplace: 'Marketplace' },
-      posts: {
-        a: { author: 'Lee · Pro', meta: 'Referrals · 3m ago', body: 'GEMINI API partnership is clear — no monthly fee, profit share only.', likes: '30 likes', comments: '5 comments' },
-        b: { author: 'Alex · SG', meta: 'Strategy · 12m ago', body: 'R3 trend stack on ETH for 30 days — logs fully transparent.', likes: '23 likes', comments: '6 comments' },
-        c: { author: 'Ben · HK', meta: 'Risk · 1d ago', body: 'TP/SL rebuilt after restart. Sentinel 6s loop is rock solid.', likes: '85 likes', comments: '12 comments' },
-        d: { author: 'Ren · JP', meta: 'Settlement · 1w ago', body: '7/10-day cycles are clear. PDF proofs included.', likes: '16 likes', comments: '6 comments' },
-      },
-    },
-    partners: {
-      kicker: 'GLOBAL REACH',
-      title: 'Trusted by teams shipping quant at scale',
-      subtitle: 'Integrated infrastructure and traders across major crypto markets.',
-      cta: 'Read stories →',
-      logos: { binance: 'Binance', tradingview: 'TradingView', redis: 'Redis', fastapi: 'FastAPI' },
-      countries: { sg: '🇸🇬 Singapore', hk: '🇭🇰 Hong Kong', ae: '🇦🇪 UAE', jp: '🇯🇵 Japan', uk: '🇬🇧 UK', us: '🇺🇸 USA', de: '🇩🇪 Germany', au: '🇦🇺 Australia' },
-      stories: {
-        read: 'Read story',
-        atlas: {
-          company: 'Atlas Quant · Singapore',
-          badge: 'API Partnership',
-          metric: '58% win rate · signals <1s',
-          quote: 'TradingView to Binance hosting with transparent 7/10-day settlement cycles.',
-        },
-        vertex: {
-          company: 'Vertex Capital · Hong Kong',
-          badge: 'Institutional risk',
-          metric: 'Sentinel 6s · zero drift',
-          quote: 'TP/SL rebuilt on restart; manual edits caught and aligned by supervisors.',
-        },
-        pulse: {
-          company: 'Pulse Trading · Tokyo',
-          badge: 'Multi-account',
-          metric: '12 supervisors · 18ms dispatch',
-          quote: 'One webhook syncs 12 accounts — R3 trend stack stable in Asia sessions.',
-        },
-        northstar: {
-          company: 'Northstar Desk · London',
-          badge: 'Global team',
-          metric: 'EN/ZH · 24/7 audit logs',
-          quote: 'Localized console and PDF settlement proofs for cross-border compliance.',
-        },
-      },
-    },
-    security: {
-      kicker: 'SECURITY FIRST',
-      title: 'Your funds, your exchange',
-      desc: 'Institutional-grade security built for API partnership — not custody.',
-      points: {
-        api: { title: 'Least-privilege API', desc: 'Futures trading only; withdraw must be disabled.' },
-        dual: { title: 'Dual verification', desc: 'Email + SMS for password, withdraw PIN, and address book.' },
-        audit: { title: 'Full audit trail', desc: 'Every trade, log, and settlement proof retained.' },
-        nocustody: { title: 'Zero custody', desc: 'Assets never leave your Binance account.' },
-      },
-    },
-    final: {
-      kicker: 'GET STARTED',
-      title: 'GEMINI AI — built for standout traders',
-      subtitle: 'GEMINI AI · Exchange API partnership · No subscription',
-      cta: 'Get started for free',
-    },
-    footer: {
-      tagline: 'GEMINI AI · Exchange API Partnership',
-      product: 'Product', company: 'Company', legal: 'Legal', connect: 'Connect',
-      rights: '© 2026 GEMINI AI. All rights reserved.',
-      risk: 'Crypto derivatives involve substantial risk. Not investment advice.',
-    },
-  },
+  framer: framerEn,
 } as const
