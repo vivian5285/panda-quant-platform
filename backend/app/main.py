@@ -94,7 +94,6 @@ def init_db():
         if users_no_uid:
             db.commit()
         _seed_subscription_plans(db)
-        supervisor_pool.load_active_users(db)
     except Exception as e:
         logger.exception("init_db failed: %s", e)
         from app.services.alert_service import notify_system
@@ -104,6 +103,23 @@ def init_db():
             str(e),
         )
         raise
+    finally:
+        db.close()
+
+
+def load_supervisors_background():
+    """Binance 接管较慢，后台加载以免阻塞 /api/health 与 Docker 健康检查。"""
+    db = SessionLocal()
+    try:
+        supervisor_pool.load_active_users(db)
+    except Exception as e:
+        logger.exception("load_active_users failed: %s", e)
+        from app.services.alert_service import notify_system
+        notify_system(
+            "critical", "SYSTEM_INIT_FAIL",
+            "账户接管加载失败",
+            str(e),
+        )
     finally:
         db.close()
 
@@ -122,9 +138,12 @@ def start_webhook_server():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    t = threading.Thread(target=start_webhook_server, daemon=True)
-    t.start()
-    logger.info(f"Webhook server started on port {settings.WEBHOOK_PORT}")
+    threading.Thread(target=start_webhook_server, daemon=True, name="webhook").start()
+    threading.Thread(target=load_supervisors_background, daemon=True, name="supervisors").start()
+    logger.info(
+        "API ready; webhook on :%s; supervisor takeover loading in background",
+        settings.WEBHOOK_PORT,
+    )
     yield
 
 
@@ -171,6 +190,8 @@ def health():
         "status": "ok",
         "service": "panda-quant-platform",
         "version": "1.0.0",
+        "supervisors_loading": supervisor_pool.startup_in_progress,
+        "supervisors_ready": supervisor_pool.startup_complete,
         "active_supervisors": len(supervisor_pool.get_all()),
         "startup_audits": len(audits),
         "users_with_position": with_position,

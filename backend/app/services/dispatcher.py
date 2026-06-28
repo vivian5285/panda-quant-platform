@@ -22,38 +22,45 @@ class UserSupervisorPool:
         self._lock = threading.Lock()
         self.last_startup_audits: list[dict] = []
         self.last_startup_failures: list[dict] = []
+        self.startup_in_progress = False
+        self.startup_complete = False
 
     def load_active_users(self, db: Session):
-        users = db.query(User).filter(
-            User.is_active == True,
-            User.api_status == ApiStatus.ACTIVE.value,
-            User.api_key_enc.isnot(None),
-        ).all()
-        audits = []
-        failed = []
-        for user in users:
-            audit = self.add_user(user, db=db)
-            if audit is None:
-                failed.append({
-                    "user_id": user.id,
-                    "uid": user.uid,
-                    "reason": "supervisor_init_failed",
-                })
-            else:
-                if audit.get("error"):
+        self.startup_in_progress = True
+        try:
+            users = db.query(User).filter(
+                User.is_active == True,
+                User.api_status == ApiStatus.ACTIVE.value,
+                User.api_key_enc.isnot(None),
+            ).all()
+            audits = []
+            failed = []
+            for user in users:
+                audit = self.add_user(user, db=db)
+                if audit is None:
                     failed.append({
                         "user_id": user.id,
                         "uid": user.uid,
-                        "reason": audit.get("error"),
+                        "reason": "supervisor_init_failed",
                     })
-                audits.append(audit)
-        self.last_startup_audits = audits
-        self.last_startup_failures = failed
-        logger.info("Loaded %d active supervisors", len(self._supervisors))
-        if audits:
-            with_pos = sum(1 for a in audits if a.get("has_position"))
-            logger.info("[VPS STARTUP] 账户接管汇总: %d 用户 | %d 有持仓 | 失败 %d", len(audits), with_pos, len(failed))
-        broadcast_startup_summary(audits, failed)
+                else:
+                    if audit.get("error"):
+                        failed.append({
+                            "user_id": user.id,
+                            "uid": user.uid,
+                            "reason": audit.get("error"),
+                        })
+                    audits.append(audit)
+            self.last_startup_audits = audits
+            self.last_startup_failures = failed
+            logger.info("Loaded %d active supervisors", len(self._supervisors))
+            if audits:
+                with_pos = sum(1 for a in audits if a.get("has_position"))
+                logger.info("[VPS STARTUP] 账户接管汇总: %d 用户 | %d 有持仓 | 失败 %d", len(audits), with_pos, len(failed))
+            broadcast_startup_summary(audits, failed)
+        finally:
+            self.startup_complete = True
+            self.startup_in_progress = False
 
     def add_user(self, user: User, db: Session | None = None) -> dict | None:
         own_db = db is None

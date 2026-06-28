@@ -58,7 +58,12 @@ fi
 # --- 4. 构建启动 ---
 echo ""
 echo ">>> [3] 构建并启动容器"
-docker compose up -d --build
+if ! docker compose up -d --build; then
+  echo ""
+  echo ">>> backend 启动失败，最近日志："
+  docker compose logs backend --tail 100 2>/dev/null || true
+  deploy_fail "docker compose up 失败（常见原因见上方 backend 日志）"
+fi
 
 # --- 5. 等待 healthy ---
 echo ""
