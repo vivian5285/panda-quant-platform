@@ -15,13 +15,14 @@ def settlement_pdf_bytes(settlement: dict, user_name: str) -> bytes:
         f"Generated: {datetime.utcnow().isoformat()}Z",
     ]
     content = "\\n".join(lines)
+    escaped = content.replace("(", "\\(").replace(")", "\\)")
     # Simple PDF structure
     pdf = f"""%PDF-1.4
 1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
 2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
 3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj
 4 0 obj<</Length {len(content)+50}>>stream
-BT /F1 12 Tf 50 750 Td ({content.replace('(', '\\(').replace(')', '\\)')}) Tj ET
+BT /F1 12 Tf 50 750 Td ({escaped}) Tj ET
 endstream endobj
 5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
 xref
