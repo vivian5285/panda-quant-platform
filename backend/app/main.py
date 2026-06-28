@@ -9,7 +9,7 @@ from app.models import User, UserRole
 from app.api import auth, users, referrals, admin, wallet
 from app.services.dispatcher import supervisor_pool
 from app.services.startup_audit import validate_production_secrets, log_security_warnings
-from app.utils.auth import hash_password, generate_referral_code, generate_uid
+from app.utils.auth import hash_password, verify_password, generate_referral_code, generate_uid
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -55,7 +55,15 @@ def init_db():
         else:
             if not admin_user.uid:
                 admin_user.uid = generate_uid(db)
-                db.commit()
+            # .env 修改 ADMIN_PASSWORD 后，启动时同步管理员密码
+            try:
+                pwd_ok = verify_password(settings.ADMIN_PASSWORD, admin_user.password_hash)
+            except Exception:
+                pwd_ok = False
+            if not pwd_ok:
+                admin_user.password_hash = hash_password(settings.ADMIN_PASSWORD)
+                logger.info("Admin password synced from ADMIN_PASSWORD")
+            db.commit()
         users_no_uid = db.query(User).filter(User.uid.is_(None)).all()
         for u in users_no_uid:
             u.uid = generate_uid(db)
