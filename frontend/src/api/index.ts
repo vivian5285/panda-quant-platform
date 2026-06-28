@@ -1,25 +1,36 @@
-import axios from 'axios'
-
-const api = axios.create({ baseURL: '/api', timeout: 30000 })
+import api from './client'
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token')
-  if (token) config.headers.Authorization = `Bearer ${token}`
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+    config.headers['X-Access-Token'] = token
+  }
   return config
 })
+
+let logoutTimer: ReturnType<typeof setTimeout> | null = null
 
 api.interceptors.response.use(
   (res) => res,
   (err) => {
     const status = err.response?.status
     const hadToken = !!localStorage.getItem('token')
-    const isAuthRoute = err.config?.url?.includes('/auth/login')
+    const url = err.config?.url || ''
+    const isAuthRoute = url.includes('/auth/login') || url.includes('/auth/register')
+
     if (hadToken && !isAuthRoute && (status === 401 || status === 403)) {
-      localStorage.removeItem('token')
-      localStorage.removeItem('uid')
-      localStorage.removeItem('displayName')
-      localStorage.removeItem('role')
-      window.location.href = '/login'
+      if (logoutTimer) clearTimeout(logoutTimer)
+      logoutTimer = setTimeout(() => {
+        if (!localStorage.getItem('token')) return
+        localStorage.removeItem('token')
+        localStorage.removeItem('uid')
+        localStorage.removeItem('displayName')
+        localStorage.removeItem('role')
+        if (!window.location.pathname.includes('/login')) {
+          window.location.href = '/login'
+        }
+      }, 300)
     }
     return Promise.reject(err)
   }

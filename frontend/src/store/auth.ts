@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import api from '../api/client'
 
 interface AuthState {
   token: string | null
@@ -10,8 +11,21 @@ interface AuthState {
   isAdmin: () => boolean
 }
 
+function applyToken(token: string | null) {
+  if (token) {
+    api.defaults.headers.common.Authorization = `Bearer ${token}`
+    api.defaults.headers.common['X-Access-Token'] = token
+  } else {
+    delete api.defaults.headers.common.Authorization
+    delete api.defaults.headers.common['X-Access-Token']
+  }
+}
+
+const initialToken = localStorage.getItem('token')
+if (initialToken) applyToken(initialToken)
+
 export const useAuth = create<AuthState>((set, get) => ({
-  token: localStorage.getItem('token'),
+  token: initialToken,
   uid: localStorage.getItem('uid'),
   displayName: localStorage.getItem('displayName'),
   role: localStorage.getItem('role'),
@@ -20,10 +34,15 @@ export const useAuth = create<AuthState>((set, get) => ({
     localStorage.setItem('uid', uid)
     localStorage.setItem('displayName', displayName)
     localStorage.setItem('role', role)
+    applyToken(token)
     set({ token, uid, displayName, role })
   },
   logout: () => {
-    localStorage.clear()
+    localStorage.removeItem('token')
+    localStorage.removeItem('uid')
+    localStorage.removeItem('displayName')
+    localStorage.removeItem('role')
+    applyToken(null)
     set({ token: null, uid: null, displayName: null, role: null })
   },
   isAdmin: () => get().role === 'admin',

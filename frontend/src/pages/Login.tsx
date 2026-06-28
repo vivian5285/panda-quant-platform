@@ -21,6 +21,10 @@ export default function Login() {
   const navigate = useNavigate()
 
   const finishLogin = (data: any) => {
+    if (!data?.access_token) {
+      setError('登录响应异常，请重试')
+      return
+    }
     setAuth(data.access_token, data.uid, data.display_name, data.role)
     navigate(data.role === 'admin' ? '/admin' : '/dashboard')
   }

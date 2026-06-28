@@ -3,6 +3,7 @@ import Layout from '../components/Layout'
 import StatCard from '../components/StatCard'
 import GlassCard from '../components/GlassCard'
 import { adminApi } from '../api'
+import { useAuth } from '../store/auth'
 
 const payStatus: Record<string, string> = {
   pending: '待支付', paid: '待确认', confirmed: '已确认', rejected: '已驳回',
@@ -12,6 +13,7 @@ const wStatus: Record<string, string> = {
 }
 
 export default function Admin() {
+  const token = useAuth(s => s.token)
   const [overview, setOverview] = useState<any>(null)
   const [users, setUsers] = useState<any[]>([])
   const [settlements, setSettlements] = useState<any[]>([])
@@ -32,7 +34,10 @@ export default function Admin() {
     adminApi.alerts().then(setAlerts)
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    if (!token) return
+    load()
+  }, [token])
 
   const runSettlement = async () => {
     const res = await adminApi.runSettlement()
