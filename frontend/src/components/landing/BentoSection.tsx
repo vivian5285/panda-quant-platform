@@ -42,7 +42,7 @@ export default function BentoSection() {
 
   return (
     <>
-      <section id="features" className="landing-section">
+      <section id="platform" className="landing-section">
         <ScrollReveal className="landing-section-head">
           <p className="landing-kicker">{t('saas.bento.kicker')}</p>
           <h2>{t('saas.bento.title')}</h2>

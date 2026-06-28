@@ -218,17 +218,17 @@ export default {
     bento: {
       kicker: 'PLATFORM', title: 'Enterprise quant capabilities', subtitle: 'From AI strategies to settlement — one SaaS platform.',
       items: {
-        ai: { title: 'AI Strategy', desc: 'Multi-model fusion with smart regime detection and strategy routing.' },
-        auto: { title: 'Auto Trading', desc: '24/7 hosting with millisecond execution and position supervision.' },
-        binance: { title: 'Binance API', desc: 'Direct USDT-M integration — least-privilege keys, funds stay on exchange.' },
-        risk: { title: 'Risk Control', desc: 'Principal cycles, leverage checks, real-time anomaly alerts.' },
-        dashboard: { title: 'Real-time Dashboard', desc: 'Equity curves, heatmaps, live performance metrics.' },
-        referral: { title: 'Referral', desc: 'Two-level commissions with invite posters and auto credits.' },
-        settlement: { title: 'Weekly Settlement', desc: 'Smart 7/10-day transparent USDT profit-share cycles.' },
-        analytics: { title: 'AI Analytics', desc: 'Sharpe, Profit Factor, MDD and pro quant metrics.' },
+        ai: { title: 'AI Strategy Engine', desc: 'Multi-model fusion with smart regime detection and strategy routing.' },
+        auto: { title: '24/7 Auto Trading', desc: 'Always-on hosting with millisecond execution and position supervision.' },
+        binance: { title: 'Binance Native', desc: 'Direct USDT-M integration — least-privilege keys, funds stay on exchange.' },
+        risk: { title: 'Risk Control', desc: 'Principal cycles, leverage checks, real-time anomaly logging.' },
+        dashboard: { title: 'Live Dashboard', desc: 'Equity curves, heatmaps, and performance metrics in real time.' },
+        referral: { title: 'Referral Network', desc: 'Two-level commissions with invite posters and auto credits.' },
+        settlement: { title: 'Smart Settlement', desc: 'Transparent 7/10-day USDT profit-share cycles.' },
+        analytics: { title: 'Pro Analytics', desc: 'Sharpe, Profit Factor, MDD and institutional quant metrics.' },
       },
     },
-    stats: { kicker: 'TRUST', title: 'Why PandaQuant', users: 'Users', volume: 'Trading Volume', uptime: 'Uptime', orders: 'Orders' },
+    stats: { kicker: 'TRUST', title: 'Why PandaQuant', users: 'Active Users', volume: 'Trading Volume', uptime: 'Uptime', orders: 'Orders Executed' },
     showcase: {
       kicker: 'PRODUCT', title: 'Cross-device experience', subtitle: 'Mac · iPhone · iPad — manage your quant account anywhere.',
       slides: { dashboard: 'Dashboard Overview', trading: 'Live Trading', analytics: 'Deep Analytics' },
@@ -255,9 +255,36 @@ export default {
   },
   landing: {
     nav: {
-      features: 'Features', strategy: 'Strategy', markets: 'Markets', how: 'How It Works', security: 'Security',
-      stats: 'Stats', showcase: 'Product', faq: 'FAQ',
+      features: 'Features', agents: 'AI Agents', strategy: 'Strategy', markets: 'Markets', how: 'How It Works', security: 'Security',
+      stats: 'Stats', showcase: 'Product', pricing: 'Pricing', faq: 'FAQ',
       console: 'Console',
+    },
+    logos: { title: 'Built for the crypto quant stack' },
+    agents: {
+      kicker: 'AI AGENTS',
+      title: 'Agents that work alongside your trading',
+      subtitle: 'Like Notion agents for ops — Panda agents monitor signals, risk, and settlement while you sleep.',
+      prompt: 'Analyze ETHUSDT position and rebuild TP/SL after restart.',
+      reply: 'Account takeover complete. Sentinel monitoring active.',
+      replyItems: {
+        a: 'Direction aligned with TradingView signal',
+        b: 'TP1/TP2/TP3 defenses rebuilt',
+        c: 'Settlement cycle tracked — no manual action needed',
+      },
+      metrics: {
+        regime: { label: 'Regime', value: 'Trend · L3' },
+        pnl: { label: 'Cycle P&L', value: '+$1,284' },
+        supervisor: { label: 'Supervisor', value: '6s radar' },
+      },
+      items: {
+        signal: { title: 'Signal Agent', desc: 'Routes TradingView webhooks to every active supervisor with sub-second dispatch.', status: 'Dispatching LONG · 12ms' },
+        risk: { title: 'Risk Agent', desc: 'Watches manual adjustments, direction mismatch, and force-aligns when needed.', status: 'Sentinel loop active' },
+        settle: { title: 'Settlement Agent', desc: 'Runs 7/10-day cycles, tracks principal resets, and prepares USDT invoices.', status: 'Next window · 7d' },
+      },
+    },
+    pricing: {
+      kicker: 'PRICING', title: 'Simple plans for every stage', subtitle: 'Start with profit-share. Upgrade when you need lower fees and priority routing.',
+      cta: 'Get started', popular: 'Most popular',
     },
     hero: {
       badge: 'Crypto-native · Binance USDT-M · AI-powered hosting',

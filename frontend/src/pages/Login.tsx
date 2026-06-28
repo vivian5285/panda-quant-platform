@@ -89,8 +89,8 @@ export default function Login() {
         <ParticleBackground />
         <motion.div className="auth-split-brand" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
           <span className="auth-logo">🐼</span>
-          <h1>{t('saas.hero.title1')}<span className="saas-gradient-text">{t('saas.hero.titleHighlight')}</span></h1>
-          <p>{t('saas.hero.subtitle')}</p>
+          <h1>{t('landing.hero.titleLine1')}<span className="saas-gradient-text">{t('landing.hero.titleHighlight')}</span>{t('landing.hero.titleLine2')}</h1>
+          <p>{t('landing.hero.subtitle')}</p>
           <Link to="/" className="auth-back-link">{t('auth.backHome')}</Link>
         </motion.div>
       </div>

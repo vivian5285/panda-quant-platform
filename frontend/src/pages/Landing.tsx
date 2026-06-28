@@ -1,6 +1,11 @@
 import { Link } from 'react-router-dom'
 import LandingNav from '../components/landing/LandingNav'
 import TradingViewWidget from '../components/landing/TradingViewWidget'
+import LogoMarquee from '../components/landing/LogoMarquee'
+import FeaturesGridSection from '../components/landing/FeaturesGridSection'
+import AiAgentsSection from '../components/landing/AiAgentsSection'
+import HowItWorksSection from '../components/landing/HowItWorksSection'
+import PricingSection from '../components/landing/PricingSection'
 import HeroSection from '../components/landing/HeroSection'
 import BentoSection from '../components/landing/BentoSection'
 import ProductShowcase from '../components/landing/ProductShowcase'
@@ -59,7 +64,13 @@ export default function Landing() {
 
       <LandingNav />
       <HeroSection />
+      <LogoMarquee />
+      <FeaturesGridSection />
       <BentoSection />
+      <AiAgentsSection />
+      <HowItWorksSection />
+      <ProductShowcase />
+      <PricingSection />
 
       <section id="markets" className="landing-section">
         <ScrollReveal className="landing-section-head">

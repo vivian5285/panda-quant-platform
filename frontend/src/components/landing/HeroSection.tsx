@@ -1,77 +1,94 @@
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { Play, Sparkles, TrendingUp } from 'lucide-react'
+import { ArrowRight, Sparkles } from 'lucide-react'
 import { useI18n } from '../../i18n'
 import { useAuth } from '../../store/auth'
-import ParticleBackground from '../ui/ParticleBackground'
 
 export default function HeroSection() {
   const t = useI18n(s => s.t)
   const token = useAuth(s => s.token)
 
   return (
-    <section className="saas-hero cyber-hero">
-      <ParticleBackground />
-      <div className="cyber-grid-bg" aria-hidden />
-      <div className="cyber-scanline" aria-hidden />
-
-      <div className="saas-hero-inner">
+    <section className="premium-hero">
+      <div className="premium-hero-glow" aria-hidden />
+      <div className="premium-hero-inner">
         <motion.div
-          className="saas-hero-copy"
-          initial={{ opacity: 0, x: -30 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.7 }}
+          className="premium-hero-copy"
+          initial={{ opacity: 0, y: 24 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.65 }}
         >
-          <div className="landing-badge saas-badge cyber-badge">
+          <div className="landing-badge premium-badge">
             <Sparkles size={14} />
-            <span>{t('hero.badge')}</span>
+            <span>{t('landing.hero.badge')}</span>
           </div>
 
-          <h1 className="saas-hero-title cyber-title">
-            <span className="cyber-title-main">{t('hero.titleMain')}</span>
-            <span className="saas-gradient-text cyber-glow-text">{t('hero.titleHighlight')}</span>
+          <h1 className="premium-hero-title display-font">
+            {t('landing.hero.titleLine1')}
+            <span className="premium-gradient-text">{t('landing.hero.titleHighlight')}</span>
+            {t('landing.hero.titleLine2')}
           </h1>
 
-          <p className="saas-hero-sub">{t('hero.subtitle')}</p>
+          <p className="premium-hero-sub">{t('landing.hero.subtitle')}</p>
 
           <div className="landing-hero-actions">
-            <Link to={token ? '/dashboard' : '/register'} className="btn btn-primary landing-hero-btn cyber-cta">
-              {token ? t('landing.nav.console') : t('hero.ctaPrimary')}
+            <Link to={token ? '/dashboard' : '/register'} className="btn btn-primary landing-hero-btn ripple-btn">
+              {token ? t('landing.nav.console') : t('landing.hero.ctaPrimary')}
+              <ArrowRight size={16} />
             </Link>
             <button
               type="button"
-              className="btn btn-secondary landing-hero-btn cyber-cta-secondary"
-              onClick={() => document.getElementById('markets')?.scrollIntoView({ behavior: 'smooth' })}
+              className="btn btn-secondary landing-hero-btn"
+              onClick={() => document.getElementById('showcase')?.scrollIntoView({ behavior: 'smooth' })}
             >
-              <Play size={16} /> {t('hero.ctaSecondary')}
+              {t('landing.hero.ctaSecondary')}
             </button>
           </div>
 
-          <div className="hero-trust-row">
-            {(['api', 'tv', 'settle'] as const).map(k => (
-              <span key={k}><TrendingUp size={14} /> {t(`hero.trust.${k}`)}</span>
+          <div className="premium-hero-stats">
+            {(['uptime', 'pairs', 'latency', 'cycles'] as const).map(k => (
+              <div key={k} className="premium-stat-pill">
+                <strong>{t(`landing.hero.stats.${k}.value`)}</strong>
+                <span>{t(`landing.hero.stats.${k}.label`)}</span>
+              </div>
             ))}
           </div>
         </motion.div>
 
         <motion.div
-          className="saas-hero-globe cyber-orb"
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.8, delay: 0.15 }}
+          className="premium-hero-panel"
+          initial={{ opacity: 0, y: 32 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.7, delay: 0.12 }}
         >
-          <div className="globe-ring globe-ring-1" />
-          <div className="globe-ring globe-ring-2" />
-          <div className="globe-ring globe-ring-3" />
-          <div className="globe-core cyber-core">
-            <span>🐼</span>
-            <div className="globe-orbit"><i /></div>
-            <div className="globe-orbit globe-orbit-2"><i /></div>
+          <div className="ai-workspace-mock glass">
+            <div className="ai-workspace-bar">
+              <span /><span /><span />
+              <em>{t('landing.hero.terminalTitle')}</em>
+            </div>
+            <div className="ai-workspace-body">
+              <div className="ai-chat ai-chat-user">
+                <p>{t('landing.agents.prompt')}</p>
+              </div>
+              <div className="ai-chat ai-chat-agent">
+                <span className="ai-agent-label">{t('landing.hero.live')}</span>
+                <p>{t('landing.agents.reply')}</p>
+                <ul>
+                  {(['a', 'b', 'c'] as const).map(k => (
+                    <li key={k}>{t(`landing.agents.replyItems.${k}`)}</li>
+                  ))}
+                </ul>
+              </div>
+              <div className="ai-workspace-metrics">
+                {(['regime', 'pnl', 'supervisor'] as const).map(k => (
+                  <div key={k} className="ai-metric">
+                    <span>{t(`landing.agents.metrics.${k}.label`)}</span>
+                    <strong>{t(`landing.agents.metrics.${k}.value`)}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
-          <div className="globe-node globe-node-1">BTC</div>
-          <div className="globe-node globe-node-2 gold">ETH</div>
-          <div className="globe-node globe-node-3">AI</div>
-          <div className="globe-beam" />
         </motion.div>
       </div>
     </section>

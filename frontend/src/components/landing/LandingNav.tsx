@@ -1,12 +1,12 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { Menu, X } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../../store/auth'
 import { useI18n } from '../../i18n'
 import LanguageSwitcher from '../LanguageSwitcher'
 import ThemeToggle from '../ThemeToggle'
 
-const anchors = ['features', 'stats', 'showcase', 'markets', 'faq'] as const
+const anchors = ['features', 'agents', 'showcase', 'how', 'pricing', 'markets', 'faq'] as const
 
 export default function LandingNav() {
   const t = useI18n(s => s.t)
@@ -14,8 +14,24 @@ export default function LandingNav() {
   const isAdmin = useAuth(s => s.isAdmin)
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
+  const [active, setActive] = useState<string>('')
 
   const consolePath = token ? (isAdmin() ? '/admin' : '/dashboard') : '/login'
+
+  useEffect(() => {
+    const ids = anchors as readonly string[]
+    const onScroll = () => {
+      let current = ids[0]
+      for (const id of ids) {
+        const el = document.getElementById(id)
+        if (el && el.getBoundingClientRect().top <= 120) current = id
+      }
+      setActive(current)
+    }
+    onScroll()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
 
   const scrollTo = (id: string) => {
     setOpen(false)
@@ -23,10 +39,10 @@ export default function LandingNav() {
   }
 
   return (
-    <header className="landing-nav">
+    <header className="landing-nav premium-nav">
       <div className="landing-nav-inner">
         <Link to="/" className="landing-brand" onClick={() => setOpen(false)}>
-          <span className="landing-brand-icon">🐼</span>
+          <span className="landing-brand-mark">PQ</span>
           <span className="landing-brand-text">
             <strong>{t('brand.name')}</strong>
             <small>{t('brand.tagline')}</small>
@@ -35,7 +51,12 @@ export default function LandingNav() {
 
         <nav className={`landing-links ${open ? 'open' : ''}`}>
           {anchors.map(id => (
-            <button key={id} type="button" className="landing-link" onClick={() => scrollTo(id)}>
+            <button
+              key={id}
+              type="button"
+              className={`landing-link ${active === id ? 'active' : ''}`}
+              onClick={() => scrollTo(id)}
+            >
               {t(`landing.nav.${id}`)}
             </button>
           ))}

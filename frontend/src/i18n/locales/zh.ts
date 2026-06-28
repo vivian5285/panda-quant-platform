@@ -216,19 +216,19 @@ export default {
       ctaPrimary: 'Start Trading', ctaSecondary: 'Watch Demo',
     },
     bento: {
-      kicker: 'PLATFORM', title: '企业级量化能力', subtitle: '从 AI 策略到结算分润，一站式 SaaS 体验。',
+      kicker: '平台能力', title: '企业级量化能力矩阵', subtitle: '从 AI 策略到结算分润，一站式 SaaS 体验。',
       items: {
-        ai: { title: 'AI Strategy', desc: '多模型融合，智能识别市场 regime，自动调度策略组合。' },
-        auto: { title: 'Auto Trading', desc: '7×24 全自动托管，毫秒级信号执行与持仓守护。' },
-        binance: { title: 'Binance API', desc: '直连币安 USDT-M，最小权限绑定，资产不离交易所。' },
-        risk: { title: 'Risk Control', desc: '本金周期隔离、杠杆校验、异常告警实时推送。' },
-        dashboard: { title: 'Real-time Dashboard', desc: '资金曲线、热力图、绩效指标实时刷新。' },
-        referral: { title: 'Referral', desc: '二级分润体系，邀请海报与自动结算奖励。' },
-        settlement: { title: 'Weekly Settlement', desc: '7/10 天智能周期，透明 USDT 分成结算。' },
-        analytics: { title: 'AI Analytics', desc: 'Sharpe、Profit Factor、MDD 等专业量化指标。' },
+        ai: { title: 'AI 策略引擎', desc: '多模型融合，智能识别市场状态，自动调度策略组合。' },
+        auto: { title: '7×24 自动交易', desc: '全天候托管，毫秒级信号执行与持仓守护。' },
+        binance: { title: '币安原生接入', desc: '直连 USDT-M 永续，最小权限 API，资产不离交易所。' },
+        risk: { title: '风控体系', desc: '本金周期隔离、杠杆校验、异常事件完整日志。' },
+        dashboard: { title: '实时仪表盘', desc: '资金曲线、热力图、绩效指标实时刷新。' },
+        referral: { title: '推广网络', desc: '二级分润体系，邀请海报与自动结算奖励。' },
+        settlement: { title: '智能结算', desc: '7/10 天透明 USDT 盈利分成周期。' },
+        analytics: { title: '专业分析', desc: 'Sharpe、Profit Factor、MDD 等机构级量化指标。' },
       },
     },
-    stats: { kicker: 'TRUST', title: '为什么选择 PandaQuant', users: 'Users', volume: 'Trading Volume', uptime: 'Uptime', orders: 'Orders' },
+    stats: { kicker: '信任数据', title: '为什么选择 PandaQuant', users: '活跃用户', volume: '交易量', uptime: '可用性', orders: '已执行订单' },
     showcase: {
       kicker: 'PRODUCT', title: '全端产品体验', subtitle: 'Mac · iPhone · iPad 自适应，随时随地掌控量化账户。',
       slides: { dashboard: 'Dashboard 总览', trading: 'Trading 实时交易', analytics: 'Analytics 深度分析' },
@@ -255,9 +255,36 @@ export default {
   },
   landing: {
     nav: {
-      features: '核心优势', strategy: '策略体系', markets: '实时行情', how: '使用流程', security: '安全保障',
-      stats: '平台数据', showcase: '产品展示', faq: 'FAQ',
+      features: '核心优势', agents: 'AI 智能体', strategy: '策略体系', markets: '实时行情', how: '使用流程', security: '安全保障',
+      stats: '平台数据', showcase: '产品展示', pricing: '定价方案', faq: '常见问题',
       console: '进入控制台',
+    },
+    logos: { title: '为加密量化技术栈而生' },
+    agents: {
+      kicker: 'AI 智能体',
+      title: '与您的交易并肩工作的 AI 助手',
+      subtitle: '如同 Notion 的自动化助手 — Panda 智能体 24/7 监控信号、风控与结算。',
+      prompt: '分析 ETHUSDT 持仓并在重启后重建止盈止损。',
+      reply: '账户接管完成，雷达哨兵已启动。',
+      replyItems: {
+        a: '持仓方向与 TradingView 信号一致',
+        b: 'TP1/TP2/TP3 防线已重构',
+        c: '结算周期已跟踪 — 无需人工干预',
+      },
+      metrics: {
+        regime: { label: '策略档位', value: '趋势 · L3' },
+        pnl: { label: '周期盈亏', value: '+$1,284' },
+        supervisor: { label: '哨兵', value: '6s 雷达' },
+      },
+      items: {
+        signal: { title: '信号智能体', desc: '将 TradingView Webhook 毫秒级广播至所有活跃 Supervisor。', status: '正在执行 LONG · 12ms' },
+        risk: { title: '风控智能体', desc: '监控人工加减仓、方向背离，必要时强制对齐。', status: '哨兵循环运行中' },
+        settle: { title: '结算智能体', desc: '执行 7/10 天周期、本金重置与 USDT 账单准备。', status: '下一窗口 · 7 天' },
+      },
+    },
+    pricing: {
+      kicker: '定价方案', title: '每个阶段的清晰定价', subtitle: '从盈利分成起步，需要更低费率与优先通道时再升级。',
+      cta: '免费开始', popular: '最受欢迎',
     },
     hero: {
       badge: '专注加密货币 · 币安 U 本位合约 · AI 智能托管',

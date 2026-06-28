@@ -12,7 +12,7 @@ export default function FaqSection() {
   return (
     <section id="faq" className="landing-section">
       <ScrollReveal className="landing-section-head">
-        <p className="landing-kicker">FAQ</p>
+        <p className="landing-kicker">{t('landing.nav.faq')}</p>
         <h2>{t('saas.faq.title')}</h2>
       </ScrollReveal>
       <div className="faq-list">
