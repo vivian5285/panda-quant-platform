@@ -67,11 +67,7 @@ export default function Referrals() {
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}>
           <div style={{ flex: 1, minWidth: 260 }}>
             <p className="text-muted" style={{ fontSize: 13, marginBottom: 8 }}>我的专属邀请链接</p>
-            <p style={{
-              fontSize: 14, wordBreak: 'break-all', lineHeight: 1.6,
-              padding: '12px 16px', borderRadius: 10, background: 'rgba(0,0,0,0.3)',
-              border: '1px solid rgba(0,230,118,0.15)', fontFamily: 'monospace',
-            }}>
+            <p className="link-box" style={{ fontSize: 14, lineHeight: 1.6 }}>
               {data?.invite_url || '...'}
             </p>
             <p className="text-muted" style={{ fontSize: 12, marginTop: 8 }}>
@@ -103,7 +99,7 @@ export default function Referrals() {
           <h3 style={{ fontSize: 15, marginBottom: 16 }}>邀请海报预览</h3>
           <img src={posterUrl} alt="邀请海报" style={{
             maxWidth: '100%', width: 375, borderRadius: 16,
-            boxShadow: '0 20px 60px rgba(0,230,118,0.15)',
+            boxShadow: 'var(--glass-shadow-lg)',
           }} />
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: 20, flexWrap: 'wrap' }}>
             <button className="btn btn-primary" onClick={() => downloadPoster(posterUrl, `panda-invite-${data?.referral_code}.png`)}>
@@ -117,21 +113,21 @@ export default function Referrals() {
       <GlassCard className="p-6" style={{ marginBottom: 24 }}>
         <h3 style={{ fontSize: 15, marginBottom: 16 }}>二级分润规则</h3>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
-          <div style={{ padding: 16, borderRadius: 12, background: 'rgba(0,230,118,0.06)', border: '1px solid rgba(0,230,118,0.15)' }}>
-            <p className="text-green" style={{ fontSize: 28, fontWeight: 700 }}>{Math.round((data?.commission?.l1_rate ?? 0.1) * 100)}%</p>
+          <div className="stat-tile stat-tile-highlight">
+            <p style={{ fontSize: 28, fontWeight: 700, color: 'var(--accent-success)' }}>{Math.round((data?.commission?.l1_rate ?? 0.1) * 100)}%</p>
             <p style={{ fontSize: 14, fontWeight: 500, marginTop: 4 }}>一级推广分润</p>
             <p className="text-muted" style={{ fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>
               您直接邀请的用户，每次结算盈利后，从平台 25% 分成中获得 10%
             </p>
           </div>
-          <div style={{ padding: 16, borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
-            <p className="text-green" style={{ fontSize: 28, fontWeight: 700 }}>{Math.round((data?.commission?.l2_rate ?? 0.05) * 100)}%</p>
+          <div className="stat-tile">
+            <p style={{ fontSize: 28, fontWeight: 700 }}>{Math.round((data?.commission?.l2_rate ?? 0.05) * 100)}%</p>
             <p style={{ fontSize: 14, fontWeight: 500, marginTop: 4 }}>二级推广分润</p>
             <p className="text-muted" style={{ fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>
               您的下级再邀请的用户盈利结算后，您持续获得 5% 分润
             </p>
           </div>
-          <div style={{ padding: 16, borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+          <div className="stat-tile">
             <p style={{ fontSize: 28, fontWeight: 700 }}>25%</p>
             <p style={{ fontSize: 14, fontWeight: 500, marginTop: 4 }}>平台分成基数</p>
             <p className="text-muted" style={{ fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>

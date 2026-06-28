@@ -22,7 +22,7 @@ const adminNav = [
 ]
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  const { displayName, role, logout, isAdmin } = useAuth()
+  const { displayName, logout, isAdmin } = useAuth()
   const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
 
@@ -34,16 +34,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const nav = [...userNav, ...(isAdmin() ? adminNav : [])]
 
   const sidebar = (
-    <aside style={{
-      width: 240, minHeight: '100vh', padding: '24px 16px',
-      borderRight: '1px solid rgba(255,255,255,0.06)',
-      display: 'flex', flexDirection: 'column',
-      background: 'rgba(0,0,0,0.3)', backdropFilter: 'blur(20px)',
-    }}>
+    <aside className="app-sidebar">
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', marginBottom: 32 }}>
         <span style={{ fontSize: 28 }}>🐼</span>
         <div>
-          <div style={{ fontWeight: 600, fontSize: 16 }}>熊猫量化</div>
+          <div style={{ fontWeight: 600, fontSize: 16, letterSpacing: '-0.02em' }}>熊猫量化</div>
           <div className="text-muted" style={{ fontSize: 11 }}>Panda Quant AI</div>
         </div>
       </div>
@@ -54,13 +49,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             key={to}
             to={to}
             onClick={() => setMobileOpen(false)}
-            style={({ isActive }) => ({
-              display: 'flex', alignItems: 'center', gap: 10,
-              padding: '10px 14px', borderRadius: 10, fontSize: 14,
-              textDecoration: 'none', transition: 'all 0.3s',
-              color: isActive ? '#00E676' : 'rgba(255,255,255,0.55)',
-              background: isActive ? 'rgba(0,230,118,0.08)' : 'transparent',
-            })}
+            className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}
           >
             <Icon size={18} />
             {label}
@@ -68,7 +57,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         ))}
       </nav>
 
-      <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16 }}>
+      <div className="section-divider">
         <div className="text-muted" style={{ fontSize: 12, padding: '0 14px', marginBottom: 8 }}>{displayName || '用户'}</div>
         <button className="btn btn-ghost" style={{ width: '100%', fontSize: 13 }} onClick={handleLogout}>
           <LogOut size={16} /> 退出登录
@@ -82,12 +71,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <div className="desktop-sidebar">{sidebar}</div>
 
       {mobileOpen && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.8)' }} onClick={() => setMobileOpen(false)}>
+        <div className="mobile-overlay" onClick={() => setMobileOpen(false)}>
           <div onClick={e => e.stopPropagation()}>{sidebar}</div>
         </div>
       )}
 
-      <main style={{ flex: 1, padding: '24px 32px', maxWidth: 1200 }}>
+      <main style={{ flex: 1, padding: '32px 40px', maxWidth: 1200, background: 'transparent' }}>
         <button
           className="btn btn-ghost mobile-menu-btn"
           style={{ display: 'none', marginBottom: 16 }}

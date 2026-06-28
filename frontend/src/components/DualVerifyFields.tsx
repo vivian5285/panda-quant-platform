@@ -35,8 +35,8 @@ export default function DualVerifyFields({
   }
 
   return (
-    <div style={{ marginBottom: 16, padding: 16, borderRadius: 10, border: '1px solid rgba(255,193,7,0.35)', background: 'rgba(255,193,7,0.06)' }}>
-      <p style={{ fontSize: 13, marginBottom: 12, color: 'rgba(255,255,255,0.7)' }}>
+    <div style={{ marginBottom: 16, padding: 16, borderRadius: 12, border: '1px solid rgba(255,149,0,0.25)', background: 'rgba(255,249,230,0.9)' }}>
+      <p style={{ fontSize: 13, marginBottom: 12, color: 'var(--text-secondary)' }}>
         安全操作需<strong style={{ color: '#ffc107' }}> 邮箱 + 手机双重验证码</strong>
       </p>
       <button type="button" className="btn btn-ghost" style={{ width: '100%', marginBottom: 12, fontSize: 12 }}

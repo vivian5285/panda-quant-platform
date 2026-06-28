@@ -25,13 +25,13 @@ export default function Dashboard() {
     xAxis: {
       type: 'category',
       data: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
-      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } },
-      axisLabel: { color: 'rgba(255,255,255,0.4)', fontSize: 11 },
+      axisLine: { lineStyle: { color: 'rgba(0,0,0,0.08)' } },
+      axisLabel: { color: '#86868b', fontSize: 11 },
     },
     yAxis: {
       type: 'value',
-      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
-      axisLabel: { color: 'rgba(255,255,255,0.4)', fontSize: 11 },
+      splitLine: { lineStyle: { color: 'rgba(0,0,0,0.05)' } },
+      axisLabel: { color: '#86868b', fontSize: 11 },
     },
     series: [{
       data: [120, 280, -50, 390, 210, 328, data?.today_pnl || 0],
@@ -39,14 +39,14 @@ export default function Dashboard() {
       smooth: true,
       symbol: 'circle',
       symbolSize: 6,
-      lineStyle: { color: '#00E676', width: 2 },
-      itemStyle: { color: '#00E676' },
+      lineStyle: { color: '#1d1d1f', width: 2 },
+      itemStyle: { color: '#1d1d1f' },
       areaStyle: {
         color: {
           type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
           colorStops: [
-            { offset: 0, color: 'rgba(0,230,118,0.2)' },
-            { offset: 1, color: 'rgba(0,230,118,0)' },
+            { offset: 0, color: 'rgba(0,0,0,0.08)' },
+            { offset: 1, color: 'rgba(0,0,0,0)' },
           ],
         },
       },
@@ -59,7 +59,7 @@ export default function Dashboard() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 32 }}>
           <h1 style={{ fontSize: 24, fontWeight: 600 }}>仪表盘</h1>
           <div className="pulse-dot" />
-          <span className="text-green" style={{ fontSize: 13 }}>实时</span>
+          <span className="text-muted" style={{ fontSize: 13 }}>实时</span>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16, marginBottom: 24 }}>
