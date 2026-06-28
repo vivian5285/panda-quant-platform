@@ -121,16 +121,15 @@ else
   deploy_info "暂无 VPS STARTUP 日志（可能尚无绑定 API 的用户）"
 fi
 
-if docker compose ps frontend 2>/dev/null | grep -q "Up"; then
-  deploy_ok "frontend 容器运行中"
-else
-  deploy_fail "frontend 容器未运行"
+if ! wait_compose_service frontend 60; then
+  deploy_fail "frontend 未在 60s 内启动"
 fi
+deploy_ok "frontend 容器运行中"
 
-# --- 7. 强制全域自检 ---
+# --- 7. 全域自检（内测默认不阻断 WARN）---
 echo ""
-echo ">>> [6] 强制生产级全域自检"
-bash "$ROOT/production_check.sh" || deploy_fail "全域自检未通过，部署中止"
+echo ">>> [6] 生产级全域自检 (PRODUCTION_STRICT=${PRODUCTION_STRICT:-0})"
+PRODUCTION_STRICT="${PRODUCTION_STRICT:-0}" bash "$ROOT/production_check.sh" || deploy_fail "全域自检未通过，部署中止"
 
 PUBLIC_IP="$(curl -sf --max-time 5 ifconfig.me 2>/dev/null || echo 'YOUR_VPS_IP')"
 
@@ -149,5 +148,6 @@ echo "  管理员: admin@pandaquant.com"
 echo "  查看日志: docker compose logs -f backend"
 echo "  接管审计: GET /api/admin/startup-audit"
 echo "  跳过拉码: SKIP_GIT_PULL=1 bash deploy.sh"
-echo "  复检命令: bash production_check.sh"
+echo "  内测自检: bash production_check.sh"
+echo "  上线复检: PRODUCTION_STRICT=1 bash production_check.sh"
 echo "========================================"

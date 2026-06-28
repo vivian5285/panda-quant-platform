@@ -1,13 +1,19 @@
 #!/bin/bash
-# 熊猫量化 · 生产级全域自检（部署后必跑，任一 FAIL 则 exit 1）
+# 熊猫量化 · 生产级全域自检
+# PRODUCTION_STRICT=1 时：WARN / production_ready=false 也视为失败（正式上线前跑）
+# 默认 PRODUCTION_STRICT=0：仅 FAIL 硬错误，配置类 WARN 不阻断 deploy
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
+# shellcheck source=scripts/deploy_lib.sh
+source "$ROOT/scripts/deploy_lib.sh"
+
 FRONT_PORT="${FRONT_PORT:-6080}"
 API_PORT="${API_PORT:-8000}"
 WEBHOOK_PORT="${WEBHOOK_PORT:-6010}"
+PRODUCTION_STRICT="${PRODUCTION_STRICT:-0}"
 
 FAILURES=0
 fail() { echo "[FAIL] $1"; FAILURES=$((FAILURES + 1)); }
@@ -17,6 +23,7 @@ warn() { echo "[WARN] $1"; }
 echo "========================================"
 echo "  熊猫量化 · 生产级全域自检"
 echo "  $(date '+%Y-%m-%d %H:%M:%S')"
+echo "  PRODUCTION_STRICT=${PRODUCTION_STRICT}"
 echo "========================================"
 
 # --- A. Docker ---
@@ -26,8 +33,11 @@ command -v docker >/dev/null 2>&1 || { fail "docker 未安装"; echo "FAIL=$FAIL
 
 docker compose ps || true
 
+deploy_info "等待 frontend 就绪 (最多 60s)..."
+wait_compose_service frontend 60 || deploy_info "frontend 仍在启动，继续检查..."
+
 for svc in backend frontend; do
-  if docker compose ps --status running 2>/dev/null | grep -q "$svc"; then
+  if docker compose ps "$svc" 2>/dev/null | grep -qE 'Up|\(healthy\)'; then
     ok "$svc 容器运行中"
   else
     fail "$svc 容器未运行"
@@ -60,12 +70,18 @@ check_host_port "$FRONT_PORT" "前端"
 
 # --- C. 后端 Python 全域自检 ---
 echo ""
-echo ">>> [C] 后端模块自检 (check_system.py --strict)"
-if docker compose ps --status running 2>/dev/null | grep -q backend; then
-  if docker compose exec -T backend python scripts/check_system.py --strict; then
-    ok "check_system.py --strict 通过"
+if [ "$PRODUCTION_STRICT" = "1" ]; then
+  echo ">>> [C] 后端模块自检 (check_system.py --strict)"
+  CHECK_ARGS="--strict"
+else
+  echo ">>> [C] 后端模块自检 (check_system.py，WARN 不阻断)"
+  CHECK_ARGS=""
+fi
+if docker compose ps backend 2>/dev/null | grep -qE 'Up|\(healthy\)'; then
+  if docker compose exec -T backend python scripts/check_system.py $CHECK_ARGS; then
+    ok "check_system.py 通过"
   else
-    fail "check_system.py --strict 未通过"
+    fail "check_system.py 未通过"
   fi
 else
   fail "backend 未运行，跳过 Python 自检"
@@ -87,7 +103,13 @@ print(f\"  active_supervisors={d.get('active_supervisors')}\")
 print(f\"  security_warnings={d.get('security_warnings')}\")
 if not d.get('production_ready'):
     sys.exit(2)
-" && ok "/api/health production_ready=true" || fail "/api/health production_ready=false 或响应异常"
+" && ok "/api/health production_ready=true" || {
+    if [ "$PRODUCTION_STRICT" = "1" ]; then
+      fail "/api/health production_ready=false（正式上线前请修复 security_warnings）"
+    else
+      warn "/api/health production_ready=false（内测可忽略，上线前设 PRODUCTION_STRICT=1 复检）"
+    fi
+  }
 else
   fail "无法读取 /api/health"
 fi
@@ -161,14 +183,18 @@ echo "========================================"
 if [ "$FAILURES" -gt 0 ]; then
   echo "  自检失败 · FAIL=${FAILURES}"
   echo "  请修复上述 [FAIL] 项后重跑: bash production_check.sh"
+  echo "  正式上线前: PRODUCTION_STRICT=1 bash production_check.sh"
   echo "========================================"
   exit 1
 fi
 
 PUBLIC_IP="$(curl -sf --max-time 5 ifconfig.me 2>/dev/null || echo 'YOUR_VPS_IP')"
-echo "  自检全部通过"
+echo "  自检全部通过 (strict=${PRODUCTION_STRICT})"
 echo "  网页:    http://${PUBLIC_IP}:${FRONT_PORT}"
 echo "  Webhook: http://${PUBLIC_IP}:${WEBHOOK_PORT}/webhook"
 echo "  健康:    http://${PUBLIC_IP}:${API_PORT}/api/health"
+if [ "$PRODUCTION_STRICT" != "1" ]; then
+  echo "  提示: 正式上线前执行 PRODUCTION_STRICT=1 bash production_check.sh"
+fi
 echo "========================================"
 exit 0

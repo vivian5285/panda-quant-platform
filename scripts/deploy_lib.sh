@@ -100,3 +100,18 @@ sync_github_code() {
 
   deploy_ok "代码已对齐 ${remote}/${branch} ($(git rev-parse --short HEAD))"
 }
+
+# 等待 compose 服务 Up / healthy（避免 frontend 刚启动时被误判未运行）
+wait_compose_service() {
+  local svc=$1
+  local max_wait=${2:-60}
+  local elapsed=0
+  while [ "$elapsed" -lt "$max_wait" ]; do
+    if docker compose ps "$svc" 2>/dev/null | grep -qE 'Up|\(healthy\)'; then
+      return 0
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+  return 1
+}
