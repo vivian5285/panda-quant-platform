@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import User, UserRole
 from app.utils.auth import decode_access_token
+from app.i18n.errors import raise_i18n
 
 security = HTTPBearer(auto_error=False)
 
@@ -26,19 +27,19 @@ def get_current_user(
 ) -> User:
     token = _extract_token(credentials, x_access_token)
     if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
+        raise_i18n(status.HTTP_401_UNAUTHORIZED, "missing_token")
 
     payload = decode_access_token(token)
     if not payload:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        raise_i18n(status.HTTP_401_UNAUTHORIZED, "invalid_token")
 
     user = db.query(User).filter(User.id == int(payload.get("sub"))).first()
     if not user or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        raise_i18n(status.HTTP_401_UNAUTHORIZED, "user_not_found")
     return user
 
 
 def get_admin_user(user: User = Depends(get_current_user)) -> User:
     if user.role != UserRole.ADMIN.value:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+        raise_i18n(status.HTTP_403_FORBIDDEN, "admin_only")
     return user

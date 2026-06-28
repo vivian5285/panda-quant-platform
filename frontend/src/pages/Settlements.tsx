@@ -1,17 +1,13 @@
 import { useEffect, useState } from 'react'
 import Layout from '../components/Layout'
+import PageHeader from '../components/PageHeader'
 import GlassCard from '../components/GlassCard'
 import { referralApi, walletApi } from '../api'
+import { useI18n } from '../i18n'
 import { Copy, Check } from 'lucide-react'
 
-const statusLabel: Record<string, string> = {
-  pending: '待支付',
-  paid: '待确认',
-  confirmed: '已确认',
-  rejected: '已驳回',
-}
-
 export default function Settlements() {
+  const { t } = useI18n()
   const [items, setItems] = useState<any[]>([])
   const [addresses, setAddresses] = useState<any[]>([])
   const [payingId, setPayingId] = useState<number | null>(null)
@@ -50,12 +46,11 @@ export default function Settlements() {
     }
   }
 
+  const statusLabel = (s: string) => t(`settlements.status.${s}`) || s
+
   return (
     <Layout>
-      <h1 style={{ fontSize: 24, fontWeight: 600, marginBottom: 8 }}>结算记录</h1>
-      <p className="text-secondary" style={{ fontSize: 14, marginBottom: 24 }}>
-        优先 7 天结算；7 天无盈利或仍有持仓则延至 10 天。结算时须全平仓，用户手工转入 USDT 后提交凭证。
-      </p>
+      <PageHeader title={t('settlements.title')} subtitle={t('settlements.subtitle')} />
 
       <GlassCard green className="p-6" style={{ marginBottom: 24 }}>
         <h3 style={{ fontSize: 15, fontWeight: 500, marginBottom: 16 }}>平台 USDT 收款地址</h3>
@@ -106,7 +101,7 @@ export default function Settlements() {
                 <td>${s.user_payable?.toFixed(2)}</td>
                 <td>
                   <span className={`badge ${s.payment_status === 'confirmed' ? 'badge-green' : 'badge-gray'}`}>
-                    {statusLabel[s.payment_status] || s.payment_status}
+                    {statusLabel(s.payment_status)}
                   </span>
                 </td>
                 <td>

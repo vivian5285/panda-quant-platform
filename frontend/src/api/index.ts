@@ -2,6 +2,8 @@ import api from './client'
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token')
+  const locale = localStorage.getItem('locale')
+  config.headers['Accept-Language'] = locale === 'en' ? 'en' : 'zh-CN'
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
     config.headers['X-Access-Token'] = token

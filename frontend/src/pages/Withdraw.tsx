@@ -1,16 +1,16 @@
 import { useEffect, useState, useMemo } from 'react'
 import Layout from '../components/Layout'
+import PageHeader from '../components/PageHeader'
 import GlassCard from '../components/GlassCard'
 import StatCard from '../components/StatCard'
 import { walletApi } from '../api'
 import DualVerifyFields from '../components/DualVerifyFields'
+import { useI18n } from '../i18n'
 import { Star, Trash2 } from 'lucide-react'
 
-const wStatus: Record<string, string> = {
-  pending: '待审核', auto_approved: '自动通过', approved: '已批准', rejected: '已驳回', completed: '已完成',
-}
-
 export default function Withdraw() {
+  const locale = useI18n(s => s.locale)
+  const t = useI18n(s => s.t)
   const [account, setAccount] = useState<any>(null)
   const [settings, setSettings] = useState<any>(null)
   const [withdrawals, setWithdrawals] = useState<any[]>([])
@@ -150,17 +150,16 @@ export default function Withdraw() {
     return m
   }, [settings])
 
+  const wStatus = (s: string) => t(`admin.wStatus.${s}`) || s
+
   return (
     <Layout>
-      <h1 style={{ fontSize: 24, fontWeight: 600, marginBottom: 8 }}>奖励提现</h1>
-      <p className="text-secondary" style={{ fontSize: 14, marginBottom: 24 }}>
-        内部转账免手续费 · 链上提现按交易所标准收取网络费
-      </p>
+      <PageHeader title={t('withdraw.title')} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 16, marginBottom: 24 }}>
-        <StatCard label="可提现余额" value={`$${(account?.balance || 0).toFixed(2)}`} />
-        <StatCard label="累计奖励" value={`$${(account?.total_earned || 0).toFixed(2)}`} />
-        <StatCard label="已提现" value={`$${(account?.total_withdrawn || 0).toFixed(2)}`} />
+        <StatCard label={t('withdraw.balance')} value={`$${(account?.balance || 0).toFixed(2)}`} />
+        <StatCard label={t('withdraw.totalEarned')} value={`$${(account?.total_earned || 0).toFixed(2)}`} />
+        <StatCard label={t('withdraw.totalWithdrawn')} value={`$${(account?.total_withdrawn || 0).toFixed(2)}`} />
       </div>
 
       {msg && <p className="text-green" style={{ marginBottom: 16 }}>{msg}</p>}
@@ -168,11 +167,11 @@ export default function Withdraw() {
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
         {[
-          { k: 'withdraw' as const, l: '链上提现' },
-          { k: 'addressbook' as const, l: '地址簿' },
-          { k: 'transfer' as const, l: '内部转账' },
-        ].map(t => (
-          <button key={t.k} className={`btn ${tab === t.k ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setTab(t.k); setError(''); setMsg('') }}>{t.l}</button>
+          { k: 'withdraw' as const, l: t('withdraw.tabWithdraw') },
+          { k: 'addressbook' as const, l: t('withdraw.tabAddress') },
+          { k: 'transfer' as const, l: t('withdraw.tabTransfer') },
+        ].map(item => (
+          <button key={item.k} className={`btn ${tab === item.k ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setTab(item.k); setError(''); setMsg('') }}>{item.l}</button>
         ))}
       </div>
 
@@ -356,7 +355,7 @@ export default function Withdraw() {
                 <td>${w.amount?.toFixed(2)}</td>
                 <td className="text-muted">${(w.network_fee ?? 0).toFixed(2)}</td>
                 <td className="text-green">${(w.amount_net ?? w.amount)?.toFixed(2)}</td>
-                <td><span className={`badge ${w.status === 'completed' ? 'badge-green' : 'badge-gray'}`}>{wStatus[w.status]}</span></td>
+                <td><span className={`badge ${w.status === 'completed' ? 'badge-green' : 'badge-gray'}`}>{wStatus(w.status)}</span></td>
               </tr>
             ))}
           </tbody>

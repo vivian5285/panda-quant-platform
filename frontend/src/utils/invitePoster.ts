@@ -7,6 +7,9 @@ export interface PosterData {
   uid: string
   l1Rate: number
   l2Rate: number
+  brandName?: string
+  brandTagline?: string
+  posterTagline?: string
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
@@ -51,15 +54,15 @@ export async function generateInvitePoster(data: PosterData): Promise<string> {
 
   ctx.fillStyle = '#FFFFFF'
   ctx.font = 'bold 42px Inter, sans-serif'
-  ctx.fillText('熊猫量化', W / 2, 190)
+  ctx.fillText(data.brandName || '熊猫AI量化', W / 2, 190)
 
   ctx.fillStyle = '#00E676'
   ctx.font = '22px Inter, sans-serif'
-  ctx.fillText('Panda Quant AI', W / 2, 228)
+  ctx.fillText(data.brandTagline || 'Panda AI Quant', W / 2, 228)
 
   ctx.fillStyle = 'rgba(255,255,255,0.65)'
   ctx.font = '24px Inter, sans-serif'
-  ctx.fillText('AI 智能量化托管 · 安全透明 · 稳定收益', W / 2, 280)
+  ctx.fillText(data.posterTagline || 'AI 智能量化托管 · 安全透明 · 稳定收益', W / 2, 280)
 
   const badges = ['🔒 加密托管', '📊 透明结算', '💰 二级分润']
   ctx.font = '18px Inter, sans-serif'

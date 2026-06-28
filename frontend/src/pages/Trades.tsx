@@ -1,38 +1,43 @@
 import { useEffect, useState } from 'react'
 import Layout from '../components/Layout'
+import PageHeader from '../components/PageHeader'
 import GlassCard from '../components/GlassCard'
 import { userApi } from '../api'
+import { useI18n, localeDate } from '../i18n'
 
 export default function Trades() {
+  const { t, locale } = useI18n()
   const [trades, setTrades] = useState<any[]>([])
 
   useEffect(() => { userApi.trades().then(setTrades) }, [])
 
   return (
     <Layout>
-      <h1 style={{ fontSize: 24, fontWeight: 600, marginBottom: 24 }}>交易记录</h1>
-      <GlassCard className="p-0" style={{ overflow: 'hidden' } as any}>
+      <PageHeader title={t('trades.title')} />
+      <GlassCard className="p-0 table-wrap">
         <table className="data-table">
           <thead>
             <tr>
-              <th>时间</th><th>方向</th><th>数量</th><th>入场价</th><th>出场价</th><th>盈亏</th><th>档位</th><th>状态</th>
+              <th>{t('common.time')}</th><th>{t('trades.side')}</th><th>{t('trades.qty')}</th>
+              <th>{t('trades.entry')}</th><th>{t('trades.exit')}</th><th>{t('trades.pnl')}</th>
+              <th>{t('trades.regime')}</th><th>{t('common.status')}</th>
             </tr>
           </thead>
           <tbody>
             {trades.length === 0 ? (
-              <tr><td colSpan={8} className="text-muted" style={{ textAlign: 'center', padding: 40 }}>暂无交易记录</td></tr>
-            ) : trades.map(t => (
-              <tr key={t.id}>
-                <td>{new Date(t.created_at).toLocaleString('zh-CN')}</td>
-                <td><span className={`badge ${t.side === 'LONG' ? 'badge-green' : 'badge-red'}`}>{t.side}</span></td>
-                <td>{t.quantity}</td>
-                <td>${t.entry_price?.toFixed(2)}</td>
-                <td>{t.exit_price ? `$${t.exit_price.toFixed(2)}` : '—'}</td>
-                <td className={t.realized_pnl >= 0 ? 'text-green' : 'text-red'}>
-                  {t.realized_pnl ? `${t.realized_pnl >= 0 ? '+' : ''}$${t.realized_pnl.toFixed(2)}` : '—'}
+              <tr><td colSpan={8} className="empty-cell">{t('trades.empty')}</td></tr>
+            ) : trades.map(tr => (
+              <tr key={tr.id}>
+                <td>{localeDate(tr.created_at, locale)}</td>
+                <td><span className={`badge ${tr.side === 'LONG' ? 'badge-green' : 'badge-red'}`}>{tr.side}</span></td>
+                <td>{tr.quantity}</td>
+                <td>${tr.entry_price?.toFixed(2)}</td>
+                <td>{tr.exit_price ? `$${tr.exit_price.toFixed(2)}` : t('common.none')}</td>
+                <td className={tr.realized_pnl >= 0 ? 'text-green' : 'text-red'}>
+                  {tr.realized_pnl ? `${tr.realized_pnl >= 0 ? '+' : ''}$${tr.realized_pnl.toFixed(2)}` : t('common.none')}
                 </td>
-                <td><span className="badge badge-gray">{t.regime}档</span></td>
-                <td><span className={`badge ${t.status === 'open' ? 'badge-green' : 'badge-gray'}`}>{t.status}</span></td>
+                <td><span className="badge badge-gray">{tr.regime}</span></td>
+                <td><span className={`badge ${tr.status === 'open' ? 'badge-green' : 'badge-gray'}`}>{tr.status}</span></td>
               </tr>
             ))}
           </tbody>

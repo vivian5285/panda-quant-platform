@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { authApi } from '../api'
+import { useI18n } from '../i18n'
 
 type Props = {
   emailCode: string
@@ -14,6 +15,7 @@ type Props = {
 export default function DualVerifyFields({
   emailCode, phoneCode, onEmailCode, onPhoneCode, devEmail, devPhone, onDevCodes,
 }: Props) {
+  const { t } = useI18n()
   const [countdown, setCountdown] = useState(0)
   const [error, setError] = useState('')
 
@@ -23,35 +25,35 @@ export default function DualVerifyFields({
       const res = await authApi.sendSecurityCodes()
       onDevCodes?.(res.dev_email_code, res.dev_phone_code)
       setCountdown(60)
-      const t = setInterval(() => {
+      const timer = setInterval(() => {
         setCountdown(c => {
-          if (c <= 1) { clearInterval(t); return 0 }
+          if (c <= 1) { clearInterval(timer); return 0 }
           return c - 1
         })
       }, 1000)
     } catch (err: any) {
-      setError(err.response?.data?.detail || '发送失败，请先绑定邮箱和手机')
+      setError(err.response?.data?.detail || t('security.sendFail'))
     }
   }
 
   return (
-    <div style={{ marginBottom: 16, padding: 16, borderRadius: 12, border: '1px solid rgba(255,149,0,0.25)', background: 'rgba(255,249,230,0.9)' }}>
+    <div className="security-notice" style={{ marginBottom: 16 }}>
       <p style={{ fontSize: 13, marginBottom: 12, color: 'var(--text-secondary)' }}>
-        安全操作需<strong style={{ color: '#ffc107' }}> 邮箱 + 手机双重验证码</strong>
+        {t('security.dualTitle')}
       </p>
       <button type="button" className="btn btn-ghost" style={{ width: '100%', marginBottom: 12, fontSize: 12 }}
         disabled={countdown > 0} onClick={sendCodes}>
-        {countdown > 0 ? `${countdown}s 后可重发` : '获取安全验证码（邮箱+手机）'}
+        {countdown > 0 ? t('security.resendIn', { n: countdown }) : t('security.getCodes')}
       </button>
       {(devEmail || devPhone) && (
         <p className="text-muted" style={{ fontSize: 11, marginBottom: 8 }}>
-          开发模式 — 邮箱: {devEmail || '—'} / 手机: {devPhone || '—'}
+          {t('security.devMode')} — {t('common.email')}: {devEmail || '—'} / {t('common.phone')}: {devPhone || '—'}
         </p>
       )}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-        <input className="input" placeholder="邮箱验证码" value={emailCode}
+        <input className="input" placeholder={t('security.emailCodePh')} value={emailCode}
           onChange={e => onEmailCode(e.target.value)} required />
-        <input className="input" placeholder="手机验证码" value={phoneCode}
+        <input className="input" placeholder={t('security.phoneCodePh')} value={phoneCode}
           onChange={e => onPhoneCode(e.target.value)} required />
       </div>
       {error && <p className="text-red" style={{ fontSize: 12, marginTop: 8 }}>{error}</p>}

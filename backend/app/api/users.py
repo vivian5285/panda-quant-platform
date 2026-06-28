@@ -15,15 +15,18 @@ from app.utils.crypto import encrypt_text, decrypt_text
 from app.services.dispatcher import supervisor_pool
 from app.services.api_validation import validate_binance_api
 from app.services.principal import fetch_live_equity, start_new_profit_cycle
+from app.i18n import get_locale, t, translate_api_message
+from app.i18n.errors import raise_i18n
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 
 def _verify_response(result: dict) -> ApiVerifyResponse:
-    equity = float(result.get("total_balance") or result.get("total_margin_balance") or 0)
+    localized = translate_api_message(result, get_locale())
+    equity = float(localized.get("total_balance") or localized.get("total_margin_balance") or 0)
     return ApiVerifyResponse(
-        valid=bool(result.get("valid")),
-        message=result.get("message", ""),
+        valid=bool(localized.get("valid")),
+        message=localized.get("message", ""),
         total_balance=equity,
         available_balance=float(result.get("available_balance", 0)),
         wallet_balance=float(result.get("wallet_balance") or result.get("total_wallet_balance") or 0),
@@ -35,7 +38,7 @@ def _verify_response(result: dict) -> ApiVerifyResponse:
         symbol_price=float(result.get("symbol_price", 0)),
         leverage=int(result.get("leverage", 15)),
         initial_principal=equity if result.get("valid") else 0,
-        detail=result.get("detail"),
+        detail=localized.get("detail"),
     )
 
 
@@ -73,7 +76,7 @@ def verify_bind_api(req: ApiBindRequest, user: User = Depends(get_current_user))
 def api_status(user: User = Depends(get_current_user)):
     """已绑定用户复查 API 是否仍可用。"""
     if not user.api_key_enc or not user.api_secret_enc:
-        raise HTTPException(400, "尚未绑定 API")
+        raise_i18n(400, "api.not_bound")
     result = validate_binance_api(
         decrypt_text(user.api_key_enc),
         decrypt_text(user.api_secret_enc),
@@ -89,7 +92,8 @@ def api_status(user: User = Depends(get_current_user)):
 def bind_api(req: ApiBindRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     result = validate_binance_api(req.api_key, req.api_secret, user.id)
     if not result.get("valid"):
-        raise HTTPException(400, result.get("message", "API 验证失败"))
+        localized = translate_api_message(result, get_locale())
+        raise HTTPException(400, localized.get("message") or t("api.verify_fail", get_locale()))
 
     equity = float(result.get("total_balance", 0))
     user.api_key_enc = encrypt_text(req.api_key)
@@ -110,7 +114,7 @@ def bind_api(req: ApiBindRequest, db: Session = Depends(get_db), user: User = De
         "status": "ok",
         "api_status": user.api_status,
         "initial_principal": user.initial_principal,
-        "message": f"绑定成功 · 初始本金 ${user.initial_principal:.2f}",
+        "message": t("api.bind_success", get_locale(), amount=f"{user.initial_principal:.2f}"),
     }
 
 

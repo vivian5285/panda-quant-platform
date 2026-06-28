@@ -16,14 +16,14 @@ def validate_binance_api(api_key: str, api_secret: str, user_id: int = 0) -> dic
         logger.warning("API validation failed user=%s: %s", user_id, e)
         return {
             "valid": False,
-            "message": "币安 API 连接失败 — 请检查 Key/Secret 是否正确，并确认已开启合约交易权限",
+            "message_key": "api.connect_failed",
             "detail": str(e),
         }
 
     if not summary.get("can_trade", True):
         return {
             "valid": False,
-            "message": "API 无合约交易权限（canTrade=false），请在币安开启 Futures 权限",
+            "message_key": "api.no_futures_permission",
             **summary,
         }
 
@@ -36,7 +36,7 @@ def validate_binance_api(api_key: str, api_secret: str, user_id: int = 0) -> dic
     if equity <= 0:
         return {
             "valid": False,
-            "message": "合约账户余额为 0，请先向 U 本位合约账户转入 USDT",
+            "message_key": "api.zero_balance",
             **summary,
             "symbol": settings.SYMBOL,
             "symbol_price": price,
@@ -46,7 +46,7 @@ def validate_binance_api(api_key: str, api_secret: str, user_id: int = 0) -> dic
 
     return {
         "valid": True,
-        "message": "API 验证通过 · 合约账户可正常交易",
+        "message_key": "api.verify_ok",
         "total_balance": equity,
         "available_balance": summary["available_balance"],
         "wallet_balance": summary["total_wallet_balance"],

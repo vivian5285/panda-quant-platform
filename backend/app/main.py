@@ -1,8 +1,9 @@
 import logging
 import threading
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from app.config import get_settings
 from app.database import engine, Base, SessionLocal
 from app.models import User, UserRole
@@ -10,6 +11,8 @@ from app.api import auth, users, referrals, admin, wallet
 from app.services.dispatcher import supervisor_pool
 from app.services.startup_audit import validate_production_secrets, log_security_warnings
 from app.utils.auth import hash_password, verify_password, generate_referral_code, generate_uid
+from app.i18n.middleware import LocaleMiddleware
+from app.i18n import translate_detail, get_locale
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -105,6 +108,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Panda Quant Platform", version="1.0.0", lifespan=lifespan)
 
+app.add_middleware(LocaleMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.FRONTEND_URL, "http://localhost:5173", "http://127.0.0.1:5173"],
@@ -119,6 +123,12 @@ app.include_router(users.router, prefix="/api")
 app.include_router(referrals.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(wallet.router, prefix="/api")
+
+
+@app.exception_handler(HTTPException)
+async def i18n_exception_handler(_request: Request, exc: HTTPException):
+    detail = translate_detail(exc.detail, get_locale())
+    return JSONResponse(status_code=exc.status_code, content={"detail": detail}, headers=exc.headers)
 
 
 @app.get("/api/health")
