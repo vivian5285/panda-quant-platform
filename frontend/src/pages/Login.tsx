@@ -1,13 +1,10 @@
 import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { motion } from 'framer-motion'
 import { authApi } from '../api'
 import { useAuth } from '../store/auth'
 import { useI18n } from '../i18n'
 import GlassCard from '../components/GlassCard'
-import TopToolbar from '../components/TopToolbar'
-import ParticleBackground from '../components/ui/ParticleBackground'
-import RippleButton from '../components/ui/RippleButton'
+import AuthShell from '../components/AuthShell'
 import OAuthSocialButtons from '../components/OAuthSocialButtons'
 
 export default function Login() {
@@ -63,7 +60,7 @@ export default function Login() {
       }, 1000)
     } catch (err: any) {
       setError(err.response?.data?.detail || t('auth.sendFail'))
-    }
+    } finally { /* noop */ }
   }
 
   const handleCodeLogin = async (e: React.FormEvent) => {
@@ -83,90 +80,77 @@ export default function Login() {
   }
 
   return (
-    <div className="auth-split-page">
-      <TopToolbar />
-      <div className="auth-split-left">
-        <ParticleBackground />
-        <motion.div className="auth-split-brand" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
-          <span className="auth-logo">🐼</span>
-          <h1>{t('landing.hero.titleLine1')}<span className="saas-gradient-text">{t('landing.hero.titleHighlight')}</span>{t('landing.hero.titleLine2')}</h1>
-          <p>{t('landing.hero.subtitle')}</p>
-          <Link to="/" className="auth-back-link">{t('auth.backHome')}</Link>
-        </motion.div>
-      </div>
+    <AuthShell>
+      <GlassCard className="p-8 auth-glass-card">
+        <h2 className="auth-card-title">{t('auth.login')}</h2>
+        <p className="text-muted auth-card-sub">{t('brand.tagline')}</p>
 
-      <motion.div key={locale} className="auth-split-right" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }}>
-        <GlassCard green className="p-8 auth-glass-card">
-          <h2 className="auth-card-title">{t('auth.login')}</h2>
-          <p className="text-muted auth-card-sub">{t('brand.tagline')}</p>
+        <OAuthSocialButtons />
 
-          <OAuthSocialButtons />
+        <div className="auth-mode-tabs">
+          <button type="button" className={`btn ${mode === 'password' ? 'btn-primary' : 'btn-ghost'}`}
+            style={{ flex: 1, fontSize: 13 }} onClick={() => setMode('password')}>{t('auth.passwordLogin')}</button>
+          <button type="button" className={`btn ${mode === 'code' ? 'btn-primary' : 'btn-ghost'}`}
+            style={{ flex: 1, fontSize: 13 }} onClick={() => setMode('code')}>{t('auth.codeLogin')}</button>
+        </div>
 
-          <div className="auth-mode-tabs">
-            <button type="button" className={`btn ${mode === 'password' ? 'btn-primary' : 'btn-ghost'}`}
-              style={{ flex: 1, fontSize: 13 }} onClick={() => setMode('password')}>{t('auth.passwordLogin')}</button>
-            <button type="button" className={`btn ${mode === 'code' ? 'btn-primary' : 'btn-ghost'}`}
-              style={{ flex: 1, fontSize: 13 }} onClick={() => setMode('code')}>{t('auth.codeLogin')}</button>
-          </div>
-
-          {mode === 'password' ? (
-            <form onSubmit={handlePasswordLogin}>
+        {mode === 'password' ? (
+          <form onSubmit={handlePasswordLogin}>
+            <div className="form-field">
+              <label className="form-label">{t('auth.account')}</label>
+              <input className="input" value={account} onChange={e => setAccount(e.target.value)} placeholder={t('auth.accountPh')} required />
+            </div>
+            <div className="form-field">
+              <label className="form-label">{t('common.password')}</label>
+              <input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder={t('auth.passwordPh')} required />
+            </div>
+            <label className="auth-remember">
+              <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />
+              {t('auth.rememberMe')}
+            </label>
+            {error && <p className="form-error">{error}</p>}
+            <button type="submit" className="btn btn-primary auth-submit" disabled={loading}>
+              {loading ? t('auth.loggingIn') : t('auth.login')}
+            </button>
+          </form>
+        ) : (
+          <form key={locale} onSubmit={handleCodeLogin}>
+            <div className="auth-mode-tabs" style={{ marginBottom: 16 }}>
+              <button type="button" className={`btn ${codeChannel === 'phone' ? 'btn-primary' : 'btn-ghost'}`}
+                style={{ flex: 1, fontSize: 12 }} onClick={() => setCodeChannel('phone')}>{t('auth.phoneCode')}</button>
+              <button type="button" className={`btn ${codeChannel === 'email' ? 'btn-primary' : 'btn-ghost'}`}
+                style={{ flex: 1, fontSize: 12 }} onClick={() => setCodeChannel('email')}>{t('auth.emailCode')}</button>
+            </div>
+            {codeChannel === 'phone' ? (
               <div className="form-field">
-                <label className="form-label">{t('auth.account')}</label>
-                <input className="input" value={account} onChange={e => setAccount(e.target.value)} placeholder={t('auth.accountPh')} required />
+                <label className="form-label">{t('common.phone')}</label>
+                <input className="input" value={phone} onChange={e => setPhone(e.target.value)} placeholder={t('auth.phonePh')} required />
               </div>
+            ) : (
               <div className="form-field">
-                <label className="form-label">{t('common.password')}</label>
-                <input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder={t('auth.passwordPh')} required />
+                <label className="form-label">{t('common.email')}</label>
+                <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} required />
               </div>
-              <label className="auth-remember">
-                <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />
-                {t('auth.rememberMe')}
-              </label>
-              {error && <p className="form-error">{error}</p>}
-              <RippleButton type="submit" className="btn btn-primary auth-submit" disabled={loading}>
-                {loading ? t('auth.loggingIn') : t('auth.login')}
-              </RippleButton>
-            </form>
-          ) : (
-            <form onSubmit={handleCodeLogin}>
-              <div className="auth-mode-tabs" style={{ marginBottom: 16 }}>
-                <button type="button" className={`btn ${codeChannel === 'phone' ? 'btn-primary' : 'btn-ghost'}`}
-                  style={{ flex: 1, fontSize: 12 }} onClick={() => setCodeChannel('phone')}>{t('auth.phoneCode')}</button>
-                <button type="button" className={`btn ${codeChannel === 'email' ? 'btn-primary' : 'btn-ghost'}`}
-                  style={{ flex: 1, fontSize: 12 }} onClick={() => setCodeChannel('email')}>{t('auth.emailCode')}</button>
-              </div>
-              {codeChannel === 'phone' ? (
-                <div className="form-field">
-                  <label className="form-label">{t('common.phone')}</label>
-                  <input className="input" value={phone} onChange={e => setPhone(e.target.value)} placeholder={t('auth.phonePh')} required />
-                </div>
-              ) : (
-                <div className="form-field">
-                  <label className="form-label">{t('common.email')}</label>
-                  <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} required />
-                </div>
-              )}
-              <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-                <input className="input" value={code} onChange={e => setCode(e.target.value)} placeholder={t('auth.codePh')} required style={{ flex: 1 }} />
-                <button type="button" className="btn btn-ghost" disabled={countdown > 0 || (codeChannel === 'phone' ? !phone : !email)} onClick={sendCode}>
-                  {countdown > 0 ? `${countdown}s` : t('auth.getCode')}
-                </button>
-              </div>
-              {devCode && <p className="text-muted" style={{ fontSize: 12, marginBottom: 12 }}>{t('auth.devCode')}: {devCode}</p>}
-              {error && <p className="form-error">{error}</p>}
-              <RippleButton type="submit" className="btn btn-primary auth-submit" disabled={loading}>
-                {loading ? t('auth.loggingIn') : t('auth.codeLogin')}
-              </RippleButton>
-            </form>
-          )}
+            )}
+            <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+              <input className="input" value={code} onChange={e => setCode(e.target.value)} placeholder={t('auth.codePh')} required style={{ flex: 1 }} />
+              <button type="button" className="btn btn-ghost" disabled={countdown > 0 || (codeChannel === 'phone' ? !phone : !email)} onClick={sendCode}>
+                {countdown > 0 ? `${countdown}s` : t('auth.getCode')}
+              </button>
+            </div>
+            {devCode && <p className="text-muted" style={{ fontSize: 12, marginBottom: 12 }}>{t('auth.devCode')}: {devCode}</p>}
+            {error && <p className="form-error">{error}</p>}
+            <button type="submit" className="btn btn-primary auth-submit" disabled={loading}>
+              {loading ? t('auth.loggingIn') : t('auth.codeLogin')}
+            </button>
+          </form>
+        )}
 
-          <p className="auth-footer">
-            {t('auth.noAccount')}{' '}
-            <Link to="/register" className="auth-link">{t('auth.registerNow')}</Link>
-          </p>
-        </GlassCard>
-      </motion.div>
-    </div>
+        <p className="auth-footer">
+          {t('auth.noAccount')}{' '}
+          <Link to="/register" className="auth-link">{t('auth.registerNow')}</Link>
+        </p>
+      </GlassCard>
+    </AuthShell>
   )
 }

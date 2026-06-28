@@ -266,7 +266,7 @@ export default function Admin() {
       {tab === 'addresses' && (
         <div>
           <p className="text-muted" style={{ fontSize: 13, marginBottom: 16 }}>{t('admin.addrHint')}</p>
-          <GlassCard green className="p-6" style={{ marginBottom: 24, maxWidth: 520 }}>
+          <GlassCard className="p-6" style={{ marginBottom: 24, maxWidth: 520 }}>
             <h3 style={{ fontSize: 15, marginBottom: 16, fontWeight: 600 }}>{t('admin.addUsdtAddr')}</h3>
             <form onSubmit={addAddr}>
               <select className="input" value={newAddr.chain} onChange={e => setNewAddr({ ...newAddr, chain: e.target.value })} style={{ marginBottom: 8 }}>

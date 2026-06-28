@@ -115,12 +115,12 @@ export default function ApiManage() {
   return (
     <Layout>
       <PageHeader title={t('api.title')} />
-      <GlassCard green className="p-8" style={{ maxWidth: 560 }} key={locale}>
+      <GlassCard className="p-8" style={{ maxWidth: 560 }} key={locale}>
         <p className="text-secondary" style={{ fontSize: 14, marginBottom: 20, lineHeight: 1.6 }}>
           {t('api.intro1')}
-          <strong className="text-green">{t('api.introBinance')}</strong>
+          <strong>{t('api.introBinance')}</strong>
           {t('api.intro2')}
-          <strong className="text-green">{t('api.intro3')}</strong>
+          <strong>{t('api.intro3')}</strong>
           {t('api.intro4')}
         </p>
 

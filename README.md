@@ -1,4 +1,4 @@
-# Panda Quant Platform · 熊猫量化
+# GEMINI AI · 双子星AI量化
 
 多用户 AI 量化托管平台。**TradingView 发信号 → 平台统一广播 → 各用户币安合约独立执行。**
 
@@ -105,13 +105,44 @@ docker compose logs backend | grep "VPS STARTUP"
 - [ ] 无 `Security` 默认密钥警告
 - [ ] Webhook `/health` 返回 ok
 
-### 5. 防火墙
+### 5. 防火墙（UFW）
+
+同一 VPS 跑币安、深币、Gemini 时，**推荐只对外开放 80 / 443**，三个系统都经 Nginx 转发；5003 / 5004 / 6010 / 6080 / 8000 仅本机 `127.0.0.1` 监听，**不必**对公网单独放行。
 
 ```bash
-ufw allow 6080    # 前端
-ufw allow 6010    # TradingView Webhook
-ufw allow 8000    # REST API（生产建议仅内网或 Nginx 反代）
+# 1. HTTP — 币安 /binance/webhook、深币 /deepcoin/webhook、Gemini / 与 /gemini/webhook 共用
+sudo ufw allow 80/tcp
+
+# 2. HTTPS — 预留绑域名、SaaS 上线
+sudo ufw allow 443/tcp
+
+# 3. 生效
+sudo ufw reload
+
+# 查看规则
+sudo ufw status numbered
 ```
+
+一键脚本（同上逻辑）：`sudo bash deploy/ufw-firewall.sh.example`
+
+| 端口 | 是否需 UFW 放行 | 说明 |
+|------|-----------------|------|
+| **80** | ✅ 必须 | Nginx 统一入口（三系统 webhook + Gemini 网页） |
+| **443** | ✅ 建议 | 未来 HTTPS / 域名 |
+| **6080** | ⚪ 可选 | 仅内测直连 `http://IP:6080` 时需要 |
+| **6010** | ❌ 不建议 | Webhook 用 `http://IP/gemini/webhook`（走 80） |
+| **8000** | ❌ 不建议 | API 经 Nginx → 6080 → `/api/`，勿暴露 Swagger |
+| **5003 / 5004** | ❌ 不必 | 币安/深币 webhook 已走 80 反代 |
+| **6379** | ❌ 禁止 | Redis，绝不对公网开放 |
+
+**可选 — Gemini 内测直连 6080**（未把 Nginx `location /` 指到 Gemini 时）：
+
+```bash
+sudo ufw allow 6080/tcp
+sudo ufw reload
+```
+
+或：`sudo GEMINI_DIRECT=1 bash deploy/ufw-firewall.sh.example`
 
 ---
 
@@ -123,13 +154,47 @@ ufw allow 8000    # REST API（生产建议仅内网或 Nginx 反代）
 | **6010** | TradingView Webhook | `http://VPS_IP:6010/webhook` |
 | **8000** | REST API | `http://VPS_IP:8000/docs` |
 
-> 已避开 5002 / 5003 / 5004。
+> 已避开同机单文件系统的 **5003（币安）** / **5004（深币）**。
+
+### 与同机币安 / 深币 Nginx 共存
+
+若 VPS 上已有 Nginx 将 `/binance/webhook`、`/deepcoin/webhook` 分别转发到 5003、5004，Gemini 使用 **6080 / 6010 / 8000**，路径互不冲突。
+
+复制并合并示例配置：
+
+```bash
+# 仓库内完整示例（含币安/深币/Gemini 三段 location）
+cat deploy/nginx-vps.conf.example
+sudo cp deploy/nginx-vps.conf.example /etc/nginx/sites-available/gemini-quant
+sudo ln -sf /etc/nginx/sites-available/gemini-quant /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+| Nginx 路径 | 转发目标 | 说明 |
+|------------|----------|------|
+| `/binance/webhook` | `127.0.0.1:5003/webhook` | 币安（已有） |
+| `/deepcoin/webhook` | `127.0.0.1:5004/webhook` | 深币（已有） |
+| `/gemini/webhook` | `127.0.0.1:6010/webhook` | Gemini TradingView |
+| `/` | `127.0.0.1:6080` | Gemini 网页（容器内已反代 `/api/`） |
+
+启用 80 反代后，修改 `backend/.env`：
+
+```env
+FRONTEND_URL=http://你的VPS_IP
+API_PUBLIC_URL=http://你的VPS_IP
+```
+
+TradingView 告警 URL 填：`http://你的VPS_IP/gemini/webhook`
+
+防火墙：已放行 **80 / 443** 即可，Gemini 无需再开 6010/6080/8000（见上文「防火墙」一节）。
 
 ---
 
 ## TradingView Webhook（策略对接 · 强制格式）
 
-**URL:** `http://你的VPS_IP:6010/webhook`
+**URL（Nginx 反代，推荐）：** `http://你的VPS_IP/gemini/webhook`
+
+**URL（内测直连，需 UFW 放行 6010）：** `http://你的VPS_IP:6010/webhook`
 
 ### 支持的 action
 

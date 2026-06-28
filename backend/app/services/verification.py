@@ -51,7 +51,7 @@ def _send_smtp_email(email: str, code: str, purpose: str) -> None:
     import smtplib
     from email.mime.text import MIMEText
 
-    subject = "熊猫量化验证码"
+    subject = "双子星AI量化 · GEMINI AI 验证码"
     body = f"您的验证码是 {code}，{settings.SMS_CODE_EXPIRE_MINUTES} 分钟内有效。用途：{purpose}"
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject

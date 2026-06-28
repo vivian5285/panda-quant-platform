@@ -11,13 +11,13 @@ interface ThemeState {
 function applyTheme(theme: Theme) {
   document.documentElement.setAttribute('data-theme', theme)
   const meta = document.querySelector('meta[name="theme-color"]')
-  if (meta) meta.setAttribute('content', theme === 'light' ? '#f7faf8' : '#09090b')
+  if (meta) meta.setAttribute('content', theme === 'light' ? '#ffffff' : '#0a0a0a')
 }
 
 function detectTheme(): Theme {
   const saved = localStorage.getItem('theme') as Theme | null
   if (saved === 'light' || saved === 'dark') return saved
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  return 'light'
 }
 
 export const useTheme = create<ThemeState>((set, get) => ({

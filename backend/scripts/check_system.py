@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-熊猫量化平台 · 生产级全域自检
+双子星AI量化 · GEMINI AI · 生产级全域自检
 用法:
   docker compose exec backend python scripts/check_system.py
   docker compose exec backend python scripts/check_system.py --strict   # 有问题则 exit 1
@@ -247,12 +247,12 @@ def check_dingtalk() -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="熊猫量化生产级全域自检")
+    parser = argparse.ArgumentParser(description="双子星AI量化 · GEMINI AI 生产级全域自检")
     parser.add_argument("--strict", action="store_true", help="存在 FAIL 或 WARN 时 exit 1")
     args = parser.parse_args()
 
     print("=" * 64)
-    print("熊猫量化平台 · 生产级全域自检")
+    print("双子星AI量化 · GEMINI AI · 生产级全域自检")
     print(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"工作目录: {ROOT}")
     print("=" * 64)

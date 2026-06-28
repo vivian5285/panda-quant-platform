@@ -6,7 +6,7 @@ import { useI18n } from '../../i18n'
 import LanguageSwitcher from '../LanguageSwitcher'
 import ThemeToggle from '../ThemeToggle'
 
-const anchors = ['features', 'agents', 'showcase', 'how', 'pricing', 'markets', 'faq'] as const
+const anchors = ['features', 'agents', 'showcase', 'how', 'markets', 'faq'] as const
 
 export default function LandingNav() {
   const t = useI18n(s => s.t)

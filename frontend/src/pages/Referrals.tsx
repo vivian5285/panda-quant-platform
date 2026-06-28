@@ -68,7 +68,7 @@ export default function Referrals() {
     <Layout>
       <PageHeader title={t('referrals.title')} subtitle={t('referrals.subtitle')} />
 
-      <GlassCard green className="p-6" style={{ marginBottom: 24 }}>
+      <GlassCard className="p-6" style={{ marginBottom: 24 }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}>
           <div style={{ flex: 1, minWidth: 260 }}>
             <p className="text-muted" style={{ fontSize: 13, marginBottom: 8 }}>{t('referrals.myLink')}</p>
@@ -107,7 +107,7 @@ export default function Referrals() {
             boxShadow: 'var(--glass-shadow-lg)',
           }} />
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: 20, flexWrap: 'wrap' }}>
-            <button className="btn btn-primary" onClick={() => downloadPoster(posterUrl, `panda-invite-${data?.referral_code}.png`)}>
+            <button className="btn btn-primary" onClick={() => downloadPoster(posterUrl, `gemini-invite-${data?.referral_code}.png`)}>
               <Download size={16} /> {t('referrals.downloadPoster')}
             </button>
             <button className="btn btn-ghost" onClick={() => setShowPoster(false)}>{t('referrals.closePreview')}</button>

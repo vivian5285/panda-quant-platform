@@ -15,7 +15,7 @@ def generate_totp_secret() -> str:
 
 
 def totp_provisioning_uri(secret: str, email: str) -> str:
-    return pyotp.TOTP(secret).provisioning_uri(name=email or "user", issuer_name="Panda AI Quant")
+    return pyotp.TOTP(secret).provisioning_uri(name=email or "user", issuer_name="GEMINI AI")
 
 
 def verify_totp(secret: str, code: str) -> bool:

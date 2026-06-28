@@ -5,7 +5,7 @@ from datetime import datetime
 def settlement_pdf_bytes(settlement: dict, user_name: str) -> bytes:
     """Minimal PDF without reportlab dependency — plain text PDF."""
     lines = [
-        f"Panda AI Quant - Settlement #{settlement.get('id')}",
+        f"GEMINI AI · 双子星AI量化 - Settlement #{settlement.get('id')}",
         f"User: {user_name}",
         f"Period: {settlement.get('period_start')} - {settlement.get('period_end')}",
         f"Net Profit: ${settlement.get('net_profit', 0):.2f}",

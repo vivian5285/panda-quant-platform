@@ -1,0 +1,74 @@
+# Gemini AI Quant · 与同机币安/深币单文件系统共存的 Nginx 示例
+#
+# 端口占用（Docker 内，仅绑定 127.0.0.1 或防火墙关闭外网直连）:
+#   币安 webhook     → 127.0.0.1:5003
+#   深币 webhook     → 127.0.0.1:5004
+#   Gemini 前端      → 127.0.0.1:6080  （容器内已反代 /api/ 与 /webhook）
+#   Gemini REST API  → 127.0.0.1:8000
+#   Gemini Webhook   → 127.0.0.1:6010
+#
+# 安装: sudo cp deploy/nginx-vps.conf.example /etc/nginx/sites-available/gemini-quant
+#       sudo ln -sf /etc/nginx/sites-available/gemini-quant /etc/nginx/sites-enabled/
+#       sudo nginx -t && sudo systemctl reload nginx
+#
+# backend/.env（走 80 反代时）:
+#   FRONTEND_URL=http://187.77.130.144
+#   API_PUBLIC_URL=http://187.77.130.144
+#
+# TradingView Webhook URL（与 /binance/webhook、/deepcoin/webhook 命名一致）:
+#   http://187.77.130.144/gemini/webhook
+
+server {
+    listen 80;
+    server_name 187.77.130.144;  # 公网 IP 或域名
+
+    # ── 币安（已有，勿改）────────────────────────────────
+    location /binance/webhook {
+        proxy_pass http://127.0.0.1:5003/webhook;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 10s;
+    }
+
+    # ── 深币（已有，勿改）────────────────────────────────
+    location /deepcoin/webhook {
+        proxy_pass http://127.0.0.1:5004/webhook;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 10s;
+    }
+
+    # ── Gemini AI · TradingView Webhook（6010，避开 5003/5004）──
+    location /gemini/webhook {
+        proxy_pass http://127.0.0.1:6010/webhook;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 10s;
+    }
+
+    # ── Gemini AI · 网页 + API（6080，容器内 /api/ 已反代到 8000）──
+    # 币安/深币只占 /binance/*、/deepcoin/*，根路径留给 Gemini，不会冲突
+    location / {
+        proxy_pass http://127.0.0.1:6080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Access-Token $http_x_access_token;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 3600s;
+    }
+}
+
+# 可选：若不想把根路径给 Gemini，仅保留上方 /gemini/webhook，
+# 网页继续用 http://IP:6080 直连，则删除 location / { ... } 整段即可。

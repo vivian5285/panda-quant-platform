@@ -1,5 +1,5 @@
 #!/bin/bash
-# 熊猫量化 · 部署公共函数（端口清理 / Git 同步）
+# 双子星AI量化 · GEMINI AI · 部署公共函数（端口清理 / Git 同步）
 # shellcheck disable=SC2034
 
 deploy_fail() { echo "[FAIL] $1"; exit 1; }

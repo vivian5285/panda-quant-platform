@@ -119,10 +119,10 @@ export default function Profile() {
       <PageHeader title={t('profile.title')} />
 
       <div key={locale}>
-        <GlassCard green className="p-6" style={{ marginBottom: 24, maxWidth: 560 }}>
+        <GlassCard className="p-6" style={{ marginBottom: 24, maxWidth: 560 }}>
           <h3 className="card-heading">{t('profile.myUid')}</h3>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-            <span className="text-green" style={{ fontSize: 28, fontWeight: 700, letterSpacing: 3, fontFamily: 'monospace' }}>
+            <span style={{ fontSize: 28, fontWeight: 700, letterSpacing: 3, fontFamily: 'ui-monospace, monospace' }}>
               {profile?.uid || uid || '...'}
             </span>
             <button className="btn btn-ghost btn-sm" onClick={() => copyText(profile?.uid || uid || '', 'uid')}>

@@ -1,10 +1,7 @@
 import { Link } from 'react-router-dom'
-import LandingNav from './landing/LandingNav'
-import LandingFooter from './landing/LandingFooter'
-import TopToolbar from './TopToolbar'
-import ScrollReveal from './ui/ScrollReveal'
-import ParticleBackground from './ui/ParticleBackground'
 import { useI18n } from '../i18n'
+import FramerBrand from './FramerBrand'
+import TopToolbar from './TopToolbar'
 import { ChevronLeft } from 'lucide-react'
 
 interface Props {
@@ -19,30 +16,36 @@ export default function LegalLayout({ titleKey, updatedKey, sectionKeys, ns }: P
 
   return (
     <div className="legal-page">
-      <div className="legal-bg-grid" aria-hidden />
-      <TopToolbar />
-      <LandingNav />
-
-      <header className="legal-hero">
-        <ParticleBackground />
-        <ScrollReveal className="legal-hero-inner">
-          <Link to="/" className="legal-back"><ChevronLeft size={16} /> {t('auth.backHome')}</Link>
-          <h1>{t(titleKey)}</h1>
-          <p className="text-muted">{t(updatedKey)}</p>
-        </ScrollReveal>
+      <header className="framer-public-nav">
+        <FramerBrand />
+        <TopToolbar />
       </header>
 
-      <article className="legal-content glass">
-        {sectionKeys.map((key, i) => (
-          <ScrollReveal key={key} delay={i * 0.04} className="legal-section">
+      <header className="legal-hero">
+        <Link to="/" className="legal-back"><ChevronLeft size={16} /> {t('auth.backHome')}</Link>
+        <h1>{t(titleKey)}</h1>
+        <p className="text-muted">{t(updatedKey)}</p>
+      </header>
+
+      <article className="legal-content">
+        {sectionKeys.map(key => (
+          <section key={key} className="legal-section">
             <h2>{t(`legal.${ns}.sections.${key}.title`)}</h2>
             <p>{t(`legal.${ns}.sections.${key}.body`)}</p>
-          </ScrollReveal>
+          </section>
         ))}
-        <p className="legal-footer-note">{t('landing.footer.riskDisclaimer')}</p>
+        <p className="legal-footer-note">{t('framer.footer.risk')}</p>
       </article>
 
-      <LandingFooter />
+      <footer className="framer-legal-footer">
+        <FramerBrand />
+        <div className="framer-legal-links">
+          <Link to="/privacy">{t('saas.footer.privacy')}</Link>
+          <Link to="/terms">{t('saas.footer.terms')}</Link>
+          <Link to="/help">{t('nav.help')}</Link>
+        </div>
+        <p>{t('framer.footer.rights')}</p>
+      </footer>
     </div>
   )
 }

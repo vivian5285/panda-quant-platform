@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { useAuth } from '../store/auth'
 import { useI18n } from '../i18n'
-import TopToolbar from '../components/TopToolbar'
+import AuthShell from '../components/AuthShell'
 import GlassCard from '../components/GlassCard'
 
 function parseHashParams(): URLSearchParams {
@@ -39,20 +39,17 @@ export default function OAuthCallback() {
   }, [params, setAuth, navigate, t])
 
   return (
-    <div className="auth-page">
-      <TopToolbar />
-      <div className="auth-container">
-        <GlassCard green className="p-8" style={{ textAlign: 'center', maxWidth: 400 }}>
-          {error ? (
-            <>
-              <p className="form-error" style={{ marginBottom: 16 }}>{error}</p>
-              <Link to="/login" className="btn btn-primary">{t('auth.login')}</Link>
-            </>
-          ) : (
-            <p className="text-muted">{t('auth.loggingIn')}</p>
-          )}
-        </GlassCard>
-      </div>
-    </div>
+    <AuthShell sideTitle={t('auth.oauthRedirect')} sideSubtitle={t('brand.tagline')}>
+      <GlassCard className="p-8 auth-glass-card" style={{ textAlign: 'center' }}>
+        {error ? (
+          <>
+            <p className="form-error" style={{ marginBottom: 16 }}>{error}</p>
+            <Link to="/login" className="btn btn-primary">{t('auth.login')}</Link>
+          </>
+        ) : (
+          <p className="text-muted">{t('auth.loggingIn')}</p>
+        )}
+      </GlassCard>
+    </AuthShell>
   )
 }

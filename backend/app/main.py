@@ -147,7 +147,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Panda Quant Platform", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="GEMINI AI · 双子星AI量化", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(LocaleMiddleware)
 app.add_middleware(

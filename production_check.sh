@@ -1,5 +1,5 @@
 #!/bin/bash
-# 熊猫量化 · 生产级全域自检
+# 双子星AI量化 · GEMINI AI · 生产级全域自检
 # PRODUCTION_STRICT=1 时：WARN / production_ready=false 也视为失败（正式上线前跑）
 # 默认 PRODUCTION_STRICT=0：仅 FAIL 硬错误，配置类 WARN 不阻断 deploy
 set -euo pipefail
@@ -21,7 +21,7 @@ ok()   { echo "[OK]   $1"; }
 warn() { echo "[WARN] $1"; }
 
 echo "========================================"
-echo "  熊猫量化 · 生产级全域自检"
+echo "  双子星AI量化 · GEMINI AI · 生产级全域自检"
 echo "  $(date '+%Y-%m-%d %H:%M:%S')"
 echo "  PRODUCTION_STRICT=${PRODUCTION_STRICT}"
 echo "========================================"

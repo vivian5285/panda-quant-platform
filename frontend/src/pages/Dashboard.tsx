@@ -170,7 +170,7 @@ export default function Dashboard() {
       )}
 
       {data?.open_position?.has_position && (
-        <GlassCard green className="p-6" delay={0.38} style={{ marginTop: 24 }}>
+        <GlassCard className="p-6" delay={0.38} style={{ marginTop: 24 }}>
           <h3 className="card-heading">{t('dashboard.currentPosition')}</h3>
           <div className="stat-grid" style={{ marginBottom: 0 }}>
             <div className="stat-tile">

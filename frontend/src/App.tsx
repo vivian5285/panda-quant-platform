@@ -8,7 +8,6 @@ import Trading from './pages/Trading'
 import Strategies from './pages/Strategies'
 import Signals from './pages/Signals'
 import AnalyticsPage from './pages/AnalyticsPage'
-import Billing from './pages/Billing'
 import Help from './pages/Help'
 import Settings from './pages/Settings'
 import Trades from './pages/Trades'
@@ -52,7 +51,7 @@ export default function App() {
         <Route path="/strategies" element={<PrivateRoute><Strategies /></PrivateRoute>} />
         <Route path="/signals" element={<PrivateRoute><Signals /></PrivateRoute>} />
         <Route path="/analytics" element={<PrivateRoute><AnalyticsPage /></PrivateRoute>} />
-        <Route path="/billing" element={<PrivateRoute><Billing /></PrivateRoute>} />
+        <Route path="/billing" element={<Navigate to="/settlements" replace />} />
         <Route path="/trades" element={<PrivateRoute><Trades /></PrivateRoute>} />
         <Route path="/logs" element={<PrivateRoute><Logs /></PrivateRoute>} />
         <Route path="/api" element={<PrivateRoute><ApiManage /></PrivateRoute>} />

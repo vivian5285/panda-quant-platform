@@ -63,7 +63,7 @@ export default function Trading() {
       </GlassCard>
 
       {pos?.has_position && (
-        <GlassCard green className="p-6" style={{ marginBottom: 24 }}>
+        <GlassCard className="p-6" style={{ marginBottom: 24 }}>
           <h3 className="card-heading">{t('dashboard.currentPosition')}</h3>
           <p>{pos.side} · {pos.qty} ETH · ${pos.entry_price?.toFixed(2)} · {fmt(pos.unrealized_pnl)}</p>
         </GlassCard>

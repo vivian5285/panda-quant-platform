@@ -1,5 +1,5 @@
 #!/bin/bash
-# 熊猫量化 · VPS 一键部署
+# 双子星AI量化 · GEMINI AI · VPS 一键部署
 # 流程: 清理旧端口进程 → 拉取 GitHub 最新代码 → 构建启动 → 强制自检 → 账户接管
 set -euo pipefail
 
@@ -16,7 +16,7 @@ HEALTH_WAIT="${HEALTH_WAIT:-120}"
 SKIP_GIT_PULL="${SKIP_GIT_PULL:-0}"
 
 echo "========================================"
-echo "  熊猫量化平台 · VPS 智能部署"
+echo "  双子星AI量化 · GEMINI AI · VPS 部署"
 echo "  $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================"
 
@@ -143,6 +143,11 @@ echo "  网页内测:  http://${PUBLIC_IP}:${FRONT_PORT}"
 echo "  REST API:  http://${PUBLIC_IP}:${API_PORT}/docs"
 echo "  Webhook:   http://${PUBLIC_IP}:${WEBHOOK_PORT}/webhook"
 echo "  健康检查:  http://${PUBLIC_IP}:${API_PORT}/api/health"
+echo ""
+echo "  与同机币安/深币共存 (Nginx :80，见 deploy/nginx-vps.conf.example):"
+echo "  网页:      http://${PUBLIC_IP}/"
+echo "  Webhook:   http://${PUBLIC_IP}/gemini/webhook"
+echo "  .env 改为 FRONTEND_URL/API_PUBLIC_URL=http://${PUBLIC_IP} 后重启 backend"
 echo ""
 echo "  管理员: admin@pandaquant.com"
 echo "  查看日志: docker compose logs -f backend"

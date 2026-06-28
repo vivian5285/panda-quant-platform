@@ -167,7 +167,7 @@ export default function Withdraw() {
         <StatCard label={t('withdraw.totalWithdrawn')} value={`$${(account?.total_withdrawn || 0).toFixed(2)}`} />
       </div>
 
-      {msg && <p className="text-green" style={{ marginBottom: 16 }}>{msg}</p>}
+      {msg && <p className="flash-msg">{msg}</p>}
       {error && <p className="text-red" style={{ marginBottom: 16 }}>{error}</p>}
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
@@ -182,7 +182,7 @@ export default function Withdraw() {
 
       {tab === 'withdraw' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-          <GlassCard green className="p-6">
+          <GlassCard className="p-6">
             <h3 style={{ fontSize: 15, marginBottom: 16 }}>{t('withdraw.applyTitle')}</h3>
             {savedAddrs.length === 0 ? (
               <p className="text-muted" style={{ fontSize: 14 }}>{t('withdraw.bindAddrFirst')}</p>
@@ -246,7 +246,7 @@ export default function Withdraw() {
 
       {tab === 'addressbook' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-          <GlassCard green className="p-6">
+          <GlassCard className="p-6">
             <h3 style={{ fontSize: 15, marginBottom: 16 }}>{t('withdraw.bindTitle')}</h3>
             <form onSubmit={handleBindAddress}>
               <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
@@ -322,9 +322,9 @@ export default function Withdraw() {
       )}
 
       {tab === 'transfer' && (
-        <GlassCard green className="p-6" style={{ maxWidth: 560 }}>
+        <GlassCard className="p-6" style={{ maxWidth: 560 }}>
           <h3 style={{ fontSize: 15, marginBottom: 8 }}>{t('withdraw.transferTitle')}</h3>
-          <p className="text-green" style={{ fontSize: 13, marginBottom: 16 }}>{t('withdraw.transferHint')}</p>
+          <p className="text-muted" style={{ fontSize: 13, marginBottom: 16 }}>{t('withdraw.transferHint')}</p>
           <form onSubmit={handleTransfer}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, marginBottom: 12 }}>
               <input className="input" value={transferRecipient} onChange={e => setTransferRecipient(e.target.value)}

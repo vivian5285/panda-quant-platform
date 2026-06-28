@@ -39,7 +39,7 @@ def push_dingtalk(title: str, body: str) -> None:
         "msgtype": "markdown",
         "markdown": {
             "title": title,
-            "text": f"### {title}\n\n{body}\n\n*熊猫量化 · 管理员通知*",
+            "text": f"### {title}\n\n{body}\n\n*双子星AI量化 · GEMINI AI · 管理员通知*",
         },
     }
     try:

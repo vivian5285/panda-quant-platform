@@ -1,21 +1,27 @@
-/** Cyber blockchain chart palette — green profit, gold accent, red loss */
+/** Framer / Gemini chart palette — blue accent, red loss */
 export const CHART = {
-  green: '#00B050',
-  greenDim: 'rgba(0,176,80,0.25)',
-  greenGlow: 'rgba(0,176,80,0.12)',
-  gold: '#F3BA2F',
-  goldDim: 'rgba(243,186,47,0.35)',
-  red: '#EF4444',
-  redDim: 'rgba(239,68,68,0.15)',
-  neutral: '#1a1f1c',
-  neutralDark: '#0c0c0e',
-  pie: ['#00B050', '#F3BA2F', '#34c759', '#d4a017', '#00c45a', '#f5c842'],
-  axisLine: (dark: boolean) => (dark ? 'rgba(0,176,80,0.2)' : 'rgba(0,176,80,0.15)'),
-  splitLine: (dark: boolean) => (dark ? 'rgba(0,176,80,0.08)' : 'rgba(52,199,89,0.06)'),
-  axisLabel: (dark: boolean) => (dark ? '#6b756d' : '#8a938e'),
-  label: (dark: boolean) => (dark ? '#9ca89f' : '#5c6560'),
-  pieBorder: (dark: boolean) => (dark ? '#111113' : '#fff'),
+  green: '#3b82f6',
+  greenDim: 'rgba(59,130,246,0.2)',
+  greenGlow: 'rgba(59,130,246,0.1)',
+  gold: '#64748b',
+  goldDim: 'rgba(100,116,139,0.25)',
+  red: '#dc2626',
+  redDim: 'rgba(220,38,38,0.12)',
+  neutral: '#0a0a0a',
+  neutralDark: '#fafafa',
+  pie: ['#3b82f6', '#64748b', '#2563eb', '#94a3b8', '#1d4ed8', '#475569'],
+  axisLine: (dark: boolean) => (dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)'),
+  splitLine: (dark: boolean) => (dark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)'),
+  axisLabel: (dark: boolean) => (dark ? '#737373' : '#999999'),
+  label: (dark: boolean) => (dark ? '#a3a3a3' : '#666666'),
+  pieBorder: (dark: boolean) => (dark ? '#141414' : '#ffffff'),
   heatmap: (dark: boolean) => (dark
-    ? ['#EF4444', '#0c0c0e', '#00B050']
-    : ['#EF4444', '#eef5f0', '#00B050']),
+    ? ['#dc2626', '#141414', '#3b82f6']
+    : ['#dc2626', '#f5f5f5', '#3b82f6']),
+} as const
+
+/** P&L semantic colors (industry convention) */
+export const PNL = {
+  up: '#16a34a',
+  down: '#dc2626',
 } as const

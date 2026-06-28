@@ -47,7 +47,7 @@ export default function Settings() {
   return (
     <Layout>
       <PageHeader title={t('nav.settings')} subtitle={t('settings.subtitle')} />
-      {msg && <p className="text-green" style={{ marginBottom: 16 }}>{msg}</p>}
+      {msg && <p className="flash-msg">{msg}</p>}
 
       <GlassCard className="p-6" style={{ marginBottom: 24 }}>
         <h3 className="card-heading">{t('settings.notifications')}</h3>
@@ -80,7 +80,7 @@ export default function Settings() {
 
       <GlassCard className="p-6">
         <h3 className="card-heading">{t('settings.openApi')}</h3>
-        {newKey && <p className="text-green" style={{ wordBreak: 'break-all', marginBottom: 12 }}>{newKey}</p>}
+        {newKey && <p className="link-box" style={{ marginBottom: 12 }}>{newKey}</p>}
         <button type="button" className="btn btn-primary" onClick={createKey}>{t('settings.createKey')}</button>
         <ul style={{ marginTop: 16, listStyle: 'none' }}>
           {apiKeys.map(k => (

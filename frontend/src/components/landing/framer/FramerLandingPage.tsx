@@ -1,11 +1,23 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { Menu, X, ArrowRight } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { motion, useReducedMotion } from 'framer-motion'
 import { useAuth } from '../../../store/auth'
 import { useI18n } from '../../../i18n'
-import DashboardPreview from '../DashboardPreview'
+import FramerBrand from '../../FramerBrand'
+import ScrollReveal from '../../ui/ScrollReveal'
+import FramerHeroBackdrop from './FramerHeroBackdrop'
+import FramerHeroMedia from './FramerHeroMedia'
+import FramerShowcaseMarquee from './FramerShowcaseMarquee'
+import FramerPlatformBento from './FramerPlatformBento'
+import FramerCommunitySection from './FramerCommunitySection'
+import FramerPartnerLogos from './FramerPartnerLogos'
+import FramerCustomerStories from './FramerCustomerStories'
 
-const NAV_IDS = ['product', 'agents', 'platform', 'partners', 'security'] as const
+const NAV_IDS = ['product', 'agents', 'platform', 'community', 'partners', 'security'] as const
+const agentKeys = ['signal', 'risk', 'settle', 'strategy'] as const
+
+const heroEase = [0.22, 1, 0.36, 1] as const
 
 export default function FramerLandingPage() {
   const t = useI18n(s => s.t)
@@ -14,20 +26,35 @@ export default function FramerLandingPage() {
   const token = useAuth(s => s.token)
   const navigate = useNavigate()
   const [menuOpen, setMenuOpen] = useState(false)
+  const [navScrolled, setNavScrolled] = useState(false)
+  const reduceMotion = useReducedMotion()
+
+  useEffect(() => {
+    const onScroll = () => setNavScrolled(window.scrollY > 16)
+    onScroll()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
 
   const scrollTo = (id: string) => {
     setMenuOpen(false)
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' })
   }
 
+  const heroItem = (delay: number) =>
+    reduceMotion
+      ? {}
+      : {
+          initial: { opacity: 0, y: 32 },
+          animate: { opacity: 1, y: 0 },
+          transition: { duration: 0.7, delay, ease: heroEase },
+        }
+
   return (
     <div className="framer-site">
-      <header className="framer-nav">
+      <header className={`framer-nav${navScrolled ? ' framer-nav-scrolled' : ''}`}>
         <div className="framer-nav-inner">
-          <Link to="/" className="framer-logo">
-            <span className="framer-logo-mark">G</span>
-            <span>{t('brand.name')}</span>
-          </Link>
+          <FramerBrand />
           <nav className={`framer-nav-links ${menuOpen ? 'open' : ''}`}>
             {NAV_IDS.map(id => (
               <button key={id} type="button" onClick={() => scrollTo(id)}>{t(`framer.nav.${id}`)}</button>
@@ -54,227 +81,211 @@ export default function FramerLandingPage() {
         </div>
       </header>
 
-      {/* Hero — Framer homepage hero */}
-      <section className="framer-hero">
-        <div className="framer-pill">{t('framer.hero.pill')}</div>
-        <h1>{t('framer.hero.title')}</h1>
-        <p className="framer-hero-sub">{t('framer.hero.subtitle')}</p>
-        <div className="framer-hero-cta">
-          <Link to={token ? '/dashboard' : '/register'} className="framer-btn-primary">
-            {t('framer.hero.ctaPrimary')}
-          </Link>
-          <button type="button" className="framer-btn-secondary" onClick={() => scrollTo('product')}>
-            {t('framer.hero.ctaSecondary')}
-          </button>
-        </div>
+      <div className="framer-hero-zone">
+        <FramerHeroBackdrop />
+        <section className="framer-hero framer-hero-inner">
+          <motion.div className="framer-pill framer-pill-shimmer" {...heroItem(0.05)}>
+            {t('framer.hero.pill')}
+          </motion.div>
+          <motion.h1 {...heroItem(0.12)}>
+            <span className="framer-title-line">{t('framer.hero.titleLead')}</span>
+            <span className="framer-title-accent">{t('framer.hero.titleAccent')}</span>
+          </motion.h1>
+          <motion.p className="framer-hero-sub" {...heroItem(0.2)}>{t('framer.hero.subtitle')}</motion.p>
+          <motion.div className="framer-hero-cta" {...heroItem(0.28)}>
+            <Link to={token ? '/dashboard' : '/register'} className="framer-btn-primary">
+              {t('framer.hero.ctaPrimary')}
+            </Link>
+            <button type="button" className="framer-btn-secondary" onClick={() => scrollTo('product')}>
+              {t('framer.hero.ctaSecondary')}
+            </button>
+          </motion.div>
+          <motion.div {...heroItem(0.38)} className="framer-hero-canvas-wrap">
+            <FramerHeroMedia />
+          </motion.div>
+        </section>
+      </div>
 
-        <div className="framer-canvas-wrap">
-          <div className="framer-canvas-bar">
-            <span /><span /><span />
-            <span style={{ marginLeft: 8 }}>{t('framer.hero.canvasLabel')}</span>
+      <section id="product" className="framer-section framer-section-wide framer-shipped">
+        <ScrollReveal>
+          <div className="framer-section-head">
+            <p className="framer-kicker">{t('framer.shipped.kicker')}</p>
+            <h2>{t('framer.shipped.title')}</h2>
+            <Link to="/register" className="framer-inline-link">{t('framer.shipped.cta')}</Link>
           </div>
-          <div className="framer-canvas-body">
-            <div className="framer-canvas-sidebar">
-              <div className="active">{t('framer.hero.sidebar.dashboard')}</div>
-              <div>{t('framer.hero.sidebar.trading')}</div>
-              <div>{t('framer.hero.sidebar.signals')}</div>
-              <div>{t('framer.hero.sidebar.analytics')}</div>
-              <div>{t('framer.hero.sidebar.settlement')}</div>
-            </div>
-            <div className="framer-canvas-preview">
-              <DashboardPreview slide="dashboard" />
-            </div>
-          </div>
-        </div>
+        </ScrollReveal>
+        <ScrollReveal delay={0.08} y={24}>
+          <FramerShowcaseMarquee />
+        </ScrollReveal>
+        <ScrollReveal delay={0.12}>
+          <p className="framer-kicker framer-customers-kicker">{t('framer.shipped.customers')}</p>
+        </ScrollReveal>
       </section>
 
-      {/* Shipped with — product carousel */}
-      <section id="product" className="framer-section framer-section-wide">
-        <div className="framer-section-head">
-          <p className="framer-kicker">{t('framer.shipped.kicker')}</p>
-          <h2>{t('framer.shipped.title')}</h2>
-        </div>
-        <div className="framer-carousel">
-          {(['dashboard', 'trading', 'signals', 'analytics', 'settlement'] as const).map(k => (
-            <div key={k} className="framer-carousel-card">
-              <div className="fr-mock">{t(`framer.shipped.items.${k}`)}</div>
-              <p>{t(`framer.shipped.items.${k}`)}</p>
-            </div>
-          ))}
-        </div>
-        <p className="framer-kicker" style={{ textAlign: 'center', marginTop: 48 }}>{t('framer.shipped.customers')}</p>
-      </section>
+      <section id="agents" className="framer-section framer-agents-intro">
+        <ScrollReveal>
+          <div className="framer-section-head">
+            <p className="framer-kicker">{t('framer.agents.kicker')}</p>
+            <h2>{t('framer.agents.title')}</h2>
+            <p>{t('framer.agents.subtitle')}</p>
+            <Link to="/register" className="framer-btn-primary framer-agents-cta">{t('framer.agents.cta')}</Link>
+          </div>
+        </ScrollReveal>
 
-      {/* Agents — 3 blocks like Framer */}
-      <section id="agents">
-        <div className="framer-section-head" style={{ padding: '0 24px' }}>
-          <h2>{t('framer.agents.title')}</h2>
-          <p>{t('framer.agents.subtitle')}</p>
-        </div>
-
-        {(['signal', 'risk', 'settle'] as const).map((key, i) => (
-          <div key={key} className={`framer-agent-block ${i % 2 === 1 ? 'reverse' : ''}`}>
-            <div className="framer-agent-copy">
-              <p className="framer-kicker">{t(`framer.agents.items.${key}.kicker`)}</p>
-              <h3>{t(`framer.agents.items.${key}.title`)}</h3>
-              <p>{t(`framer.agents.items.${key}.desc`)}</p>
-              <Link to="/register">{t('framer.agents.learn')} →</Link>
-            </div>
-            <div className="framer-mock-ui">
-              {key === 'signal' && (
-                <div style={{ padding: 16, fontFamily: 'ui-monospace, monospace', fontSize: 12, lineHeight: 1.7 }}>
-                  <div style={{ color: '#666', marginBottom: 8 }}>{t('framer.agents.items.signal.mockTitle')}</div>
-                  <div>{t('framer.agents.items.signal.mockLine1')}</div>
-                  <div style={{ color: '#2e7d32' }}>{t('framer.agents.items.signal.mockLine2')}</div>
-                </div>
-              )}
-              {key === 'risk' && (
-                <table className="framer-table-mock">
-                  <thead>
-                    <tr><th>{t('framer.agents.table.event')}</th><th>{t('framer.agents.table.status')}</th><th>{t('framer.agents.table.latency')}</th></tr>
-                  </thead>
-                  <tbody>
-                    {(['a', 'b', 'c'] as const).map(r => (
-                      <tr key={r}>
-                        <td>{t(`framer.agents.items.risk.rows.${r}.event`)}</td>
-                        <td><span className="framer-badge-live">{t(`framer.agents.items.risk.rows.${r}.status`)}</span></td>
-                        <td>{t(`framer.agents.items.risk.rows.${r}.latency`)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-              {key === 'settle' && (
-                <div style={{ padding: 20 }}>
-                  <div className="framer-metric-row">
-                    <div><strong>58%</strong><span>{t('framer.agents.items.settle.winRate')}</span></div>
-                    <div><strong>&lt;1s</strong><span>{t('framer.agents.items.settle.latency')}</span></div>
-                    <div><strong>7/10d</strong><span>{t('framer.agents.items.settle.cycle')}</span></div>
+        {agentKeys.map((key, i) => (
+          <ScrollReveal key={key} delay={i * 0.06} y={48}>
+            <div className={`framer-agent-block${i % 2 === 1 ? ' reverse' : ''}`}>
+              <div className="framer-agent-copy">
+                <p className="framer-kicker">{t(`framer.agents.items.${key}.kicker`)}</p>
+                <h3>{t(`framer.agents.items.${key}.title`)}</h3>
+                <p>{t(`framer.agents.items.${key}.desc`)}</p>
+                <Link to="/register">{t('framer.agents.learn')} →</Link>
+              </div>
+              <div className="framer-mock-ui framer-mock-hover">
+                {key === 'signal' && (
+                  <div className="framer-mock-terminal">
+                    <div className="framer-mock-terminal-head">{t('framer.agents.items.signal.mockTitle')}</div>
+                    <div>{t('framer.agents.items.signal.mockLine1')}</div>
+                    <div className="framer-mock-success">{t('framer.agents.items.signal.mockLine2')}</div>
                   </div>
-                  <p style={{ marginTop: 16, fontSize: 13, color: '#666' }}>{t('framer.agents.items.settle.note')}</p>
-                </div>
-              )}
+                )}
+                {key === 'risk' && (
+                  <table className="framer-table-mock">
+                    <thead>
+                      <tr>
+                        <th>{t('framer.agents.table.event')}</th>
+                        <th>{t('framer.agents.table.status')}</th>
+                        <th>{t('framer.agents.table.latency')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(['a', 'b', 'c'] as const).map(r => (
+                        <tr key={r}>
+                          <td>{t(`framer.agents.items.risk.rows.${r}.event`)}</td>
+                          <td><span className="framer-badge-live">{t(`framer.agents.items.risk.rows.${r}.status`)}</span></td>
+                          <td>{t(`framer.agents.items.risk.rows.${r}.latency`)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                {key === 'settle' && (
+                  <div className="framer-mock-settle">
+                    <div className="framer-metric-row">
+                      <div><strong>58%</strong><span>{t('framer.agents.items.settle.winRate')}</span></div>
+                      <div><strong>&lt;1s</strong><span>{t('framer.agents.items.settle.latency')}</span></div>
+                      <div><strong>7/10d</strong><span>{t('framer.agents.items.settle.cycle')}</span></div>
+                    </div>
+                    <p>{t('framer.agents.items.settle.note')}</p>
+                  </div>
+                )}
+                {key === 'strategy' && (
+                  <div className="framer-mock-code">
+                    <div className="framer-code-line"><span className="c-dim">#</span> {t('framer.agents.items.strategy.codeComment')}</div>
+                    <div className="framer-code-line"><span className="c-key">regime</span> = <span className="c-str">&quot;trend&quot;</span></div>
+                    <div className="framer-code-line"><span className="c-key">atr_mult</span> = <span className="c-num">2.4</span></div>
+                    <div className="framer-code-line"><span className="c-key">supervisor</span>.<span className="c-fn">deploy</span>(<span className="c-str">&quot;ETHUSDT&quot;</span>)</div>
+                    <div className="framer-code-line framer-mock-success">{t('framer.agents.items.strategy.codeResult')}</div>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
+          </ScrollReveal>
         ))}
       </section>
 
-      {/* Connect — API partnership */}
-      <section className="framer-agent-block">
-        <div className="framer-agent-copy">
-          <p className="framer-kicker">{t('framer.api.kicker')}</p>
-          <h3>{t('framer.api.title')}</h3>
-          <p>{t('framer.api.desc')}</p>
-          <Link to="/register" className="framer-btn-primary" style={{ marginTop: 8 }}>
-            {t('framer.api.cta')} <ArrowRight size={16} />
-          </Link>
-        </div>
-        <div className="framer-mock-ui" style={{ padding: 16, fontFamily: 'ui-monospace, monospace', fontSize: 11, background: '#1a1a1a', color: '#e0e0e0' }}>
-          <div style={{ color: '#888' }}>$ bind-binance-api --futures-only --no-withdraw</div>
-          <div style={{ color: '#7cfc7c' }}>✓ Connection verified</div>
-          <div style={{ color: '#7cfc7c' }}>✓ One-way mode OK · Leverage 15x</div>
-          <div style={{ color: '#7cfc7c' }}>✓ Supervisor loaded · Sentinel 6s</div>
-          <div style={{ marginTop: 12, color: '#888' }}>{t('framer.api.terminalNote')}</div>
-        </div>
+      <ScrollReveal>
+        <section className="framer-agent-block framer-connect-block">
+          <div className="framer-agent-copy">
+            <p className="framer-kicker">{t('framer.api.kicker')}</p>
+            <h3>{t('framer.api.title')}</h3>
+            <p>{t('framer.api.desc')}</p>
+            <Link to="/register" className="framer-btn-primary" style={{ marginTop: 8 }}>
+              {t('framer.api.cta')} <ArrowRight size={16} />
+            </Link>
+          </div>
+          <div className="framer-mock-ui framer-terminal-dark framer-mock-hover">
+            <div className="framer-terminal-line dim">$ bind-binance-api --futures-only --no-withdraw</div>
+            <div className="framer-terminal-line ok">✓ Connection verified</div>
+            <div className="framer-terminal-line ok">✓ One-way mode OK · Leverage 15x</div>
+            <div className="framer-terminal-line ok">✓ Supervisor loaded · Sentinel 6s</div>
+            <div className="framer-terminal-line dim">{t('framer.api.terminalNote')}</div>
+          </div>
+        </section>
+      </ScrollReveal>
+
+      <section id="platform" className="framer-section framer-platform-section">
+        <ScrollReveal>
+          <div className="framer-section-head">
+            <h2>{t('framer.platform.title')}</h2>
+          </div>
+        </ScrollReveal>
+        <FramerPlatformBento />
       </section>
 
-      {/* Platform grid — Not just vibes */}
-      <section id="platform" className="framer-section" style={{ paddingTop: 0 }}>
-        <div className="framer-section-head">
-          <h2>{t('framer.platform.title')}</h2>
-        </div>
-        <div className="framer-platform-grid">
-          <div className="framer-platform-card span2">
-            <h4>{t('framer.platform.performance.title')}</h4>
-            <div className="framer-metric-row">
-              <div><strong>GOOD</strong><span>Core Web Vitals</span></div>
-              <div><strong>&lt;1s</strong><span>{t('framer.platform.performance.lcp')}</span></div>
-              <div><strong>95ms</strong><span>INP</span></div>
-            </div>
-          </div>
-          <div className="framer-platform-card">
-            <h4>{t('framer.platform.security.title')}</h4>
-            <p>{t('framer.platform.security.desc')}</p>
-          </div>
-          <div className="framer-platform-card">
-            <h4>{t('framer.platform.latency.title')}</h4>
-            <p>{t('framer.platform.latency.desc')}</p>
-          </div>
-          <div className="framer-platform-card">
-            <h4>{t('framer.platform.signals.title')}</h4>
-            <p>{t('framer.platform.signals.desc')}</p>
-          </div>
-          <div className="framer-platform-card">
-            <h4>{t('framer.platform.winrate.title')}</h4>
-            <p>{t('framer.platform.winrate.desc')}</p>
-          </div>
-          <div className="framer-platform-card span2">
-            <h4>{t('framer.platform.settlement.title')}</h4>
-            <p>{t('framer.platform.settlement.desc')}</p>
-          </div>
-          <div className="framer-platform-card span4" style={{ textAlign: 'center' }}>
-            <h4>{t('framer.platform.partnership.title')}</h4>
-            <p>{t('framer.platform.partnership.desc')}</p>
-          </div>
-        </div>
-      </section>
+      <FramerCommunitySection />
 
-      {/* Partners & countries */}
-      <section id="partners" className="framer-section">
-        <div className="framer-section-head">
-          <p className="framer-kicker">{t('framer.partners.kicker')}</p>
-          <h2>{t('framer.partners.title')}</h2>
-          <p>{t('framer.partners.subtitle')}</p>
-        </div>
-        <div className="framer-logos-row">
-          {(['binance', 'tradingview', 'redis', 'fastapi'] as const).map(k => (
-            <span key={k}>{t(`framer.partners.logos.${k}`)}</span>
-          ))}
-        </div>
-        <div className="framer-countries">
-          {(['sg', 'hk', 'ae', 'jp', 'uk', 'us', 'de', 'au'] as const).map(c => (
-            <span key={c} className="framer-country-pill">{t(`framer.partners.countries.${c}`)}</span>
-          ))}
-        </div>
-      </section>
-
-      {/* Security */}
-      <section id="security" className="framer-agent-block reverse">
-        <div className="framer-agent-copy">
-          <p className="framer-kicker">{t('framer.security.kicker')}</p>
-          <h3>{t('framer.security.title')}</h3>
-          <p>{t('framer.security.desc')}</p>
-        </div>
-        <div className="framer-mock-ui" style={{ padding: 24 }}>
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-            {(['api', 'dual', 'audit', 'nocustody'] as const).map(k => (
-              <li key={k} style={{ padding: '12px 0', borderBottom: '1px solid rgba(0,0,0,0.08)', fontSize: 14 }}>
-                <strong>{t(`framer.security.points.${k}.title`)}</strong>
-                <p style={{ margin: '4px 0 0', color: '#666', fontSize: 13 }}>{t(`framer.security.points.${k}.desc`)}</p>
-              </li>
+      <section id="partners" className="framer-section framer-trusted">
+        <ScrollReveal>
+          <div className="framer-section-head">
+            <p className="framer-kicker">{t('framer.partners.kicker')}</p>
+            <h2>{t('framer.partners.title')}</h2>
+            <p>{t('framer.partners.subtitle')}</p>
+            <Link to="/help" className="framer-inline-link">{t('framer.partners.cta')}</Link>
+          </div>
+        </ScrollReveal>
+        <ScrollReveal delay={0.1} y={28}>
+          <FramerPartnerLogos />
+        </ScrollReveal>
+        <ScrollReveal delay={0.16}>
+          <div className="framer-countries">
+            {(['sg', 'hk', 'ae', 'jp', 'uk', 'us', 'de', 'au'] as const).map(c => (
+              <span key={c} className="framer-country-pill">{t(`framer.partners.countries.${c}`)}</span>
             ))}
-          </ul>
-        </div>
+          </div>
+        </ScrollReveal>
+        <FramerCustomerStories />
       </section>
 
-      {/* Final CTA */}
-      <section className="framer-cta-final">
-        <h2>{t('framer.final.title')}</h2>
-        <Link to={token ? '/dashboard' : '/register'} className="framer-btn-primary">
-          {t('framer.final.cta')}
-        </Link>
-      </section>
+      <ScrollReveal y={48}>
+        <section id="security" className="framer-agent-block reverse framer-security-block">
+          <div className="framer-agent-copy">
+            <p className="framer-kicker">{t('framer.security.kicker')}</p>
+            <h3>{t('framer.security.title')}</h3>
+            <p>{t('framer.security.desc')}</p>
+          </div>
+          <div className="framer-mock-ui framer-security-list framer-mock-hover">
+            <ul>
+              {(['api', 'dual', 'audit', 'nocustody'] as const).map(k => (
+                <li key={k}>
+                  <strong>{t(`framer.security.points.${k}.title`)}</strong>
+                  <p>{t(`framer.security.points.${k}.desc`)}</p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+      </ScrollReveal>
 
-      {/* Footer — Framer-style */}
+      <ScrollReveal blur={4}>
+        <section className="framer-cta-final">
+          <p className="framer-kicker">{t('framer.final.kicker')}</p>
+          <h2>{t('framer.final.title')}</h2>
+          <p className="framer-cta-final-sub">{t('framer.final.subtitle')}</p>
+          <Link to={token ? '/dashboard' : '/register'} className="framer-btn-primary framer-btn-glow">
+            {t('framer.final.cta')}
+          </Link>
+        </section>
+      </ScrollReveal>
+
       <footer className="framer-footer">
         <div className="framer-footer-inner">
           <div className="framer-footer-grid">
             <div>
               <div className="framer-logo" style={{ marginBottom: 12 }}>
-                <span className="framer-logo-mark">G</span>
-                <span>{t('brand.name')}</span>
+                <FramerBrand to={undefined} />
               </div>
-              <p style={{ fontSize: 13, color: '#666', maxWidth: 280 }}>{t('framer.footer.tagline')}</p>
+              <p className="framer-footer-tagline">{t('framer.footer.tagline')}</p>
             </div>
             <div>
               <h5>{t('framer.footer.product')}</h5>
@@ -284,6 +295,7 @@ export default function FramerLandingPage() {
             </div>
             <div>
               <h5>{t('framer.footer.company')}</h5>
+              <a href="#community" onClick={e => { e.preventDefault(); scrollTo('community') }}>{t('framer.nav.community')}</a>
               <a href="#partners" onClick={e => { e.preventDefault(); scrollTo('partners') }}>{t('framer.nav.partners')}</a>
               <a href="#security" onClick={e => { e.preventDefault(); scrollTo('security') }}>{t('framer.nav.security')}</a>
             </div>

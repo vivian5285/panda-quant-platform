@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import './styles/global.css'
+import './styles/framer-landing.css'
 import { initI18n } from './i18n'
 import { initTheme } from './store/theme'
 

@@ -1,6 +1,7 @@
 import { NavLink, Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../store/auth'
 import { useI18n } from '../i18n'
+import GeminiLogo from './GeminiLogo'
 import NotificationDropdown from './NotificationDropdown'
 import TopToolbar from './TopToolbar'
 import AppSearchNav, { SearchNavItem } from './AppSearchNav'
@@ -40,7 +41,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       { to: '/strategies', label: t('nav.strategies'), keywords: 'strategy webhook' },
       { to: '/signals', label: t('nav.signals'), keywords: 'tradingview signal' },
       { to: '/analytics', label: t('nav.analytics'), keywords: 'sharpe analytics' },
-      { to: '/billing', label: t('nav.billing'), keywords: 'billing plan' },
     ]
     const seen = new Set(core.map(c => c.to))
     return [...core, ...extra.filter(e => !seen.has(e.to))]
@@ -53,12 +53,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   const sidebar = (
     <aside className="app-sidebar">
-      <Link to="/" className="sidebar-brand" onClick={() => setMobileOpen(false)}>
-        <span className="sidebar-brand-icon">🐼</span>
-        <div>
-          <div className="sidebar-brand-name">{t('brand.name')}</div>
-          <div className="sidebar-brand-tag">{t('brand.tagline')}</div>
-        </div>
+      <Link to="/" className="sidebar-brand framer-logo" onClick={() => setMobileOpen(false)}>
+        <GeminiLogo size="md" />
+        <span className="framer-logo-text">
+          <strong>{t('brand.name')}</strong>
+          <small>{t('brand.tagline')}</small>
+        </span>
       </Link>
 
       <nav key={locale} className="sidebar-nav">
