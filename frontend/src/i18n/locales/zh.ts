@@ -1,5 +1,5 @@
 export default {
-  brand: { name: '熊猫AI量化', tagline: 'Panda AI Quant' },
+  brand: { name: '双子座AI量化', tagline: 'GEMINI AI · 交易所 API 合作' },
   nav: {
     dashboard: '仪表盘', trading: '交易', strategies: '策略', signals: '信号', analytics: '分析',
     trades: '交易记录', logs: '操作日志', referrals: '推广中心', billing: '套餐',
@@ -75,7 +75,7 @@ export default {
     rewardBalance: '奖励余额', pendingRewards: '待结算', totalEarnings: '累计推广收益',
     withdrawLink: '提现 / 转账', user: '用户', totalPnl: '累计盈亏', myReward: '我的奖励',
     inviteEmpty: '邀请好友加入，开始赚取分润', l2Empty: '暂无二级下级', defaultName: '推广达人',
-    shareTitle: '熊猫AI量化 · Panda AI Quant', shareText: 'AI 智能量化托管，邀请你一起加入！',
+    shareTitle: 'Gemini AI Quant · 双子座AI量化', shareText: 'AI 智能量化托管，邀请你一起加入！',
     posterTagline: 'AI 智能量化托管 · 安全透明 · 稳定收益',
     treeTitle: '推广关系树', treeSubtitle: '可视化您的一级、二级下级网络',
   },
@@ -365,9 +365,100 @@ export default {
       button: '立即注册',
     },
     footer: {
-      tagline: 'Panda AI Quant · 专注加密货币智能量化托管',
-      rights: '© 2026 熊猫AI量化 · Panda AI Quant. All rights reserved.',
+      tagline: '双子座AI量化 · 专注加密货币智能量化托管',
+      rights: '© 2026 双子座AI量化 · GEMINI AI. All rights reserved.',
       riskDisclaimer: '风险提示：加密货币交易具有高风险，过往业绩不代表未来收益。本平台不托管用户资金，不构成投资建议。请谨慎评估自身风险承受能力。',
+    },
+  },
+  framer: {
+    nav: {
+      product: '产品', agents: 'AI 智能体', platform: '平台', partners: '合作伙伴', security: '安全',
+      signup: '免费注册', console: '进入控制台',
+    },
+    hero: {
+      pill: 'Gemini AI 3.0 · 最新发布',
+      title: '双子座AI量化 — 为顶尖交易者打造的专业平台',
+      subtitle: '交易所 API 合作模式，无订阅月费。TradingView 信号、毫秒级执行、机构级安全。资金始终留在您的币安账户。',
+      ctaPrimary: '免费开始', ctaSecondary: '了解平台',
+      canvasLabel: '控制台 · 仪表盘 · 实时',
+      sidebar: { dashboard: '仪表盘', trading: '交易', signals: '信号', analytics: '分析', settlement: '结算' },
+    },
+    shipped: {
+      kicker: 'GEMINI 产品矩阵',
+      title: '看看 Gemini 能做什么',
+      customers: '认识我们的交易者',
+      items: { dashboard: '仪表盘总览', trading: '实时交易', signals: '信号引擎', analytics: '深度分析', settlement: '智能结算' },
+    },
+    agents: {
+      title: '与您并肩工作的 AI 智能体，而非取代您',
+      subtitle: 'AI 监管员 24/7 监控信号、风控与结算 — 您通过交易所 API 保持完全控制权。',
+      learn: '从智能体开始',
+      table: { event: '事件', status: '状态', latency: '延迟' },
+      items: {
+        signal: {
+          kicker: '信号智能体', title: '用智能体执行交易',
+          desc: '专业信号智能体将 TradingView Webhook 毫秒级路由至每个活跃 Supervisor — 全程可见、可追溯、由您掌控。',
+          mockTitle: 'Webhook · LONG ETHUSDT',
+          mockLine1: '分析档位 · ATR 校验通过',
+          mockLine2: '✓ 已广播至 12 个 Supervisor · 18ms',
+        },
+        risk: {
+          kicker: '风控智能体', title: '用智能体守护风险',
+          desc: '重启后自动重建 TP/SL 防线，检测人工加减仓，方向背离时强制对齐 — 全程写入账户日志。',
+          rows: {
+            a: { event: '雷达哨兵', status: '运行中', latency: '6s' },
+            b: { event: '方向校验', status: '运行中', latency: '12ms' },
+            c: { event: '强制对齐', status: '运行中', latency: '890ms' },
+          },
+        },
+        settle: {
+          kicker: '结算智能体', title: '用智能体管理结算',
+          desc: '透明 7/10 天盈利分成 — 无月费订阅，纯 API 合作模式。',
+          winRate: '策略胜率', latency: '信号延迟', cycle: '结算周期',
+          note: '绩效因策略与市场环境而异，过往业绩不代表未来收益。',
+        },
+      },
+    },
+    api: {
+      kicker: 'API 合作',
+      title: '连接交易所 API — 无需订阅',
+      desc: '绑定币安 USDT-M 合约，仅需交易权限、关闭提现。平台不托管资金，仅在盈利周期按约定分成 — 零月费。',
+      cta: '通过 API 合作', terminalNote: '双子座AI量化 · Supervisor 已就绪',
+    },
+    platform: {
+      title: '不只是界面，而是完整平台',
+      performance: { title: '极致性能', lcp: '信号分发' },
+      security: { title: '机构级安全', desc: 'API 仅交易权限、禁止提现，敏感操作双重验证。' },
+      latency: { title: '极速执行', desc: '全球 Webhook 亚秒级路由至所有活跃 Supervisor。' },
+      signals: { title: '准确及时', desc: 'TradingView 原生信号，每笔下单前校验档位与 ATR。' },
+      winrate: { title: '策略胜率', desc: '多档位组合适配趋势与震荡，交易日志完全透明。' },
+      settlement: { title: '智能结算', desc: '7/10 天 USDT 盈利分成 — 无订阅套餐。' },
+      partnership: { title: '100% API 合作模式', desc: '无 SaaS 订阅。连接交易所，盈利周期分成 — 这是我们的全部商业模式。' },
+    },
+    partners: {
+      kicker: '全球布局',
+      title: '深受量化团队信赖',
+      subtitle: '覆盖主流加密市场的基础设施与交易者网络。',
+      logos: { binance: 'Binance', tradingview: 'TradingView', redis: 'Redis', fastapi: 'FastAPI' },
+      countries: { sg: '🇸🇬 新加坡', hk: '🇭🇰 香港', ae: '🇦🇪 阿联酋', jp: '🇯🇵 日本', uk: '🇬🇧 英国', us: '🇺🇸 美国', de: '🇩🇪 德国', au: '🇦🇺 澳大利亚' },
+    },
+    security: {
+      kicker: '安全至上',
+      title: '您的资金，始终在交易所',
+      desc: '为 API 合作而生的机构级安全 — 非托管模式。',
+      points: {
+        api: { title: 'API 最小权限', desc: '仅合约交易，必须关闭提现。' },
+        dual: { title: '双重验证', desc: '改密、提现密码、地址簿需邮箱+短信。' },
+        audit: { title: '全链路审计', desc: '交易、日志、结算凭证完整留存。' },
+        nocustody: { title: '零托管', desc: '资产从不离开您的币安账户。' },
+      },
+    },
+    final: { title: '双子座AI量化 — 为顶尖交易者打造', cta: '免费开始' },
+    footer: {
+      tagline: 'GEMINI AI · 全球交易所 API 合作量化托管',
+      product: '产品', company: '公司', legal: '法律', connect: '联系',
+      rights: '© 2026 双子座AI量化 · GEMINI AI. 保留所有权利。',
+      risk: '加密货币衍生品具有高风险，不构成投资建议。',
     },
   },
 } as const

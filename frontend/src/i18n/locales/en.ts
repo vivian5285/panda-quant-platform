@@ -1,5 +1,5 @@
 export default {
-  brand: { name: 'Panda AI Quant', tagline: 'AI Quant Trading Platform' },
+  brand: { name: 'Gemini AI Quant', tagline: 'GEMINI AI · Exchange API Partnership' },
   nav: {
     dashboard: 'Dashboard', trading: 'Trading', strategies: 'Strategies', signals: 'Signals', analytics: 'Analytics',
     trades: 'Trades', logs: 'Logs', referrals: 'Referrals', billing: 'Billing',
@@ -75,7 +75,7 @@ export default {
     rewardBalance: 'Reward Balance', pendingRewards: 'Pending', totalEarnings: 'Total Referral Earnings',
     withdrawLink: 'Withdraw / Transfer', user: 'User', totalPnl: 'Total P&L', myReward: 'My Reward',
     inviteEmpty: 'Invite friends to start earning commissions', l2Empty: 'No L2 referrals yet', defaultName: 'Referrer',
-    shareTitle: 'Panda AI Quant', shareText: 'Join me on AI-powered quant trading!',
+    shareTitle: 'Gemini AI Quant', shareText: 'Join me on AI-powered quant trading!',
     posterTagline: 'AI Quant Hosting · Transparent · Stable Returns',
     treeTitle: 'Referral Tree', treeSubtitle: 'Visualize your L1 and L2 referral network',
   },
@@ -365,9 +365,100 @@ export default {
       button: 'Sign Up Now',
     },
     footer: {
-      tagline: 'Panda AI Quant · Crypto-native AI quant hosting',
-      rights: '© 2026 Panda AI Quant. All rights reserved.',
+      tagline: 'Gemini AI Quant · Crypto-native AI quant hosting',
+      rights: '© 2026 Gemini AI Quant. All rights reserved.',
       riskDisclaimer: 'Risk disclaimer: Crypto trading involves substantial risk. Past performance does not guarantee future results. We do not custody funds. Not investment advice.',
+    },
+  },
+  framer: {
+    nav: {
+      product: 'Product', agents: 'AI Agents', platform: 'Platform', partners: 'Partners', security: 'Security',
+      signup: 'Sign up', console: 'Open Console',
+    },
+    hero: {
+      pill: 'Gemini AI 3.0 · Everything we shipped',
+      title: 'Gemini AI is the quant platform for standout traders',
+      subtitle: 'Exchange API partnership — no subscriptions. TradingView signals, millisecond execution, institutional security. Your funds stay on Binance.',
+      ctaPrimary: 'Get started for free', ctaSecondary: 'See the platform',
+      canvasLabel: 'Console · Dashboard · Live',
+      sidebar: { dashboard: 'Dashboard', trading: 'Trading', signals: 'Signals', analytics: 'Analytics', settlement: 'Settlement' },
+    },
+    shipped: {
+      kicker: 'SHIPPED WITH GEMINI',
+      title: 'See Gemini in action',
+      customers: 'Meet our traders',
+      items: { dashboard: 'Dashboard Overview', trading: 'Live Trading', signals: 'Signal Engine', analytics: 'Deep Analytics', settlement: 'Smart Settlement' },
+    },
+    agents: {
+      title: 'Agents that work alongside you, not instead of you',
+      subtitle: 'AI supervisors monitor signals, risk, and settlement 24/7 — you keep full control via your exchange API.',
+      learn: 'Start with agents',
+      table: { event: 'Event', status: 'Status', latency: 'Latency' },
+      items: {
+        signal: {
+          kicker: 'SIGNAL AGENT', title: 'Execute with an agent',
+          desc: 'A professional signal agent routes TradingView webhooks to every active supervisor with sub-second dispatch — visible, traceable, under your control.',
+          mockTitle: 'Webhook · LONG ETHUSDT',
+          mockLine1: 'Analyzing regime · ATR validated',
+          mockLine2: '✓ Dispatched to 12 supervisors · 18ms',
+        },
+        risk: {
+          kicker: 'RISK AGENT', title: 'Protect with an agent',
+          desc: 'The risk agent rebuilds TP/SL defenses on restart, detects manual adjustments, and force-aligns direction mismatch — every event logged.',
+          rows: {
+            a: { event: 'Sentinel loop', status: 'Live', latency: '6s' },
+            b: { event: 'Direction check', status: 'Live', latency: '12ms' },
+            c: { event: 'Force align', status: 'Live', latency: '890ms' },
+          },
+        },
+        settle: {
+          kicker: 'SETTLEMENT AGENT', title: 'Settle with an agent',
+          desc: 'Transparent 7/10-day profit-share cycles — no monthly subscription. API partnership only.',
+          winRate: 'Win rate', latency: 'Signal latency', cycle: 'Settlement cycle',
+          note: 'Performance metrics vary by strategy and market conditions. Past results do not guarantee future returns.',
+        },
+      },
+    },
+    api: {
+      kicker: 'API PARTNERSHIP',
+      title: 'Connect your exchange API — no subscription',
+      desc: 'Bind Binance USDT-M with trade-only permissions. We never custody funds. Profit-share on winning cycles only — zero monthly fees.',
+      cta: 'Partner via API', terminalNote: 'Gemini AI Quant · Supervisor ready',
+    },
+    platform: {
+      title: 'Not just vibes, a full platform',
+      performance: { title: 'Performance', lcp: 'Signal dispatch' },
+      security: { title: 'Security', desc: 'Trade-only API keys, withdraw disabled, dual-factor for sensitive actions.' },
+      latency: { title: 'Ultra-low latency', desc: 'Sub-second webhook routing to all active supervisors worldwide.' },
+      signals: { title: 'Timely & accurate signals', desc: 'TradingView-native webhooks with regime validation before every order.' },
+      winrate: { title: 'Strategy win rate', desc: 'Multi-regime stacks optimized for trend and range — transparent trade logs.' },
+      settlement: { title: 'Smart settlement', desc: '7/10-day cycles with USDT profit-share — no subscription tiers.' },
+      partnership: { title: '100% API partnership model', desc: 'No SaaS subscription. Connect your exchange, share profits on winning cycles — that is the entire commercial model.' },
+    },
+    partners: {
+      kicker: 'GLOBAL REACH',
+      title: 'Trusted by teams shipping quant at scale',
+      subtitle: 'Integrated infrastructure and traders across major crypto markets.',
+      logos: { binance: 'Binance', tradingview: 'TradingView', redis: 'Redis', fastapi: 'FastAPI' },
+      countries: { sg: '🇸🇬 Singapore', hk: '🇭🇰 Hong Kong', ae: '🇦🇪 UAE', jp: '🇯🇵 Japan', uk: '🇬🇧 UK', us: '🇺🇸 USA', de: '🇩🇪 Germany', au: '🇦🇺 Australia' },
+    },
+    security: {
+      kicker: 'SECURITY FIRST',
+      title: 'Your funds, your exchange',
+      desc: 'Institutional-grade security built for API partnership — not custody.',
+      points: {
+        api: { title: 'Least-privilege API', desc: 'Futures trading only; withdraw must be disabled.' },
+        dual: { title: 'Dual verification', desc: 'Email + SMS for password, withdraw PIN, and address book.' },
+        audit: { title: 'Full audit trail', desc: 'Every trade, log, and settlement proof retained.' },
+        nocustody: { title: 'Zero custody', desc: 'Assets never leave your Binance account.' },
+      },
+    },
+    final: { title: 'Gemini AI is the quant platform for standout traders', cta: 'Get started for free' },
+    footer: {
+      tagline: 'GEMINI AI · Global quant hosting via exchange API partnership',
+      product: 'Product', company: 'Company', legal: 'Legal', connect: 'Connect',
+      rights: '© 2026 Gemini AI Quant. All rights reserved.',
+      risk: 'Crypto derivatives involve substantial risk. Not investment advice.',
     },
   },
 } as const

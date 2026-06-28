@@ -54,11 +54,11 @@ export async function generateInvitePoster(data: PosterData): Promise<string> {
 
   ctx.fillStyle = '#FFFFFF'
   ctx.font = 'bold 42px Inter, sans-serif'
-  ctx.fillText(data.brandName || '熊猫AI量化', W / 2, 190)
+  ctx.fillText(data.brandName || '双子座AI量化', W / 2, 190)
 
   ctx.fillStyle = '#00E676'
   ctx.font = '22px Inter, sans-serif'
-  ctx.fillText(data.brandTagline || 'Panda AI Quant', W / 2, 228)
+  ctx.fillText(data.brandTagline || 'GEMINI AI Quant', W / 2, 228)
 
   ctx.fillStyle = 'rgba(255,255,255,0.65)'
   ctx.font = '24px Inter, sans-serif'
