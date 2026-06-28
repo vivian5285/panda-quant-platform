@@ -14,6 +14,17 @@ from app.database import SessionLocal
 logger = logging.getLogger(__name__)
 
 
+def _user_event_handler(db: Session):
+    """用户账户事件写入 TradeLog；不推送钉钉。"""
+    trade_logger = TradeLogger(db)
+
+    def handler(user_id: int, severity: str, alert_type: str, title: str, message: str, detail: dict | None = None):
+        trade_logger.log_event(user_id, alert_type, f"{title}: {message}", detail)
+        notify_admin(user_id, severity, alert_type, title, message, detail)
+
+    return handler
+
+
 class UserSupervisorPool:
     """Manages per-user PositionSupervisor instances."""
 
@@ -72,6 +83,9 @@ class UserSupervisorPool:
             client = BinanceClient(api_key, api_secret, user.id)
             if not client.test_connection():
                 logger.warning("User %s API connection failed", user.id)
+                TradeLogger(db).log_event(
+                    user.id, "ERROR", "API 连接失败，无法加载 Supervisor", {"uid": user.uid},
+                )
                 notify_admin(
                     user.id, "warning", "API_OFFLINE",
                     "用户 API 不可用",
@@ -81,13 +95,14 @@ class UserSupervisorPool:
                 return None
 
             trade_logger = TradeLogger(db)
+            user_events = _user_event_handler(db)
             supervisor = PositionSupervisor(
                 user_id=user.id,
                 client=client,
                 on_log=trade_logger.log_event,
                 on_trade_open=trade_logger.on_trade_open,
                 on_trade_close=trade_logger.on_trade_close,
-                on_alert=notify_admin,
+                on_alert=user_events,
             )
             open_trade_id = link_open_trade(db, user.id)
             audit = supervisor.recover_on_startup(open_trade_id=open_trade_id)
@@ -100,6 +115,7 @@ class UserSupervisorPool:
             return audit
         except Exception as e:
             logger.error("Failed to add supervisor user=%s: %s", user.id, e)
+            TradeLogger(db).log_event(user.id, "ERROR", f"Supervisor 加载失败: {e}", {"uid": user.uid})
             notify_admin(
                 user.id, "critical", "SUPERVISOR_FAIL",
                 "Supervisor 加载失败",
@@ -161,6 +177,14 @@ class SignalDispatcher:
                 except Exception as e:
                     logger.error(f"Dispatch failed user={uid}: {e}")
                     errors.append({"user_id": uid, "message": str(e)})
+                    err_db = SessionLocal()
+                    try:
+                        TradeLogger(err_db).log_event(
+                            uid, "ERROR", f"信号执行失败: {e}",
+                            {"action": payload.get("action")},
+                        )
+                    finally:
+                        err_db.close()
                     notify_admin(
                         uid, "critical", "DISPATCH_ERROR",
                         "信号执行失败",

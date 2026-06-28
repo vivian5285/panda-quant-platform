@@ -1,20 +1,17 @@
-import json
-from datetime import date, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+
 from app.database import get_db
-from app.models import User, Trade, TradeLog, ApiStatus, PrincipalSnapshot
+from app.models import User, Trade, ApiStatus, PrincipalSnapshot
 from app.schemas import (
     ApiBindRequest, ApiVerifyResponse, UserProfile, DashboardStats,
     TradeOut, TradeLogOut, PrincipalSnapshotOut, UserAnalyticsOut, SignalStatsOut,
 )
-from app.services.user_lookup import display_name
 from app.api.deps import get_current_user
 from app.utils.crypto import encrypt_text, decrypt_text
 from app.services.dispatcher import supervisor_pool
 from app.services.api_validation import validate_binance_api
-from app.services.principal import fetch_live_equity, start_new_profit_cycle
+from app.services.principal import start_new_profit_cycle
 from app.services.analytics import build_user_analytics, build_signal_stats
 from app.i18n import get_locale, t, translate_api_message
 from app.i18n.errors import raise_i18n
@@ -45,25 +42,8 @@ def _verify_response(result: dict) -> ApiVerifyResponse:
 
 @router.get("/profile", response_model=UserProfile)
 def profile(user: User = Depends(get_current_user)):
-    return UserProfile(
-        id=user.id,
-        uid=user.uid,
-        email=user.email,
-        phone=user.phone,
-        nickname=user.nickname,
-        display_name=display_name(user),
-        referral_code=user.referral_code,
-        api_status=user.api_status,
-        role=user.role,
-        is_active=user.is_active,
-        high_water_mark=user.high_water_mark,
-        has_withdraw_password=bool(user.withdraw_password_hash),
-        has_email=bool(user.email),
-        has_phone=bool(user.phone),
-        initial_principal=float(user.initial_principal or 0),
-        initial_principal_at=user.initial_principal_at,
-        created_at=user.created_at,
-    )
+    from app.services.user_account import build_user_profile
+    return build_user_profile(user)
 
 
 @router.post("/bind-api/verify", response_model=ApiVerifyResponse)
@@ -136,54 +116,8 @@ def principal_history(
 
 @router.get("/dashboard", response_model=DashboardStats)
 def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    balance, unrealized, position = 0.0, 0.0, None
-    equity = 0.0
-
-    supervisor = supervisor_pool.get(user.id)
-    if supervisor:
-        summary = supervisor.client.get_futures_account_summary()
-        equity = float(summary.get("total_margin_balance", 0))
-        balance = float(summary.get("available_balance", equity))
-        status = supervisor.position_manager.get_position_status()
-        if status.get("has_position"):
-            unrealized = status.get("unrealized_pnl", 0)
-            position = status
-    elif user.api_key_enc and user.api_status == ApiStatus.ACTIVE.value:
-        try:
-            equity = fetch_live_equity(user)
-            balance = equity
-        except Exception:
-            pass
-
-    initial = float(user.initial_principal or 0)
-    cycle_pnl = round(equity - initial, 2) if initial > 0 else 0.0
-
-    today = date.today()
-    week_start = today - timedelta(days=today.weekday())
-
-    today_pnl = db.query(func.coalesce(func.sum(Trade.realized_pnl), 0)).filter(
-        Trade.user_id == user.id, func.date(Trade.closed_at) == today
-    ).scalar() or 0
-
-    week_pnl = db.query(func.coalesce(func.sum(Trade.realized_pnl), 0)).filter(
-        Trade.user_id == user.id, func.date(Trade.closed_at) >= week_start
-    ).scalar() or 0
-
-    total_pnl = db.query(func.coalesce(func.sum(Trade.realized_pnl), 0)).filter(
-        Trade.user_id == user.id, Trade.status == "closed"
-    ).scalar() or 0
-
-    return DashboardStats(
-        balance=balance,
-        unrealized_pnl=unrealized,
-        today_pnl=float(today_pnl),
-        week_pnl=float(week_pnl),
-        total_pnl=float(total_pnl),
-        initial_principal=initial,
-        cycle_pnl=cycle_pnl,
-        initial_principal_at=user.initial_principal_at,
-        open_position=position,
-    )
+    from app.services.user_account import build_dashboard_stats
+    return build_dashboard_stats(db, user)
 
 
 @router.get("/trades", response_model=list[TradeOut])

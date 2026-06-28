@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import (
-    User, Trade, Settlement, ReferralReward, PaymentStatus, ApiStatus,
+    User, Trade, TradeLog, Settlement, ReferralReward, PaymentStatus, ApiStatus,
     PlatformDepositAddress, WithdrawalRequest, WithdrawalStatus, SUPPORTED_CHAINS,
     AdminAlert,
 )
@@ -10,7 +10,7 @@ from app.schemas import (
     AdminUserOut, AdminOverview, SettlementOut,
     DepositAddressOut, DepositAddressCreate,
     WithdrawalOut, WithdrawalComplete, WithdrawalReject,
-    AdminAlertOut,
+    AdminAlertOut, AdminUserDetailOut, TradeOut, TradeLogOut,
 )
 from app.api.deps import get_admin_user
 from app.services.dispatcher import supervisor_pool
@@ -40,7 +40,10 @@ def overview(admin=Depends(get_admin_user), db: Session = Depends(get_db)):
                 WithdrawalStatus.APPROVED.value,
             ])
         ).count(),
-        unread_alerts=db.query(AdminAlert).filter(AdminAlert.is_read == False).count(),
+        unread_alerts=db.query(AdminAlert).filter(
+            AdminAlert.is_read == False,
+            AdminAlert.user_id.is_(None),
+        ).count(),
     )
 
 
@@ -57,6 +60,66 @@ def toggle_user(user_id: int, admin=Depends(get_admin_user), db: Session = Depen
     user.is_active = not user.is_active
     db.commit()
     return {"id": user.id, "is_active": user.is_active}
+
+
+@router.get("/users/{user_id}", response_model=AdminUserDetailOut)
+def get_user_detail(user_id: int, admin=Depends(get_admin_user), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    from app.services.user_account import build_user_profile, build_dashboard_stats
+
+    trade_count = db.query(Trade).filter(Trade.user_id == user.id).count()
+    log_count = db.query(TradeLog).filter(TradeLog.user_id == user.id).count()
+    return AdminUserDetailOut(
+        profile=build_user_profile(user),
+        dashboard=build_dashboard_stats(db, user),
+        trade_count=trade_count,
+        log_count=log_count,
+        supervisor_active=supervisor_pool.get(user.id) is not None,
+    )
+
+
+@router.get("/users/{user_id}/trades", response_model=list[TradeOut])
+def get_user_trades(
+    user_id: int,
+    limit: int = 50,
+    offset: int = 0,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    return (
+        db.query(Trade)
+        .filter(Trade.user_id == user.id)
+        .order_by(Trade.created_at.desc())
+        .offset(offset)
+        .limit(min(limit, 200))
+        .all()
+    )
+
+
+@router.get("/users/{user_id}/logs", response_model=list[TradeLogOut])
+def get_user_logs(
+    user_id: int,
+    limit: int = 100,
+    offset: int = 0,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    return (
+        db.query(TradeLog)
+        .filter(TradeLog.user_id == user.id)
+        .order_by(TradeLog.created_at.desc())
+        .offset(offset)
+        .limit(min(limit, 500))
+        .all()
+    )
 
 
 @router.get("/settlements", response_model=list[SettlementOut])
@@ -218,14 +281,12 @@ def get_alerts(
     admin=Depends(get_admin_user),
     db: Session = Depends(get_db),
 ):
-    alerts = list_alerts(db, unread_only=unread_only, limit=limit)
-    out = []
-    for a in alerts:
-        user = db.query(User).filter(User.id == a.user_id).first() if a.user_id else None
-        out.append(AdminAlertOut(
+    alerts = list_alerts(db, unread_only=unread_only, limit=limit, system_only=True)
+    return [
+        AdminAlertOut(
             id=a.id,
             user_id=a.user_id,
-            uid=user.uid if user else None,
+            uid=None,
             severity=a.severity,
             alert_type=a.alert_type,
             title=a.title,
@@ -233,8 +294,9 @@ def get_alerts(
             detail_json=a.detail_json,
             is_read=a.is_read,
             created_at=a.created_at,
-        ))
-    return out
+        )
+        for a in alerts
+    ]
 
 
 @router.post("/alerts/{alert_id}/read")
@@ -246,5 +308,5 @@ def read_alert(alert_id: int, admin=Depends(get_admin_user), db: Session = Depen
 
 @router.post("/alerts/read-all")
 def read_all_alerts(admin=Depends(get_admin_user), db: Session = Depends(get_db)):
-    count = mark_all_read(db)
+    count = mark_all_read(db, system_only=True)
     return {"status": "ok", "marked": count}

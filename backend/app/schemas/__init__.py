@@ -122,6 +122,8 @@ class TradeLogOut(BaseModel):
     id: int
     event_type: Optional[str]
     message: Optional[str]
+    detail_json: Optional[str] = None
+    trade_id: Optional[int] = None
     created_at: datetime
 
     class Config:
@@ -400,6 +402,14 @@ class AdminUserOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class AdminUserDetailOut(BaseModel):
+    profile: UserProfile
+    dashboard: DashboardStats
+    trade_count: int = 0
+    log_count: int = 0
+    supervisor_active: bool = False
 
 
 class TransferRecipientPreview(BaseModel):

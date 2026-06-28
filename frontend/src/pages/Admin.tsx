@@ -25,6 +25,26 @@ export default function Admin() {
   const [online, setOnline] = useState<any>(null)
   const [newAddr, setNewAddr] = useState({ chain: 'TRC20', address: '', label: '' })
   const [completeTx, setCompleteTx] = useState<Record<number, string>>({})
+  const [selectedUserId, setSelectedUserId] = useState<number | null>(null)
+  const [userDetail, setUserDetail] = useState<any>(null)
+  const [userTrades, setUserTrades] = useState<any[]>([])
+  const [userLogs, setUserLogs] = useState<any[]>([])
+  const [userDetailTab, setUserDetailTab] = useState<'overview' | 'trades' | 'logs'>('overview')
+
+  const loadUserDetail = (id: number) => {
+    setSelectedUserId(id)
+    setUserDetailTab('overview')
+    adminApi.userDetail(id).then(setUserDetail)
+    adminApi.userTrades(id).then(setUserTrades)
+    adminApi.userLogs(id).then(setUserLogs)
+  }
+
+  const closeUserDetail = () => {
+    setSelectedUserId(null)
+    setUserDetail(null)
+    setUserTrades([])
+    setUserLogs([])
+  }
 
   const load = () => {
     adminApi.overview().then(setOverview)
@@ -108,7 +128,7 @@ export default function Admin() {
         }
       />
 
-      {tab === 'users' && (
+      {tab === 'users' && !selectedUserId && (
         <GlassCard className="p-0 table-wrap">
           <table className="data-table">
             <thead>
@@ -126,7 +146,8 @@ export default function Admin() {
                   <td><span className="badge badge-gray">{u.role}</span></td>
                   <td><span className={`badge ${u.api_status === 'active' ? 'badge-green' : 'badge-gray'}`}>{u.api_status}</span></td>
                   <td>{u.is_active ? '✅' : '❌'}</td>
-                  <td>
+                  <td style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                    <button className="btn btn-primary btn-xs" onClick={() => loadUserDetail(u.id)}>{t('admin.viewUser')}</button>
                     <button className="btn btn-ghost btn-xs" onClick={() => adminApi.toggleUser(u.id).then(load)}>
                       {u.is_active ? t('common.disable') : t('common.enable')}
                     </button>
@@ -136,6 +157,73 @@ export default function Admin() {
             </tbody>
           </table>
         </GlassCard>
+      )}
+
+      {tab === 'users' && selectedUserId && userDetail && (
+        <div>
+          <button className="btn btn-ghost btn-sm" style={{ marginBottom: 16 }} onClick={closeUserDetail}>{t('admin.backToList')}</button>
+          <GlassCard className="p-6" style={{ marginBottom: 16 }}>
+            <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>{t('admin.userDetail')} · {userDetail.profile?.uid}</h3>
+            <div className="stat-grid" style={{ marginBottom: 16 }}>
+              <StatCard label={t('dashboard.balance')} value={`$${userDetail.dashboard?.balance?.toFixed(2) ?? '0'}`} />
+              <StatCard label={t('dashboard.cyclePnl')} value={`$${userDetail.dashboard?.cycle_pnl?.toFixed(2) ?? '0'}`} />
+              <StatCard label={t('admin.tradeCount')} value={String(userDetail.trade_count ?? 0)} />
+              <StatCard label={t('admin.logCount')} value={String(userDetail.log_count ?? 0)} />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, fontSize: 13 }}>
+              <div><span className="text-muted">{t('common.email')}:</span> {userDetail.profile?.email || t('common.none')}</div>
+              <div><span className="text-muted">{t('common.phone')}:</span> {userDetail.profile?.phone || t('common.none')}</div>
+              <div><span className="text-muted">API:</span> {userDetail.profile?.api_status}</div>
+              <div><span className="text-muted">{t('admin.supervisorActive')}:</span> {userDetail.supervisor_active ? '✅' : '—'}</div>
+              <div><span className="text-muted">{t('dashboard.principal')}:</span> ${userDetail.profile?.initial_principal?.toFixed(2) ?? '0'}</div>
+            </div>
+          </GlassCard>
+          <TabBar
+            tabs={[
+              { key: 'overview', label: t('dashboard.title') },
+              { key: 'trades', label: t('admin.userTrades') },
+              { key: 'logs', label: t('admin.userLogs') },
+            ]}
+            active={userDetailTab}
+            onChange={k => setUserDetailTab(k as typeof userDetailTab)}
+          />
+          {userDetailTab === 'overview' && userDetail.dashboard?.open_position && (
+            <GlassCard className="p-4" style={{ marginTop: 16 }}>
+              <p style={{ fontWeight: 600, marginBottom: 8 }}>{t('dashboard.currentPosition')}</p>
+              <pre style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>{JSON.stringify(userDetail.dashboard.open_position, null, 2)}</pre>
+            </GlassCard>
+          )}
+          {userDetailTab === 'trades' && (
+            <GlassCard className="p-0 table-wrap" style={{ marginTop: 16 }}>
+              <table className="data-table">
+                <thead><tr><th>ID</th><th>{t('trades.side')}</th><th>{t('trades.qty')}</th><th>{t('trades.entry')}</th><th>{t('trades.pnl')}</th><th>{t('common.status')}</th></tr></thead>
+                <tbody>
+                  {userTrades.map(tr => (
+                    <tr key={tr.id}>
+                      <td>{tr.id}</td><td>{tr.side}</td><td>{tr.quantity}</td><td>{tr.entry_price}</td>
+                      <td className={tr.realized_pnl >= 0 ? 'text-green' : ''}>{tr.realized_pnl?.toFixed(2)}</td><td>{tr.status}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </GlassCard>
+          )}
+          {userDetailTab === 'logs' && (
+            <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {userLogs.map(log => (
+                <GlassCard key={log.id} className="p-4">
+                  <span className={`badge badge-gray`} style={{ marginRight: 8 }}>{log.event_type}</span>
+                  <span style={{ fontSize: 14 }}>{log.message}</span>
+                  <p className="text-muted" style={{ fontSize: 11, marginTop: 6 }}>{localeDate(log.created_at, locale)}</p>
+                </GlassCard>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'users' && selectedUserId && !userDetail && (
+        <GlassCard className="p-8"><p className="text-muted">{t('common.loading')}</p></GlassCard>
       )}
 
       {tab === 'settlements' && (
@@ -177,6 +265,7 @@ export default function Admin() {
 
       {tab === 'addresses' && (
         <div>
+          <p className="text-muted" style={{ fontSize: 13, marginBottom: 16 }}>{t('admin.addrHint')}</p>
           <GlassCard green className="p-6" style={{ marginBottom: 24, maxWidth: 520 }}>
             <h3 style={{ fontSize: 15, marginBottom: 16, fontWeight: 600 }}>{t('admin.addUsdtAddr')}</h3>
             <form onSubmit={addAddr}>
@@ -214,6 +303,7 @@ export default function Admin() {
 
       {tab === 'alerts' && (
         <div>
+          <p className="text-muted" style={{ fontSize: 13, marginBottom: 12 }}>{t('admin.dingtalkHint')}</p>
           <div style={{ marginBottom: 16 }}>
             <button className="btn btn-ghost btn-sm" onClick={() => adminApi.readAllAlerts().then(() => { setMsg(t('admin.allRead')); load() })}>
               {t('common.markAllRead')}
@@ -222,16 +312,15 @@ export default function Admin() {
           <GlassCard className="p-0 table-wrap">
             <table className="data-table">
               <thead>
-                <tr><th>{t('common.time')}</th><th>{t('admin.cols.uid')}</th><th>{t('admin.cols.level')}</th><th>{t('admin.cols.type')}</th><th>{t('admin.cols.detail')}</th><th>{t('common.action')}</th></tr>
+                <tr><th>{t('common.time')}</th><th>{t('admin.cols.level')}</th><th>{t('admin.cols.type')}</th><th>{t('admin.cols.detail')}</th><th>{t('common.action')}</th></tr>
               </thead>
               <tbody>
                 {alerts.length === 0 && (
-                  <tr><td colSpan={6} className="empty-cell">{t('admin.noAlerts')}</td></tr>
+                  <tr><td colSpan={5} className="empty-cell">{t('admin.noAlerts')}</td></tr>
                 )}
                 {alerts.map(a => (
                   <tr key={a.id} style={{ opacity: a.is_read ? 0.6 : 1 }}>
                     <td style={{ fontSize: 11 }}>{localeDate(a.created_at, locale)}</td>
-                    <td><span className="badge badge-gray">{a.uid || a.user_id}</span></td>
                     <td>
                       <span className={`badge ${a.severity === 'critical' ? 'badge-red' : a.severity === 'warning' ? 'badge-gray' : 'badge-green'}`}>
                         {a.severity}

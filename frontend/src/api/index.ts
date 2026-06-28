@@ -165,6 +165,9 @@ export const walletApi = {
 export const adminApi = {
   overview: () => api.get('/admin/overview').then(r => r.data),
   users: () => api.get('/admin/users').then(r => r.data),
+  userDetail: (id: number) => api.get(`/admin/users/${id}`).then(r => r.data),
+  userTrades: (id: number, limit = 50) => api.get(`/admin/users/${id}/trades`, { params: { limit } }).then(r => r.data),
+  userLogs: (id: number, limit = 100) => api.get(`/admin/users/${id}/logs`, { params: { limit } }).then(r => r.data),
   toggleUser: (id: number) => api.post(`/admin/users/${id}/toggle`).then(r => r.data),
   settlements: () => api.get('/admin/settlements').then(r => r.data),
   runWeekly: () => api.post('/admin/settlements/run-weekly').then(r => r.data),
