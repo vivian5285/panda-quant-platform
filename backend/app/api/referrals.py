@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.database import get_db
@@ -9,6 +10,7 @@ from app.services.referral import build_invite_url, commission_info
 from app.schemas import ReferralSummary, ReferralUserOut, ReferralInviteOut, ReferralCommissionOut, SettlementOut
 from app.api.deps import get_current_user
 from app.config import get_settings
+from app.services.pdf_export import settlement_pdf_bytes
 
 router = APIRouter(tags=["referrals"])
 settings = get_settings()
@@ -104,3 +106,36 @@ def referral_summary(user: User = Depends(get_current_user), db: Session = Depen
 def my_settlements(user=Depends(get_current_user), db: Session = Depends(get_db)):
     from app.models import Settlement
     return db.query(Settlement).filter(Settlement.user_id == user.id).order_by(Settlement.created_at.desc()).all()
+
+
+@router.get("/settlements/{settlement_id}/pdf")
+def settlement_pdf(settlement_id: int, user=Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.models import Settlement
+    s = db.query(Settlement).filter(Settlement.id == settlement_id, Settlement.user_id == user.id).first()
+    if not s:
+        raise HTTPException(404, "Not found")
+    data = {
+        "id": s.id,
+        "period_start": str(s.period_start),
+        "period_end": str(s.period_end),
+        "net_profit": s.net_profit,
+        "platform_fee": s.platform_fee,
+        "user_payable": s.user_payable,
+        "payment_status": s.payment_status,
+    }
+    pdf = settlement_pdf_bytes(data, display_name(user))
+    return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename=settlement-{s.id}.pdf"})
+
+
+@router.get("/tree")
+def referral_tree(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Referral relationship tree for visualization."""
+    l1 = db.query(User).filter(User.referrer_id == user.id).all()
+    nodes = [{"id": user.id, "uid": user.uid, "label": display_name(user), "level": 0, "children": []}]
+    for u in l1:
+        l2 = db.query(User).filter(User.referrer_id == u.id).all()
+        child = {"id": u.id, "uid": u.uid, "label": display_name(u), "level": 1, "children": [
+            {"id": c.id, "uid": c.uid, "label": display_name(c), "level": 2, "children": []} for c in l2
+        ]}
+        nodes[0]["children"].append(child)
+    return {"root": nodes[0], "l1_count": len(l1), "l2_count": sum(len(n["children"]) for n in nodes[0]["children"])}

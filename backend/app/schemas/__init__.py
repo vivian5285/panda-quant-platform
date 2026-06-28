@@ -5,6 +5,7 @@ from typing import Optional
 
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
     role: str
     uid: str
@@ -31,6 +32,11 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     account: str = Field(min_length=3)
     password: str
+
+
+class OAuthProvidersResponse(BaseModel):
+    google: bool = False
+    github: bool = False
 
 
 class NicknameUpdate(BaseModel):
@@ -444,3 +450,49 @@ class AdminAlertOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class AnalyticsDailyPoint(BaseModel):
+    date: str
+    pnl: float
+    cumulative: float
+
+
+class AnalyticsRegimePoint(BaseModel):
+    regime: str
+    pnl: float
+
+
+class UserAnalyticsOut(BaseModel):
+    win_rate: float
+    profit_factor: float
+    max_drawdown_pct: float
+    sharpe: float
+    sortino: float = 0.0
+    calmar: float = 0.0
+    sqn: float = 0.0
+    expectancy: float = 0.0
+    kelly: float = 0.0
+    monte_carlo: dict = {}
+    total_trades: int
+    winning_trades: int
+    losing_trades: int
+    gross_profit: float
+    gross_loss: float
+    daily_series: list[AnalyticsDailyPoint]
+    week_labels: list[str]
+    week_values: list[float]
+    pnl_by_regime: list[AnalyticsRegimePoint]
+
+
+class SignalLogItem(BaseModel):
+    id: int
+    event_type: Optional[str]
+    message: Optional[str]
+    created_at: Optional[str]
+
+
+class SignalStatsOut(BaseModel):
+    total: int
+    success_rate: float
+    recent: list[SignalLogItem]

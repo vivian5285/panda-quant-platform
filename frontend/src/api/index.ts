@@ -64,14 +64,17 @@ export const authApi = {
     api.post('/auth/withdraw-password', { withdraw_password, email_code, phone_code }).then(r => r.data),
   bindEmail: (email: string, email_code: string, phone_code?: string) =>
     api.post('/auth/bind-email', { email, email_code, phone_code }).then(r => r.data),
-  bindPhone: (phone: string, phone_code: string, email_code?: string) =>
+    bindPhone: (phone: string, phone_code: string, email_code?: string) =>
     api.post('/auth/bind-phone', { phone, phone_code, email_code }).then(r => r.data),
+  oauthProviders: () => api.get('/auth/oauth/providers').then(r => r.data),
 }
 
 export const userApi = {
   dashboard: () => api.get('/users/dashboard').then(r => r.data),
   trades: () => api.get('/users/trades').then(r => r.data),
   logs: () => api.get('/users/logs').then(r => r.data),
+  analytics: (days = 90) => api.get('/users/analytics', { params: { days } }).then(r => r.data),
+  signals: (limit = 100) => api.get('/users/signals', { params: { limit } }).then(r => r.data),
   verifyApi: (api_key: string, api_secret: string) =>
     api.post('/users/bind-api/verify', { api_key, api_secret }).then(r => r.data),
   apiStatus: () => api.get('/users/api-status').then(r => r.data),
@@ -81,10 +84,54 @@ export const userApi = {
   profile: () => api.get('/users/profile').then(r => r.data),
 }
 
+export const publicApi = {
+  stats: () => api.get('/public/stats').then(r => r.data),
+}
+
+export const strategyApi = {
+  list: () => api.get('/strategies').then(r => r.data),
+  create: (data: object) => api.post('/strategies', data).then(r => r.data),
+  update: (id: number, data: object) => api.patch(`/strategies/${id}`, data).then(r => r.data),
+  remove: (id: number) => api.delete(`/strategies/${id}`).then(r => r.data),
+  versions: (id: number) => api.get(`/strategies/${id}/versions`).then(r => r.data),
+}
+
+export const notificationApi = {
+  list: (unread_only?: boolean) => api.get('/notifications', { params: { unread_only } }).then(r => r.data),
+  unreadCount: () => api.get('/notifications/unread-count').then(r => r.data),
+  markRead: (id: number) => api.post(`/notifications/${id}/read`).then(r => r.data),
+  markAllRead: () => api.post('/notifications/read-all').then(r => r.data),
+}
+
+export const settingsApi = {
+  get: () => api.get('/settings').then(r => r.data),
+  update: (data: object) => api.patch('/settings', data).then(r => r.data),
+  totpSetup: () => api.post('/settings/totp/setup').then(r => r.data),
+  totpEnable: (code: string) => api.post('/settings/totp/enable', { code }).then(r => r.data),
+  totpDisable: (code: string) => api.post('/settings/totp/disable', { code }).then(r => r.data),
+  apiKeys: () => api.get('/settings/api-keys').then(r => r.data),
+  createApiKey: (name: string) => api.post('/settings/api-keys', { name }).then(r => r.data),
+  revokeApiKey: (id: number) => api.delete(`/settings/api-keys/${id}`).then(r => r.data),
+}
+
+export const billingApi = {
+  plans: () => api.get('/billing/plans').then(r => r.data),
+  subscription: () => api.get('/billing/subscription').then(r => r.data),
+  subscribe: (plan_code: string, payment_method?: string) => api.post('/billing/subscribe', { plan_code, payment_method }).then(r => r.data),
+  payInvoice: (id: number, tx_hash: string) => api.post(`/billing/invoices/${id}/pay`, { tx_hash }).then(r => r.data),
+  invoices: () => api.get('/billing/invoices').then(r => r.data),
+}
+
+export const referralApiExtra = {
+  tree: () => api.get('/referrals/tree').then(r => r.data),
+  settlementPdf: (id: number) => api.get(`/referrals/settlements/${id}/pdf`, { responseType: 'blob' }).then(r => r.data),
+}
+
 export const referralApi = {
   summary: () => api.get('/referrals').then(r => r.data),
   invite: () => api.get('/referrals/invite').then(r => r.data),
   settlements: () => api.get('/settlements').then(r => r.data),
+  tree: () => api.get('/referrals/tree').then(r => r.data),
 }
 
 export const walletApi = {
@@ -140,4 +187,10 @@ export const adminApi = {
   readAlert: (id: number) => api.post(`/admin/alerts/${id}/read`).then(r => r.data),
   readAllAlerts: () => api.post('/admin/alerts/read-all').then(r => r.data),
   startupAudit: () => api.get('/admin/startup-audit').then(r => r.data),
+  systemMonitor: () => api.get('/admin/system/monitor').then(r => r.data),
+  auditLogs: () => api.get('/admin/system/audit-logs').then(r => r.data),
+  loginRecords: () => api.get('/admin/system/login-records').then(r => r.data),
+  riskAlerts: () => api.get('/admin/system/risk-alerts').then(r => r.data),
+  allOrders: () => api.get('/admin/system/orders').then(r => r.data),
+  onlineStats: () => api.get('/admin/system/online').then(r => r.data),
 }

@@ -8,6 +8,7 @@ import { referralApi } from '../api'
 import { useI18n } from '../i18n'
 import { generateInvitePoster, downloadPoster } from '../utils/invitePoster'
 import { Copy, Check, Link2, Image, Download, Share2 } from 'lucide-react'
+import ReferralTree from '../components/ReferralTree'
 
 export default function Referrals() {
   const locale = useI18n(s => s.locale)
@@ -135,6 +136,8 @@ export default function Referrals() {
         </div>
         <p className="text-muted" style={{ fontSize: 12, marginTop: 16 }}>✓ {t('referrals.autoCredit')}</p>
       </GlassCard>
+
+      <ReferralTree />
 
       <div className="stat-grid">
         <StatCard label={t('referrals.l1Count')} value={String(data?.l1_count || 0)} />

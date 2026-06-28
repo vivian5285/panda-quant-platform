@@ -3,6 +3,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import User, UserRole
+from app.models.platform import STAFF_ROLES
 from app.utils.auth import decode_access_token
 from app.i18n.errors import raise_i18n
 
@@ -41,5 +42,11 @@ def get_current_user(
 
 def get_admin_user(user: User = Depends(get_current_user)) -> User:
     if user.role != UserRole.ADMIN.value:
+        raise_i18n(status.HTTP_403_FORBIDDEN, "admin_only")
+    return user
+
+
+def get_staff_user(user: User = Depends(get_current_user)) -> User:
+    if user.role not in STAFF_ROLES:
         raise_i18n(status.HTTP_403_FORBIDDEN, "admin_only")
     return user

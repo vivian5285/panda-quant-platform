@@ -57,6 +57,9 @@ class User(Base):
     initial_principal = Column(Float, default=0.0)
     initial_principal_at = Column(DateTime, nullable=True)
     withdraw_password_hash = Column(String(255), nullable=True)
+    oauth_google_id = Column(String(64), unique=True, index=True, nullable=True)
+    oauth_github_id = Column(String(64), unique=True, index=True, nullable=True)
+    oauth_avatar_url = Column(String(512), nullable=True)
     settlement_cycle_start = Column(Date, nullable=True)
     settlement_target_days = Column(Integer, default=7)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -320,3 +323,10 @@ class AdminAlert(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     user = relationship("User", foreign_keys=[user_id])
+
+
+from app.models.platform import (  # noqa: E402
+    Strategy, StrategyVersion, UserNotification, AuditLog, UserOpenApiKey,
+    UserPreference, LoginRecord, RefreshToken, SubscriptionPlan, UserSubscription,
+    Invoice, RiskAlert, StaffRole, STAFF_ROLES,
+)

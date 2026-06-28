@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     REFERRAL_L2_RATE: float = 0.05
     REDIS_URL: str = "redis://localhost:6379/0"
     FRONTEND_URL: str = "http://localhost:6080"
+    API_PUBLIC_URL: str = "http://localhost:8000"
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GITHUB_CLIENT_ID: str = ""
+    GITHUB_CLIENT_SECRET: str = ""
     WEBHOOK_PORT: int = 6010
     API_PORT: int = 8000
     ALGORITHM: str = "HS256"

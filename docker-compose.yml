@@ -1,6 +1,17 @@
 version: '3.8'
 
 services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
   backend:
     build: ./backend
     ports:
@@ -8,10 +19,15 @@ services:
       - "6010:6010"    # TradingView Webhook（避开 5002/5003/5004）
     env_file:
       - ./backend/.env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
     volumes:
       - ./backend/data:/app/data
       - ./backend/state:/app/state
       - ./backend/logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]

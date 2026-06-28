@@ -6,6 +6,9 @@ import { useAuth } from '../store/auth'
 import { useI18n } from '../i18n'
 import GlassCard from '../components/GlassCard'
 import TopToolbar from '../components/TopToolbar'
+import ParticleBackground from '../components/ui/ParticleBackground'
+import RippleButton from '../components/ui/RippleButton'
+import OAuthSocialButtons from '../components/OAuthSocialButtons'
 
 export default function Login() {
   const locale = useI18n(s => s.locale)
@@ -17,6 +20,7 @@ export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
+  const [remember, setRemember] = useState(true)
   const [countdown, setCountdown] = useState(0)
   const [devCode, setDevCode] = useState('')
   const [error, setError] = useState('')
@@ -79,16 +83,25 @@ export default function Login() {
   }
 
   return (
-    <div className="auth-page">
+    <div className="auth-split-page">
       <TopToolbar />
-      <motion.div key={locale} initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} className="auth-container">
-        <div className="auth-header">
-          <motion.span className="auth-logo" animate={{ y: [0, -6, 0] }} transition={{ repeat: Infinity, duration: 3 }}>🐼</motion.span>
-          <h1 className="auth-title">{t('brand.name')}</h1>
-          <p className="auth-tagline">{t('brand.tagline')}</p>
-        </div>
+      <div className="auth-split-left">
+        <ParticleBackground />
+        <motion.div className="auth-split-brand" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
+          <span className="auth-logo">🐼</span>
+          <h1>{t('saas.hero.title1')}<span className="saas-gradient-text">{t('saas.hero.titleHighlight')}</span></h1>
+          <p>{t('saas.hero.subtitle')}</p>
+          <Link to="/" className="auth-back-link">{t('auth.backHome')}</Link>
+        </motion.div>
+      </div>
 
-        <GlassCard green className="p-8">
+      <motion.div key={locale} className="auth-split-right" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }}>
+        <GlassCard green className="p-8 auth-glass-card">
+          <h2 className="auth-card-title">{t('auth.login')}</h2>
+          <p className="text-muted auth-card-sub">{t('brand.tagline')}</p>
+
+          <OAuthSocialButtons />
+
           <div className="auth-mode-tabs">
             <button type="button" className={`btn ${mode === 'password' ? 'btn-primary' : 'btn-ghost'}`}
               style={{ flex: 1, fontSize: 13 }} onClick={() => setMode('password')}>{t('auth.passwordLogin')}</button>
@@ -106,10 +119,14 @@ export default function Login() {
                 <label className="form-label">{t('common.password')}</label>
                 <input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder={t('auth.passwordPh')} required />
               </div>
+              <label className="auth-remember">
+                <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />
+                {t('auth.rememberMe')}
+              </label>
               {error && <p className="form-error">{error}</p>}
-              <button className="btn btn-primary auth-submit" disabled={loading}>
+              <RippleButton type="submit" className="btn btn-primary auth-submit" disabled={loading}>
                 {loading ? t('auth.loggingIn') : t('auth.login')}
-              </button>
+              </RippleButton>
             </form>
           ) : (
             <form onSubmit={handleCodeLogin}>
@@ -138,9 +155,9 @@ export default function Login() {
               </div>
               {devCode && <p className="text-muted" style={{ fontSize: 12, marginBottom: 12 }}>{t('auth.devCode')}: {devCode}</p>}
               {error && <p className="form-error">{error}</p>}
-              <button className="btn btn-primary auth-submit" disabled={loading}>
+              <RippleButton type="submit" className="btn btn-primary auth-submit" disabled={loading}>
                 {loading ? t('auth.loggingIn') : t('auth.codeLogin')}
-              </button>
+              </RippleButton>
             </form>
           )}
 

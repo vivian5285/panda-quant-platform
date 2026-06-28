@@ -1,6 +1,9 @@
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import RedirectResponse
+from urllib.parse import urlencode
+import secrets
 
 from sqlalchemy.orm import Session
 
@@ -18,7 +21,7 @@ from app.schemas import (
 
     ChangePasswordRequest, WithdrawPasswordRequest,
 
-    BindEmailRequest, BindPhoneRequest,
+    BindEmailRequest, BindPhoneRequest, OAuthProvidersResponse,
 
 )
 
@@ -75,26 +78,36 @@ def _check_auth_rate(account: str) -> None:
 
 
 
-def _token_response(user: User) -> TokenResponse:
+def _require_active(user: User) -> User:
+    if not user.is_active:
+        raise HTTPException(403, "Account disabled")
+    return user
 
+
+def _token_response(user: User, db: Session | None = None, request=None) -> TokenResponse:
     token = create_access_token({"sub": user.id, "role": user.role})
-
+    refresh_raw = None
+    if db is not None:
+        from app.models.platform import RefreshToken, LoginRecord
+        from app.services.totp import create_refresh_token, hash_refresh_token
+        raw, thash, exp = create_refresh_token(user.id)
+        db.add(RefreshToken(user_id=user.id, token_hash=thash, expires_at=exp))
+        ip, ua = None, None
+        if request:
+            ip = request.client.host if request.client else None
+            ua = (request.headers.get("user-agent") or "")[:255]
+        db.add(LoginRecord(user_id=user.id, ip_address=ip, user_agent=ua, success=True))
+        db.commit()
+        refresh_raw = raw
     return TokenResponse(
-
         access_token=token,
-
+        refresh_token=refresh_raw,
         role=user.role,
-
         uid=user.uid,
-
         email=user.email,
-
         phone=user.phone,
-
         nickname=user.nickname,
-
         display_name=display_name(user),
-
     )
 
 
@@ -143,7 +156,7 @@ def _profile(user: User) -> UserProfile:
 
 @router.post("/register", response_model=TokenResponse)
 
-def register(req: RegisterRequest, db: Session = Depends(get_db)):
+def register(req: RegisterRequest, request: Request, db: Session = Depends(get_db)):
 
     email = req.email.lower() if req.email else None
 
@@ -221,7 +234,7 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
 
     db.refresh(user)
 
-    return _token_response(user)
+    return _token_response(user, db, request)
 
 
 
@@ -229,7 +242,7 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
 
 @router.post("/login", response_model=TokenResponse)
 
-def login(req: LoginRequest, db: Session = Depends(get_db)):
+def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
 
     account = normalize_account(req.account)
 
@@ -262,10 +275,9 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
 
 
     if not user or not verify_password(req.password, user.password_hash):
-
         raise HTTPException(401, "账号或密码错误")
-
-    return _token_response(user)
+    _require_active(user)
+    return _token_response(user, db, request)
 
 
 
@@ -357,13 +369,13 @@ def send_email_code(req: EmailSendRequest, db: Session = Depends(get_db)):
 
 @router.post("/sms/login", response_model=TokenResponse)
 
-def login_with_sms(req: SmsLoginRequest, db: Session = Depends(get_db)):
+def login_with_sms(req: SmsLoginRequest, request: Request, db: Session = Depends(get_db)):
 
     try:
 
         user = verify_login_code(db, "phone", req.phone, req.code)
-
-        return _token_response(user)
+        _require_active(user)
+        return _token_response(user, db, request)
 
     except ValueError as e:
 
@@ -375,13 +387,13 @@ def login_with_sms(req: SmsLoginRequest, db: Session = Depends(get_db)):
 
 @router.post("/email/login", response_model=TokenResponse)
 
-def login_with_email(req: EmailLoginRequest, db: Session = Depends(get_db)):
+def login_with_email(req: EmailLoginRequest, request: Request, db: Session = Depends(get_db)):
 
     try:
 
         user = verify_login_code(db, "email", req.email, req.code)
-
-        return _token_response(user)
+        _require_active(user)
+        return _token_response(user, db, request)
 
     except ValueError as e:
 
@@ -565,4 +577,116 @@ def bind_phone(
 
     return _profile(user)
 
+
+def _oauth_login_or_register(db: Session, provider: str, profile: dict) -> User:
+    provider_id = profile.get("provider_id") or ""
+    if not provider_id:
+        raise HTTPException(400, "OAuth profile missing id")
+
+    if provider == "google":
+        user = db.query(User).filter(User.oauth_google_id == provider_id).first()
+    else:
+        user = db.query(User).filter(User.oauth_github_id == provider_id).first()
+
+    if user:
+        if profile.get("avatar"):
+            user.oauth_avatar_url = profile["avatar"]
+            db.commit()
+        return user
+
+    email = (profile.get("email") or "").lower()
+    if email:
+        user = db.query(User).filter(User.email == email).first()
+        if user:
+            if provider == "google":
+                user.oauth_google_id = provider_id
+            else:
+                user.oauth_github_id = provider_id
+            if profile.get("avatar"):
+                user.oauth_avatar_url = profile["avatar"]
+            db.commit()
+            db.refresh(user)
+            return user
+
+    if not email:
+        raise HTTPException(400, "OAuth provider did not return a verified email")
+
+    code = generate_referral_code()
+    while db.query(User).filter(User.referral_code == code).first():
+        code = generate_referral_code()
+
+    name = (profile.get("name") or "").strip()[:32] or None
+    user = User(
+        uid=generate_uid(db),
+        email=email,
+        password_hash=hash_password(secrets.token_urlsafe(32)),
+        referral_code=code,
+        nickname=name,
+        oauth_google_id=provider_id if provider == "google" else None,
+        oauth_github_id=provider_id if provider == "github" else None,
+        oauth_avatar_url=profile.get("avatar"),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.get("/oauth/providers", response_model=OAuthProvidersResponse)
+def oauth_providers():
+    from app.services.oauth import oauth_providers_enabled
+    p = oauth_providers_enabled()
+    return OAuthProvidersResponse(**p)
+
+
+@router.get("/oauth/{provider}/start")
+def oauth_start(provider: str):
+    from app.services.oauth import (
+        oauth_providers_enabled, make_oauth_state,
+        google_authorize_url, github_authorize_url,
+    )
+    enabled = oauth_providers_enabled()
+    if provider not in ("google", "github") or not enabled.get(provider):
+        raise HTTPException(400, "OAuth provider not configured")
+    state = make_oauth_state(provider)
+    url = google_authorize_url(state) if provider == "google" else github_authorize_url(state)
+    return RedirectResponse(url)
+
+
+@router.get("/oauth/{provider}/callback")
+def oauth_callback(
+    provider: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+):
+    from app.services.oauth import (
+        verify_oauth_state, exchange_google_code, exchange_github_code,
+    )
+    frontend = settings.FRONTEND_URL.rstrip("/")
+    if error:
+        return RedirectResponse(f"{frontend}/auth/callback?{urlencode({'error': error})}")
+    if provider not in ("google", "github") or not code or not state:
+        return RedirectResponse(f"{frontend}/auth/callback?{urlencode({'error': 'OAuth failed'})}")
+    if not verify_oauth_state(state, provider):
+        return RedirectResponse(f"{frontend}/auth/callback?{urlencode({'error': 'Invalid OAuth state'})}")
+    try:
+        profile = exchange_google_code(code) if provider == "google" else exchange_github_code(code)
+        user = _oauth_login_or_register(db, provider, profile)
+        _require_active(user)
+        token = _token_response(user, db, request)
+        params = {
+            "access_token": token.access_token,
+            "uid": token.uid,
+            "display_name": token.display_name,
+            "role": token.role,
+        }
+        if token.refresh_token:
+            params["refresh_token"] = token.refresh_token
+        return RedirectResponse(f"{frontend}/auth/callback#{urlencode(params)}")
+    except Exception as e:
+        msg = str(e)[:200]
+        return RedirectResponse(f"{frontend}/auth/callback?{urlencode({'error': msg})}")
 

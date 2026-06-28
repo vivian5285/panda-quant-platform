@@ -18,7 +18,11 @@ export default function Admin() {
   const [withdrawals, setWithdrawals] = useState<any[]>([])
   const [alerts, setAlerts] = useState<any[]>([])
   const [msg, setMsg] = useState('')
-  const [tab, setTab] = useState<'users' | 'settlements' | 'addresses' | 'withdrawals' | 'alerts'>('users')
+  const [tab, setTab] = useState<'users' | 'settlements' | 'addresses' | 'withdrawals' | 'alerts' | 'system'>('users')
+  const [monitor, setMonitor] = useState<any>(null)
+  const [auditLogs, setAuditLogs] = useState<any[]>([])
+  const [orders, setOrders] = useState<any[]>([])
+  const [online, setOnline] = useState<any>(null)
   const [newAddr, setNewAddr] = useState({ chain: 'TRC20', address: '', label: '' })
   const [completeTx, setCompleteTx] = useState<Record<number, string>>({})
 
@@ -29,6 +33,10 @@ export default function Admin() {
     adminApi.depositAddresses().then(setDepositAddrs)
     adminApi.withdrawals().then(setWithdrawals)
     adminApi.alerts().then(setAlerts)
+    adminApi.systemMonitor().then(setMonitor).catch(() => {})
+    adminApi.auditLogs().then(setAuditLogs).catch(() => {})
+    adminApi.allOrders().then(setOrders).catch(() => {})
+    adminApi.onlineStats().then(setOnline).catch(() => {})
   }
 
   useEffect(() => {
@@ -70,6 +78,7 @@ export default function Admin() {
     { key: 'settlements', label: t('admin.tabSettlements') },
     { key: 'addresses', label: t('admin.tabAddresses') },
     { key: 'withdrawals', label: t('admin.tabWithdrawals') },
+    { key: 'system', label: t('admin.tabSystem') },
   ]
 
   const payStatus = (s: string) => t(`admin.payStatus.${s}`) || s
@@ -282,6 +291,27 @@ export default function Admin() {
             </tbody>
           </table>
         </GlassCard>
+      )}
+
+      {tab === 'system' && (
+        <>
+          <div className="stat-grid">
+            <StatCard label={t('admin.onlineUsers')} value={String(online?.recent_logins_15m || 0)} />
+            <StatCard label={t('admin.activeSupervisors')} value={String(monitor?.active_supervisors || 0)} />
+            <StatCard label="Redis" value={monitor?.redis_connected ? 'OK' : '—'} />
+            <StatCard label={t('admin.apiLatency')} value={`${monitor?.api_latency_ms || 0}ms`} />
+          </div>
+          <GlassCard className="p-6" style={{ marginBottom: 24 }}>
+            <h3 className="card-heading">{t('admin.auditLogs')}</h3>
+            <div className="table-wrap"><table className="data-table"><thead><tr><th>{t('common.action')}</th><th>User</th><th>IP</th><th>{t('common.time')}</th></tr></thead>
+              <tbody>{auditLogs.slice(0, 30).map(l => <tr key={l.id}><td>{l.action}</td><td>{l.user_id}</td><td>{l.ip_address}</td><td>{localeDate(l.created_at, locale)}</td></tr>)}</tbody></table></div>
+          </GlassCard>
+          <GlassCard className="p-0 table-wrap">
+            <h3 className="card-heading p-6" style={{ marginBottom: 0 }}>{t('admin.allOrders')}</h3>
+            <table className="data-table"><thead><tr><th>ID</th><th>User</th><th>{t('trades.side')}</th><th>{t('trades.pnl')}</th><th>{t('common.status')}</th></tr></thead>
+              <tbody>{orders.slice(0, 50).map(o => <tr key={o.id}><td>{o.id}</td><td>{o.user_id}</td><td>{o.side}</td><td>{o.realized_pnl}</td><td>{o.status}</td></tr>)}</tbody></table>
+          </GlassCard>
+        </>
       )}
     </Layout>
   )

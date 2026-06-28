@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from app.config import get_settings
 from app.database import engine, Base, SessionLocal
 from app.models import User, UserRole
-from app.api import auth, users, referrals, admin, wallet
+from app.api import auth, users, referrals, admin, wallet, public, strategies, notifications, settings_api, billing, system
 from app.services.dispatcher import supervisor_pool
 from app.services.startup_audit import validate_production_secrets, log_security_warnings
 from app.utils.auth import hash_password, verify_password, generate_referral_code, generate_uid
@@ -33,6 +33,27 @@ def _ensure_sqlite_columns():
                 conn.execute(text("ALTER TABLE users ADD COLUMN initial_principal FLOAT DEFAULT 0"))
             if "initial_principal_at" not in cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN initial_principal_at DATETIME"))
+            if "oauth_google_id" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN oauth_google_id VARCHAR(64)"))
+            if "oauth_github_id" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN oauth_github_id VARCHAR(64)"))
+            if "oauth_avatar_url" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN oauth_avatar_url VARCHAR(512)"))
+
+
+def _seed_subscription_plans(db):
+    from app.models.platform import SubscriptionPlan
+    import json
+    if db.query(SubscriptionPlan).count() > 0:
+        return
+    plans = [
+        ("starter", "Starter", 0, ["7/10 day settlement", "Binance API", "Basic analytics"], 0),
+        ("pro", "Pro", 99, ["Lower fee share", "Advanced analytics", "Priority signals"], 1),
+        ("vip", "VIP", 299, ["Custom strategies", "1-on-1 support", "Dedicated webhook"], 2),
+    ]
+    for code, name, price, feats, order in plans:
+        db.add(SubscriptionPlan(code=code, name=name, price_usd=price, features_json=json.dumps(feats), sort_order=order))
+    db.commit()
 
 
 def init_db():
@@ -72,6 +93,7 @@ def init_db():
             u.uid = generate_uid(db)
         if users_no_uid:
             db.commit()
+        _seed_subscription_plans(db)
         supervisor_pool.load_active_users(db)
     except Exception as e:
         logger.exception("init_db failed: %s", e)
@@ -123,6 +145,13 @@ app.include_router(users.router, prefix="/api")
 app.include_router(referrals.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(wallet.router, prefix="/api")
+app.include_router(public.router, prefix="/api")
+app.include_router(strategies.router, prefix="/api")
+app.include_router(notifications.router, prefix="/api")
+app.include_router(settings_api.router, prefix="/api")
+app.include_router(billing.router, prefix="/api")
+app.include_router(system.router, prefix="/api")
+app.include_router(system.ws_router, prefix="/api")
 
 
 @app.exception_handler(HTTPException)

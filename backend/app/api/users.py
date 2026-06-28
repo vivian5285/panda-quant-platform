@@ -7,7 +7,7 @@ from app.database import get_db
 from app.models import User, Trade, TradeLog, ApiStatus, PrincipalSnapshot
 from app.schemas import (
     ApiBindRequest, ApiVerifyResponse, UserProfile, DashboardStats,
-    TradeOut, TradeLogOut, PrincipalSnapshotOut,
+    TradeOut, TradeLogOut, PrincipalSnapshotOut, UserAnalyticsOut, SignalStatsOut,
 )
 from app.services.user_lookup import display_name
 from app.api.deps import get_current_user
@@ -15,6 +15,7 @@ from app.utils.crypto import encrypt_text, decrypt_text
 from app.services.dispatcher import supervisor_pool
 from app.services.api_validation import validate_binance_api
 from app.services.principal import fetch_live_equity, start_new_profit_cycle
+from app.services.analytics import build_user_analytics, build_signal_stats
 from app.i18n import get_locale, t, translate_api_message
 from app.i18n.errors import raise_i18n
 
@@ -193,3 +194,13 @@ def trades(limit: int = 50, offset: int = 0, user: User = Depends(get_current_us
 @router.get("/logs", response_model=list[TradeLogOut])
 def logs(limit: int = 100, offset: int = 0, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(TradeLog).filter(TradeLog.user_id == user.id).order_by(TradeLog.created_at.desc()).offset(offset).limit(limit).all()
+
+
+@router.get("/analytics", response_model=UserAnalyticsOut)
+def analytics(days: int = 90, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return build_user_analytics(db, user.id, days=min(max(days, 7), 365))
+
+
+@router.get("/signals", response_model=SignalStatsOut)
+def signals(limit: int = 100, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return build_signal_stats(db, user.id, limit=min(max(limit, 10), 200))
