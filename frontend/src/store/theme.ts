@@ -11,7 +11,7 @@ interface ThemeState {
 function applyTheme(theme: Theme) {
   document.documentElement.setAttribute('data-theme', theme)
   const meta = document.querySelector('meta[name="theme-color"]')
-  if (meta) meta.setAttribute('content', theme === 'light' ? '#ffffff' : '#050816')
+  if (meta) meta.setAttribute('content', theme === 'light' ? '#ffffff' : '#000000')
 }
 
 function detectTheme(): Theme {

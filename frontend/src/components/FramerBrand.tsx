@@ -10,11 +10,12 @@ interface Props {
 }
 
 export default function FramerBrand({ to = '/', showTagline = false, className = '', logoSize = 'md' }: Props) {
+  const locale = useI18n(s => s.locale)
   const t = useI18n(s => s.t)
   const inner = (
     <>
       <GeminiLogo size={logoSize} />
-      <span className="framer-logo-text">
+      <span className="framer-logo-text" key={locale}>
         <strong>{t('brand.name')}</strong>
         {showTagline && <small>{t('brand.tagline')}</small>}
       </span>

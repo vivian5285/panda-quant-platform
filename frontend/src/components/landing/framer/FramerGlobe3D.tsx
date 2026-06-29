@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import { useI18n } from '../../../i18n'
+import { useTheme } from '../../../store/theme'
 
 const NODES = [
   { id: 'sf', lng: -122.4, lat: 37.8, region: 'na' },
@@ -56,6 +57,7 @@ function rotX(p: Vec3, a: number): Vec3 {
 
 export default function FramerGlobe3D() {
   const t = useI18n(s => s.t)
+  const theme = useTheme(s => s.theme)
   const reduceMotion = useReducedMotion()
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const rotRef = useRef(0)
@@ -88,6 +90,8 @@ export default function FramerGlobe3D() {
     resize()
     window.addEventListener('resize', resize)
 
+    const isLight = theme === 'light'
+
     const draw = () => {
       if (!running) return
       const w = canvas.getBoundingClientRect().width
@@ -100,18 +104,30 @@ export default function FramerGlobe3D() {
       ctx.clearRect(0, 0, w, h)
 
       const glow = ctx.createRadialGradient(cx, cy, scale * 0.5, cx, cy, scale * 1.15)
-      glow.addColorStop(0, 'rgba(0, 122, 255, 0.12)')
-      glow.addColorStop(0.55, 'rgba(0, 122, 255, 0.04)')
-      glow.addColorStop(1, 'rgba(0, 122, 255, 0)')
+      if (isLight) {
+        glow.addColorStop(0, 'rgba(59, 130, 246, 0.14)')
+        glow.addColorStop(0.55, 'rgba(59, 130, 246, 0.05)')
+        glow.addColorStop(1, 'rgba(59, 130, 246, 0)')
+      } else {
+        glow.addColorStop(0, 'rgba(0, 122, 255, 0.12)')
+        glow.addColorStop(0.55, 'rgba(0, 122, 255, 0.04)')
+        glow.addColorStop(1, 'rgba(0, 122, 255, 0)')
+      }
       ctx.fillStyle = glow
       ctx.beginPath()
       ctx.arc(cx, cy, scale * 1.12, 0, Math.PI * 2)
       ctx.fill()
 
       const sphere = ctx.createRadialGradient(cx - scale * 0.2, cy - scale * 0.25, scale * 0.1, cx, cy, scale)
-      sphere.addColorStop(0, 'rgba(30, 35, 50, 0.95)')
-      sphere.addColorStop(0.7, 'rgba(12, 14, 22, 0.98)')
-      sphere.addColorStop(1, 'rgba(4, 6, 12, 1)')
+      if (isLight) {
+        sphere.addColorStop(0, 'rgba(255, 255, 255, 0.98)')
+        sphere.addColorStop(0.55, 'rgba(226, 232, 240, 0.96)')
+        sphere.addColorStop(1, 'rgba(203, 213, 225, 0.92)')
+      } else {
+        sphere.addColorStop(0, 'rgba(30, 35, 50, 0.95)')
+        sphere.addColorStop(0.7, 'rgba(12, 14, 22, 0.98)')
+        sphere.addColorStop(1, 'rgba(4, 6, 12, 1)')
+      }
       ctx.fillStyle = sphere
       ctx.beginPath()
       ctx.arc(cx, cy, scale, 0, Math.PI * 2)
@@ -121,7 +137,7 @@ export default function FramerGlobe3D() {
       for (let lat = -60; lat <= 60; lat += 30) lines.push({ lat, lng: 0, isLat: true })
       for (let lng = -180; lng < 180; lng += 30) lines.push({ lat: 0, lng, isLat: false })
 
-      ctx.strokeStyle = 'rgba(255,255,255,0.04)'
+      ctx.strokeStyle = isLight ? 'rgba(15, 23, 42, 0.1)' : 'rgba(255,255,255,0.04)'
       ctx.lineWidth = 0.6
       for (const line of lines) {
         ctx.beginPath()
@@ -156,7 +172,9 @@ export default function FramerGlobe3D() {
       for (const p of landPts) {
         if (p.z < 0) continue
         const alpha = 0.08 + (p.z / radius) * 0.22
-        ctx.fillStyle = `rgba(200, 210, 230, ${alpha})`
+        ctx.fillStyle = isLight
+          ? `rgba(59, 130, 246, ${alpha * 0.85})`
+          : `rgba(200, 210, 230, ${alpha})`
         ctx.beginPath()
         ctx.arc(p.sx, p.sy, 1.2 + (p.z / radius) * 0.8, 0, Math.PI * 2)
         ctx.fill()
@@ -186,7 +204,13 @@ export default function FramerGlobe3D() {
           ctx.fill()
         }
 
-        ctx.fillStyle = lit ? '#007aff' : warm ? '#3b82f6' : `rgba(255,255,255,${0.25 + depth * 0.35})`
+        ctx.fillStyle = lit
+          ? '#007aff'
+          : warm
+            ? '#3b82f6'
+            : isLight
+              ? `rgba(15, 23, 42, ${0.22 + depth * 0.28})`
+              : `rgba(255,255,255,${0.25 + depth * 0.35})`
         ctx.beginPath()
         ctx.arc(p.sx, p.sy, lit ? 4.5 + depth : warm ? 3.5 : 2.5, 0, Math.PI * 2)
         ctx.fill()
@@ -200,7 +224,7 @@ export default function FramerGlobe3D() {
         }
       }
 
-      ctx.strokeStyle = 'rgba(0, 122, 255, 0.15)'
+      ctx.strokeStyle = isLight ? 'rgba(59, 130, 246, 0.22)' : 'rgba(0, 122, 255, 0.15)'
       ctx.lineWidth = 1.5
       ctx.beginPath()
       ctx.arc(cx, cy, scale, 0, Math.PI * 2)
@@ -217,7 +241,7 @@ export default function FramerGlobe3D() {
       cancelAnimationFrame(raf)
       window.removeEventListener('resize', resize)
     }
-  }, [active, reduceMotion])
+  }, [active, reduceMotion, theme])
 
   const cur = NODES[active]
 

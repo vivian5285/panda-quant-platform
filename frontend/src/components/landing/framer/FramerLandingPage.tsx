@@ -5,6 +5,7 @@ import { useAuth } from '../../../store/auth'
 import { useI18n } from '../../../i18n'
 import { useTheme } from '../../../store/theme'
 import FramerBrand from '../../FramerBrand'
+import TopToolbar from '../../TopToolbar'
 import ScrollReveal from '../../ui/ScrollReveal'
 import FramerSiteEffects from './FramerSiteEffects'
 import FramerHeroPipeline from './FramerHeroPipeline'
@@ -37,21 +38,13 @@ const SECTION_MAP: Record<string, string> = {
 }
 
 export default function FramerLandingPage() {
-  const t = useI18n(s => s.t)
   const locale = useI18n(s => s.locale)
-  const setLocale = useI18n(s => s.setLocale)
+  const t = useI18n(s => s.t)
+  const { theme } = useTheme()
   const token = useAuth(s => s.token)
   const navigate = useNavigate()
   const [menuOpen, setMenuOpen] = useState(false)
   const [navScrolled, setNavScrolled] = useState(false)
-
-  useEffect(() => {
-    const prev = document.documentElement.getAttribute('data-theme')
-    useTheme.getState().setTheme('dark')
-    return () => {
-      if (prev === 'light' || prev === 'dark') useTheme.getState().setTheme(prev)
-    }
-  }, [])
 
   useEffect(() => {
     const onScroll = () => setNavScrolled(window.scrollY > 16)
@@ -66,7 +59,7 @@ export default function FramerLandingPage() {
   }
 
   return (
-    <div className="framer-site">
+    <div className="framer-site" key={`${locale}-${theme}`}>
       <FramerSiteEffects />
       <header className={`framer-nav${navScrolled ? ' framer-nav-scrolled' : ''}`}>
         <div className="framer-nav-inner">
@@ -79,9 +72,9 @@ export default function FramerLandingPage() {
             ))}
           </nav>
           <div className="framer-nav-actions">
-            <button type="button" className="framer-lang" onClick={() => setLocale(locale === 'zh' ? 'en' : 'zh')}>
-              {locale === 'zh' ? 'EN' : '中文'}
-            </button>
+            <div className="framer-nav-toolbar">
+              <TopToolbar />
+            </div>
             {token ? (
               <button type="button" className="framer-btn-primary framer-btn-white" onClick={() => navigate('/dashboard')}>
                 {t('framer.nav.console')}

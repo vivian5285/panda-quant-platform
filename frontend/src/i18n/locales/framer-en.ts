@@ -1,9 +1,9 @@
 export default {
   nav: {
     indicators: 'Indicators',
-    showcase: 'AI Intelligence',
-    agents: 'AI Layers',
-    think: 'How AI Thinks',
+    showcase: 'Insights',
+    agents: 'AI Stack',
+    think: 'Reasoning',
     platform: 'Platform',
     workflow: 'Workflow',
     partners: 'Exchanges',

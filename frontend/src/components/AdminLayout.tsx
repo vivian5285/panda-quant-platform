@@ -1,14 +1,13 @@
 import { NavLink, Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../store/auth'
 import { useI18n } from '../i18n'
-import { useTheme } from '../store/theme'
 import GeminiLogo from './GeminiLogo'
 import TopToolbar from './TopToolbar'
 import {
   Shield, LogOut, Menu, X, LayoutDashboard, Users, Wallet, Bell,
   Landmark, Banknote, KeyRound, Bot, Activity, Radio, FileText, Share2,
 } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import ToastHost from './ui/ToastHost'
 
 export type AdminTabKey =
@@ -33,15 +32,12 @@ const ADMIN_TABS: { key: AdminTabKey; icon: typeof LayoutDashboard; labelKey: st
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const { displayName, logout } = useAuth()
+  const locale = useI18n(s => s.locale)
   const t = useI18n(s => s.t)
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const activeTab = (searchParams.get('tab') || 'home') as AdminTabKey
   const [mobileOpen, setMobileOpen] = useState(false)
-
-  useEffect(() => {
-    useTheme.getState().setTheme('dark')
-  }, [])
 
   const handleLogout = () => {
     logout()
@@ -63,7 +59,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         <span>{t('admin.consoleBadge')}</span>
       </div>
 
-      <nav className="sidebar-nav">
+      <nav key={locale} className="sidebar-nav">
         {ADMIN_TABS.map(({ key, icon: Icon, labelKey }) => (
           <NavLink
             key={key}

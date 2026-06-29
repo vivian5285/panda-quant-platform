@@ -1,5 +1,7 @@
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useI18n } from '../../../i18n'
+import { useTheme } from '../../../store/theme'
+import { accentCardGradient } from '../../../utils/framerThemeGradients'
 
 const STEPS = [
   'marketData',
@@ -25,12 +27,13 @@ const STEP_ACCENTS = [
   '#ffd60a',
 ] as const
 
-const STEP_BGS = STEP_ACCENTS.map(
-  c => `linear-gradient(155deg, color-mix(in srgb, ${c} 22%, #000) 0%, color-mix(in srgb, ${c} 10%, #0c0c0c) 42%, #141414 100%)`,
-)
-
 export default function FramerWorkflowStrip() {
   const t = useI18n(s => s.t)
+  const { theme } = useTheme()
+  const stepBgs = useMemo(
+    () => STEP_ACCENTS.map(c => accentCardGradient(c, theme)),
+    [theme],
+  )
   const [active, setActive] = useState(0)
 
   useEffect(() => {
@@ -50,7 +53,7 @@ export default function FramerWorkflowStrip() {
             <div
               className={`framer-workflow-node glass framer-glass-cell framer-color-card${i <= active ? ' lit' : ''}${i === active ? ' active' : ''}`}
               style={{
-                '--card-bg': STEP_BGS[i],
+                '--card-bg': stepBgs[i],
                 '--card-accent': STEP_ACCENTS[i],
               } as CSSProperties}
             >

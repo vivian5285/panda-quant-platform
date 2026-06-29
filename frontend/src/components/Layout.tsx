@@ -1,7 +1,6 @@
 import { NavLink, Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../store/auth'
 import { useI18n } from '../i18n'
-import { useTheme } from '../store/theme'
 import GeminiLogo from './GeminiLogo'
 import NotificationDropdown from './NotificationDropdown'
 import TopToolbar from './TopToolbar'
@@ -12,7 +11,7 @@ import {
   Menu, X, UserCircle, TrendingUp, KeyRound, BarChart3, ShieldAlert, Share2, Layers,
   Sparkles, HelpCircle,
 } from 'lucide-react'
-import { useMemo, useState, useEffect } from 'react'
+import { useMemo, useState } from 'react'
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const { displayName, logout, uid } = useAuth()
@@ -20,10 +19,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const t = useI18n(s => s.t)
   const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
-
-  useEffect(() => {
-    useTheme.getState().setTheme('dark')
-  }, [])
 
   const nav = [
     { to: '/dashboard', icon: LayoutDashboard, label: t('nav.dashboard') },

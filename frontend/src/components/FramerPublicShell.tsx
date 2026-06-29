@@ -8,10 +8,11 @@ interface Props {
 }
 
 export default function FramerPublicShell({ children }: Props) {
+  const locale = useI18n(s => s.locale)
   const t = useI18n(s => s.t)
 
   return (
-    <div className="framer-public-page">
+    <div className="framer-public-page" key={locale}>
       <header className="framer-public-nav">
         <FramerBrand />
         <div className="framer-public-nav-actions">

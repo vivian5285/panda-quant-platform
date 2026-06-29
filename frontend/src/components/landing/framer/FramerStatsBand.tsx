@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { useI18n } from '../../../i18n'
+import { useTheme } from '../../../store/theme'
 import CountUp from '../../ui/CountUp'
 import { publicApi } from '../../../api'
+import { accentCardGradient } from '../../../utils/framerThemeGradients'
 
 type PublicStats = {
   users: number
@@ -21,10 +23,6 @@ const SHOWCASE: PublicStats = {
 
 const STAT_ACCENTS = ['#007aff', '#5856d6', '#32d74b', '#ff9f0a'] as const
 
-const STAT_BGS = STAT_ACCENTS.map(
-  c => `linear-gradient(160deg, color-mix(in srgb, ${c} 20%, #000) 0%, color-mix(in srgb, ${c} 8%, #0c0c0c) 50%, #141414 100%)`,
-)
-
 function mergeStats(raw: PublicStats | null): PublicStats {
   if (!raw) return SHOWCASE
   return {
@@ -37,6 +35,7 @@ function mergeStats(raw: PublicStats | null): PublicStats {
 
 export default function FramerStatsBand() {
   const t = useI18n(s => s.t)
+  const { theme } = useTheme()
   const [raw, setRaw] = useState<PublicStats | null>(null)
   const [loaded, setLoaded] = useState(false)
 
@@ -48,6 +47,10 @@ export default function FramerStatsBand() {
   }, [])
 
   const stats = useMemo(() => mergeStats(raw), [raw])
+  const statBgs = useMemo(
+    () => STAT_ACCENTS.map(c => accentCardGradient(c, theme)),
+    [theme],
+  )
 
   const vol =
     stats.trading_volume_usd >= 1_000_000_000
@@ -84,7 +87,7 @@ export default function FramerStatsBand() {
               key={s.label}
               className="framer-stat-cell glass framer-glass-cell framer-color-card"
               style={{
-                '--card-bg': STAT_BGS[i],
+                '--card-bg': statBgs[i],
                 '--card-accent': STAT_ACCENTS[i],
               } as CSSProperties}
             >

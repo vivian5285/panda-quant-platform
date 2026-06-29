@@ -12,10 +12,11 @@ interface Props {
 }
 
 export default function LegalLayout({ titleKey, updatedKey, sectionKeys, ns }: Props) {
+  const locale = useI18n(s => s.locale)
   const t = useI18n(s => s.t)
 
   return (
-    <div className="legal-page">
+    <div className="legal-page" key={locale}>
       <header className="framer-public-nav">
         <FramerBrand />
         <TopToolbar />

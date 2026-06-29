@@ -16,6 +16,15 @@ function detectLocale(): Locale {
   return navigator.language.startsWith('zh') ? 'zh' : 'en'
 }
 
+function syncDocumentMeta(locale: Locale) {
+  document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en'
+  const titles = locales[locale] as { meta?: { title?: string } }
+  const title = titles.meta?.title
+  if (title) document.title = title
+  const ogLocale = document.querySelector('meta[property="og:locale"]')
+  if (ogLocale) ogLocale.setAttribute('content', locale === 'zh' ? 'zh_CN' : 'en_US')
+}
+
 interface I18nState {
   locale: Locale
   setLocale: (l: Locale) => void
@@ -26,7 +35,7 @@ export const useI18n = create<I18nState>((set, get) => ({
   locale: detectLocale(),
   setLocale: (locale) => {
     localStorage.setItem('locale', locale)
-    document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en'
+    syncDocumentMeta(locale)
     set({ locale })
   },
   t: (key, params) => {
@@ -44,7 +53,7 @@ export const useI18n = create<I18nState>((set, get) => ({
 
 export function initI18n() {
   const locale = detectLocale()
-  document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en'
+  syncDocumentMeta(locale)
   useI18n.setState({ locale })
 }
 

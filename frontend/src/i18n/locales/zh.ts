@@ -2,7 +2,14 @@ import framerZh from './framer-zh'
 export default {
   brand: {
     name: "双子星AI量化",
-    tagline: "GEMINI AI · AI Quant Decision Engine"
+    tagline: "GEMINI AI · 机构级 AI 量化决策引擎"
+  },
+  meta: {
+    title: "双子星AI量化 · GEMINI AI"
+  },
+  lang: {
+    switchToEn: "切换为 English",
+    switchToZh: "Switch to 中文"
   },
   nav: {
     dashboard: "仪表盘",
