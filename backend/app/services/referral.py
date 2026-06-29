@@ -4,9 +4,12 @@ from app.config import get_settings
 settings = get_settings()
 
 
-def build_invite_url(referral_code: str) -> str:
+def build_invite_url(referral_code: str, inviter_uid: str | None = None) -> str:
     base = settings.FRONTEND_URL.rstrip("/")
-    return f"{base}/register?{urlencode({'ref': referral_code})}"
+    params: dict[str, str] = {"ref": referral_code}
+    if inviter_uid:
+        params["from"] = str(inviter_uid)
+    return f"{base}/register?{urlencode(params)}"
 
 
 def commission_info() -> dict:

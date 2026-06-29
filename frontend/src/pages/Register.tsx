@@ -76,6 +76,9 @@ export default function Register() {
       <GlassCard className="auth-glass-card">
         <h2 className="auth-card-title">{t('auth.registerTitle')}</h2>
         <p className="text-muted auth-card-sub">{t('auth.registerSubtitle')}</p>
+        {searchParams.get('from') && (
+          <p className="register-inviter-banner">{t('register.inviterBanner', { uid: searchParams.get('from') ?? '' })}</p>
+        )}
 
         <div className="auth-mode-tabs">
           <button type="button" className={`btn ${mode === 'email' ? 'btn-primary' : 'btn-ghost'}`}
@@ -109,7 +112,7 @@ export default function Register() {
           </div>
           <div className="form-field">
             <label className="form-label">{t('auth.referralOptional')}</label>
-            <input className="input" value={referralCode} onChange={e => setReferralCode(e.target.value)} placeholder="GEMINI-XXXXXXXX" readOnly={!!searchParams.get('ref')} />
+            <input className="input" value={referralCode} onChange={e => setReferralCode(e.target.value)} placeholder="PANDA-XXXXXXXX" readOnly={!!searchParams.get('ref')} />
           </div>
           {error && <p className="form-error">{error}</p>}
           <RippleButton type="submit" className="btn btn-auth-primary auth-submit" disabled={loading}>

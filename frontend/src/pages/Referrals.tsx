@@ -4,10 +4,10 @@ import PageHeader from '../components/PageHeader'
 import StatCard from '../components/StatCard'
 import GlassCard from '../components/GlassCard'
 import WithdrawCta from '../components/WithdrawCta'
+import InviteSharePanel from '../components/InviteSharePanel'
 import { referralApi } from '../api'
 import { useI18n } from '../i18n'
 import { generateInvitePoster, downloadPoster } from '../utils/invitePoster'
-import { Copy, Check, Link2, Image, Download, Share2 } from 'lucide-react'
 import ReferralTree from '../components/ReferralTree'
 import DualPathIntro from '../components/DualPathIntro'
 
@@ -27,6 +27,7 @@ export default function Referrals() {
   }, [])
 
   const copyText = (text: string, key: string) => {
+    if (!text) return
     navigator.clipboard.writeText(text)
     setCopied(key)
     setTimeout(() => setCopied(''), 2000)
@@ -35,6 +36,20 @@ export default function Referrals() {
   const l1Rate = Math.round((data?.commission?.l1_rate ?? 0.1) * 100)
   const l2Rate = Math.round((data?.commission?.l2_rate ?? 0.05) * 100)
   const platformFeeRate = Math.round((data?.commission?.platform_fee_rate ?? 0.25) * 100)
+
+  const posterLabels = () => ({
+    headline: t('referrals.posterHeadline'),
+    badges: [t('referrals.posterBadge1'), t('referrals.posterBadge2'), t('referrals.posterBadge3')] as [string, string, string],
+    commissionTitle: t('referrals.posterCommissionTitle'),
+    l1Title: t('referrals.l1Title'),
+    l1Sub: t('referrals.posterL1Sub'),
+    l2Title: t('referrals.l2Title'),
+    l2Sub: t('referrals.posterL2Sub'),
+    scanHint: t('referrals.scanToRegister'),
+    inviterLine: t('referrals.posterInviterLine'),
+    inviterUidLabel: t('referrals.posterInviterUid', { uid: data?.uid ?? '—' }),
+    disclaimer: t('referrals.posterDisclaimer'),
+  })
 
   const generatePoster = async () => {
     if (!data) return
@@ -50,6 +65,7 @@ export default function Referrals() {
         brandName: t('brand.name'),
         brandTagline: t('brand.tagline'),
         posterTagline: t('referrals.posterTagline'),
+        labels: posterLabels(),
       })
       setPosterUrl(url)
       setShowPoster(true)
@@ -79,53 +95,18 @@ export default function Referrals() {
 
       <DualPathIntro />
 
-      <GlassCard className="p-6 section-mb-lg">
-        <div className="referral-link-row">
-          <div className="referral-link-main">
-            <p className="text-muted referral-link-label">{t('referrals.myLink')}</p>
-            <p className="link-box link-box-lg">
-              {data?.invite_url || t('common.loading')}
-            </p>
-            <p className="text-muted referral-code-meta">
-              {t('referrals.referralCode')}{' '}
-              <span className="text-green text-semibold">{data?.referral_code}</span>
-              {' · '}{t('referrals.uidLine', { uid: data?.uid ?? '—' })}
-            </p>
-          </div>
-          <div className="referral-actions">
-            <button className="btn btn-primary" onClick={() => copyText(data?.invite_url, 'link')}>
-              {copied === 'link' ? <Check size={16} /> : <Link2 size={16} />}
-              {copied === 'link' ? t('referrals.copyLinkDone') : t('referrals.copyLink')}
-            </button>
-            <button className="btn btn-ghost" onClick={() => copyText(data?.referral_code, 'code')}>
-              {copied === 'code' ? <Check size={16} /> : <Copy size={16} />}
-              {copied === 'code' ? t('common.copied') : t('referrals.copyCode')}
-            </button>
-            <button className="btn btn-ghost" onClick={shareLink}>
-              <Share2 size={16} /> {t('referrals.share')}
-            </button>
-            <button className="btn btn-ghost" onClick={generatePoster} disabled={posterLoading}>
-              <Image size={16} /> {posterLoading ? t('referrals.genPosterLoading') : t('referrals.genPoster')}
-            </button>
-          </div>
-        </div>
-      </GlassCard>
-
-      {showPoster && posterUrl && (
-        <GlassCard className="p-6 section-mb-lg poster-preview-card">
-          <h3 className="card-heading">{t('referrals.posterPreview')}</h3>
-          <img src={posterUrl} alt={t('referrals.posterAlt')} className="poster-img" />
-          <div className="flex-center-gap section-mt-md">
-            <button
-              className="btn btn-primary"
-              onClick={() => downloadPoster(posterUrl, t('referrals.posterFilename', { code: data?.referral_code || 'invite' }))}
-            >
-              <Download size={16} /> {t('referrals.downloadPoster')}
-            </button>
-            <button className="btn btn-ghost" onClick={() => setShowPoster(false)}>{t('referrals.closePreview')}</button>
-          </div>
-        </GlassCard>
-      )}
+      <InviteSharePanel
+        data={data}
+        copied={copied}
+        onCopy={copyText}
+        onShare={shareLink}
+        onGeneratePoster={generatePoster}
+        posterLoading={posterLoading}
+        posterUrl={posterUrl}
+        showPoster={showPoster}
+        onDownloadPoster={() => downloadPoster(posterUrl, t('referrals.posterFilename', { code: data?.referral_code || 'invite' }))}
+        onClosePoster={() => setShowPoster(false)}
+      />
 
       <GlassCard className="p-6 section-mb-lg">
         <h3 className="card-heading">{t('referrals.rulesTitle')}</h3>
@@ -182,7 +163,7 @@ export default function Referrals() {
                 <tr><td colSpan={3} className="empty-cell">{t('referrals.inviteEmpty')}</td></tr>
               ) : data.l1_users.map((u: any) => (
                 <tr key={u.id}>
-                  <td>{u.email}</td>
+                  <td className="cell-ellipsis" title={u.email}>{u.email}</td>
                   <td className={u.week_pnl >= 0 ? 'text-green' : 'text-red'}>${u.week_pnl?.toFixed(2)}</td>
                   <td className="text-green">${u.total_reward?.toFixed(2)}</td>
                 </tr>
@@ -204,7 +185,7 @@ export default function Referrals() {
                 <tr><td colSpan={3} className="empty-cell">{t('referrals.l2Empty')}</td></tr>
               ) : data.l2_users.map((u: any) => (
                 <tr key={u.id}>
-                  <td>{u.email}</td>
+                  <td className="cell-ellipsis" title={u.email}>{u.email}</td>
                   <td className={u.week_pnl >= 0 ? 'text-green' : 'text-red'}>${u.week_pnl?.toFixed(2)}</td>
                   <td className="text-green">${u.total_reward?.toFixed(2)}</td>
                 </tr>

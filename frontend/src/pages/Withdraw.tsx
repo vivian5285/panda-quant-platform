@@ -277,6 +277,7 @@ export default function Withdraw() {
 
           <GlassCard className="p-6">
             <h3 className="panel-title-sm mb-md">{t('withdraw.feeTableTitle')}</h3>
+            <div className="table-wrap">
             <table className="data-table data-table-sm">
               <thead><tr><th>{t('withdraw.feeTableChain')}</th><th>{t('withdraw.feeTableFee')}</th></tr></thead>
               <tbody>
@@ -285,6 +286,7 @@ export default function Withdraw() {
                 ))}
               </tbody>
             </table>
+            </div>
             <p className="text-muted fee-note">{t('withdraw.feeTableNote')}</p>
           </GlassCard>
         </div>
@@ -402,7 +404,7 @@ export default function Withdraw() {
         </GlassCard>
       )}
 
-      <GlassCard className="p-0 card-overflow-hidden section-mt-lg">
+      <GlassCard className="p-0 table-wrap card-overflow-hidden section-mt-lg">
         <div className="card-section-head"><h3 className="panel-title-sm">{t('withdraw.historyTitle')}</h3></div>
         <table className="data-table">
           <thead><tr><th>{t('common.time')}</th><th>{t('common.chain')}</th><th>{t('admin.cols.detail')}</th><th>{t('admin.cols.fee')}</th><th>{t('admin.cols.received')}</th><th>{t('common.status')}</th><th>TxHash</th></tr></thead>

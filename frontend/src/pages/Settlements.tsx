@@ -134,7 +134,7 @@ export default function Settlements() {
         )}
       </GlassCard>
 
-      <GlassCard className="p-0 card-overflow-hidden">
+      <GlassCard className="p-0 table-wrap card-overflow-hidden">
         <table className="data-table">
           <thead>
             <tr>

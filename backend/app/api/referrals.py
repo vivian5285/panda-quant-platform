@@ -34,7 +34,7 @@ def _commission_out() -> ReferralCommissionOut:
 def referral_invite(user: User = Depends(get_current_user)):
     return ReferralInviteOut(
         referral_code=user.referral_code,
-        invite_url=build_invite_url(user.referral_code),
+        invite_url=build_invite_url(user.referral_code, user.uid),
         uid=user.uid,
         display_name=display_name(user),
         commission=_commission_out(),
@@ -90,7 +90,7 @@ def referral_summary(user: User = Depends(get_current_user), db: Session = Depen
 
     return ReferralSummary(
         referral_code=user.referral_code,
-        invite_url=build_invite_url(user.referral_code),
+        invite_url=build_invite_url(user.referral_code, user.uid),
         uid=user.uid,
         display_name=display_name(user),
         l1_count=len(l1_users), l2_count=len(l2_users),
