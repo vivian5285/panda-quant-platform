@@ -40,14 +40,15 @@ export default function FramerCryptoTicker() {
         .catch(() => { if (!cancelled) setLive(false) })
     }
     load()
-    const timer = setInterval(load, 20000)
+    const timer = setInterval(load, 15000)
     return () => { cancelled = true; clearInterval(timer) }
   }, [])
 
   const loop = items.length ? [...items, ...items] : []
 
   return (
-    <div className="framer-crypto-ticker" aria-label={t('framer.ticker.label')}>
+    <div className="framer-market-ticker-bar">
+      <div className="framer-crypto-ticker" aria-label={t('framer.ticker.label')}>
       <div className="framer-crypto-ticker-live">
         <span className={`framer-crypto-ticker-dot${live ? ' on' : ''}`} />
         {t('framer.ticker.live')}
@@ -67,6 +68,7 @@ export default function FramerCryptoTicker() {
             <span className="framer-crypto-ticker-loading">{t('framer.ticker.loading')}</span>
           )}
         </div>
+      </div>
       </div>
     </div>
   )

@@ -3122,6 +3122,13 @@ html[lang="en"] .framer-nav-actions .framer-btn-primary {
 }
 
 /* ── Hero crypto price ticker ── */
+.framer-market-ticker-bar {
+  position: sticky;
+  top: 0;
+  z-index: 90;
+  width: 100%;
+}
+
 .framer-crypto-ticker {
   position: relative; z-index: 2;
   display: flex; align-items: stretch;

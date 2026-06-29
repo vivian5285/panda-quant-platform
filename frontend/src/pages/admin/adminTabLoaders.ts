@@ -31,6 +31,8 @@ export type AdminTabSetters = {
   setReferralOverview: (v: any) => void
   setWithdrawThresholds: (v: any) => void
   setThresholdDraft: (v: { auto_max_usd: string; review_min_usd: string }) => void
+  setPayoutSettings: (v: any) => void
+  setPayoutKeyDraft: (v: Record<string, string>) => void
   setPlatformAnalytics: (v: any) => void
   setStartupAudit?: (v: any) => void
 }
@@ -168,7 +170,15 @@ export async function loadAdminTab(
         })
       }
       if (tab === 'addresses') {
-        setters.setDepositAddrs(await adminApi.depositAddresses())
+        const [addrs, payout] = await Promise.all([
+          adminApi.depositAddresses(),
+          adminApi.payoutSettings().catch(() => null),
+        ])
+        setters.setDepositAddrs(addrs)
+        if (payout) {
+          setters.setPayoutSettings(payout)
+          setters.setPayoutKeyDraft({})
+        }
       }
       break
     }

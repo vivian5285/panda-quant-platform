@@ -5,7 +5,6 @@ import { useI18n } from '../../../i18n'
 import { useAuth } from '../../../store/auth'
 import FramerHeroBackdrop from './FramerHeroBackdrop'
 import FramerHeroCanvas from './FramerHeroCanvas'
-import FramerCryptoTicker from './FramerCryptoTicker'
 import WatchDemoModal from './WatchDemoModal'
 import RippleButton from '../../ui/RippleButton'
 
@@ -29,7 +28,6 @@ export default function FramerHeroPipeline() {
   return (
     <div className="framer-hero-zone framer-hero-zone-stacked">
       <FramerHeroBackdrop />
-      <FramerCryptoTicker />
       <section className="framer-hero-stacked">
         <motion.div className="framer-pill" {...item(0.05)}>
           {t('framer.hero.pill')}

@@ -7,16 +7,38 @@ export default function AdminSystemTab() {
   const {
     t, locale, webhookPayload, setWebhookPayload, runWebhookTest,
     online, monitor, signalLogs, riskAlerts, loginRecords, auditLogs,
-    tradeLogs, exportTradeLogsCsv, orders, formatOrderUser, startupAudit,
+    tradeLogs, exportTradeLogsCsv, orders, formatOrderUser, startupAudit, setTab,
   } = useAdmin()
 
   const audits = startupAudit?.audits || []
   const failures = startupAudit?.failures || []
   const secWarnings = startupAudit?.security_warnings || []
   const infraNotes = startupAudit?.infra_notes || []
+  const productionReady = startupAudit?.production_ready
+  const hasDepositInfraNote = infraNotes.some((n: string) => n.includes('收款地址') || n.includes('二维码'))
 
   return (
     <>
+      {productionReady === false && (
+        <GlassCard className="p-6 section-mb-lg production-checklist-card">
+          <h3 className="card-heading">{t('admin.productionChecklistTitle')}</h3>
+          <p className="text-muted text-sm section-mb-sm">{t('admin.productionChecklistHint')}</p>
+          <ul className="production-checklist-list">
+            {secWarnings.map((w: string, i: number) => (
+              <li key={`chk-sec-${i}`} className="text-sm text-red">⚠ {w}</li>
+            ))}
+          </ul>
+          <p className="text-muted text-xs section-mt-sm">{t('admin.productionStrictNote')}</p>
+        </GlassCard>
+      )}
+      {hasDepositInfraNote && (
+        <GlassCard className="p-4 section-mb-lg">
+          <p className="text-sm section-mb-sm">{t('admin.depositInfraHint')}</p>
+          <button className="btn btn-primary btn-sm" type="button" onClick={() => setTab('addresses')}>
+            {t('admin.tabAddresses')}
+          </button>
+        </GlassCard>
+      )}
       <GlassCard className="p-6 section-mb-lg">
         <h3 className="card-heading">{t('admin.startupAuditTitle')}</h3>
         <p className="text-muted text-sm section-mb-sm">{t('admin.startupAuditHint')}</p>

@@ -1,5 +1,6 @@
 from datetime import datetime, date
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import (
@@ -10,6 +11,7 @@ from app.models import (
 from app.schemas import (
     AdminUserOut, AdminOverview, SettlementOut,
     DepositAddressOut, DepositAddressCreate, DepositAddressUpdate,
+    PayoutSettingsOut, PayoutSettingsUpdate,
     WithdrawThresholdsUpdate,
     WithdrawalOut, WithdrawalComplete, WithdrawalReject,
     AdminAlertOut, AdminUserDetailOut, TradeOut, TradeLogOut, PrincipalSnapshotOut,
@@ -23,11 +25,15 @@ from app.services.query_filters import parse_date_param, apply_trade_date_filter
 from app.services.admin_referral import build_user_referral_stats, build_admin_referral_overview
 from app.services.binance_sync import sync_user_binance_fills
 from app.services.platform_runtime import get_withdraw_thresholds, set_withdraw_thresholds
+from app.services.deposit_qr import save_deposit_qr, delete_deposit_qr, resolve_deposit_qr_path
 from app.api.deps import get_admin_user
 from app.services.dispatcher import supervisor_pool
 from app.services.trade_logger import TradeLogger
 from app.services.settlement import run_scheduled_settlements, confirm_settlement_payment
 from app.services.wallet import complete_withdrawal, reject_withdrawal
+from app.services.payout_secrets import (
+    get_payout_settings, update_payout_keys, is_payout_auto_enabled,
+)
 from app.services.chain_payout import get_payout_status
 from app.models.platform import Strategy
 from app.services.audit import log_audit
@@ -387,11 +393,16 @@ def reject_settlement(
 
 # --- Platform deposit addresses ---
 
+def _deposit_address_out(addr: PlatformDepositAddress) -> DepositAddressOut:
+    return DepositAddressOut.from_model(addr)
+
+
 @router.get("/deposit-addresses", response_model=list[DepositAddressOut])
 def list_deposit_addresses(admin=Depends(get_admin_user), db: Session = Depends(get_db)):
-    return db.query(PlatformDepositAddress).order_by(
+    rows = db.query(PlatformDepositAddress).order_by(
         PlatformDepositAddress.sort_order, PlatformDepositAddress.id
     ).all()
+    return [_deposit_address_out(a) for a in rows]
 
 
 @router.post("/deposit-addresses", response_model=DepositAddressOut)
@@ -427,7 +438,7 @@ def create_deposit_address(
     )
     db.commit()
     db.refresh(addr)
-    return addr
+    return _deposit_address_out(addr)
 
 
 @router.patch("/deposit-addresses/{addr_id}", response_model=DepositAddressOut)
@@ -480,7 +491,63 @@ def update_deposit_address(
     )
     db.commit()
     db.refresh(addr)
-    return addr
+    return _deposit_address_out(addr)
+
+
+@router.post("/deposit-addresses/{addr_id}/qr-image", response_model=DepositAddressOut)
+async def upload_deposit_qr_image(
+    addr_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    addr = db.query(PlatformDepositAddress).filter(PlatformDepositAddress.id == addr_id).first()
+    if not addr:
+        raise HTTPException(404, "Address not found")
+    if addr.qr_image_filename:
+        delete_deposit_qr(addr.qr_image_filename)
+    addr.qr_image_filename = await save_deposit_qr(addr_id, file)
+    log_audit(
+        db,
+        "deposit_address.qr_upload",
+        actor_id=admin.id,
+        resource_type="deposit_address",
+        resource_id=str(addr.id),
+        detail={"chain": addr.chain, "address": addr.address, "qr_image_filename": addr.qr_image_filename},
+        request=request,
+    )
+    db.commit()
+    db.refresh(addr)
+    return _deposit_address_out(addr)
+
+
+@router.delete("/deposit-addresses/{addr_id}/qr-image", response_model=DepositAddressOut)
+def remove_deposit_qr_image(
+    addr_id: int,
+    request: Request,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    addr = db.query(PlatformDepositAddress).filter(PlatformDepositAddress.id == addr_id).first()
+    if not addr:
+        raise HTTPException(404, "Address not found")
+    if addr.qr_image_filename:
+        delete_deposit_qr(addr.qr_image_filename)
+        old = addr.qr_image_filename
+        addr.qr_image_filename = None
+        log_audit(
+            db,
+            "deposit_address.qr_delete",
+            actor_id=admin.id,
+            resource_type="deposit_address",
+            resource_id=str(addr.id),
+            detail={"chain": addr.chain, "removed": old},
+            request=request,
+        )
+        db.commit()
+        db.refresh(addr)
+    return _deposit_address_out(addr)
 
 
 @router.post("/deposit-addresses/{addr_id}/toggle")
@@ -523,6 +590,7 @@ def delete_deposit_address(
         "label": addr.label,
         "is_active": addr.is_active,
     }
+    delete_deposit_qr(addr.qr_image_filename)
     db.delete(addr)
     log_audit(
         db,
@@ -587,6 +655,41 @@ def admin_update_withdraw_settings(
         "payout_auto_enabled": payout.enabled,
         "payout_configured_chains": payout.configured_chains,
     }
+
+
+@router.get("/payout/settings", response_model=PayoutSettingsOut)
+def admin_payout_settings(admin=Depends(get_admin_user)):
+    return get_payout_settings()
+
+
+@router.patch("/payout/settings", response_model=PayoutSettingsOut)
+def admin_update_payout_settings(
+    req: PayoutSettingsUpdate,
+    request: Request,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        updated = update_payout_keys(
+            auto_enabled=req.auto_enabled,
+            keys=req.private_keys,
+            clear_chains=req.clear_chains,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    log_audit(
+        db,
+        "payout_settings.update",
+        actor_id=admin.id,
+        resource_type="platform_settings",
+        resource_id="payout_keys",
+        detail={
+            "auto_enabled": updated.get("auto_enabled"),
+            "configured_chains": [c for c, ok in (updated.get("chains") or {}).items() if ok],
+        },
+        request=request,
+    )
+    return updated
 
 
 # --- Withdrawals ---
@@ -657,11 +760,13 @@ def startup_audit(admin=Depends(get_admin_user), db: Session = Depends(get_db)):
     """VPS 自启账户接管审计 + 生产配置检查（管理员查看）。"""
     from app.services.startup_audit import validate_production_secrets, validate_production_infra
 
+    sec = validate_production_secrets()
     return {
         "active_supervisors": len(supervisor_pool.get_all()),
         "audits": supervisor_pool.last_startup_audits,
         "failures": supervisor_pool.last_startup_failures,
-        "security_warnings": validate_production_secrets(),
+        "security_warnings": sec,
+        "production_ready": len(sec) == 0,
         "infra_notes": validate_production_infra(db),
     }
 

@@ -9,6 +9,7 @@ import TopToolbar from '../../TopToolbar'
 import ScrollReveal from '../../ui/ScrollReveal'
 import FramerSiteEffects from './FramerSiteEffects'
 import FramerHeroPipeline from './FramerHeroPipeline'
+import FramerCryptoTicker from './FramerCryptoTicker'
 import FramerIndicatorShowcase from './FramerIndicatorShowcase'
 import FramerShowcaseMarquee from './FramerShowcaseMarquee'
 import FramerAgentsSection from './FramerAgentsSection'
@@ -91,6 +92,8 @@ export default function FramerLandingPage() {
           </div>
         </div>
       </header>
+
+      <FramerCryptoTicker />
 
       <FramerHeroPipeline />
 

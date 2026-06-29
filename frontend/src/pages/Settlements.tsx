@@ -110,10 +110,19 @@ export default function Settlements() {
           <div className="log-list-stack">
             {addresses.map(a => (
               <div key={a.id} className="panel-muted-lg addr-panel-row">
-                <div>
-                  <span className="badge badge-green">{a.chain}</span>
-                  {a.label && <span className="text-muted label-inline">{a.label}</span>}
-                  <p className="mono-text-sm">{a.address}</p>
+                <div className="addr-panel-main">
+                  <div>
+                    <span className="badge badge-green">{a.chain}</span>
+                    {a.label && <span className="text-muted label-inline">{a.label}</span>}
+                    <p className="mono-text-sm">{a.address}</p>
+                  </div>
+                  {a.has_qr && (
+                    <img
+                      className="deposit-qr-settlement"
+                      src={walletApi.depositAddressQrUrl(a.id)}
+                      alt={t('settlements.walletQr')}
+                    />
+                  )}
                 </div>
                 <button className="btn btn-ghost" onClick={() => copyAddr(a.address, String(a.id))}>
                   {copied === String(a.id) ? <Check size={14} /> : <Copy size={14} />}

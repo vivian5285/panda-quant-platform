@@ -45,6 +45,19 @@ class LoginRequest(BaseModel):
 class OAuthProvidersResponse(BaseModel):
     google: bool = False
     github: bool = False
+    twitter: bool = False
+    apple: bool = False
+
+
+class PayoutSettingsOut(BaseModel):
+    auto_enabled: bool = False
+    chains: dict[str, bool] = {}
+
+
+class PayoutSettingsUpdate(BaseModel):
+    auto_enabled: Optional[bool] = None
+    private_keys: Optional[dict[str, str]] = None
+    clear_chains: Optional[list[str]] = None
 
 
 class NicknameUpdate(BaseModel):
@@ -228,6 +241,18 @@ class DepositAddressOut(BaseModel):
     address: str
     label: str
     is_active: bool
+    has_qr: bool = False
+
+    @classmethod
+    def from_model(cls, addr) -> "DepositAddressOut":
+        return cls(
+            id=addr.id,
+            chain=addr.chain,
+            address=addr.address,
+            label=addr.label or "",
+            is_active=bool(addr.is_active),
+            has_qr=bool(getattr(addr, "qr_image_filename", None)),
+        )
 
     class Config:
         from_attributes = True

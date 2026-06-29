@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import (
@@ -25,6 +26,7 @@ from app.services.chain_fees import (
     calc_withdraw_net, EXCHANGE_SOURCES, WALLET_SOURCES,
 )
 from app.services.platform_runtime import get_withdraw_thresholds
+from app.services.deposit_qr import resolve_deposit_qr_path
 from app.services.auto_payout import process_auto_payout
 from app.config import get_settings
 
@@ -34,9 +36,30 @@ settings = get_settings()
 
 @router.get("/deposit-addresses", response_model=list[DepositAddressOut])
 def list_deposit_addresses(db: Session = Depends(get_db)):
-    return db.query(PlatformDepositAddress).filter(
+    rows = db.query(PlatformDepositAddress).filter(
         PlatformDepositAddress.is_active == True
     ).order_by(PlatformDepositAddress.sort_order, PlatformDepositAddress.id).all()
+    return [DepositAddressOut.from_model(a) for a in rows]
+
+
+@router.get("/deposit-addresses/{addr_id}/qr")
+def get_deposit_qr_image(addr_id: int, db: Session = Depends(get_db)):
+    addr = db.query(PlatformDepositAddress).filter(
+        PlatformDepositAddress.id == addr_id,
+        PlatformDepositAddress.is_active == True,
+    ).first()
+    if not addr or not addr.qr_image_filename:
+        raise HTTPException(404, "QR image not found")
+    path = resolve_deposit_qr_path(addr.qr_image_filename)
+    media = "image/png"
+    low = addr.qr_image_filename.lower()
+    if low.endswith(".jpg") or low.endswith(".jpeg"):
+        media = "image/jpeg"
+    elif low.endswith(".webp"):
+        media = "image/webp"
+    elif low.endswith(".gif"):
+        media = "image/gif"
+    return FileResponse(path, media_type=media)
 
 
 @router.post("/settlements/{settlement_id}/pay", response_model=SettlementOut)

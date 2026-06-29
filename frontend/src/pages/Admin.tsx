@@ -76,6 +76,9 @@ export default function Admin() {
     payout_configured_chains?: string[]
   } | null>(null)
   const [thresholdDraft, setThresholdDraft] = useState({ auto_max_usd: '100', review_min_usd: '500' })
+  const [payoutSettings, setPayoutSettings] = useState<{ auto_enabled: boolean; chains: Record<string, boolean> } | null>(null)
+  const [payoutKeyDraft, setPayoutKeyDraft] = useState<Record<string, string>>({})
+  const [payoutAutoDraft, setPayoutAutoDraft] = useState(false)
   const [completeTx, setCompleteTx] = useState<Record<number, string>>({})
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null)
   const [userDetail, setUserDetail] = useState<any>(null)
@@ -140,6 +143,8 @@ export default function Admin() {
     setReferralOverview,
     setWithdrawThresholds,
     setThresholdDraft,
+    setPayoutSettings,
+    setPayoutKeyDraft,
     setPlatformAnalytics,
     setStartupAudit,
   }), [])
@@ -185,6 +190,10 @@ export default function Admin() {
     }, 400)
     return () => clearTimeout(debounce)
   }, [token, tab, auditSearch, tabSetters])
+
+  useEffect(() => {
+    if (payoutSettings) setPayoutAutoDraft(!!payoutSettings.auto_enabled)
+  }, [payoutSettings])
 
   const onAdminWs = useCallback((raw: unknown) => {
     const data = raw as { type?: string; orders?: any[]; signal_logs?: any[]; monitor?: any }
@@ -233,6 +242,28 @@ export default function Admin() {
     }
   }
 
+  const uploadAddrQr = async (id: number, file: File) => {
+    try {
+      const updated = await adminApi.uploadDepositAddressQr(id, file)
+      toast.success(t('admin.qrUploaded'))
+      setEditingAddr((prev: any) => (prev?.id === id ? updated : prev))
+      load()
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('admin.qrUploadFail'))
+    }
+  }
+
+  const removeAddrQr = async (id: number) => {
+    try {
+      const updated = await adminApi.deleteDepositAddressQr(id)
+      toast.success(t('admin.qrRemoved'))
+      setEditingAddr((prev: any) => (prev?.id === id ? updated : prev))
+      load()
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('admin.qrRemoveFail'))
+    }
+  }
+
   const saveWithdrawThresholds = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
@@ -244,6 +275,26 @@ export default function Admin() {
       toast.success(t('admin.withdrawSettingsSaved'))
     } catch (err: any) {
       toast.error(err.response?.data?.detail || t('admin.withdrawSettingsFail'))
+    }
+  }
+
+  const savePayoutSettings = async (e: React.FormEvent) => {
+    e.preventDefault()
+    try {
+      const private_keys: Record<string, string> = {}
+      for (const [chain, val] of Object.entries(payoutKeyDraft)) {
+        if (val?.trim()) private_keys[chain] = val.trim()
+      }
+      const res = await adminApi.updatePayoutSettings({
+        auto_enabled: payoutAutoDraft,
+        private_keys: Object.keys(private_keys).length ? private_keys : undefined,
+      })
+      setPayoutSettings(res)
+      setPayoutKeyDraft({})
+      toast.success(t('admin.payoutKeysSaved'))
+      load()
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('admin.payoutKeysFail'))
     }
   }
 
@@ -717,6 +768,7 @@ export default function Admin() {
     auditLogs, orders, strategies, tradeLogs, online, loginRecords, riskAlerts,
     newAddr, setNewAddr, editingAddr, setEditingAddr,
     withdrawThresholds, thresholdDraft, setThresholdDraft,
+    payoutSettings, payoutKeyDraft, setPayoutKeyDraft, payoutAutoDraft, setPayoutAutoDraft,
     completeTx, setCompleteTx,
     selectedUserId, userDetail, userTrades, userLogs, setUserLogs,
     userDetailTab, setUserDetailTab,
@@ -726,7 +778,7 @@ export default function Admin() {
     platformAnalytics,
     startupAudit,
     load, loadUserDetail, closeUserDetail,
-    runSettlement, confirm, addAddr, saveEditingAddr, saveWithdrawThresholds, completeWd,
+    runSettlement, confirm, addAddr, saveEditingAddr, uploadAddrQr, removeAddrQr, saveWithdrawThresholds, savePayoutSettings, completeWd,
     setAdminConfirm, forceUserPause, forceCloseUser, setUserRisk,
     saveTemplateEdit, exportAuditCsv, saveSignalTemplate, testTemplate, reviewStrategy,
     exportUsersCsv, toggleUserSelect, toggleSelectAllUsers, runBatchNotify, runBatchPause,

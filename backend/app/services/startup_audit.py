@@ -5,7 +5,7 @@ import os
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import Trade, User, PlatformDepositAddress
+from app.models import Trade, User, PlatformDepositAddress, SUPPORTED_CHAINS
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -69,9 +69,21 @@ def validate_production_infra(db: Session | None = None) -> list[str]:
         notes.append("state/ 目录不存在（首次运行正常）")
 
     if db is not None:
-        dep_count = db.query(PlatformDepositAddress).filter(PlatformDepositAddress.is_active == True).count()
-        if dep_count == 0:
-            notes.append("未配置平台 USDT 收款地址（管理后台添加）")
+        active_addrs = db.query(PlatformDepositAddress).filter(
+            PlatformDepositAddress.is_active == True
+        ).all()
+        if not active_addrs:
+            notes.append("未配置平台 USDT 收款地址（管理后台 → 收款地址）")
+        else:
+            chains = {a.chain for a in active_addrs}
+            missing_chains = [c for c in SUPPORTED_CHAINS if c not in chains]
+            if missing_chains:
+                notes.append(f"以下公链未配置启用收款地址: {', '.join(missing_chains)}")
+            missing_qr = [a for a in active_addrs if not a.qr_image_filename]
+            if missing_qr:
+                notes.append(
+                    f"{len(missing_qr)} 条启用收款地址未上传钱包二维码（管理后台 → 收款地址）"
+                )
 
     return notes
 

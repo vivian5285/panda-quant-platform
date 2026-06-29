@@ -3,6 +3,7 @@ import logging
 from dataclasses import dataclass
 
 from app.config import get_settings
+from app.services.payout_secrets import get_chain_private_key, is_payout_auto_enabled
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -75,20 +76,30 @@ def get_payout_status() -> PayoutStatus:
         else:
             missing.append(chain)
     return PayoutStatus(
-        enabled=bool(settings.PAYOUT_AUTO_ENABLED),
+        enabled=is_payout_auto_enabled(),
         configured_chains=configured,
         missing_chains=missing,
     )
+
+
+def _resolve_private_key(chain: str) -> str:
+    chain = chain.upper()
+    key = get_chain_private_key(chain)
+    if key:
+        return key
+    if chain == "TRC20":
+        return settings.PAYOUT_TRC20_PRIVATE_KEY.strip()
+    return settings.PAYOUT_EVM_PRIVATE_KEY.strip()
 
 
 def _chain_ready(chain: str, cfg: dict | None = None) -> bool:
     cfg = cfg or CHAIN_PAYOUT_CONFIG.get(chain.upper(), {})
     kind = cfg.get("kind")
     if kind == "tron":
-        return bool(settings.PAYOUT_TRC20_PRIVATE_KEY.strip())
+        return bool(_resolve_private_key(chain).strip())
     if kind == "evm":
         rpc = cfg["rpc"](settings)
-        return bool(settings.PAYOUT_EVM_PRIVATE_KEY.strip() and rpc.strip())
+        return bool(_resolve_private_key(chain).strip() and rpc.strip())
     return False
 
 
@@ -99,7 +110,7 @@ def execute_usdt_payout(chain: str, to_address: str, amount_net: float) -> str:
     if not cfg:
         raise ValueError(f"Auto payout not supported for chain {chain}")
 
-    if not settings.PAYOUT_AUTO_ENABLED:
+    if not settings.PAYOUT_AUTO_ENABLED and not is_payout_auto_enabled():
         raise ValueError("Auto payout is disabled (PAYOUT_AUTO_ENABLED=false)")
 
     if not _chain_ready(chain, cfg):
@@ -128,7 +139,7 @@ def _payout_trc20(to_address: str, amount_raw: int) -> str:
     from tronpy.keys import PrivateKey
     from tronpy.providers import HTTPProvider
 
-    key_hex = settings.PAYOUT_TRC20_PRIVATE_KEY.strip()
+    key_hex = _resolve_private_key("TRC20")
     if key_hex.startswith("0x"):
         key_hex = key_hex[2:]
 
@@ -168,7 +179,8 @@ def _payout_evm(chain: str, cfg: dict, to_address: str, amount_raw: int) -> str:
     if not w3.is_connected():
         raise RuntimeError(f"Cannot connect to {chain} RPC")
 
-    account = w3.eth.account.from_key(_normalize_evm_key(settings.PAYOUT_EVM_PRIVATE_KEY))
+    private_key = _resolve_private_key(chain)
+    account = w3.eth.account.from_key(_normalize_evm_key(private_key))
     contract = w3.eth.contract(
         address=Web3.to_checksum_address(cfg["contract"]),
         abi=ERC20_TRANSFER_ABI,

@@ -215,6 +215,7 @@ curl http://127.0.0.1:8000/api/health
 ### 平台收款地址
 
 - 管理员在后台 **收款地址** 页配置多公链 USDT 地址（TRC20 / ERC20 / BEP20 / ARBITRUM / POLYGON / SOL）
+- 每条地址可上传 **钱包收款二维码**（PNG/JPEG/WebP，≤2MB），会员在 **绩效结算** 页可见地址与二维码
 - 支持 **新增、编辑、启用/停用、删除**；变更写入 **审计日志**
 - 用户仅在 **绩效结算** 页看到当前启用的地址
 
@@ -291,7 +292,7 @@ TRON_API_KEY=可选
 | **结算** | 批量扫描结算、确认/驳回付款 |
 | **推广** | L1/L2 总览、奖励统计 |
 | **信号** | TV 模板管理、测试下发、分发日志 |
-| **收款地址** | 多链 USDT 地址 CRUD；**秒到/审核门槛** 热配置；自动打款状态 |
+| **收款地址** | 多链 USDT 地址 CRUD + **钱包二维码** 上传；**秒到/审核门槛** 热配置；自动打款状态 |
 | **提现** | 审核队列、秒到队列、手动/自动 TxHash |
 | **风控** | 风险告警、用户暂停 |
 | **执行** | 实时 WebSocket 监控、Supervisor 状态 |
@@ -475,9 +476,10 @@ curl -s http://127.0.0.1:8000/api/health | python3 -m json.tool
 
 - [ ] 容器 `backend` / `frontend` / `redis` healthy
 - [ ] `/api/health` → `production_ready: true`
-- [ ] 有 API 用户时出现 `[VPS STARTUP] 账户接管审计`
-- [ ] 无默认密钥 Security 警告
-- [ ] 管理后台已配置 USDT 收款地址
+- [ ] `backend/.env`：`SMS_DEV_MODE=false`、`EMAIL_DEV_MODE=false`，并配置 `SMS_ALIYUN_*` / `SMTP_*`
+- [ ] `SECRET_KEY` / `ENCRYPTION_KEY` / `WEBHOOK_SECRET` / `ADMIN_PASSWORD` 已改为强随机值
+- [ ] `FRONTEND_URL` / `API_PUBLIC_URL` 为公网域名或 VPS IP（非 localhost）
+- [ ] 管理后台 **收款地址** 已配置各公链 USDT 地址及钱包二维码
 - [ ] 秒到/审核门槛已按业务设定
 - [ ] （可选）`PAYOUT_AUTO_ENABLED` 与热钱包已配置
 
@@ -607,6 +609,9 @@ curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:6010/webhook \
 | `GET /api/admin/startup-audit` | VPS 接管审计 |
 | `GET /api/admin/system/audit-logs` | 审计日志 |
 | `GET /api/wallet/deposit-addresses` | 用户可见收款地址 |
+| `GET /api/deposit-addresses/{id}/qr` | 收款地址钱包二维码图片 |
+| `POST /api/admin/deposit-addresses/{id}/qr-image` | 管理员上传二维码（multipart） |
+| `DELETE /api/admin/deposit-addresses/{id}/qr-image` | 管理员删除二维码 |
 | `GET /api/wallet/withdraw/settings` | 提现门槛与链费用 |
 
 Swagger（仅内网）：`http://127.0.0.1:8000/docs`

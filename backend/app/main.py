@@ -37,6 +37,10 @@ def _ensure_sqlite_columns():
                 conn.execute(text("ALTER TABLE users ADD COLUMN oauth_google_id VARCHAR(64)"))
             if "oauth_github_id" not in cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN oauth_github_id VARCHAR(64)"))
+            if "oauth_twitter_id" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN oauth_twitter_id VARCHAR(64)"))
+            if "oauth_apple_id" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN oauth_apple_id VARCHAR(128)"))
             if "oauth_avatar_url" not in cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN oauth_avatar_url VARCHAR(512)"))
     if "trades" in insp.get_table_names():
@@ -49,6 +53,19 @@ def _ensure_sqlite_columns():
         with engine.begin() as conn:
             if "skipped_count" not in cols:
                 conn.execute(text("ALTER TABLE signal_dispatch_logs ADD COLUMN skipped_count INTEGER DEFAULT 0"))
+
+
+def _ensure_schema_migrations():
+    """Lightweight column patches for all database backends."""
+    from sqlalchemy import text, inspect
+
+    insp = inspect(engine)
+    if "platform_deposit_addresses" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("platform_deposit_addresses")}
+    if "qr_image_filename" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE platform_deposit_addresses ADD COLUMN qr_image_filename VARCHAR(128)"))
 
 
 def _seed_subscription_plans(db):
@@ -70,6 +87,7 @@ def init_db():
     log_security_warnings(validate_production_secrets())
     Base.metadata.create_all(bind=engine)
     _ensure_sqlite_columns()
+    _ensure_schema_migrations()
     db = SessionLocal()
     try:
         admin_user = db.query(User).filter(User.email == settings.ADMIN_EMAIL).first()

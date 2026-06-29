@@ -30,6 +30,14 @@ def _write_file(data: dict) -> None:
     RUNTIME_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def read_runtime_file() -> dict:
+    return _read_file()
+
+
+def write_runtime_file(data: dict) -> None:
+    _write_file(data)
+
+
 def get_withdraw_thresholds() -> dict:
     out = {
         "auto_max_usd": float(settings.WITHDRAW_AUTO_MAX_USD),

@@ -2,6 +2,15 @@ import { useEffect, useState } from 'react'
 import { useI18n } from '../i18n'
 import { authApi } from '../api'
 
+type Provider = 'google' | 'github' | 'twitter' | 'apple'
+
+type ProviderState = {
+  google: boolean
+  github: boolean
+  twitter: boolean
+  apple: boolean
+}
+
 function GoogleIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>
@@ -21,19 +30,43 @@ function GithubIcon() {
   )
 }
 
+function XIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+    </svg>
+  )
+}
+
+function AppleIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <path d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z" />
+    </svg>
+  )
+}
+
+const PROVIDERS: { id: Provider; icon: typeof GoogleIcon; labelKey: string }[] = [
+  { id: 'google', icon: GoogleIcon, labelKey: 'auth.oauthGoogle' },
+  { id: 'github', icon: GithubIcon, labelKey: 'auth.oauthGithub' },
+  { id: 'twitter', icon: XIcon, labelKey: 'auth.oauthTwitter' },
+  { id: 'apple', icon: AppleIcon, labelKey: 'auth.oauthApple' },
+]
+
 export default function OAuthSocialButtons() {
   const t = useI18n(s => s.t)
-  const [providers, setProviders] = useState({ google: false, github: false })
-  const [loading, setLoading] = useState<string | null>(null)
+  const [providers, setProviders] = useState<ProviderState>({
+    google: false, github: false, twitter: false, apple: false,
+  })
+  const [loading, setLoading] = useState<Provider | null>(null)
   const [hint, setHint] = useState('')
 
   useEffect(() => {
     authApi.oauthProviders().then(setProviders).catch(() => {})
   }, [])
 
-  const start = (provider: 'google' | 'github') => {
-    const enabled = provider === 'google' ? providers.google : providers.github
-    if (!enabled) {
+  const start = (provider: Provider) => {
+    if (!providers[provider]) {
       setHint(t('auth.oauthNotConfigured'))
       return
     }
@@ -45,13 +78,18 @@ export default function OAuthSocialButtons() {
   return (
     <div className="oauth-social">
       <div className="oauth-divider"><span>{t('auth.oauthOr')}</span></div>
-      <div className="oauth-btns">
-        <button type="button" className="btn btn-oauth btn-oauth-google" disabled={!!loading} onClick={() => start('google')}>
-          <GoogleIcon /> {loading === 'google' ? t('auth.oauthRedirect') : t('auth.oauthGoogle')}
-        </button>
-        <button type="button" className="btn btn-oauth btn-oauth-github" disabled={!!loading} onClick={() => start('github')}>
-          <GithubIcon /> {loading === 'github' ? t('auth.oauthRedirect') : t('auth.oauthGithub')}
-        </button>
+      <div className="oauth-btns oauth-btns-grid">
+        {PROVIDERS.map(({ id, icon: Icon, labelKey }) => (
+          <button
+            key={id}
+            type="button"
+            className={`btn btn-oauth btn-oauth-${id}`}
+            disabled={!!loading}
+            onClick={() => start(id)}
+          >
+            <Icon /> {loading === id ? t('auth.oauthRedirect') : t(labelKey)}
+          </button>
+        ))}
       </div>
       {hint && <p className="text-muted oauth-hint">{hint}</p>}
     </div>

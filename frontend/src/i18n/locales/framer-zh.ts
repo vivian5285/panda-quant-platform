@@ -107,12 +107,12 @@ export default {
     live: '分析中',
     confidence: 'Long Bias · 置信度',
     tags: {
-      trend: 'Trend · 趋势',
-      structure: 'Structure · 结构',
-      regime: 'Regime · 档位',
-      momentum: 'Momentum · 动量',
-      liquidity: 'Liquidity · 流动性',
-      probability: 'Probability · 概率',
+      trend: '趋势',
+      structure: '结构',
+      regime: '档位',
+      momentum: '动量',
+      liquidity: '流动性',
+      probability: '概率',
     },
     cards: {
       trend: {

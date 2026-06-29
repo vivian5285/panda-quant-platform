@@ -621,15 +621,36 @@ def bind_phone(
     return _profile(user)
 
 
+def _oauth_provider_column(provider: str):
+    return {
+        "google": User.oauth_google_id,
+        "github": User.oauth_github_id,
+        "twitter": User.oauth_twitter_id,
+        "apple": User.oauth_apple_id,
+    }.get(provider)
+
+
+def _set_oauth_provider_id(user: User, provider: str, provider_id: str) -> None:
+    if provider == "google":
+        user.oauth_google_id = provider_id
+    elif provider == "github":
+        user.oauth_github_id = provider_id
+    elif provider == "twitter":
+        user.oauth_twitter_id = provider_id
+    elif provider == "apple":
+        user.oauth_apple_id = provider_id
+
+
 def _oauth_login_or_register(db: Session, provider: str, profile: dict) -> User:
     provider_id = profile.get("provider_id") or ""
     if not provider_id:
         raise HTTPException(400, "OAuth profile missing id")
 
-    if provider == "google":
-        user = db.query(User).filter(User.oauth_google_id == provider_id).first()
-    else:
-        user = db.query(User).filter(User.oauth_github_id == provider_id).first()
+    col = _oauth_provider_column(provider)
+    if not col:
+        raise HTTPException(400, "Unsupported OAuth provider")
+
+    user = db.query(User).filter(col == provider_id).first()
 
     if user:
         if profile.get("avatar"):
@@ -638,13 +659,10 @@ def _oauth_login_or_register(db: Session, provider: str, profile: dict) -> User:
         return user
 
     email = (profile.get("email") or "").lower()
-    if email:
+    if email and not email.endswith(".oauth.local"):
         user = db.query(User).filter(User.email == email).first()
         if user:
-            if provider == "google":
-                user.oauth_google_id = provider_id
-            else:
-                user.oauth_github_id = provider_id
+            _set_oauth_provider_id(user, provider, provider_id)
             if profile.get("avatar"):
                 user.oauth_avatar_url = profile["avatar"]
             db.commit()
@@ -665,14 +683,39 @@ def _oauth_login_or_register(db: Session, provider: str, profile: dict) -> User:
         password_hash=hash_password(secrets.token_urlsafe(32)),
         referral_code=code,
         nickname=name,
-        oauth_google_id=provider_id if provider == "google" else None,
-        oauth_github_id=provider_id if provider == "github" else None,
         oauth_avatar_url=profile.get("avatar"),
     )
+    _set_oauth_provider_id(user, provider, provider_id)
     db.add(user)
     db.commit()
     db.refresh(user)
     return user
+
+
+def _oauth_finish_redirect(user: User, db: Session, request: Request) -> RedirectResponse:
+    frontend = settings.FRONTEND_URL.rstrip("/")
+    _require_active(user)
+    token = _login_result(user, db, request)
+    if token.requires_totp:
+        params = {
+            "requires_totp": "1",
+            "challenge_token": token.challenge_token or "",
+            "uid": token.uid,
+            "display_name": token.display_name,
+            "role": token.role,
+            "api_status": token.api_status or "",
+        }
+        return RedirectResponse(f"{frontend}/auth/callback?{urlencode(params)}")
+    params = {
+        "access_token": token.access_token,
+        "uid": token.uid,
+        "display_name": token.display_name,
+        "role": token.role,
+        "api_status": token.api_status or "",
+    }
+    if token.refresh_token:
+        params["refresh_token"] = token.refresh_token
+    return RedirectResponse(f"{frontend}/auth/callback#{urlencode(params)}")
 
 
 @router.get("/oauth/providers", response_model=OAuthProvidersResponse)
@@ -684,20 +727,16 @@ def oauth_providers():
 
 @router.get("/oauth/{provider}/start")
 def oauth_start(provider: str):
-    from app.services.oauth import (
-        oauth_providers_enabled, make_oauth_state,
-        google_authorize_url, github_authorize_url,
-    )
+    from app.services.oauth import OAUTH_PROVIDERS, oauth_providers_enabled, oauth_start_payload
     enabled = oauth_providers_enabled()
-    if provider not in ("google", "github") or not enabled.get(provider):
+    if provider not in OAUTH_PROVIDERS or not enabled.get(provider):
         raise HTTPException(400, "OAuth provider not configured")
-    state = make_oauth_state(provider)
-    url = google_authorize_url(state) if provider == "google" else github_authorize_url(state)
-    return RedirectResponse(url)
+    payload = oauth_start_payload(provider)
+    return RedirectResponse(payload["url"])
 
 
 @router.get("/oauth/{provider}/callback")
-def oauth_callback(
+def oauth_callback_get(
     provider: str,
     request: Request,
     db: Session = Depends(get_db),
@@ -705,41 +744,49 @@ def oauth_callback(
     state: str | None = None,
     error: str | None = None,
 ):
-    from app.services.oauth import (
-        verify_oauth_state, exchange_google_code, exchange_github_code,
+    return _oauth_callback(provider, request, db, code, state, error)
+
+
+@router.post("/oauth/{provider}/callback")
+async def oauth_callback_post(
+    provider: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    form = await request.form()
+    code = form.get("code")
+    state = form.get("state")
+    error = form.get("error")
+    return _oauth_callback(
+        provider,
+        request,
+        db,
+        str(code) if code else None,
+        str(state) if state else None,
+        str(error) if error else None,
     )
+
+
+def _oauth_callback(
+    provider: str,
+    request: Request,
+    db: Session,
+    code: str | None,
+    state: str | None,
+    error: str | None,
+):
+    from app.services.oauth import OAUTH_PROVIDERS, exchange_oauth_code, verify_oauth_state
     frontend = settings.FRONTEND_URL.rstrip("/")
     if error:
         return RedirectResponse(f"{frontend}/auth/callback?{urlencode({'error': error})}")
-    if provider not in ("google", "github") or not code or not state:
+    if provider not in OAUTH_PROVIDERS or not code or not state:
         return RedirectResponse(f"{frontend}/auth/callback?{urlencode({'error': 'OAuth failed'})}")
     if not verify_oauth_state(state, provider):
         return RedirectResponse(f"{frontend}/auth/callback?{urlencode({'error': 'Invalid OAuth state'})}")
     try:
-        profile = exchange_google_code(code) if provider == "google" else exchange_github_code(code)
+        profile = exchange_oauth_code(provider, code, state)
         user = _oauth_login_or_register(db, provider, profile)
-        _require_active(user)
-        token = _login_result(user, db, request)
-        if token.requires_totp:
-            params = {
-                "requires_totp": "1",
-                "challenge_token": token.challenge_token or "",
-                "uid": token.uid,
-                "display_name": token.display_name,
-                "role": token.role,
-                "api_status": token.api_status or "",
-            }
-            return RedirectResponse(f"{frontend}/auth/callback?{urlencode(params)}")
-        params = {
-            "access_token": token.access_token,
-            "uid": token.uid,
-            "display_name": token.display_name,
-            "role": token.role,
-            "api_status": token.api_status or "",
-        }
-        if token.refresh_token:
-            params["refresh_token"] = token.refresh_token
-        return RedirectResponse(f"{frontend}/auth/callback#{urlencode(params)}")
+        return _oauth_finish_redirect(user, db, request)
     except Exception as e:
         msg = str(e)[:200]
         return RedirectResponse(f"{frontend}/auth/callback?{urlencode({'error': msg})}")

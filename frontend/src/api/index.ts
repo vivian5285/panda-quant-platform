@@ -145,6 +145,7 @@ export const referralApi = {
 
 export const walletApi = {
   depositAddresses: () => api.get('/deposit-addresses').then(r => r.data),
+  depositAddressQrUrl: (id: number) => `/api/deposit-addresses/${id}/qr`,
   paySettlement: (id: number, chain: string, tx_hash: string, amount: number) =>
     api.post(`/settlements/${id}/pay`, { chain, tx_hash, amount }).then(r => r.data),
   rewardAccount: () => api.get('/reward-account').then(r => r.data),
@@ -204,9 +205,19 @@ export const adminApi = {
     api.patch(`/admin/deposit-addresses/${id}`, data).then(r => r.data),
   toggleDepositAddress: (id: number) => api.post(`/admin/deposit-addresses/${id}/toggle`).then(r => r.data),
   deleteDepositAddress: (id: number) => api.delete(`/admin/deposit-addresses/${id}`).then(r => r.data),
+  uploadDepositAddressQr: (id: number, file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return api.post(`/admin/deposit-addresses/${id}/qr-image`, fd).then(r => r.data)
+  },
+  deleteDepositAddressQr: (id: number) => api.delete(`/admin/deposit-addresses/${id}/qr-image`).then(r => r.data),
+  depositAddressQrUrl: (id: number) => `/api/deposit-addresses/${id}/qr`,
   withdrawSettings: () => api.get('/admin/withdraw/settings').then(r => r.data),
   updateWithdrawSettings: (auto_max_usd: number, review_min_usd: number) =>
     api.patch('/admin/withdraw/settings', { auto_max_usd, review_min_usd }).then(r => r.data),
+  payoutSettings: () => api.get('/admin/payout/settings').then(r => r.data),
+  updatePayoutSettings: (data: { auto_enabled?: boolean; private_keys?: Record<string, string> }) =>
+    api.patch('/admin/payout/settings', data).then(r => r.data),
   withdrawals: () => api.get('/admin/withdrawals').then(r => r.data),
   approveWithdrawal: (id: number) => api.post(`/admin/withdrawals/${id}/approve`).then(r => r.data),
   completeWithdrawal: (id: number, tx_hash: string, admin_note?: string) =>
