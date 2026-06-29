@@ -6,7 +6,6 @@ import { useI18n } from '../i18n'
 import { toast } from '../store/toast'
 import GlassCard from '../components/GlassCard'
 import AuthShell from '../components/AuthShell'
-import OAuthSocialButtons from '../components/OAuthSocialButtons'
 import RippleButton from '../components/ui/RippleButton'
 
 export default function Login() {
@@ -154,8 +153,6 @@ export default function Login() {
       <GlassCard className="auth-glass-card">
         <h2 className="auth-card-title">{t('auth.login')}</h2>
         <p className="text-muted auth-card-sub">{t('brand.tagline')}</p>
-
-        <OAuthSocialButtons />
 
         <div className="auth-mode-tabs">
           <button type="button" className={`btn ${mode === 'password' ? 'btn-primary' : 'btn-ghost'}`}

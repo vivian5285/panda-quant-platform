@@ -42,11 +42,8 @@ class LoginRequest(BaseModel):
     password: str
 
 
-class OAuthProvidersResponse(BaseModel):
-    google: bool = False
-    github: bool = False
-    twitter: bool = False
-    apple: bool = False
+class NicknameUpdate(BaseModel):
+    nickname: str = Field(min_length=1, max_length=32)
 
 
 class PayoutSettingsOut(BaseModel):
@@ -58,10 +55,6 @@ class PayoutSettingsUpdate(BaseModel):
     auto_enabled: Optional[bool] = None
     private_keys: Optional[dict[str, str]] = None
     clear_chains: Optional[list[str]] = None
-
-
-class NicknameUpdate(BaseModel):
-    nickname: str = Field(min_length=1, max_length=32)
 
 
 class ApiBindRequest(BaseModel):

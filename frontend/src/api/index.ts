@@ -68,7 +68,6 @@ export const authApi = {
     api.post('/auth/bind-email', { email, email_code, phone_code }).then(r => r.data),
     bindPhone: (phone: string, phone_code: string, email_code?: string) =>
     api.post('/auth/bind-phone', { phone, phone_code, email_code }).then(r => r.data),
-  oauthProviders: () => api.get('/auth/oauth/providers').then(r => r.data),
 }
 
 export type TradeQueryParams = { limit?: number; offset?: number; start?: string; end?: string }

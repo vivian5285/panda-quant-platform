@@ -135,16 +135,6 @@ export default {
     totpVerify: "Verify & Sign In",
     totpBack: "Back to login",
     totpError: "Invalid or expired TOTP code",
-    oauthOr: "Or continue with",
-    oauthGoogle: "Continue with Google",
-    oauthGithub: "Continue with GitHub",
-    oauthTwitter: "Continue with X",
-    oauthApple: "Continue with Apple",
-    oauthRedirect: "Redirecting…",
-    oauthFail: "OAuth sign-in failed",
-    oauthDisabled: "Account disabled — contact support",
-    oauthStateInvalid: "Login session expired — please try again",
-    oauthNotConfigured: "This provider is not configured. Set OAuth credentials in server .env",
     visual: {
       latency: {
         title: "Millisecond execution",

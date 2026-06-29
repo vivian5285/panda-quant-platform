@@ -314,7 +314,7 @@ TRON_API_KEY=可选
 | 页面 | 路径 | 说明 |
 |------|------|------|
 | 落地页 | `/` | 产品介绍 |
-| 注册/登录 | `/register` `/login` | 邮箱/手机验证码、OAuth（Google/GitHub） |
+| 注册/登录 | `/register` `/login` | 邮箱/手机验证码注册与登录 |
 | 仪表盘 | `/dashboard` | 账户概览、绩效结算横幅 |
 | API 管理 | `/api-manage` | 绑定币安合约 API |
 | 交易 | `/trading` | 交易控制、持仓状态 |
@@ -331,7 +331,7 @@ TRON_API_KEY=可选
 | 场景 | 验证 |
 |------|------|
 | 注册 | 邮箱或手机 + 验证码 + 密码 |
-| 登录 | 密码或验证码；支持 OAuth |
+| 登录 | 密码或手机/邮箱验证码 |
 | 安全操作 | 邮箱 + 手机 **双重验证码** |
 
 需双重验证：改登录密码、设/改提现密码、绑定/删除提现地址、提交链上提现。
@@ -379,7 +379,7 @@ TRON_API_KEY=可选
 | `ADMIN_PASSWORD` | 管理员密码 |
 | `WEBHOOK_SECRET` | TradingView Webhook 密钥 |
 | `FRONTEND_URL` | 前端地址（CORS、邀请链接） |
-| `API_PUBLIC_URL` | OAuth 回调基址 |
+| `API_PUBLIC_URL` | 公网 API 基址（Webhook、回调等） |
 
 ### 业务与结算
 
@@ -621,7 +621,7 @@ Swagger（仅内网）：`http://127.0.0.1:8000/docs`
 1. 域名 A 记录 → VPS IP  
 2. Nginx 反代 + HTTPS  
 3. `FRONTEND_URL` / `API_PUBLIC_URL` 改为 `https://…`  
-4. OAuth 控制台更新回调 URL  
+4. 更新 `FRONTEND_URL` / `API_PUBLIC_URL` 为生产域名  
 
 ---
 
@@ -649,7 +649,7 @@ Swagger（仅内网）：`http://127.0.0.1:8000/docs`
 - [x] 推广 L1/L2 分润 + 分级提现 + 地址簿
 - [x] 秒到额度后台热改 + 自动链上打款（热钱包）
 - [x] 管理员全域后台（用户/财务/信号/审计/执行监控）
-- [x] 币安 ETHUSDT 成交同步、OAuth 登录
+- [x] 币安 ETHUSDT 成交同步、手机/邮箱验证码登录
 - [x] 钉钉管理员交易告警
 - [ ] OKX / Bybit 等交易所 API 适配（二期）
 - [ ] 域名 HTTPS 一键脚本

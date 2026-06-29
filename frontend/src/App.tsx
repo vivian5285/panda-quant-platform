@@ -7,7 +7,6 @@ import AuthBootstrap from './components/AuthBootstrap'
 import Landing from './pages/Landing'
 import Login from './pages/Login'
 import Register from './pages/Register'
-import OAuthCallback from './pages/OAuthCallback'
 import Help from './pages/Help'
 import Privacy from './pages/Privacy'
 import Terms from './pages/Terms'
@@ -60,7 +59,6 @@ export default function App() {
           <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
-          <Route path="/auth/callback" element={<OAuthCallback />} />
           <Route path="/help" element={<Help />} />
           <Route path="/privacy" element={<Privacy />} />
           <Route path="/terms" element={<Terms />} />

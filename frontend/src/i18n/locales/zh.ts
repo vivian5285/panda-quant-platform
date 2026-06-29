@@ -135,16 +135,6 @@ export default {
     totpVerify: "验证并登录",
     totpBack: "返回登录",
     totpError: "TOTP 验证码错误或已过期",
-    oauthOr: "或使用第三方登录",
-    oauthGoogle: "Google 登录",
-    oauthGithub: "GitHub 登录",
-    oauthTwitter: "X 登录",
-    oauthApple: "Apple 登录",
-    oauthRedirect: "跳转中…",
-    oauthFail: "第三方登录失败",
-    oauthDisabled: "账户已禁用，请联系客服",
-    oauthStateInvalid: "登录状态已过期，请重新授权",
-    oauthNotConfigured: "该登录方式尚未配置，请在服务端 .env 设置对应 OAuth 密钥",
     visual: {
       latency: {
         title: "毫秒级执行",
