@@ -35,6 +35,18 @@ MESSAGES: dict[str, dict[str, str]] = {
         "zh": "API 验证通过 · 合约账户可正常交易",
         "en": "API verified · Futures account ready for trading",
     },
+    "api.withdraw_enabled": {
+        "zh": "API 仍开启提现权限 — 请在币安关闭 Withdraw 后重新验证",
+        "en": "API still has withdraw permission — disable Withdraw on Binance and retry",
+    },
+    "api.no_futures_api_flag": {
+        "zh": "API 未开启合约（Futures）权限 — 请在币安 API 管理中启用",
+        "en": "API Futures permission flag is off — enable Futures in Binance API settings",
+    },
+    "api.security_codes_required": {
+        "zh": "绑定 API 需邮箱 + 手机安全验证码",
+        "en": "API binding requires email + SMS security codes",
+    },
     "api.not_bound": {"zh": "尚未绑定 API", "en": "API not bound yet"},
     "api.verify_fail": {"zh": "API 验证失败", "en": "API verification failed"},
     "api.bind_success": {"zh": "绑定成功 · 初始本金 ${amount}", "en": "Bound successfully · Initial principal ${amount}"},

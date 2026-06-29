@@ -8,6 +8,7 @@ from app.models import User, Trade, TradeLog, ApiStatus
 from app.schemas import DashboardStats, UserProfile
 from app.services.dispatcher import supervisor_pool
 from app.services.principal import fetch_live_equity
+from app.services.settlement import get_pending_settlement
 from app.services.user_lookup import display_name
 
 
@@ -71,6 +72,17 @@ def build_dashboard_stats(db: Session, user: User) -> DashboardStats:
         Trade.user_id == user.id, Trade.status == "closed"
     ).scalar() or 0
 
+    pending = get_pending_settlement(db, user.id)
+    pending_out = None
+    if pending:
+        pending_out = {
+            "id": pending.id,
+            "user_payable": pending.user_payable,
+            "payment_status": pending.payment_status,
+            "period_start": pending.period_start.isoformat(),
+            "period_end": pending.period_end.isoformat(),
+        }
+
     return DashboardStats(
         balance=balance,
         unrealized_pnl=unrealized,
@@ -81,4 +93,6 @@ def build_dashboard_stats(db: Session, user: User) -> DashboardStats:
         cycle_pnl=cycle_pnl,
         initial_principal_at=user.initial_principal_at,
         open_position=position,
+        settlement_blocked=pending is not None,
+        pending_settlement=pending_out,
     )

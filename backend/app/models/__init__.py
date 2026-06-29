@@ -29,6 +29,7 @@ class PaymentStatus(str, enum.Enum):
 class WithdrawalStatus(str, enum.Enum):
     PENDING = "pending"
     AUTO_APPROVED = "auto_approved"
+    PROCESSING = "processing"
     APPROVED = "approved"
     REJECTED = "rejected"
     COMPLETED = "completed"
@@ -84,6 +85,7 @@ class Trade(Base):
     entry_price = Column(Float, default=0.0)
     exit_price = Column(Float, default=0.0)
     realized_pnl = Column(Float, default=0.0)
+    funding_fee = Column(Float, default=0.0)
     regime = Column(Integer, default=3)
     tv_tp1 = Column(Float, default=0.0)
     tv_tp2 = Column(Float, default=0.0)
@@ -328,5 +330,6 @@ class AdminAlert(Base):
 from app.models.platform import (  # noqa: E402
     Strategy, StrategyVersion, UserNotification, AuditLog, UserOpenApiKey,
     UserPreference, LoginRecord, RefreshToken, SubscriptionPlan, UserSubscription,
-    Invoice, RiskAlert, StaffRole, STAFF_ROLES,
+    Invoice, RiskAlert, StaffRole, STAFF_ROLES, TvSignalTemplate, SignalDispatchLog, SignalDispatchUserResult,
+    WebhookIdempotencyKey,
 )

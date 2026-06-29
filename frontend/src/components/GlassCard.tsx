@@ -12,7 +12,7 @@ interface Props {
 export default function GlassCard({ children, className = '', delay = 0, onClick, style }: Props) {
   return (
     <motion.div
-      className={`glass ${className}`}
+      className={`glass framer-glass-cell ${className}`}
       style={style}
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}

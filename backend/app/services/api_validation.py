@@ -27,6 +27,27 @@ def validate_binance_api(api_key: str, api_secret: str, user_id: int = 0) -> dic
             **summary,
         }
 
+    restrictions = client.get_api_key_restrictions()
+    if restrictions:
+        if restrictions.get("enableWithdrawals"):
+            return {
+                "valid": False,
+                "message_key": "api.withdraw_enabled",
+                **summary,
+                "withdraw_disabled": False,
+                "enable_futures": restrictions.get("enableFutures"),
+            }
+        if restrictions.get("enableFutures") is False:
+            return {
+                "valid": False,
+                "message_key": "api.no_futures_api_flag",
+                **summary,
+                "withdraw_disabled": True,
+                "enable_futures": False,
+            }
+    withdraw_disabled = not bool(restrictions.get("enableWithdrawals")) if restrictions else None
+    enable_futures = restrictions.get("enableFutures") if restrictions else None
+
     one_way = client.ensure_one_way_mode()
     price = client.get_current_price(settings.SYMBOL)
 
@@ -54,6 +75,8 @@ def validate_binance_api(api_key: str, api_secret: str, user_id: int = 0) -> dic
         "can_trade": summary.get("can_trade", True),
         "one_way_mode": one_way,
         "leverage_ok": leverage_ok,
+        "withdraw_disabled": withdraw_disabled if withdraw_disabled is not None else True,
+        "enable_futures": enable_futures if enable_futures is not None else True,
         "symbol": settings.SYMBOL,
         "symbol_price": price,
         "leverage": settings.LEVERAGE,

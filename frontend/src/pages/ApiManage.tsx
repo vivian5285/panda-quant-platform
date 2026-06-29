@@ -1,10 +1,13 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { ShieldAlert, CheckCircle2, XCircle, RefreshCw } from 'lucide-react'
 import Layout from '../components/Layout'
 import PageHeader from '../components/PageHeader'
 import GlassCard from '../components/GlassCard'
-import { userApi } from '../api'
+import DualVerifyFields from '../components/DualVerifyFields'
+import { authApi, settingsApi, userApi } from '../api'
 import { useI18n } from '../i18n'
+import { toast } from '../store/toast'
 
 type VerifyResult = {
   valid: boolean
@@ -16,6 +19,8 @@ type VerifyResult = {
   can_trade: boolean
   one_way_mode: boolean
   leverage_ok: boolean
+  withdraw_disabled?: boolean | null
+  enable_futures?: boolean | null
   symbol: string
   symbol_price: number
   leverage: number
@@ -30,10 +35,37 @@ export default function ApiManage() {
   const [apiSecret, setApiSecret] = useState('')
   const [verify, setVerify] = useState<VerifyResult | null>(null)
   const [boundStatus, setBoundStatus] = useState<VerifyResult | null>(null)
-  const [msg, setMsg] = useState('')
+  const [profile, setProfile] = useState<any>(null)
+  const [totpEnabled, setTotpEnabled] = useState<boolean | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [checking, setChecking] = useState(false)
+  const [secEmailCode, setSecEmailCode] = useState('')
+  const [secPhoneCode, setSecPhoneCode] = useState('')
+  const [devEmail, setDevEmail] = useState('')
+  const [devPhone, setDevPhone] = useState('')
+
+  const needsDualVerify = profile?.has_email && profile?.has_phone
+
+  const isBindReady = (v: VerifyResult | null) => {
+    if (!v?.valid) return false
+    if (v.withdraw_disabled !== true) return false
+    if (!v.can_trade) return false
+    if (!v.one_way_mode) return false
+    if (!v.leverage_ok) return false
+    if (v.enable_futures === false) return false
+    return true
+  }
+
+  const bindReady = isBindReady(verify)
+  const dualCodesOk = !needsDualVerify || (secEmailCode.length > 0 && secPhoneCode.length > 0)
+  const canBind = bindReady && dualCodesOk && !!apiKey && !!apiSecret
+
+  useEffect(() => {
+    userApi.apiStatus().then(setBoundStatus).catch(() => {})
+    authApi.me().then(setProfile).catch(() => {})
+    settingsApi.get().then(p => setTotpEnabled(!!p.totp_enabled)).catch(() => {})
+  }, [])
 
   const handleVerify = async () => {
     if (!apiKey || !apiSecret) {
@@ -71,22 +103,30 @@ export default function ApiManage() {
   const handleBind = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
-    setMsg('')
     setError('')
     try {
-      if (!verify?.valid) {
+      if (!verify?.valid || !isBindReady(verify)) {
         const res = await userApi.verifyApi(apiKey, apiSecret)
         setVerify(res)
-        if (!res.valid) {
-          setError(res.message)
+        if (!isBindReady(res)) {
+          setError(res.message || t('api.bindBlockedHint'))
           return
         }
       }
-      const res = await userApi.bindApi(apiKey, apiSecret)
-      setMsg(res.message || t('api.bindSuccessMsg', { amount: `$${res.initial_principal?.toFixed(2)}` }))
+      const res = await userApi.bindApi(
+        apiKey,
+        apiSecret,
+        needsDualVerify ? secEmailCode : undefined,
+        needsDualVerify ? secPhoneCode : undefined,
+      )
+      toast.success(res.message || t('api.bindSuccessMsg', { amount: `$${res.initial_principal?.toFixed(2)}` }))
+      const snapshot = await userApi.apiStatus()
+      setBoundStatus(snapshot)
       setApiKey('')
       setApiSecret('')
       setVerify(null)
+      setSecEmailCode('')
+      setSecPhoneCode('')
     } catch (err: any) {
       setError(err.response?.data?.detail || t('api.bindFail'))
     } finally {
@@ -94,15 +134,22 @@ export default function ApiManage() {
     }
   }
 
+  const flag = (ok: boolean | null | undefined) => {
+    if (ok === null || ok === undefined) return '—'
+    return ok ? '✓' : '✗'
+  }
+
   const renderVerifyPanel = (v: VerifyResult, title: string) => (
-    <div className={`verify-panel ${v.valid ? 'verify-ok' : 'verify-fail'}`} style={{ marginBottom: 20 }}>
-      <p style={{ fontWeight: 600, marginBottom: 8 }}>{title}</p>
-      <p style={{ fontSize: 13, marginBottom: 12 }}>{v.message}</p>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, fontSize: 13 }}>
+    <div className={`verify-panel ${v.valid ? 'verify-ok' : 'verify-fail'}`}>
+      <p className="verify-panel-title">{title}</p>
+      <p className="verify-panel-msg">{v.message}</p>
+      <div className="verify-grid">
         <div><span className="text-muted">{t('api.futuresEquity')}</span><br />${v.total_balance.toFixed(2)}</div>
         <div><span className="text-muted">{t('api.availableBalance')}</span><br />${v.available_balance.toFixed(2)}</div>
         <div><span className="text-muted">{t('api.unrealizedPnl')}</span><br />${v.unrealized_pnl.toFixed(2)}</div>
         <div><span className="text-muted">{t('api.tradePermission')}</span><br />{v.can_trade ? '✓' : '✗'}</div>
+        <div><span className="text-muted">{t('api.withdrawDisabled')}</span><br />{flag(v.withdraw_disabled)}</div>
+        <div><span className="text-muted">{t('api.futuresFlag')}</span><br />{flag(v.enable_futures ?? v.can_trade)}</div>
         <div><span className="text-muted">{t('api.oneWayMode')}</span><br />{v.one_way_mode ? '✓' : '✗'}</div>
         <div><span className="text-muted">{t('api.leverage')} {v.leverage}x</span><br />{v.leverage_ok ? '✓' : '✗'}</div>
         {v.initial_principal > 0 && (
@@ -115,8 +162,26 @@ export default function ApiManage() {
   return (
     <Layout>
       <PageHeader title={t('api.title')} />
-      <GlassCard className="p-8" style={{ maxWidth: 560 }} key={locale}>
-        <p className="text-secondary" style={{ fontSize: 14, marginBottom: 20, lineHeight: 1.6 }}>
+      <div className="api-danger-banner">
+        <ShieldAlert size={20} />
+        <div>
+          <strong>{t('api.securityTitle')}</strong>
+          <p>{t('api.sec1Highlight')}{t('api.sec1Detail')} · {t('api.sec2Warn')}{t('api.sec2Detail')}</p>
+        </div>
+      </div>
+
+      {totpEnabled === false && (
+        <div className="api-welcome-banner">
+          <ShieldAlert size={18} />
+          <div>
+            <strong>{t('api.totpRecommend')}</strong>
+            <p>{t('profile.totpRecommendDesc')} · <Link to="/profile">{t('api.totpRecommendLink')}</Link></p>
+          </div>
+        </div>
+      )}
+
+      <GlassCard className="p-8 api-page-panel" key={locale}>
+        <p className="text-secondary api-intro">
           {t('api.intro1')}
           <strong>{t('api.introBinance')}</strong>
           {t('api.intro2')}
@@ -152,7 +217,7 @@ export default function ApiManage() {
           </ul>
         </div>
 
-        <div style={{ marginBottom: 16 }}>
+        <div className="api-actions">
           <button type="button" className="btn btn-secondary" disabled={checking} onClick={handleCheckBound}>
             <RefreshCw size={14} />
             {checking ? t('api.checking') : t('api.recheckBound')}
@@ -170,7 +235,7 @@ export default function ApiManage() {
             <input className="input" type="password" value={apiSecret} onChange={e => setApiSecret(e.target.value)} placeholder={t('api.secretPh')} required />
           </div>
 
-          <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
+          <div className="api-actions">
             <button type="button" className="btn btn-secondary" disabled={checking || !apiKey || !apiSecret} onClick={handleVerify}>
               {checking ? t('api.verifying') : t('api.verify')}
             </button>
@@ -178,13 +243,65 @@ export default function ApiManage() {
 
           {verify && renderVerifyPanel(verify, t('api.verifyResultTitle'))}
 
-          {msg && <div className="flash-msg">{msg}</div>}
+          {needsDualVerify && (
+            <GlassCard className="p-4 api-bind-security">
+              <p className="text-muted form-hint-sm">{t('api.bindSecurityHint')}</p>
+              <DualVerifyFields
+                emailCode={secEmailCode}
+                phoneCode={secPhoneCode}
+                onEmailCode={setSecEmailCode}
+                onPhoneCode={setSecPhoneCode}
+                devEmail={devEmail}
+                devPhone={devPhone}
+                onDevCodes={(e, p) => { setDevEmail(e || ''); setDevPhone(p || '') }}
+              />
+            </GlassCard>
+          )}
+
+          {verify && !bindReady && (
+            <p className="form-error form-hint-sm">{t('api.bindBlockedHint')}</p>
+          )}
+
           {error && <p className="form-error">{error}</p>}
-          <button className="btn btn-primary" disabled={loading || checking}>
+          <button className="btn btn-primary" disabled={loading || checking || !canBind}>
             {loading ? t('api.binding') : t('api.bind')}
           </button>
         </form>
       </GlassCard>
+
+      {boundStatus?.valid && (
+        <GlassCard className="p-6 section-mt-lg">
+          <h3 className="card-heading">{t('api.unbindTitle')}</h3>
+          <p className="text-muted text-sm section-mb-sm">{t('api.unbindHint')}</p>
+          {needsDualVerify && (
+            <DualVerifyFields
+              emailCode={secEmailCode}
+              phoneCode={secPhoneCode}
+              onEmailCode={setSecEmailCode}
+              onPhoneCode={setSecPhoneCode}
+              devEmail={devEmail}
+              devPhone={devPhone}
+              onDevCodes={(e, p) => { setDevEmail(e || ''); setDevPhone(p || '') }}
+            />
+          )}
+          <button className="btn btn-danger section-mt-sm" type="button" disabled={loading || (needsDualVerify && (!secEmailCode || !secPhoneCode))}
+            onClick={async () => {
+              setLoading(true)
+              try {
+                await userApi.unbindApi(secEmailCode, secPhoneCode)
+                toast.success(t('api.unbindSuccess'))
+                setBoundStatus(null)
+                setVerify(null)
+              } catch (err: any) {
+                toast.error(err.response?.data?.detail || t('api.unbindFail'))
+              } finally {
+                setLoading(false)
+              }
+            }}>
+            {t('api.unbindBtn')}
+          </button>
+        </GlassCard>
+      )}
     </Layout>
   )
 }

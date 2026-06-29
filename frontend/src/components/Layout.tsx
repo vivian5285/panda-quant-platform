@@ -1,50 +1,49 @@
 import { NavLink, Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../store/auth'
 import { useI18n } from '../i18n'
+import { useTheme } from '../store/theme'
 import GeminiLogo from './GeminiLogo'
 import NotificationDropdown from './NotificationDropdown'
 import TopToolbar from './TopToolbar'
 import AppSearchNav, { SearchNavItem } from './AppSearchNav'
+import ToastHost from './ui/ToastHost'
 import {
-  LayoutDashboard, ArrowLeftRight, ScrollText, Link2, Wallet, Shield, LogOut,
-  Menu, X, Banknote, UserCircle, TrendingUp, KeyRound,
+  LayoutDashboard, ArrowLeftRight, Wallet, LogOut,
+  Menu, X, UserCircle, TrendingUp, KeyRound, BarChart3, ShieldAlert, Share2, Layers,
+  Sparkles, HelpCircle,
 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  const { displayName, logout, isAdmin, role } = useAuth()
+  const { displayName, logout, uid } = useAuth()
   const locale = useI18n(s => s.locale)
   const t = useI18n(s => s.t)
   const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
 
-  const userNav = [
+  useEffect(() => {
+    useTheme.getState().setTheme('dark')
+  }, [])
+
+  const nav = [
     { to: '/dashboard', icon: LayoutDashboard, label: t('nav.dashboard') },
+    { to: '/strategies', icon: Sparkles, label: t('nav.strategies') },
     { to: '/trading', icon: TrendingUp, label: t('nav.trading') },
+    { to: '/positions', icon: Layers, label: t('nav.positions') },
     { to: '/trades', icon: ArrowLeftRight, label: t('nav.trades') },
-    { to: '/logs', icon: ScrollText, label: t('nav.logs') },
+    { to: '/risk', icon: ShieldAlert, label: t('nav.risk') },
     { to: '/api', icon: KeyRound, label: t('nav.api') },
-    { to: '/referrals', icon: Link2, label: t('nav.referrals') },
+    { to: '/analytics', icon: BarChart3, label: t('nav.analytics') },
+    { to: '/help', icon: HelpCircle, label: t('nav.help') },
+    { to: '/referrals', icon: Share2, label: t('nav.referrals') },
     { to: '/settlements', icon: Wallet, label: t('nav.settlements') },
-    { to: '/withdraw', icon: Banknote, label: t('nav.withdraw') },
     { to: '/profile', icon: UserCircle, label: t('nav.profile') },
   ]
 
-  const adminNav = [{ to: '/admin', icon: Shield, label: t('nav.admin') }]
-  const nav = [...userNav, ...(isAdmin() ? adminNav : [])]
-
   const searchItems: SearchNavItem[] = useMemo(() => {
-    const core = nav.map(({ to, label }) => ({ to, label }))
-    const extra = [
-      { to: '/help', label: t('nav.help'), keywords: 'help faq docs' },
-      { to: '/settings', label: t('nav.settings'), keywords: 'settings 2fa notification' },
-      { to: '/strategies', label: t('nav.strategies'), keywords: 'strategy webhook' },
-      { to: '/signals', label: t('nav.signals'), keywords: 'ai indicator signal' },
-      { to: '/analytics', label: t('nav.analytics'), keywords: 'sharpe analytics' },
-    ]
-    const seen = new Set(core.map(c => c.to))
-    return [...core, ...extra.filter(e => !seen.has(e.to))]
-  }, [locale, role, t])
+    const core: SearchNavItem[] = nav.map(({ to, label }) => ({ to, label }))
+    return [...core, { to: '/withdraw', label: t('nav.withdraw'), keywords: 'withdraw reward transfer' }]
+  }, [locale, t, nav])
 
   const handleLogout = () => {
     logout()
@@ -80,7 +79,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   )
 
   return (
-    <div className="app-shell">
+    <div className="framer-site app-console app-shell">
       <TopToolbar />
       <div className="desktop-sidebar">{sidebar}</div>
 
@@ -91,7 +90,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       )}
 
       <main className="app-main">
-        <div className="app-topbar glass">
+        <div className="app-topbar glass framer-glass-cell">
           <button type="button" className="btn btn-ghost mobile-menu-btn" onClick={() => setMobileOpen(!mobileOpen)}>
             {mobileOpen ? <X size={18} /> : <Menu size={18} />}
           </button>
@@ -100,8 +99,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <NotificationDropdown />
           </div>
         </div>
+        <div className="user-scope-bar">
+          <span>{t('scope.userAccount')}</span>
+          {uid && <span className="user-scope-uid">UID {uid}</span>}
+        </div>
         <div className="animate-in app-content">{children}</div>
       </main>
+      <ToastHost />
     </div>
   )
 }

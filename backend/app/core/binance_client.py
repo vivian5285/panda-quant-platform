@@ -151,3 +151,42 @@ class BinanceClient:
             return True
         except Exception:
             return False
+
+    def get_api_key_restrictions(self) -> dict:
+        """Binance API key permission flags (withdraw, futures, etc.)."""
+        try:
+            return self.client.get_account_api_restrictions() or {}
+        except Exception as e:
+            logger.warning(f"[User {self.user_id}] api restrictions fetch failed: {e}")
+            return {}
+
+    def get_funding_fees(self, symbol="ETHUSDT", start_time_ms: int | None = None) -> float:
+        """Sum FUNDING_FEE income since position open (negative = paid by user)."""
+        try:
+            params: dict = {"symbol": symbol, "incomeType": "FUNDING_FEE", "limit": 100}
+            if start_time_ms:
+                params["startTime"] = start_time_ms
+            rows = self.client.futures_income_history(**params)
+            return round(sum(float(r.get("income", 0)) for r in rows), 4)
+        except Exception as e:
+            logger.warning(f"[User {self.user_id}] funding fee fetch failed: {e}")
+            return 0.0
+
+    def get_account_trades(
+        self,
+        symbol: str = "ETHUSDT",
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """USDT-M perpetual account trade history (fills)."""
+        try:
+            params: dict = {"symbol": symbol, "limit": min(limit, 1000)}
+            if start_time_ms:
+                params["startTime"] = start_time_ms
+            if end_time_ms:
+                params["endTime"] = end_time_ms
+            return self.client.futures_account_trades(**params) or []
+        except Exception as e:
+            logger.warning(f"[User {self.user_id}] account trades fetch failed: {e}")
+            return []

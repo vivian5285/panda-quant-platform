@@ -1,11 +1,13 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { authApi } from '../api'
 import { useAuth } from '../store/auth'
 import { useI18n } from '../i18n'
+import { toast } from '../store/toast'
 import GlassCard from '../components/GlassCard'
 import AuthShell from '../components/AuthShell'
 import OAuthSocialButtons from '../components/OAuthSocialButtons'
+import RippleButton from '../components/ui/RippleButton'
 
 export default function Login() {
   const locale = useI18n(s => s.locale)
@@ -17,6 +19,9 @@ export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
+  const [totpCode, setTotpCode] = useState('')
+  const [challengeToken, setChallengeToken] = useState('')
+  const [pendingUser, setPendingUser] = useState<{ uid: string; display_name: string; role: string; api_status?: string } | null>(null)
   const [remember, setRemember] = useState(true)
   const [countdown, setCountdown] = useState(0)
   const [devCode, setDevCode] = useState('')
@@ -25,13 +30,47 @@ export default function Login() {
   const { setAuth } = useAuth()
   const navigate = useNavigate()
 
+  useEffect(() => {
+    const saved = localStorage.getItem('remember_account')
+    if (saved) setAccount(saved)
+  }, [])
+
+  const navigatePostLogin = (data: { role?: string; api_status?: string }) => {
+    if (data.role === 'admin') navigate('/admin')
+    else if (data.api_status && data.api_status !== 'active') navigate('/api')
+    else navigate('/dashboard')
+  }
+
   const finishLogin = (data: any) => {
+    if (data?.requires_totp && data.challenge_token) {
+      setChallengeToken(data.challenge_token)
+      setPendingUser({ uid: data.uid, display_name: data.display_name, role: data.role, api_status: data.api_status })
+      setError('')
+      return
+    }
     if (!data?.access_token) {
+      toast.error(t('auth.loginRespError'))
       setError(t('auth.loginRespError'))
       return
     }
     setAuth(data.access_token, data.uid, data.display_name, data.role)
-    navigate(data.role === 'admin' ? '/admin' : '/dashboard')
+    if (remember && account) localStorage.setItem('remember_account', account)
+    else localStorage.removeItem('remember_account')
+    navigatePostLogin(data)
+  }
+
+  const submitTotp = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setLoading(true)
+    setError('')
+    try {
+      finishLogin(await authApi.loginTotp(challengeToken, totpCode))
+    } catch {
+      toast.error(t('auth.totpError'))
+      setError(t('auth.totpError'))
+    } finally {
+      setLoading(false)
+    }
   }
 
   const handlePasswordLogin = async (e: React.FormEvent) => {
@@ -41,6 +80,7 @@ export default function Login() {
     try {
       finishLogin(await authApi.login(account, password))
     } catch {
+      toast.error(t('auth.loginError'))
       setError(t('auth.loginError'))
     } finally {
       setLoading(false)
@@ -59,7 +99,9 @@ export default function Login() {
         setCountdown(c => { if (c <= 1) { clearInterval(timer); return 0 }; return c - 1 })
       }, 1000)
     } catch (err: any) {
-      setError(err.response?.data?.detail || t('auth.sendFail'))
+      const msg = err.response?.data?.detail || t('auth.sendFail')
+      toast.error(msg)
+      setError(msg)
     } finally { /* noop */ }
   }
 
@@ -73,15 +115,43 @@ export default function Login() {
         : await authApi.loginEmail(email, code)
       finishLogin(data)
     } catch (err: any) {
-      setError(err.response?.data?.detail || t('auth.codeError'))
+      const msg = err.response?.data?.detail || t('auth.codeError')
+      toast.error(msg)
+      setError(msg)
     } finally {
       setLoading(false)
     }
   }
 
+  if (challengeToken) {
+    return (
+      <AuthShell>
+        <GlassCard className="auth-glass-card">
+          <h2 className="auth-card-title">{t('auth.totpTitle')}</h2>
+          <p className="text-muted auth-card-sub">{t('auth.totpSubtitle', { name: pendingUser?.display_name || pendingUser?.uid || '' })}</p>
+          <form onSubmit={submitTotp}>
+            <div className="form-field">
+              <label className="form-label">{t('auth.totpCode')}</label>
+              <input className="input" value={totpCode} onChange={e => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 8))}
+                placeholder="000000" inputMode="numeric" autoComplete="one-time-code" required />
+            </div>
+            {error && <p className="form-error">{error}</p>}
+            <RippleButton type="submit" className="btn btn-auth-primary auth-submit" disabled={loading}>
+              {loading ? t('auth.loggingIn') : t('auth.totpVerify')}
+            </RippleButton>
+            <button type="button" className="btn btn-ghost auth-submit auth-submit-spaced"
+              onClick={() => { setChallengeToken(''); setPendingUser(null); setTotpCode('') }}>
+              {t('auth.totpBack')}
+            </button>
+          </form>
+        </GlassCard>
+      </AuthShell>
+    )
+  }
+
   return (
     <AuthShell>
-      <GlassCard className="p-8 auth-glass-card">
+      <GlassCard className="auth-glass-card">
         <h2 className="auth-card-title">{t('auth.login')}</h2>
         <p className="text-muted auth-card-sub">{t('brand.tagline')}</p>
 
@@ -89,9 +159,9 @@ export default function Login() {
 
         <div className="auth-mode-tabs">
           <button type="button" className={`btn ${mode === 'password' ? 'btn-primary' : 'btn-ghost'}`}
-            style={{ flex: 1, fontSize: 13 }} onClick={() => setMode('password')}>{t('auth.passwordLogin')}</button>
+            onClick={() => setMode('password')}>{t('auth.passwordLogin')}</button>
           <button type="button" className={`btn ${mode === 'code' ? 'btn-primary' : 'btn-ghost'}`}
-            style={{ flex: 1, fontSize: 13 }} onClick={() => setMode('code')}>{t('auth.codeLogin')}</button>
+            onClick={() => setMode('code')}>{t('auth.codeLogin')}</button>
         </div>
 
         {mode === 'password' ? (
@@ -109,17 +179,17 @@ export default function Login() {
               {t('auth.rememberMe')}
             </label>
             {error && <p className="form-error">{error}</p>}
-            <button type="submit" className="btn btn-primary auth-submit" disabled={loading}>
+            <RippleButton type="submit" className="btn btn-auth-primary auth-submit" disabled={loading}>
               {loading ? t('auth.loggingIn') : t('auth.login')}
-            </button>
+            </RippleButton>
           </form>
         ) : (
           <form key={locale} onSubmit={handleCodeLogin}>
-            <div className="auth-mode-tabs" style={{ marginBottom: 16 }}>
+            <div className="auth-mode-tabs auth-mode-tabs--compact">
               <button type="button" className={`btn ${codeChannel === 'phone' ? 'btn-primary' : 'btn-ghost'}`}
-                style={{ flex: 1, fontSize: 12 }} onClick={() => setCodeChannel('phone')}>{t('auth.phoneCode')}</button>
+                onClick={() => setCodeChannel('phone')}>{t('auth.phoneCode')}</button>
               <button type="button" className={`btn ${codeChannel === 'email' ? 'btn-primary' : 'btn-ghost'}`}
-                style={{ flex: 1, fontSize: 12 }} onClick={() => setCodeChannel('email')}>{t('auth.emailCode')}</button>
+                onClick={() => setCodeChannel('email')}>{t('auth.emailCode')}</button>
             </div>
             {codeChannel === 'phone' ? (
               <div className="form-field">
@@ -132,17 +202,17 @@ export default function Login() {
                 <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} required />
               </div>
             )}
-            <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-              <input className="input" value={code} onChange={e => setCode(e.target.value)} placeholder={t('auth.codePh')} required style={{ flex: 1 }} />
+            <div className="auth-code-row">
+              <input className="input" value={code} onChange={e => setCode(e.target.value)} placeholder={t('auth.codePh')} required />
               <button type="button" className="btn btn-ghost" disabled={countdown > 0 || (codeChannel === 'phone' ? !phone : !email)} onClick={sendCode}>
                 {countdown > 0 ? `${countdown}s` : t('auth.getCode')}
               </button>
             </div>
-            {devCode && <p className="text-muted" style={{ fontSize: 12, marginBottom: 12 }}>{t('auth.devCode')}: {devCode}</p>}
+            {devCode && <p className="text-muted auth-dev-hint">{t('auth.devCode')}: {devCode}</p>}
             {error && <p className="form-error">{error}</p>}
-            <button type="submit" className="btn btn-primary auth-submit" disabled={loading}>
+            <RippleButton type="submit" className="btn btn-auth-primary auth-submit" disabled={loading}>
               {loading ? t('auth.loggingIn') : t('auth.codeLogin')}
-            </button>
+            </RippleButton>
           </form>
         )}
 

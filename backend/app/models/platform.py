@@ -180,3 +180,63 @@ class RiskAlert(Base):
     message = Column(Text, nullable=False)
     is_resolved = Column(Boolean, default=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class WebhookIdempotencyKey(Base):
+    """Short-lived dedup keys for TradingView webhook retries."""
+    __tablename__ = "webhook_idempotency_keys"
+
+    fingerprint = Column(String(128), primary_key=True)
+    dispatch_log_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class TvSignalTemplate(Base):
+    """TradingView alert JSON templates managed by admin."""
+    __tablename__ = "tv_signal_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(64), nullable=False)
+    description = Column(Text, default="")
+    payload_json = Column(Text, default="{}")
+    enabled = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SignalDispatchLog(Base):
+    """Platform signal dispatch history."""
+    __tablename__ = "signal_dispatch_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    template_id = Column(Integer, ForeignKey("tv_signal_templates.id"), nullable=True, index=True)
+    action = Column(String(32), nullable=False, index=True)
+    payload_json = Column(Text, default="{}")
+    dispatched_count = Column(Integer, default=0)
+    error_count = Column(Integer, default=0)
+    skipped_count = Column(Integer, default=0)
+    status = Column(String(20), default="ok")
+    source = Column(String(20), default="webhook")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    user_results = relationship("SignalDispatchUserResult", back_populates="dispatch_log", cascade="all, delete-orphan")
+
+
+class SignalDispatchUserResult(Base):
+    """Per-user outcome for a single signal dispatch."""
+    __tablename__ = "signal_dispatch_user_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dispatch_log_id = Column(Integer, ForeignKey("signal_dispatch_logs.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    user_uid = Column(String(16), nullable=True, index=True)
+    status = Column(String(20), default="ok", index=True)
+    reason = Column(String(64), nullable=True)
+    error_message = Column(Text, nullable=True)
+    slippage = Column(Float, nullable=True)
+    trade_id = Column(Integer, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    detail_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    dispatch_log = relationship("SignalDispatchLog", back_populates="user_results")

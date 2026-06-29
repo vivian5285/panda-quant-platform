@@ -1,32 +1,38 @@
 import { Link } from 'react-router-dom'
+import { useEffect } from 'react'
 import { useI18n } from '../i18n'
-import FramerBrand from './FramerBrand'
+import { useTheme } from '../store/theme'
 import TopToolbar from './TopToolbar'
+import AuthVisualPanel from './AuthVisualPanel'
 
 interface Props {
   children: React.ReactNode
-  sideTitle?: string
-  sideSubtitle?: string
 }
 
-export default function AuthShell({ children, sideTitle, sideSubtitle }: Props) {
+export default function AuthShell({ children }: Props) {
   const t = useI18n(s => s.t)
 
+  useEffect(() => {
+    const prev = document.documentElement.getAttribute('data-theme')
+    useTheme.getState().setTheme('dark')
+    return () => {
+      if (prev === 'light' || prev === 'dark') useTheme.getState().setTheme(prev)
+    }
+  }, [])
+
   return (
-    <div className="auth-split-page">
+    <div className="auth-framer-page">
       <div className="auth-toolbar-fixed">
         <TopToolbar />
       </div>
-      <div className="auth-split-left">
-        <div className="auth-split-brand">
-          <FramerBrand showTagline />
-          <h1>{sideTitle || `${t('framer.hero.titleLead')} ${t('framer.hero.titleAccent')}`}</h1>
-          <p>{sideSubtitle || t('framer.hero.subtitle')}</p>
+      <div className="auth-framer-grid">
+        <div className="auth-framer-left">
+          <AuthVisualPanel />
           <Link to="/" className="auth-back-link">{t('auth.backHome')}</Link>
         </div>
-      </div>
-      <div className="auth-split-right">
-        {children}
+        <div className="auth-framer-right">
+          <div className="auth-glass-shell">{children}</div>
+        </div>
       </div>
     </div>
   )

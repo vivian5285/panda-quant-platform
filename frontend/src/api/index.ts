@@ -21,7 +21,7 @@ api.interceptors.response.use(
     const url = err.config?.url || ''
     const isAuthRoute = url.includes('/auth/login') || url.includes('/auth/register')
 
-    if (hadToken && !isAuthRoute && (status === 401 || status === 403)) {
+    if (hadToken && !isAuthRoute && status === 401) {
       if (logoutTimer) clearTimeout(logoutTimer)
       logoutTimer = setTimeout(() => {
         if (!localStorage.getItem('token')) return
@@ -47,6 +47,8 @@ export const authApi = {
     api.post('/auth/sms/login', { phone, code }).then(r => r.data),
   loginEmail: (email: string, code: string) =>
     api.post('/auth/email/login', { email, code }).then(r => r.data),
+  loginTotp: (challenge_token: string, code: string) =>
+    api.post('/auth/login/totp', { challenge_token, code }).then(r => r.data),
   sendSms: (phone: string, purpose = 'login') =>
     api.post('/auth/sms/send', { phone, purpose }).then(r => r.data),
   sendEmail: (email: string, purpose = 'login') =>
@@ -69,23 +71,34 @@ export const authApi = {
   oauthProviders: () => api.get('/auth/oauth/providers').then(r => r.data),
 }
 
+export type TradeQueryParams = { limit?: number; offset?: number; start?: string; end?: string }
+export type LogQueryParams = TradeQueryParams & { sync_exchange?: boolean }
+
 export const userApi = {
   dashboard: () => api.get('/users/dashboard').then(r => r.data),
-  trades: () => api.get('/users/trades').then(r => r.data),
-  logs: () => api.get('/users/logs').then(r => r.data),
+  trades: (params?: TradeQueryParams) => api.get('/users/trades', { params }).then(r => r.data),
+  logs: (params?: LogQueryParams) => api.get('/users/logs', { params }).then(r => r.data),
+  syncExchangeLogs: (days = 90) => api.post('/users/sync-exchange-logs', null, { params: { days } }).then(r => r.data),
   analytics: (days = 90) => api.get('/users/analytics', { params: { days } }).then(r => r.data),
   signals: (limit = 100) => api.get('/users/signals', { params: { limit } }).then(r => r.data),
   verifyApi: (api_key: string, api_secret: string) =>
     api.post('/users/bind-api/verify', { api_key, api_secret }).then(r => r.data),
   apiStatus: () => api.get('/users/api-status').then(r => r.data),
-  bindApi: (api_key: string, api_secret: string) =>
-    api.post('/users/bind-api', { api_key, api_secret }).then(r => r.data),
+  bindApi: (api_key: string, api_secret: string, email_code?: string, phone_code?: string) =>
+    api.post('/users/bind-api', { api_key, api_secret, email_code, phone_code }).then(r => r.data),
+  unbindApi: (email_code: string, phone_code: string) =>
+    api.delete('/users/bind-api', { params: { email_code, phone_code } }).then(r => r.data),
+  positions: () => api.get('/users/positions').then(r => r.data),
   principalHistory: () => api.get('/users/principal-history').then(r => r.data),
   profile: () => api.get('/users/profile').then(r => r.data),
+  tradingControl: () => api.get('/users/trading-control').then(r => r.data),
+  updateTradingControl: (data: { trading_paused?: boolean; risk_level?: string }) =>
+    api.patch('/users/trading-control', data).then(r => r.data),
 }
 
 export const publicApi = {
   stats: () => api.get('/public/stats').then(r => r.data),
+  marketTicker: () => api.get('/public/market-ticker').then(r => r.data),
 }
 
 export const strategyApi = {
@@ -122,16 +135,12 @@ export const billingApi = {
   invoices: () => api.get('/billing/invoices').then(r => r.data),
 }
 
-export const referralApiExtra = {
-  tree: () => api.get('/referrals/tree').then(r => r.data),
-  settlementPdf: (id: number) => api.get(`/referrals/settlements/${id}/pdf`, { responseType: 'blob' }).then(r => r.data),
-}
-
 export const referralApi = {
   summary: () => api.get('/referrals').then(r => r.data),
   invite: () => api.get('/referrals/invite').then(r => r.data),
   settlements: () => api.get('/settlements').then(r => r.data),
   tree: () => api.get('/referrals/tree').then(r => r.data),
+  settlementPdf: (id: number) => api.get(`/settlements/${id}/pdf`, { responseType: 'blob' }).then(r => r.data),
 }
 
 export const walletApi = {
@@ -164,10 +173,24 @@ export const walletApi = {
 
 export const adminApi = {
   overview: () => api.get('/admin/overview').then(r => r.data),
-  users: () => api.get('/admin/users').then(r => r.data),
+  users: (params?: { q?: string; api_status?: string; trading_paused?: boolean; risk_level?: string; risk_flag?: boolean }) =>
+    api.get('/admin/users', { params }).then(r => r.data),
+  batchNotifyUsers: (user_ids: number[], title: string, message: string) =>
+    api.post('/admin/users/batch-notify', { user_ids, title, message }).then(r => r.data),
+  batchTradingControl: (user_ids: number[], data: { trading_paused?: boolean; risk_level?: string }) =>
+    api.post('/admin/users/batch-trading-control', { user_ids, ...data }).then(r => r.data),
   userDetail: (id: number) => api.get(`/admin/users/${id}`).then(r => r.data),
-  userTrades: (id: number, limit = 50) => api.get(`/admin/users/${id}/trades`, { params: { limit } }).then(r => r.data),
-  userLogs: (id: number, limit = 100) => api.get(`/admin/users/${id}/logs`, { params: { limit } }).then(r => r.data),
+  userTrades: (id: number, params?: TradeQueryParams) =>
+    api.get(`/admin/users/${id}/trades`, { params: { limit: 200, ...params } }).then(r => r.data),
+  userLogs: (id: number, params?: LogQueryParams) =>
+    api.get(`/admin/users/${id}/logs`, { params: { limit: 200, ...params } }).then(r => r.data),
+  userPrincipalHistory: (id: number) =>
+    api.get(`/admin/users/${id}/principal-history`).then(r => r.data),
+  userReferralStats: (id: number) =>
+    api.get(`/admin/users/${id}/referral-stats`).then(r => r.data),
+  referralsOverview: () => api.get('/admin/referrals/overview').then(r => r.data),
+  syncUserExchangeLogs: (id: number, days = 90) =>
+    api.post(`/admin/users/${id}/sync-exchange-logs`, null, { params: { days } }).then(r => r.data),
   toggleUser: (id: number) => api.post(`/admin/users/${id}/toggle`).then(r => r.data),
   settlements: () => api.get('/admin/settlements').then(r => r.data),
   runWeekly: () => api.post('/admin/settlements/run-weekly').then(r => r.data),
@@ -177,8 +200,13 @@ export const adminApi = {
   depositAddresses: () => api.get('/admin/deposit-addresses').then(r => r.data),
   addDepositAddress: (data: { chain: string; address: string; label?: string; sort_order?: number }) =>
     api.post('/admin/deposit-addresses', data).then(r => r.data),
+  updateDepositAddress: (id: number, data: { chain?: string; address?: string; label?: string; sort_order?: number; is_active?: boolean }) =>
+    api.patch(`/admin/deposit-addresses/${id}`, data).then(r => r.data),
   toggleDepositAddress: (id: number) => api.post(`/admin/deposit-addresses/${id}/toggle`).then(r => r.data),
   deleteDepositAddress: (id: number) => api.delete(`/admin/deposit-addresses/${id}`).then(r => r.data),
+  withdrawSettings: () => api.get('/admin/withdraw/settings').then(r => r.data),
+  updateWithdrawSettings: (auto_max_usd: number, review_min_usd: number) =>
+    api.patch('/admin/withdraw/settings', { auto_max_usd, review_min_usd }).then(r => r.data),
   withdrawals: () => api.get('/admin/withdrawals').then(r => r.data),
   approveWithdrawal: (id: number) => api.post(`/admin/withdrawals/${id}/approve`).then(r => r.data),
   completeWithdrawal: (id: number, tx_hash: string, admin_note?: string) =>
@@ -191,9 +219,40 @@ export const adminApi = {
   readAllAlerts: () => api.post('/admin/alerts/read-all').then(r => r.data),
   startupAudit: () => api.get('/admin/startup-audit').then(r => r.data),
   systemMonitor: () => api.get('/admin/system/monitor').then(r => r.data),
-  auditLogs: () => api.get('/admin/system/audit-logs').then(r => r.data),
+  auditLogs: (params?: { limit?: number; action?: string; user_id?: number; actor_id?: number; q?: string }) =>
+    api.get('/admin/system/audit-logs', { params }).then(r => r.data),
   loginRecords: () => api.get('/admin/system/login-records').then(r => r.data),
   riskAlerts: () => api.get('/admin/system/risk-alerts').then(r => r.data),
   allOrders: () => api.get('/admin/system/orders').then(r => r.data),
+  allTradeLogs: (limit = 200) => api.get('/admin/system/trade-logs', { params: { limit } }).then(r => r.data),
   onlineStats: () => api.get('/admin/system/online').then(r => r.data),
+  globalTradingControl: () => api.get('/admin/system/trading-control').then(r => r.data),
+  setGlobalTradingPause: (global_trading_paused: boolean, note?: string) =>
+    api.patch('/admin/system/trading-control', { global_trading_paused, note }).then(r => r.data),
+  setGlobalRiskMultiplier: (global_risk_multiplier: number) =>
+    api.patch('/admin/system/trading-control', { global_risk_multiplier }).then(r => r.data),
+  strategies: (status?: string) => api.get('/admin/strategies', { params: status ? { status } : {} }).then(r => r.data),
+  reviewStrategy: (id: number, action: 'approve' | 'reject' | 'pause', note?: string) =>
+    api.post(`/admin/strategies/${id}/review`, { action, note }).then(r => r.data),
+  userTradingControl: (userId: number, data?: { trading_paused?: boolean; risk_level?: string }) =>
+    data
+      ? api.patch(`/admin/users/${userId}/trading-control`, data).then(r => r.data)
+      : api.get(`/admin/users/${userId}/trading-control`).then(r => r.data),
+  forceCloseUser: (userId: number) =>
+    api.post(`/admin/users/${userId}/force-close`).then(r => r.data),
+  signalTemplates: () => api.get('/admin/signal-templates').then(r => r.data),
+  createSignalTemplate: (data: { name: string; description?: string; payload?: object; enabled?: boolean }) =>
+    api.post('/admin/signal-templates', data).then(r => r.data),
+  updateSignalTemplate: (id: number, data: object) =>
+    api.patch(`/admin/signal-templates/${id}`, data).then(r => r.data),
+  deleteSignalTemplate: (id: number) => api.delete(`/admin/signal-templates/${id}`).then(r => r.data),
+  testSignalTemplate: (id: number) => api.post(`/admin/signal-templates/${id}/test`).then(r => r.data),
+  signalDispatchLogs: (limit = 50) =>
+    api.get('/admin/system/signal-dispatch-logs', { params: { limit } }).then(r => r.data),
+  signalDispatchResults: (dispatchId: number) =>
+    api.get(`/admin/system/signal-dispatch-logs/${dispatchId}/results`).then(r => r.data),
+  platformAnalytics: (days = 14) =>
+    api.get('/admin/system/analytics', { params: { days } }).then(r => r.data),
+  webhookTest: (payload: object) =>
+    api.post('/admin/system/webhook-test', { payload }).then(r => r.data),
 }

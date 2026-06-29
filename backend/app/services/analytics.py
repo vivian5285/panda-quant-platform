@@ -46,9 +46,10 @@ def _sortino(daily: list[float]) -> float:
     return round((mean / std) * math.sqrt(365), 2) if std else 0.0
 
 
-def _monte_carlo(daily: list[float], simulations: int = 500) -> dict:
+def _monte_carlo(daily: list[float], simulations: int = 500, bins: int = 10) -> dict:
+    empty = {"median": 0.0, "p5": 0.0, "p95": 0.0, "histogram": []}
     if len(daily) < 5:
-        return {"median": 0.0, "p5": 0.0, "p95": 0.0}
+        return empty
     import random
     outcomes = []
     for _ in range(simulations):
@@ -56,10 +57,24 @@ def _monte_carlo(daily: list[float], simulations: int = 500) -> dict:
         outcomes.append(sum(sample))
     outcomes.sort()
     n = len(outcomes)
+    lo, hi = outcomes[0], outcomes[-1]
+    histogram: list[dict] = []
+    if hi == lo:
+        histogram = [{"label": f"{lo:.0f}", "count": n}]
+    else:
+        width = (hi - lo) / bins
+        counts = [0] * bins
+        for v in outcomes:
+            idx = min(int((v - lo) / width), bins - 1) if width > 0 else 0
+            counts[idx] += 1
+        for i in range(bins):
+            start = lo + i * width
+            histogram.append({"label": f"{start:.0f}", "count": counts[i]})
     return {
         "median": round(outcomes[n // 2], 2),
         "p5": round(outcomes[int(n * 0.05)], 2),
         "p95": round(outcomes[int(n * 0.95)], 2),
+        "histogram": histogram,
     }
 
 
@@ -153,6 +168,8 @@ def build_user_analytics(db: Session, user_id: int, days: int = 90) -> dict:
 
 
 def build_signal_stats(db: Session, user_id: int, limit: int = 100) -> dict:
+    import json
+
     logs = (
         db.query(TradeLog)
         .filter(TradeLog.user_id == user_id)
@@ -160,12 +177,59 @@ def build_signal_stats(db: Session, user_id: int, limit: int = 100) -> dict:
         .limit(limit)
         .all()
     )
-    signals = [l for l in logs if (l.event_type or "").upper() in ("SIGNAL", "WEBHOOK", "OPEN", "CLOSE")]
-    success = sum(1 for l in signals if (l.event_type or "").upper() in ("OPEN", "CLOSE"))
-    total = len(signals) or 1
+    exec_logs = [l for l in logs if (l.event_type or "").upper() in ("OPEN", "CLOSE", "ERROR", "ADJUST", "SIGNAL")]
+    opens = [l for l in exec_logs if (l.event_type or "").upper() == "OPEN"]
+    errors = [l for l in exec_logs if (l.event_type or "").upper() == "ERROR"]
+    attempts = len(opens) + len(errors)
+    success_rate = round(len(opens) / attempts * 100, 1) if attempts else 0.0
+
+    regime_confidence = 0.0
+    regime_count = 0
+    for log in opens[:20]:
+        detail = {}
+        if log.detail_json:
+            try:
+                detail = json.loads(log.detail_json)
+            except json.JSONDecodeError:
+                pass
+        regime = detail.get("regime")
+        if isinstance(regime, int) and regime > 0:
+            regime_confidence += min(95.0, 55.0 + regime * 12.0)
+            regime_count += 1
+
+    if regime_count:
+        confidence = round(regime_confidence / regime_count, 1)
+    elif attempts:
+        confidence = round(min(92.0, max(52.0, 48 + success_rate * 0.45)), 1)
+    else:
+        confidence = 0.0
+
+    open_trade = (
+        db.query(Trade)
+        .filter(Trade.user_id == user_id, Trade.status == "open")
+        .order_by(Trade.created_at.desc())
+        .first()
+    )
+    direction_bias = open_trade.side if open_trade and open_trade.side else None
+    if not direction_bias:
+        for l in exec_logs:
+            msg = (l.message or "").upper()
+            if "LONG" in msg:
+                direction_bias = "LONG"
+                break
+            if "SHORT" in msg:
+                direction_bias = "SHORT"
+                break
+
+    last_signal_at = exec_logs[0].created_at.isoformat() if exec_logs and exec_logs[0].created_at else None
+
     return {
-        "total": len(signals),
-        "success_rate": round(success / total * 100, 1) if signals else 0.0,
+        "total": len(exec_logs),
+        "success_rate": success_rate,
+        "confidence_score": confidence,
+        "direction_bias": direction_bias,
+        "last_signal_at": last_signal_at,
+        "execution_attempts": attempts,
         "recent": [
             {
                 "id": l.id,
@@ -173,6 +237,6 @@ def build_signal_stats(db: Session, user_id: int, limit: int = 100) -> dict:
                 "message": l.message,
                 "created_at": l.created_at.isoformat() if l.created_at else None,
             }
-            for l in signals[:50]
+            for l in exec_logs[:50]
         ],
     }

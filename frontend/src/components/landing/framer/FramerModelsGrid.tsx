@@ -38,7 +38,7 @@ export default function FramerModelsGrid() {
         {MODELS.map(key => (
           <article
             key={key}
-            className={`framer-model-card${hovered === key ? ' expanded' : ''}`}
+            className={`framer-model-card glass${hovered === key ? ' expanded' : ''}`}
             onMouseEnter={() => setHovered(key)}
             onMouseLeave={() => setHovered(null)}
             onFocus={() => setHovered(key)}

@@ -3,6 +3,7 @@ from app.services.chain_fees import calc_withdraw_net, get_chain_fee, CHAIN_WITH
 from app.models import RewardAccount, RewardLedger, WithdrawalRequest, WithdrawalStatus, InternalTransfer, User, WithdrawalAddress
 from app.services.user_lookup import find_user_by_identifier, display_name
 from app.config import get_settings
+from app.services.platform_runtime import get_withdraw_thresholds
 
 settings = get_settings()
 
@@ -80,8 +81,13 @@ def create_withdrawal(
     address_book_id: int | None = None,
 ) -> WithdrawalRequest:
     chain = chain.upper()
-    if gross_amount < settings.WITHDRAW_MIN_USD:
-        raise ValueError(f"Minimum withdrawal is ${settings.WITHDRAW_MIN_USD}")
+    thresholds = get_withdraw_thresholds()
+    min_usd = thresholds["min_usd"]
+    auto_max = thresholds["auto_max_usd"]
+    review_min = thresholds["review_min_usd"]
+
+    if gross_amount < min_usd:
+        raise ValueError(f"Minimum withdrawal is ${min_usd}")
 
     network_fee, amount_net = calc_withdraw_net(gross_amount, chain)
     if amount_net <= 0:
@@ -91,16 +97,15 @@ def create_withdrawal(
     if account.balance < gross_amount:
         raise ValueError("Insufficient reward balance")
 
-    auto_approved = gross_amount <= settings.WITHDRAW_AUTO_MAX_USD
-    needs_review = gross_amount >= settings.WITHDRAW_REVIEW_MIN_USD
-
-    if needs_review:
+    if gross_amount >= review_min:
         status = WithdrawalStatus.PENDING.value
         auto_approved = False
-    elif auto_approved:
+    elif gross_amount <= auto_max:
         status = WithdrawalStatus.AUTO_APPROVED.value
+        auto_approved = True
     else:
         status = WithdrawalStatus.PENDING.value
+        auto_approved = False
 
     req = WithdrawalRequest(
         user_id=user_id,

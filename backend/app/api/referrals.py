@@ -118,6 +118,8 @@ def settlement_pdf(settlement_id: int, user=Depends(get_current_user), db: Sessi
         "id": s.id,
         "period_start": str(s.period_start),
         "period_end": str(s.period_end),
+        "gross_profit": s.gross_profit,
+        "high_water_mark": s.high_water_mark,
         "net_profit": s.net_profit,
         "platform_fee": s.platform_fee,
         "user_payable": s.user_payable,
@@ -127,6 +129,7 @@ def settlement_pdf(settlement_id: int, user=Depends(get_current_user), db: Sessi
     return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename=settlement-{s.id}.pdf"})
 
 
+@router.get("/referrals/tree")
 @router.get("/tree")
 def referral_tree(user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Referral relationship tree for visualization."""

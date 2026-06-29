@@ -68,7 +68,7 @@ export async function generateInvitePoster(data: PosterData): Promise<string> {
   ctx.font = '24px Inter, sans-serif'
   ctx.fillText(data.posterTagline || 'AI 量化托管 · 无订阅 · 盈利分成', W / 2, 280)
 
-  const badges = ['🔒 非托管', '📊 透明结算', '💰 二级分润']
+  const badges = ['🔒 非托管', '📊 绩效结算', '💰 二级奖励']
   ctx.font = '18px Inter, sans-serif'
   let bx = W / 2 - 200
   badges.forEach(b => {
@@ -92,21 +92,21 @@ export async function generateInvitePoster(data: PosterData): Promise<string> {
   ctx.textAlign = 'left'
   ctx.fillStyle = 'rgba(255,255,255,0.5)'
   ctx.font = '18px Inter, sans-serif'
-  ctx.fillText('推广收益（从平台分成中结算）', 72, 420)
+  ctx.fillText('推广奖励（从 AI 绩效服务费池结算）', 72, 420)
 
   ctx.fillStyle = '#FFFFFF'
   ctx.font = 'bold 36px Inter, sans-serif'
   ctx.fillText(`一级推广  ${Math.round(data.l1Rate * 100)}%`, 72, 470)
   ctx.fillStyle = 'rgba(255,255,255,0.55)'
   ctx.font = '20px Inter, sans-serif'
-  ctx.fillText('直接邀请的用户盈利结算后分润', 72, 500)
+  ctx.fillText('直接邀请用户完成绩效结算后获奖励', 72, 500)
 
   ctx.fillStyle = '#FFFFFF'
   ctx.font = 'bold 36px Inter, sans-serif'
   ctx.fillText(`二级推广  ${Math.round(data.l2Rate * 100)}%`, 72, 545)
   ctx.fillStyle = 'rgba(255,255,255,0.55)'
   ctx.font = '20px Inter, sans-serif'
-  ctx.fillText('下级再邀请的用户，持续获得分润', 72, 575)
+  ctx.fillText('下级再邀请的用户，持续获得奖励', 72, 575)
 
   const qrSize = 220
   const qrX = (W - qrSize) / 2

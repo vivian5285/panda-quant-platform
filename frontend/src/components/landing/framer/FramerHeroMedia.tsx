@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import { useI18n } from '../../../i18n'
+import { SITE_MEDIA } from '../../../config/site'
 import FramerHeroCanvas from './FramerHeroCanvas'
 import FramerMacDock from './FramerMacDock'
-
-const VIDEO_SRC = '/demo/console-demo.webm'
-const POSTER_SRC = '/demo/console-poster.svg'
 
 export default function FramerHeroMedia() {
   const t = useI18n(s => s.t)
@@ -76,8 +74,8 @@ export default function FramerHeroMedia() {
               <video
                 ref={videoRef}
                 className="framer-hero-video-el"
-                src={VIDEO_SRC}
-                poster={POSTER_SRC}
+                src={SITE_MEDIA.demoVideo}
+                poster={SITE_MEDIA.demoPoster}
                 autoPlay
                 loop
                 muted

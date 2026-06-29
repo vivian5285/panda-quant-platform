@@ -13,7 +13,7 @@ export default function FramerWhyAI() {
       </div>
       <div className="framer-why-grid">
         {CARDS.map(key => (
-          <article key={key} className="framer-why-card">
+          <article key={key} className="framer-why-card glass">
             <h3>{t(`framer.why.cards.${key}.title`)}</h3>
             <p>{t(`framer.why.cards.${key}.desc`)}</p>
           </article>

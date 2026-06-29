@@ -8,6 +8,25 @@ from app.config import get_settings
 
 settings = get_settings()
 
+_UNSETTLED_STATUSES = (PaymentStatus.PENDING.value, PaymentStatus.PAID.value)
+
+
+def get_pending_settlement(db: Session, user_id: int) -> Settlement | None:
+    """Return the active settlement awaiting user payment or admin confirmation."""
+    return (
+        db.query(Settlement)
+        .filter(
+            Settlement.user_id == user_id,
+            Settlement.payment_status.in_(_UNSETTLED_STATUSES),
+        )
+        .order_by(Settlement.created_at.desc())
+        .first()
+    )
+
+
+def user_has_unsettled_payment(db: Session, user_id: int) -> bool:
+    return get_pending_settlement(db, user_id) is not None
+
 
 def user_has_open_position(db: Session, user_id: int) -> bool:
     open_trade = db.query(Trade).filter(
@@ -76,6 +95,15 @@ def calculate_settlement(
     user.high_water_mark = new_hwm
     db.commit()
     db.refresh(settlement)
+
+    from app.services.trade_logger import TradeLogger
+
+    TradeLogger(db).log_event(
+        user.id,
+        "SETTLEMENT",
+        f"AI 绩效服务费账单已生成，应付 ${platform_fee:.2f} USDT，AI 执行已暂停直至确认到账",
+        {"settlement_id": settlement.id, "user_payable": platform_fee},
+    )
     return settlement
 
 
@@ -214,6 +242,14 @@ def confirm_settlement_payment(db: Session, settlement: Settlement, admin_note: 
     if user:
         from app.services.principal import reset_after_settlement_confirmed
         reset_after_settlement_confirmed(db, user, settlement.id)
+        from app.services.trade_logger import TradeLogger
+
+        TradeLogger(db).log_event(
+            user.id,
+            "SETTLEMENT",
+            "绩效结算已确认到账，初始本金已重置，AI 执行已恢复",
+            {"settlement_id": settlement.id},
+        )
 
     db.commit()
     db.refresh(settlement)

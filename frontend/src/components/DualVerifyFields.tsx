@@ -37,26 +37,24 @@ export default function DualVerifyFields({
   }
 
   return (
-    <div className="security-notice" style={{ marginBottom: 16 }}>
-      <p style={{ fontSize: 13, marginBottom: 12, color: 'var(--text-secondary)' }}>
-        {t('security.dualTitle')}
-      </p>
-      <button type="button" className="btn btn-ghost" style={{ width: '100%', marginBottom: 12, fontSize: 12 }}
+    <div className="security-notice dual-verify-panel">
+      <p className="dual-verify-lead">{t('security.dualTitle')}</p>
+      <button type="button" className="btn btn-ghost dual-verify-send"
         disabled={countdown > 0} onClick={sendCodes}>
         {countdown > 0 ? t('security.resendIn', { n: countdown }) : t('security.getCodes')}
       </button>
       {(devEmail || devPhone) && (
-        <p className="text-muted" style={{ fontSize: 11, marginBottom: 8 }}>
+        <p className="text-muted dual-verify-dev">
           {t('security.devMode')} — {t('common.email')}: {devEmail || '—'} / {t('common.phone')}: {devPhone || '—'}
         </p>
       )}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+      <div className="dual-verify-codes">
         <input className="input" placeholder={t('security.emailCodePh')} value={emailCode}
           onChange={e => onEmailCode(e.target.value)} required />
         <input className="input" placeholder={t('security.phoneCodePh')} value={phoneCode}
           onChange={e => onPhoneCode(e.target.value)} required />
       </div>
-      {error && <p className="text-red" style={{ fontSize: 12, marginTop: 8 }}>{error}</p>}
+      {error && <p className="text-red dual-verify-error">{error}</p>}
     </div>
   )
 }

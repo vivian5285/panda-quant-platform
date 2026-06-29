@@ -1,88 +1,146 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { motion, useReducedMotion } from 'framer-motion'
 import { useI18n } from '../../../i18n'
 
-const INDICATOR_KEYS = [
-  'mkr',
+const INDICATORS = [
+  'kernelRegression',
   'marketStructure',
-  'imbalance',
-  'trendline',
-  'tradeIq',
+  'imbalanceAlgo',
+  'trendlineBreakout',
+  'tradeIqToolkit',
   'volumeSupertrend',
   'rangeDetector',
-  'diyBuilder',
-  'harmonic',
-  'divergence',
+  'diyStrategyBuilder',
+  'harmonicPatterns',
+  'divergenceV4',
 ] as const
 
-const GRADIENTS = [
-  'linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #6366f1 100%)',
-  'linear-gradient(135deg, #0c4a6e 0%, #0369a1 50%, #38bdf8 100%)',
-  'linear-gradient(135deg, #134e4a 0%, #0f766e 50%, #2dd4bf 100%)',
-  'linear-gradient(135deg, #1e293b 0%, #334155 50%, #94a3b8 100%)',
-  'linear-gradient(135deg, #312e81 0%, #4f46e5 50%, #818cf8 100%)',
-  'linear-gradient(135deg, #172554 0%, #1d4ed8 50%, #60a5fa 100%)',
-  'linear-gradient(135deg, #18181b 0%, #27272a 50%, #52525b 100%)',
-  'linear-gradient(135deg, #4c1d95 0%, #7c3aed 50%, #a78bfa 100%)',
-  'linear-gradient(135deg, #831843 0%, #be185d 50%, #f472b6 100%)',
-  'linear-gradient(135deg, #713f12 0%, #ca8a04 50%, #fde047 100%)',
-]
+const COLORS: Record<string, string> = {
+  kernelRegression: '#007aff',
+  marketStructure: '#5856d6',
+  imbalanceAlgo: '#00c7be',
+  trendlineBreakout: '#ff9f0a',
+  tradeIqToolkit: '#bf5af2',
+  volumeSupertrend: '#32d74b',
+  rangeDetector: '#64d2ff',
+  diyStrategyBuilder: '#ff375f',
+  harmonicPatterns: '#ffd60a',
+  divergenceV4: '#5e5ce6',
+}
+
+const GRADIENTS: Record<string, string> = {
+  kernelRegression: 'linear-gradient(135deg, #001a33 0%, #003366 40%, #000000 100%)',
+  marketStructure: 'linear-gradient(135deg, #1a0a2e 0%, #312e81 50%, #000 100%)',
+  imbalanceAlgo: 'linear-gradient(135deg, #002622 0%, #0e7490 45%, #000 100%)',
+  trendlineBreakout: 'linear-gradient(135deg, #1c1000 0%, #92400e 40%, #000 100%)',
+  tradeIqToolkit: 'linear-gradient(135deg, #1a0a24 0%, #6b21a8 45%, #000 100%)',
+  volumeSupertrend: 'linear-gradient(135deg, #001a0a 0%, #065f46 45%, #000 100%)',
+  rangeDetector: 'linear-gradient(135deg, #001520 0%, #0369a1 45%, #000 100%)',
+  diyStrategyBuilder: 'linear-gradient(135deg, #1a0008 0%, #9f1239 40%, #000 100%)',
+  harmonicPatterns: 'linear-gradient(135deg, #1a1500 0%, #854d0e 45%, #000 100%)',
+  divergenceV4: 'linear-gradient(135deg, #0a0a1a 0%, #4338ca 45%, #000 100%)',
+}
 
 export default function FramerIndicatorShowcase() {
   const t = useI18n(s => s.t)
+  const reduceMotion = useReducedMotion()
   const [active, setActive] = useState(0)
+  const [tilt, setTilt] = useState({ x: 0, y: 0 })
+  const paused = useRef(false)
+  const key = INDICATORS[active]
 
   useEffect(() => {
+    if (reduceMotion) return
     const timer = setInterval(() => {
-      setActive(i => (i + 1) % INDICATOR_KEYS.length)
-    }, 4500)
+      if (paused.current) return
+      setActive(i => (i + 1) % INDICATORS.length)
+    }, 5500)
     return () => clearInterval(timer)
-  }, [])
+  }, [reduceMotion])
 
-  const key = INDICATOR_KEYS[active]
+  const onMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (reduceMotion) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const x = ((e.clientY - rect.top) / rect.height - 0.5) * -8
+    const y = ((e.clientX - rect.left) / rect.width - 0.5) * 8
+    setTilt({ x, y })
+  }
+
+  const select = (i: number) => {
+    paused.current = true
+    setActive(i)
+    setTimeout(() => { paused.current = false }, 12000)
+  }
+
+  const points = ['a', 'b', 'c'] as const
 
   return (
-    <section id="indicators" className="framer-section framer-indicators">
+    <section id="indicators" className="framer-section framer-indicators-section">
       <div className="framer-section-head">
         <p className="framer-kicker">{t('framer.indicators.kicker')}</p>
         <h2>{t('framer.indicators.title')}</h2>
         <p>{t('framer.indicators.subtitle')}</p>
       </div>
 
-      <div className="framer-indicator-stage">
-        <div
-          className="framer-indicator-spotlight"
-          style={{ background: GRADIENTS[active] }}
+      <div className="framer-indicators">
+        <motion.div
           key={key}
+          className="framer-indicator-spotlight framer-glass-cell framer-color-card"
+          style={{
+            '--card-bg': GRADIENTS[key],
+            '--card-accent': COLORS[key],
+            transform: reduceMotion ? undefined : `perspective(900px) rotateX(${tilt.x}deg) rotateY(${tilt.y}deg)`,
+          } as React.CSSProperties}
+          onMouseMove={onMove}
+          onMouseLeave={() => setTilt({ x: 0, y: 0 })}
+          initial={reduceMotion ? false : { opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.45 }}
         >
-          <div className="framer-indicator-spotlight-inner">
+          <div className="framer-indicator-wave" />
+          <div className="framer-indicator-glow" style={{ background: `radial-gradient(circle at 70% 30%, ${COLORS[key]}33, transparent 55%)` }} />
+          <div className="framer-indicator-spotlight-inner glass">
             <span className="framer-indicator-tag">{t(`framer.indicators.items.${key}.tag`)}</span>
             <h3>{t(`framer.indicators.items.${key}.name`)}</h3>
             <p>{t(`framer.indicators.items.${key}.desc`)}</p>
             <ul>
-              {(['a', 'b', 'c'] as const).map(s => (
-                <li key={s}>{t(`framer.indicators.items.${key}.points.${s}`)}</li>
-              ))}
+              {points.map(pt => {
+                const text = t(`framer.indicators.items.${key}.points.${pt}`)
+                if (!text || text.startsWith('framer.')) return null
+                return <li key={pt}>{text}</li>
+              })}
             </ul>
           </div>
-          <div className="framer-indicator-wave" aria-hidden />
-        </div>
+          <div className="framer-indicator-mock-3d" aria-hidden>
+            {INDICATORS.slice(0, 5).map((k, i) => (
+              <div
+                key={k}
+                className={`framer-indicator-3d-card${k === key ? ' active' : ''}`}
+                style={{
+                  '--i': i,
+                  '--accent': COLORS[k],
+                } as React.CSSProperties}
+              />
+            ))}
+          </div>
+        </motion.div>
 
         <div className="framer-indicator-rail">
-          {INDICATOR_KEYS.map((k, i) => (
+          {INDICATORS.map((k, i) => (
             <button
               key={k}
               type="button"
-              className={`framer-indicator-chip${i === active ? ' active' : ''}`}
-              onClick={() => setActive(i)}
+              className={`framer-indicator-chip framer-glass-cell framer-color-card${i === active ? ' active' : ''}`}
+              style={{ '--chip-accent': COLORS[k] } as React.CSSProperties}
+              onClick={() => select(i)}
             >
-              <span className="framer-indicator-chip-dot" style={{ background: GRADIENTS[i] }} />
-              <span>{t(`framer.indicators.items.${k}.short`)}</span>
+              <span className="framer-indicator-chip-dot" style={{ background: COLORS[k] }} />
+              {t(`framer.indicators.items.${k}.short`)}
             </button>
           ))}
         </div>
+        <p className="framer-indicator-footnote">{t('framer.indicators.footnote')}</p>
       </div>
-
-      <p className="framer-indicator-footnote">{t('framer.indicators.footnote')}</p>
     </section>
   )
 }

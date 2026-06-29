@@ -31,6 +31,7 @@ class TradeLogger:
             self.db.rollback()
 
     def on_trade_open(self, user_id: int, side: str, qty: float, entry_price: float, regime: int, tv_tps: list) -> int:
+        """Create Trade row only; event detail is logged by PositionSupervisor._log(OPEN)."""
         try:
             trade = Trade(
                 user_id=user_id,
@@ -48,25 +49,25 @@ class TradeLogger:
             self.db.add(trade)
             self.db.commit()
             self.db.refresh(trade)
-            self.log_event(user_id, "OPEN", f"开仓 {side} {qty} @ {entry_price}", {"regime": regime}, trade.id)
             return trade.id
         except Exception as e:
             logger.error(f"Trade open log failed user={user_id}: {e}")
             self.db.rollback()
             return 0
 
-    def on_trade_close(self, trade_id: int, exit_price: float, pnl: float, reason: str):
+    def on_trade_close(self, trade_id: int, exit_price: float, pnl: float, reason: str, funding_fee: float = 0.0):
+        """Update Trade row only; CLOSE event is logged by PositionSupervisor._log(CLOSE)."""
         try:
             trade = self.db.query(Trade).filter(Trade.id == trade_id).first()
             if not trade:
                 return
             trade.exit_price = exit_price
             trade.realized_pnl = pnl
+            trade.funding_fee = funding_fee
             trade.status = "closed"
             trade.closed_at = datetime.utcnow()
             trade.action = reason[:30] if reason else "CLOSE"
             self.db.commit()
-            self.log_event(trade.user_id, "CLOSE", reason, {"exit_price": exit_price, "pnl": pnl}, trade_id)
         except Exception as e:
             logger.error(f"Trade close log failed trade={trade_id}: {e}")
             self.db.rollback()

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { useI18n } from '../../../i18n'
 
 const STEPS = [
@@ -12,6 +12,22 @@ const STEPS = [
   'riskMonitoring',
   'exitOptimization',
 ] as const
+
+const STEP_ACCENTS = [
+  '#007aff',
+  '#5856d6',
+  '#00c7be',
+  '#ff9f0a',
+  '#ff375f',
+  '#32d74b',
+  '#64d2ff',
+  '#bf5af2',
+  '#ffd60a',
+] as const
+
+const STEP_BGS = STEP_ACCENTS.map(
+  c => `linear-gradient(155deg, color-mix(in srgb, ${c} 22%, #000) 0%, color-mix(in srgb, ${c} 10%, #0c0c0c) 42%, #141414 100%)`,
+)
 
 export default function FramerWorkflowStrip() {
   const t = useI18n(s => s.t)
@@ -31,12 +47,25 @@ export default function FramerWorkflowStrip() {
       <div className="framer-workflow-strip">
         {STEPS.map((step, i) => (
           <div key={step} className="framer-workflow-item">
-            <div className={`framer-workflow-node${i <= active ? ' lit' : ''}${i === active ? ' active' : ''}`}>
+            <div
+              className={`framer-workflow-node glass framer-glass-cell framer-color-card${i <= active ? ' lit' : ''}${i === active ? ' active' : ''}`}
+              style={{
+                '--card-bg': STEP_BGS[i],
+                '--card-accent': STEP_ACCENTS[i],
+              } as CSSProperties}
+            >
               <span className="framer-workflow-index">{i + 1}</span>
               <span>{t(`framer.workflow.steps.${step}`)}</span>
             </div>
             {i < STEPS.length - 1 && (
-              <div className={`framer-workflow-line${i < active ? ' lit' : ''}`} aria-hidden />
+              <div
+                className={`framer-workflow-line${i < active ? ' lit' : ''}`}
+                style={i < active ? {
+                  '--line-from': STEP_ACCENTS[i],
+                  '--line-to': STEP_ACCENTS[i + 1],
+                } as CSSProperties : undefined}
+                aria-hidden
+              />
             )}
           </div>
         ))}

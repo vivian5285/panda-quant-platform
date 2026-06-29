@@ -3,6 +3,7 @@ import { useI18n } from '../../../i18n'
 import DashboardPreview from '../DashboardPreview'
 
 const SLIDES = ['dashboard', 'trading', 'analytics'] as const
+const METRICS = ['score', 'pnl', 'winRate', 'analysis'] as const
 
 export default function FramerDashboardProof() {
   const t = useI18n(s => s.t)
@@ -10,30 +11,30 @@ export default function FramerDashboardProof() {
 
   return (
     <section id="dashboard" className="framer-section framer-dashboard-proof">
-      <div className="framer-section-head framer-section-head-left">
+      <div className="framer-section-head">
         <p className="framer-kicker">{t('framer.dashboard.kicker')}</p>
         <h2>{t('framer.dashboard.title')}</h2>
         <p>{t('framer.dashboard.subtitle')}</p>
       </div>
       <div className="framer-dashboard-layout">
         <div className="framer-dashboard-stats">
-          {(['score', 'pnl', 'winRate', 'analysis'] as const).map(k => (
-            <div key={k} className="framer-dashboard-stat">
-              <small>{t(`framer.dashboard.metrics.${k}.label`)}</small>
-              <strong>{t(`framer.dashboard.metrics.${k}.value`)}</strong>
+          {METRICS.map(key => (
+            <div key={key} className="framer-dashboard-stat">
+              <small>{t(`framer.dashboard.metrics.${key}.label`)}</small>
+              <strong>{t(`framer.dashboard.metrics.${key}.value`)}</strong>
             </div>
           ))}
         </div>
         <div className="framer-dashboard-preview-wrap">
           <div className="framer-dashboard-tabs">
-            {SLIDES.map(s => (
+            {SLIDES.map(id => (
               <button
-                key={s}
+                key={id}
                 type="button"
-                className={slide === s ? 'active' : ''}
-                onClick={() => setSlide(s)}
+                className={slide === id ? 'active' : ''}
+                onClick={() => setSlide(id)}
               >
-                {t(`framer.dashboard.slides.${s}`)}
+                {t(`framer.dashboard.slides.${id}`)}
               </button>
             ))}
           </div>

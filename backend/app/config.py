@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     WEBHOOK_SECRET: str = "528586"
     WEBHOOK_ALLOWED_IPS: str = ""
     WEBHOOK_RATE_LIMIT_PER_MIN: int = 120
+    WEBHOOK_IDEMPOTENCY_TTL_SEC: int = 120
+    PRODUCTION_STRICT: bool = False
     ADMIN_EMAIL: str = "admin@pandaquant.com"
     ADMIN_PASSWORD: str = "admin123456"
     PLATFORM_FEE_RATE: float = 0.25
@@ -34,6 +36,17 @@ class Settings(BaseSettings):
     WITHDRAW_REVIEW_MIN_USD: float = 500.0
     WITHDRAW_MIN_USD: float = 10.0
     TRANSFER_MIN_USD: float = 1.0
+
+    # Instant withdrawal auto on-chain payout (hot wallet)
+    PAYOUT_AUTO_ENABLED: bool = False
+    PAYOUT_TRC20_PRIVATE_KEY: str = ""
+    PAYOUT_EVM_PRIVATE_KEY: str = ""
+    ETH_RPC_URL: str = ""
+    BSC_RPC_URL: str = ""
+    ARBITRUM_RPC_URL: str = ""
+    POLYGON_RPC_URL: str = ""
+    TRON_API_URL: str = "https://api.trongrid.io"
+    TRON_API_KEY: str = ""
 
     SMS_DEV_MODE: bool = True
     SMS_CODE_EXPIRE_MINUTES: int = 5

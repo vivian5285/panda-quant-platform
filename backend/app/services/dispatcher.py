@@ -1,5 +1,6 @@
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy.orm import Session
 from app.models import User, ApiStatus
@@ -129,7 +130,22 @@ class UserSupervisorPool:
 
     def remove_user(self, user_id: int):
         with self._lock:
-            self._supervisors.pop(user_id, None)
+            sup = self._supervisors.pop(user_id, None)
+        if sup:
+            sup.monitoring = False
+
+    def shutdown_all(self, wait_seconds: float = 3.0) -> None:
+        """Graceful shutdown: stop sentinel loops before process exit."""
+        with self._lock:
+            supervisors = list(self._supervisors.values())
+        logger.info("Shutting down %d supervisors...", len(supervisors))
+        for sup in supervisors:
+            sup.monitoring = False
+        if wait_seconds > 0 and supervisors:
+            time.sleep(wait_seconds)
+        with self._lock:
+            self._supervisors.clear()
+        logger.info("Supervisor pool cleared")
 
     def get_all(self) -> list[PositionSupervisor]:
         with self._lock:
@@ -151,6 +167,18 @@ class SignalDispatcher:
         self.max_workers = max_workers
 
     def dispatch(self, payload: dict) -> dict:
+        from app.services.trading_control import get_user_control, is_globally_paused, is_user_paused
+
+        if is_globally_paused():
+            logger.warning("Signal rejected: platform globally paused")
+            notify_system(
+                "warning", "GLOBAL_PAUSE",
+                "全局交易已暂停",
+                f"收到 {payload.get('action', '?')} 信号但未执行（平台暂停）",
+                {"payload_action": payload.get("action")},
+            )
+            return {"dispatched": 0, "results": [], "reason": "global_pause"}
+
         supervisors = self.pool.get_all()
         if not supervisors:
             logger.warning("No active supervisors to dispatch")
@@ -162,18 +190,58 @@ class SignalDispatcher:
             )
             return {"dispatched": 0, "results": []}
 
-        results = []
+        db = SessionLocal()
+        try:
+            eligible: list = []
+            results: list[dict] = []
+            for s in supervisors:
+                user = db.query(User).filter(User.id == s.user_id).first()
+                if not user or not user.is_active:
+                    results.append({
+                        "user_id": s.user_id,
+                        "status": "risk_blocked",
+                        "reason": "user_inactive",
+                    })
+                    continue
+                if user.api_status != ApiStatus.ACTIVE.value:
+                    results.append({
+                        "user_id": s.user_id,
+                        "status": "risk_blocked",
+                        "reason": "api_inactive",
+                    })
+                    continue
+                if is_user_paused(db, s.user_id):
+                    reason = "user_paused"
+                    ctrl = get_user_control(db, s.user_id)
+                    if not ctrl.get("trading_paused"):
+                        reason = "settlement_blocked"
+                    results.append({
+                        "user_id": s.user_id,
+                        "status": "risk_blocked",
+                        "reason": reason,
+                    })
+                else:
+                    eligible.append(s)
+        finally:
+            db.close()
+
+        if not eligible:
+            logger.warning("No eligible supervisors (all paused, settlement-gated, or inactive)")
+            return {"dispatched": 0, "results": results, "reason": "all_users_paused"}
+
         errors = []
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {
-                executor.submit(s.handle_signal, payload): s.user_id
-                for s in supervisors
+                executor.submit(self._execute_for_user, s, payload): s.user_id
+                for s in eligible
             }
             for future in as_completed(futures):
                 uid = futures[future]
                 try:
-                    future.result()
-                    results.append({"user_id": uid, "status": "ok"})
+                    outcome = future.result()
+                    results.append({"user_id": uid, **outcome})
+                    if outcome.get("status") == "error":
+                        errors.append({"user_id": uid, "message": outcome.get("message", "")})
                 except Exception as e:
                     logger.error(f"Dispatch failed user={uid}: {e}")
                     errors.append({"user_id": uid, "message": str(e)})
@@ -193,7 +261,8 @@ class SignalDispatcher:
                     )
                     results.append({"user_id": uid, "status": "error", "message": str(e)})
 
-        logger.info(f"Signal dispatched to {len(results)} users")
+        ok_count = sum(1 for r in results if r.get("status") == "ok")
+        logger.info(f"Signal dispatched: ok={ok_count} total={len(results)}")
         if errors:
             notify_system(
                 "warning", "DISPATCH_PARTIAL_FAIL",
@@ -201,7 +270,25 @@ class SignalDispatcher:
                 f"{len(errors)}/{len(results)} 用户执行失败",
                 {"action": payload.get("action"), "errors": errors},
             )
-        return {"dispatched": len(results), "results": results}
+        return {"dispatched": ok_count, "results": results}
+
+    def _execute_for_user(self, supervisor, payload: dict) -> dict:
+        from app.services.platform_runtime import get_global_risk_multiplier
+        from app.services.trading_control import get_user_control
+
+        t0 = time.time()
+        db = SessionLocal()
+        try:
+            ctrl = get_user_control(db, supervisor.user_id)
+            effective_risk = round(get_global_risk_multiplier() * ctrl["risk_multiplier"], 4)
+            user_payload = {**payload, "risk_multiplier": effective_risk}
+        finally:
+            db.close()
+        outcome = supervisor.handle_signal(user_payload)
+        if not isinstance(outcome, dict):
+            outcome = {"status": "ok"}
+        outcome["latency_ms"] = max(1, int((time.time() - t0) * 1000))
+        return outcome
 
 
 signal_dispatcher = SignalDispatcher(supervisor_pool)

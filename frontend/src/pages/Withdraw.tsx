@@ -6,6 +6,7 @@ import StatCard from '../components/StatCard'
 import { walletApi } from '../api'
 import DualVerifyFields from '../components/DualVerifyFields'
 import { useI18n, localeDate } from '../i18n'
+import { toast } from '../store/toast'
 import { Star, Trash2 } from 'lucide-react'
 
 export default function Withdraw() {
@@ -19,7 +20,6 @@ export default function Withdraw() {
   const [selectedAddrId, setSelectedAddrId] = useState<number | ''>('')
   const [amount, setAmount] = useState('')
   const [feePreview, setFeePreview] = useState<any>(null)
-  const [msg, setMsg] = useState('')
   const [error, setError] = useState('')
   const [tab, setTab] = useState<'withdraw' | 'addressbook' | 'transfer'>('withdraw')
 
@@ -40,6 +40,9 @@ export default function Withdraw() {
   const [withdrawPwd, setWithdrawPwd] = useState('')
   const [wdEmailCode, setWdEmailCode] = useState('')
   const [wdPhoneCode, setWdPhoneCode] = useState('')
+  const [deleteTargetId, setDeleteTargetId] = useState<number | null>(null)
+  const [deleteEmailCode, setDeleteEmailCode] = useState('')
+  const [deletePhoneCode, setDeletePhoneCode] = useState('')
   const [devEmail, setDevEmail] = useState('')
   const [devPhone, setDevPhone] = useState('')
 
@@ -78,16 +81,37 @@ export default function Withdraw() {
     e.preventDefault()
     if (!selectedAddrId) { setError(t('withdraw.selectAddrError')); return }
     setError('')
-    setMsg('')
     try {
       const res = await walletApi.withdraw(
         parseFloat(amount), withdrawPwd, wdEmailCode, wdPhoneCode, Number(selectedAddrId)
       )
-      setMsg(t('withdraw.withdrawSubmitted', {
-        gross: res.amount?.toFixed(2),
-        fee: res.network_fee?.toFixed(2),
-        net: res.amount_net?.toFixed(2),
-      }))
+      const amt = parseFloat(amount)
+      const reviewMin = settings?.review_min_usd ?? 500
+      const autoMax = settings?.auto_max_usd ?? 100
+      if (res.status === 'completed' && res.tx_hash) {
+        toast.success(t('withdraw.completedInstant', {
+          net: res.amount_net?.toFixed(2),
+          tx: res.tx_hash.slice(0, 12) + '…',
+        }))
+      } else if (res.auto_approved || amt <= autoMax) {
+        toast.success(t('withdraw.submittedInstant', {
+          gross: res.amount?.toFixed(2),
+          fee: res.network_fee?.toFixed(2),
+          net: res.amount_net?.toFixed(2),
+        }))
+      } else if (amt >= reviewMin) {
+        toast.success(t('withdraw.submittedReview', {
+          gross: res.amount?.toFixed(2),
+          fee: res.network_fee?.toFixed(2),
+          net: res.amount_net?.toFixed(2),
+        }))
+      } else {
+        toast.success(t('withdraw.withdrawSubmitted', {
+          gross: res.amount?.toFixed(2),
+          fee: res.network_fee?.toFixed(2),
+          net: res.amount_net?.toFixed(2),
+        }))
+      }
       setAmount('')
       load()
     } catch (err: any) {
@@ -110,7 +134,7 @@ export default function Withdraw() {
         email_code: bindEmailCode,
         phone_code: bindPhoneCode,
       })
-      setMsg(t('withdraw.bindSuccess'))
+      toast.success(t('withdraw.bindSuccess'))
       setBindAddress('')
       setBindLabel('')
       setBindMemo('')
@@ -134,10 +158,9 @@ export default function Withdraw() {
   const handleTransfer = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
-    setMsg('')
     try {
       const res = await walletApi.transfer(transferRecipient.trim(), parseFloat(transferAmount), transferNote)
-      setMsg(t('withdraw.transferSuccess', { name: res.to_display_name, amount: res.amount.toFixed(2) }))
+      toast.success(t('withdraw.transferSuccess', { name: res.to_display_name, amount: res.amount.toFixed(2) }))
       setTransferRecipient('')
       setTransferAmount('')
       setTransferNote('')
@@ -157,39 +180,62 @@ export default function Withdraw() {
   const wStatus = (s: string) => t(`admin.wStatus.${s}`) || s
   const addrTypeLabel = (type: string) => type === 'exchange' ? t('withdraw.exchange') : t('withdraw.wallet')
 
+  const confirmDeleteAddress = async () => {
+    if (!deleteTargetId) return
+    setError('')
+    try {
+      await walletApi.deleteWithdrawAddress(deleteTargetId, deleteEmailCode, deletePhoneCode)
+      setDeleteTargetId(null)
+      setDeleteEmailCode('')
+      setDeletePhoneCode('')
+      load()
+    } catch (err: any) {
+      setError(err.response?.data?.detail || t('withdraw.deleteFail'))
+    }
+  }
+
   return (
     <Layout>
       <PageHeader title={t('withdraw.title')} />
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 16, marginBottom: 24 }}>
+      <div className="stat-grid">
         <StatCard label={t('withdraw.balance')} value={`$${(account?.balance || 0).toFixed(2)}`} />
         <StatCard label={t('withdraw.totalEarned')} value={`$${(account?.total_earned || 0).toFixed(2)}`} />
         <StatCard label={t('withdraw.totalWithdrawn')} value={`$${(account?.total_withdrawn || 0).toFixed(2)}`} />
       </div>
 
-      {msg && <p className="flash-msg">{msg}</p>}
-      {error && <p className="text-red" style={{ marginBottom: 16 }}>{error}</p>}
+      {error && <p className="text-red form-error-block">{error}</p>}
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+      <div className="withdraw-tabs">
         {[
           { k: 'withdraw' as const, l: t('withdraw.tabWithdraw') },
           { k: 'addressbook' as const, l: t('withdraw.tabAddress') },
           { k: 'transfer' as const, l: t('withdraw.tabTransfer') },
         ].map(item => (
-          <button key={item.k} className={`btn ${tab === item.k ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setTab(item.k); setError(''); setMsg('') }}>{item.l}</button>
+          <button key={item.k} className={`btn ${tab === item.k ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setTab(item.k); setError('') }}>{item.l}</button>
         ))}
       </div>
 
+      {tab === 'withdraw' && settings && (
+        <GlassCard className="p-4 section-mb-md">
+          <p className="text-sm">{t('withdraw.thresholdHint', {
+            instant: settings.auto_max_usd,
+            review: settings.review_min_usd,
+            min: settings.min_usd,
+          })}</p>
+        </GlassCard>
+      )}
+
       {tab === 'withdraw' && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <div className="withdraw-split">
           <GlassCard className="p-6">
-            <h3 style={{ fontSize: 15, marginBottom: 16 }}>{t('withdraw.applyTitle')}</h3>
+            <h3 className="card-heading">{t('withdraw.applyTitle')}</h3>
             {savedAddrs.length === 0 ? (
-              <p className="text-muted" style={{ fontSize: 14 }}>{t('withdraw.bindAddrFirst')}</p>
+              <p className="text-muted form-hint">{t('withdraw.bindAddrFirst')}</p>
             ) : (
-              <form onSubmit={handleWithdraw}>
-                <div style={{ marginBottom: 12 }}>
-                  <label className="text-secondary" style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>{t('withdraw.selectAddrBook')}</label>
+              <form onSubmit={handleWithdraw} className="form-stack">
+                <div>
+                  <label className="text-secondary field-label">{t('withdraw.selectAddrBook')}</label>
                   <select className="input" value={selectedAddrId} onChange={e => setSelectedAddrId(Number(e.target.value))}>
                     {savedAddrs.map(a => (
                       <option key={a.id} value={a.id}>
@@ -199,25 +245,25 @@ export default function Withdraw() {
                   </select>
                 </div>
                 {selectedAddr && (
-                  <div style={{ padding: 12, marginBottom: 12, borderRadius: 8, background: 'rgba(255,255,255,0.03)', fontSize: 12 }}>
+                  <div className="panel-muted panel-muted-spaced">
                     <p><span className="text-muted">{t('withdraw.chainLabel')}</span> <span className="badge badge-green">{selectedAddr.chain}</span></p>
-                    <p style={{ marginTop: 6, wordBreak: 'break-all', fontFamily: 'monospace' }}>{selectedAddr.address}</p>
-                    <p className="text-muted" style={{ marginTop: 6 }}>{t('withdraw.networkFee')} ${feeMap[selectedAddr.chain] ?? '?'}</p>
+                    <p className="mono-address panel-line-spaced">{selectedAddr.address}</p>
+                    <p className="text-muted panel-line-spaced">{t('withdraw.networkFee')} ${feeMap[selectedAddr.chain] ?? '?'}</p>
                   </div>
                 )}
-                <div style={{ marginBottom: 16 }}>
-                  <label className="text-secondary" style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>{t('withdraw.amountLabel')}</label>
+                <div>
+                  <label className="text-secondary field-label">{t('withdraw.amountLabel')}</label>
                   <input className="input" type="number" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} required />
                 </div>
                 {feePreview && (
-                  <div style={{ padding: 12, marginBottom: 16, borderRadius: 8, background: 'rgba(0,176,80,0.08)', fontSize: 13 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{t('withdraw.deductBalance')}</span><span>${feePreview.gross_amount?.toFixed(2)}</span></div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}><span className="text-muted">{t('withdraw.networkFeeLabel')}</span><span>-${feePreview.network_fee?.toFixed(2)}</span></div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, fontWeight: 600 }}><span>{t('withdraw.netReceive')}</span><span className="text-green">${feePreview.amount_net?.toFixed(2)}</span></div>
+                  <div className="panel-success">
+                    <div className="split-row"><span>{t('withdraw.deductBalance')}</span><span>${feePreview.gross_amount?.toFixed(2)}</span></div>
+                    <div className="split-row split-row-gap"><span className="text-muted">{t('withdraw.networkFeeLabel')}</span><span>-${feePreview.network_fee?.toFixed(2)}</span></div>
+                    <div className="split-row split-row-strong"><span>{t('withdraw.netReceive')}</span><span className="text-green">${feePreview.amount_net?.toFixed(2)}</span></div>
                   </div>
                 )}
                 <input className="input" type="password" placeholder={t('withdraw.withdrawPwdPh')} value={withdrawPwd}
-                  onChange={e => setWithdrawPwd(e.target.value)} style={{ marginBottom: 12 }} required />
+                  onChange={e => setWithdrawPwd(e.target.value)} required />
                 <DualVerifyFields
                   emailCode={wdEmailCode} phoneCode={wdPhoneCode}
                   onEmailCode={setWdEmailCode} onPhoneCode={setWdPhoneCode}
@@ -230,8 +276,8 @@ export default function Withdraw() {
           </GlassCard>
 
           <GlassCard className="p-6">
-            <h3 style={{ fontSize: 15, marginBottom: 12 }}>{t('withdraw.feeTableTitle')}</h3>
-            <table className="data-table" style={{ fontSize: 13 }}>
+            <h3 className="panel-title-sm mb-md">{t('withdraw.feeTableTitle')}</h3>
+            <table className="data-table data-table-sm">
               <thead><tr><th>{t('withdraw.feeTableChain')}</th><th>{t('withdraw.feeTableFee')}</th></tr></thead>
               <tbody>
                 {Object.entries(feeMap).map(([c, f]) => (
@@ -239,33 +285,33 @@ export default function Withdraw() {
                 ))}
               </tbody>
             </table>
-            <p className="text-muted" style={{ fontSize: 11, marginTop: 12 }}>{t('withdraw.feeTableNote')}</p>
+            <p className="text-muted fee-note">{t('withdraw.feeTableNote')}</p>
           </GlassCard>
         </div>
       )}
 
       {tab === 'addressbook' && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <div className="grid-2-col">
           <GlassCard className="p-6">
-            <h3 style={{ fontSize: 15, marginBottom: 16 }}>{t('withdraw.bindTitle')}</h3>
-            <form onSubmit={handleBindAddress}>
-              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+            <h3 className="panel-title-sm mb-md">{t('withdraw.bindTitle')}</h3>
+            <form onSubmit={handleBindAddress} className="form-stack">
+              <div className="toggle-btn-row">
                 <button type="button" className={`btn ${bindType === 'exchange' ? 'btn-primary' : 'btn-ghost'}`}
-                  style={{ flex: 1, fontSize: 12 }} onClick={() => { setBindType('exchange'); setBindSource('Binance') }}>{t('withdraw.exchange')}</button>
+                  onClick={() => { setBindType('exchange'); setBindSource('Binance') }}>{t('withdraw.exchange')}</button>
                 <button type="button" className={`btn ${bindType === 'wallet' ? 'btn-primary' : 'btn-ghost'}`}
-                  style={{ flex: 1, fontSize: 12 }} onClick={() => { setBindType('wallet'); setBindSource('MetaMask') }}>{t('withdraw.wallet')}</button>
+                  onClick={() => { setBindType('wallet'); setBindSource('MetaMask') }}>{t('withdraw.wallet')}</button>
               </div>
-              <select className="input" value={bindSource} onChange={e => setBindSource(e.target.value)} style={{ marginBottom: 8 }}>
+              <select className="input" value={bindSource} onChange={e => setBindSource(e.target.value)}>
                 {(bindType === 'exchange' ? exchangeSources : walletSources).map((s: string) => (
                   <option key={s} value={s}>{s}</option>
                 ))}
               </select>
-              <select className="input" value={bindChain} onChange={e => setBindChain(e.target.value)} style={{ marginBottom: 8 }}>
+              <select className="input" value={bindChain} onChange={e => setBindChain(e.target.value)}>
                 {chains.map((c: string) => <option key={c}>{c}</option>)}
               </select>
-              <input className="input" placeholder={t('withdraw.addrPh')} value={bindAddress} onChange={e => setBindAddress(e.target.value)} required style={{ marginBottom: 8 }} />
-              <input className="input" placeholder={t('withdraw.labelPh')} value={bindLabel} onChange={e => setBindLabel(e.target.value)} style={{ marginBottom: 8 }} />
-              <input className="input" placeholder={t('withdraw.memoPh')} value={bindMemo} onChange={e => setBindMemo(e.target.value)} style={{ marginBottom: 12 }} />
+              <input className="input" placeholder={t('withdraw.addrPh')} value={bindAddress} onChange={e => setBindAddress(e.target.value)} required />
+              <input className="input" placeholder={t('withdraw.labelPh')} value={bindLabel} onChange={e => setBindLabel(e.target.value)} />
+              <input className="input" placeholder={t('withdraw.memoPh')} value={bindMemo} onChange={e => setBindMemo(e.target.value)} />
               <DualVerifyFields
                 emailCode={bindEmailCode} phoneCode={bindPhoneCode}
                 onEmailCode={setBindEmailCode} onPhoneCode={setBindPhoneCode}
@@ -276,68 +322,78 @@ export default function Withdraw() {
             </form>
           </GlassCard>
 
-          <GlassCard className="p-0" style={{ overflow: 'hidden' } as any}>
-            <div style={{ padding: '16px 20px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-              <h3 style={{ fontSize: 15 }}>{t('withdraw.addrBookTitle')} ({savedAddrs.length})</h3>
+          <GlassCard className="p-0 card-overflow-hidden">
+            <div className="card-section-head">
+              <h3 className="panel-title-sm">{t('withdraw.addrBookTitle')} ({savedAddrs.length})</h3>
             </div>
             {savedAddrs.length === 0 ? (
-              <p className="text-muted" style={{ padding: 32, textAlign: 'center' }}>{t('withdraw.noAddr')}</p>
+              <p className="text-muted empty-state">{t('withdraw.noAddr')}</p>
             ) : savedAddrs.map(a => (
-              <div key={a.id} style={{
-                padding: '14px 20px', borderBottom: '1px solid rgba(255,255,255,0.04)',
-                display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12,
-              }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <div key={a.id} className="list-row-divider list-row-flex">
+                <div className="list-row-main">
+                  <div className="list-row-meta">
                     {a.is_default && <Star size={14} className="text-green" fill="var(--accent)" />}
                     <span className="badge badge-green">{a.chain}</span>
                     <span className="badge badge-gray">{addrTypeLabel(a.address_type)}</span>
-                    <span style={{ fontSize: 13 }}>{a.source_name || a.label}</span>
+                    <span className="list-row-name">{a.source_name || a.label}</span>
                   </div>
-                  <p style={{ fontSize: 12, marginTop: 8, wordBreak: 'break-all', fontFamily: 'monospace' }}>{a.address}</p>
-                  {a.memo && <p className="text-muted" style={{ fontSize: 11, marginTop: 4 }}>Memo: {a.memo}</p>}
+                  <p className="addr-mono">{a.address}</p>
+                  {a.memo && <p className="text-muted text-xs mt-xs">{t('withdraw.memoLabel')}: {a.memo}</p>}
                 </div>
-                <div style={{ display: 'flex', gap: 4 }}>
+                <div className="table-actions">
                   {!a.is_default && (
-                    <button className="btn btn-ghost" style={{ padding: '4px 8px', fontSize: 11 }}
+                    <button className="btn btn-ghost btn-compact"
                       onClick={() => walletApi.setDefaultAddress(a.id).then(load)}>{t('withdraw.defaultBtn')}</button>
                   )}
-                  <button className="btn btn-ghost" style={{ padding: '4px 8px' }}
-                    onClick={async () => {
-                      const ec = window.prompt(t('withdraw.emailCodePrompt'))
-                      const pc = window.prompt(t('withdraw.phoneCodePrompt'))
-                      if (!ec || !pc) return
-                      try {
-                        await walletApi.deleteWithdrawAddress(a.id, ec, pc)
-                        load()
-                      } catch (err: any) {
-                        setError(err.response?.data?.detail || t('withdraw.deleteFail'))
-                      }
+                  <button className="btn btn-ghost btn-compact" type="button"
+                    onClick={() => {
+                      setDeleteTargetId(a.id)
+                      setDeleteEmailCode('')
+                      setDeletePhoneCode('')
                     }}><Trash2 size={14} /></button>
                 </div>
               </div>
             ))}
           </GlassCard>
+
+          {deleteTargetId && (
+            <GlassCard className="p-6 section-mb-lg page-panel">
+              <h3 className="panel-title-sm mb-sm">{t('withdraw.deleteAddrTitle')}</h3>
+              <DualVerifyFields
+                emailCode={deleteEmailCode}
+                phoneCode={deletePhoneCode}
+                onEmailCode={setDeleteEmailCode}
+                onPhoneCode={setDeletePhoneCode}
+                devEmail={devEmail}
+                devPhone={devPhone}
+                onDevCodes={(e, p) => { setDevEmail(e || ''); setDevPhone(p || '') }}
+              />
+              <div className="flex-gap-sm section-mt-md">
+                <button type="button" className="btn btn-danger" onClick={confirmDeleteAddress}>{t('withdraw.confirmDelete')}</button>
+                <button type="button" className="btn btn-ghost" onClick={() => setDeleteTargetId(null)}>{t('common.cancel')}</button>
+              </div>
+            </GlassCard>
+          )}
         </div>
       )}
 
       {tab === 'transfer' && (
-        <GlassCard className="p-6" style={{ maxWidth: 560 }}>
-          <h3 style={{ fontSize: 15, marginBottom: 8 }}>{t('withdraw.transferTitle')}</h3>
-          <p className="text-muted" style={{ fontSize: 13, marginBottom: 16 }}>{t('withdraw.transferHint')}</p>
-          <form onSubmit={handleTransfer}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, marginBottom: 12 }}>
+        <GlassCard className="p-6 page-panel">
+          <h3 className="panel-title-sm mb-sm">{t('withdraw.transferTitle')}</h3>
+          <p className="text-muted text-sm section-mb-sm">{t('withdraw.transferHint')}</p>
+          <form onSubmit={handleTransfer} className="form-stack">
+            <div className="grid-input-action">
               <input className="input" value={transferRecipient} onChange={e => setTransferRecipient(e.target.value)}
                 placeholder={t('withdraw.recipientPh')} required />
               <button type="button" className="btn btn-ghost" onClick={lookupRecipient}>{t('withdraw.lookup')}</button>
             </div>
             {transferPreview && (
-              <div style={{ padding: 10, marginBottom: 12, borderRadius: 8, background: 'rgba(0,176,80,0.08)', fontSize: 13 }}>
+              <div className="panel-success panel-compact">
                 {t('withdraw.recipientLabel')}：<span className="text-green">{transferPreview.display_name}</span>
-                <span className="text-muted" style={{ marginLeft: 8 }}>UID: {transferPreview.uid}</span>
+                <span className="text-muted ml-sm">{t('withdraw.uidLine', { uid: transferPreview.uid })}</span>
               </div>
             )}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+            <div className="grid-2-col-gap">
               <input className="input" type="number" step="0.01" value={transferAmount} onChange={e => setTransferAmount(e.target.value)} placeholder={t('withdraw.transferAmountPh')} required />
               <input className="input" value={transferNote} onChange={e => setTransferNote(e.target.value)} placeholder={t('withdraw.notePh')} />
             </div>
@@ -346,13 +402,13 @@ export default function Withdraw() {
         </GlassCard>
       )}
 
-      <GlassCard className="p-0" style={{ overflow: 'hidden', marginTop: 24 } as any}>
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}><h3 style={{ fontSize: 15 }}>{t('withdraw.historyTitle')}</h3></div>
+      <GlassCard className="p-0 card-overflow-hidden section-mt-lg">
+        <div className="card-section-head"><h3 className="panel-title-sm">{t('withdraw.historyTitle')}</h3></div>
         <table className="data-table">
-          <thead><tr><th>{t('common.time')}</th><th>{t('common.chain')}</th><th>{t('admin.cols.detail')}</th><th>{t('admin.cols.fee')}</th><th>{t('admin.cols.received')}</th><th>{t('common.status')}</th></tr></thead>
+          <thead><tr><th>{t('common.time')}</th><th>{t('common.chain')}</th><th>{t('admin.cols.detail')}</th><th>{t('admin.cols.fee')}</th><th>{t('admin.cols.received')}</th><th>{t('common.status')}</th><th>TxHash</th></tr></thead>
           <tbody>
             {withdrawals.length === 0 ? (
-              <tr><td colSpan={6} className="text-muted" style={{ textAlign: 'center', padding: 32 }}>{t('withdraw.emptyHistory')}</td></tr>
+              <tr><td colSpan={7} className="text-muted empty-state">{t('withdraw.emptyHistory')}</td></tr>
             ) : withdrawals.map(w => (
               <tr key={w.id}>
                 <td>{localeDate(w.created_at, locale)}</td>
@@ -360,14 +416,31 @@ export default function Withdraw() {
                 <td>${w.amount?.toFixed(2)}</td>
                 <td className="text-muted">${(w.network_fee ?? 0).toFixed(2)}</td>
                 <td className="text-green">${(w.amount_net ?? w.amount)?.toFixed(2)}</td>
-                <td><span className={`badge ${w.status === 'completed' ? 'badge-green' : 'badge-gray'}`}>{wStatus(w.status)}</span></td>
+                <td>
+                  <span className={`badge ${
+                    w.status === 'completed' ? 'badge-green'
+                    : w.status === 'processing' ? 'badge-yellow'
+                    : 'badge-gray'
+                  }`}>
+                    {w.status === 'completed' && w.admin_note === 'auto_payout'
+                      ? t('admin.wStatus.autoCompleted')
+                      : wStatus(w.status)}
+                  </span>
+                </td>
+                <td className="mono-address-sm">
+                  {w.explorer_url && w.tx_hash ? (
+                    <a href={w.explorer_url} target="_blank" rel="noopener noreferrer" className="link-muted">
+                      {w.tx_hash.slice(0, 14)}…
+                    </a>
+                  ) : w.tx_hash ? (
+                    <span>{w.tx_hash.slice(0, 14)}…</span>
+                  ) : '—'}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </GlassCard>
-
-      <style>{`@media (max-width: 768px) { div[style*="grid-template-columns: 1fr 1fr"] { grid-template-columns: 1fr !important; } }`}</style>
     </Layout>
   )
 }

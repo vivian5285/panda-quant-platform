@@ -39,9 +39,9 @@ export default function ReferralTree() {
   if (!tree) return null
 
   return (
-    <GlassCard className="p-6" style={{ marginBottom: 24 }}>
+    <GlassCard className="p-6 section-mb-lg">
       <h3 className="card-heading">{t('referrals.treeTitle')}</h3>
-      <p className="text-muted" style={{ fontSize: 13, marginBottom: 20 }}>{t('referrals.treeSubtitle')}</p>
+      <p className="text-muted text-sm mb-md">{t('referrals.treeSubtitle')}</p>
       <div className="ref-tree-root">
         <Node node={tree} />
       </div>

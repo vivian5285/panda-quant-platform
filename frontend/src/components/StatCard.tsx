@@ -49,10 +49,10 @@ export default function StatCard({ label, value, countUp, change, positive, dela
 
   return (
     <GlassCard delay={delay} className="p-6 stat-card-hover">
-      <p className="text-muted" style={{ fontSize: 13, marginBottom: 8 }}>{label}</p>
+      <p className="text-muted stat-card-label">{label}</p>
       <p className="stat-value">{display}</p>
       {change && (
-        <p className={positive ? 'text-green' : 'text-red'} style={{ fontSize: 13, marginTop: 6 }}>
+        <p className={`stat-card-change ${positive ? 'text-green' : 'text-red'}`}>
           {change}
         </p>
       )}

@@ -13,7 +13,7 @@ from app.models import User
 
 from app.schemas import (
 
-    RegisterRequest, LoginRequest, TokenResponse, UserProfile, NicknameUpdate,
+    RegisterRequest, LoginRequest, TokenResponse, TotpLoginRequest, UserProfile, NicknameUpdate,
 
     SmsSendRequest, SmsLoginRequest, SmsSendResponse,
 
@@ -108,7 +108,32 @@ def _token_response(user: User, db: Session | None = None, request=None) -> Toke
         phone=user.phone,
         nickname=user.nickname,
         display_name=display_name(user),
+        api_status=user.api_status,
     )
+
+
+def _user_pref(db: Session, user_id: int):
+    from app.models.platform import UserPreference
+    return db.query(UserPreference).filter(UserPreference.user_id == user_id).first()
+
+
+def _login_result(user: User, db: Session, request) -> TokenResponse:
+    from app.services.login_challenge import create_login_challenge
+
+    p = _user_pref(db, user.id)
+    if p and p.totp_enabled and p.totp_secret:
+        return TokenResponse(
+            requires_totp=True,
+            challenge_token=create_login_challenge(user.id),
+            role=user.role,
+            uid=user.uid,
+            email=user.email,
+            phone=user.phone,
+            nickname=user.nickname,
+            display_name=display_name(user),
+            api_status=user.api_status,
+        )
+    return _token_response(user, db, request)
 
 
 
@@ -277,6 +302,24 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
     if not user or not verify_password(req.password, user.password_hash):
         raise HTTPException(401, "账号或密码错误")
     _require_active(user)
+    return _login_result(user, db, request)
+
+
+@router.post("/login/totp", response_model=TokenResponse)
+def login_totp(req: TotpLoginRequest, request: Request, db: Session = Depends(get_db)):
+    from app.services.login_challenge import consume_login_challenge
+    from app.services.totp import verify_totp
+
+    user_id = consume_login_challenge(req.challenge_token)
+    if not user_id:
+        raise HTTPException(401, "登录验证已过期，请重新登录")
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(401, "用户不存在")
+    p = _user_pref(db, user.id)
+    if not p or not p.totp_enabled or not verify_totp(p.totp_secret or "", req.code):
+        raise HTTPException(401, "TOTP 验证码错误")
+    _require_active(user)
     return _token_response(user, db, request)
 
 
@@ -375,7 +418,7 @@ def login_with_sms(req: SmsLoginRequest, request: Request, db: Session = Depends
 
         user = verify_login_code(db, "phone", req.phone, req.code)
         _require_active(user)
-        return _token_response(user, db, request)
+        return _login_result(user, db, request)
 
     except ValueError as e:
 
@@ -393,7 +436,7 @@ def login_with_email(req: EmailLoginRequest, request: Request, db: Session = Dep
 
         user = verify_login_code(db, "email", req.email, req.code)
         _require_active(user)
-        return _token_response(user, db, request)
+        return _login_result(user, db, request)
 
     except ValueError as e:
 
@@ -676,12 +719,23 @@ def oauth_callback(
         profile = exchange_google_code(code) if provider == "google" else exchange_github_code(code)
         user = _oauth_login_or_register(db, provider, profile)
         _require_active(user)
-        token = _token_response(user, db, request)
+        token = _login_result(user, db, request)
+        if token.requires_totp:
+            params = {
+                "requires_totp": "1",
+                "challenge_token": token.challenge_token or "",
+                "uid": token.uid,
+                "display_name": token.display_name,
+                "role": token.role,
+                "api_status": token.api_status or "",
+            }
+            return RedirectResponse(f"{frontend}/auth/callback?{urlencode(params)}")
         params = {
             "access_token": token.access_token,
             "uid": token.uid,
             "display_name": token.display_name,
             "role": token.role,
+            "api_status": token.api_status or "",
         }
         if token.refresh_token:
             params["refresh_token"] = token.refresh_token

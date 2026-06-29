@@ -1,15 +1,18 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import ReactECharts from 'echarts-for-react'
 import Layout from '../components/Layout'
 import PageHeader from '../components/PageHeader'
 import StatCard from '../components/StatCard'
 import GlassCard from '../components/GlassCard'
 import Skeleton from '../components/ui/Skeleton'
+import TradingViewWidget from '../components/landing/TradingViewWidget'
 import { useDashboardWebSocket } from '../hooks/useDashboardWebSocket'
 import { userApi } from '../api'
 import { useI18n } from '../i18n'
 import { useTheme } from '../store/theme'
 import { CHART } from '../theme/chartColors'
+import { buildCalendarHeatmap } from '../utils/heatmapCalendar'
+import SettlementGateBanner from '../components/SettlementGateBanner'
 
 function fmt(n: number) {
   const prefix = n >= 0 ? '+$' : '-$'
@@ -22,52 +25,64 @@ export default function Dashboard() {
   const [data, setData] = useState<any>(null)
   const [analytics, setAnalytics] = useState<any>(null)
   const [trades, setTrades] = useState<any[]>([])
+  const [signals, setSignals] = useState<any>(null)
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    const load = () => Promise.all([
+  const load = useCallback(() => {
+    return Promise.all([
       userApi.dashboard().then(setData),
       userApi.analytics(90).then(setAnalytics),
-      userApi.trades().then((r: any[]) => setTrades(r.slice(0, 8))),
+      userApi.trades().then((r: any[]) => setTrades(r.slice(0, 12))),
+      userApi.signals(50).then(setSignals).catch(() => setSignals(null)),
     ]).finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => {
     load()
     const timer = setInterval(load, 30000)
     return () => clearInterval(timer)
-  }, [])
+  }, [load])
 
   useDashboardWebSocket(useCallback((msg: any) => {
     if (msg?.analytics) setAnalytics(msg.analytics)
+    if (msg?.dashboard) setData(msg.dashboard)
+    if (Array.isArray(msg?.trades)) setTrades(msg.trades.slice(0, 12))
   }, []))
 
   const isDark = theme === 'dark'
-  const weekLabels = analytics?.week_labels?.map((d: string) => {
-    const dt = new Date(d)
-    return locale === 'zh'
-      ? `${dt.getMonth() + 1}/${dt.getDate()}`
-      : dt.toLocaleDateString('en-US', { weekday: 'short' })
-  }) || []
+  const calendar = useMemo(
+    () => buildCalendarHeatmap(analytics?.daily_series || []),
+    [analytics?.daily_series],
+  )
 
   const equityOption = {
     backgroundColor: 'transparent',
-    grid: { top: 30, right: 20, bottom: 30, left: 50 },
-    tooltip: { trigger: 'axis' },
+    grid: { top: 36, right: 16, bottom: 28, left: 52 },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: isDark ? '#141414' : '#fff',
+      borderColor: CHART.axisLine(isDark),
+      textStyle: { color: CHART.label(isDark), fontSize: 12 },
+    },
     xAxis: {
       type: 'category',
-      data: analytics?.daily_series?.slice(-30).map((d: any) => d.date.slice(5)) || weekLabels,
+      data: analytics?.daily_series?.slice(-30).map((d: any) => d.date.slice(5)) || [],
       axisLine: { lineStyle: { color: CHART.axisLine(isDark) } },
       axisLabel: { color: CHART.axisLabel(isDark), fontSize: 10 },
+      boundaryGap: false,
     },
     yAxis: {
       type: 'value',
       splitLine: { lineStyle: { color: CHART.splitLine(isDark) } },
-      axisLabel: { color: CHART.axisLabel(isDark), fontSize: 11 },
+      axisLabel: { color: CHART.axisLabel(isDark), fontSize: 11, formatter: (v: number) => `$${v}` },
     },
     series: [{
-      data: analytics?.daily_series?.slice(-30).map((d: any) => d.cumulative)
-        || analytics?.week_values || [],
+      data: analytics?.daily_series?.slice(-30).map((d: any) => d.cumulative) || [],
       type: 'line',
-      smooth: true,
-      symbol: 'none',
+      smooth: 0.35,
+      symbol: 'circle',
+      symbolSize: 4,
+      showSymbol: false,
       lineStyle: { color: CHART.green, width: 2.5 },
       areaStyle: {
         color: {
@@ -89,7 +104,7 @@ export default function Dashboard() {
       radius: ['42%', '68%'],
       itemStyle: { borderRadius: 8, borderColor: CHART.pieBorder(isDark), borderWidth: 2 },
       label: { color: CHART.label(isDark), fontSize: 11 },
-      data: (analytics?.pnl_by_regime || [{ regime: 'R3', pnl: 0 }]).map((r: any) => ({
+      data: (analytics?.pnl_by_regime || [{ regime: 'Trend', pnl: 1 }, { regime: 'Range', pnl: 1 }]).map((r: any) => ({
         name: r.regime,
         value: Math.abs(r.pnl) || 0.01,
       })),
@@ -97,101 +112,202 @@ export default function Dashboard() {
     }],
   }
 
-  const heatmapData = analytics?.daily_series?.slice(-84) || []
   const heatmapOption = {
     backgroundColor: 'transparent',
-    tooltip: { position: 'top' },
-    grid: { top: 10, right: 10, bottom: 30, left: 40 },
-    xAxis: { type: 'category', data: ['', '', '', '', '', '', ''], show: false },
-    yAxis: { type: 'category', data: ['W1', 'W2', 'W3', 'W4', 'W5', 'W6', 'W7', 'W8', 'W9', 'W10', 'W11', 'W12'], axisLabel: { fontSize: 9, color: CHART.axisLabel(isDark) } },
+    tooltip: {
+      formatter: (p: any) => {
+        const [date, val] = p.data as [string, number]
+        return `${date}<br/>PNL: ${fmt(val || 0)}`
+      },
+    },
     visualMap: {
-      min: -100, max: 100, calculable: false, orient: 'horizontal', left: 'center', bottom: 0,
+      min: calendar.min,
+      max: calendar.max,
+      calculable: false,
+      orient: 'horizontal',
+      left: 'center',
+      bottom: 0,
       inRange: { color: CHART.heatmap(isDark) },
       textStyle: { color: CHART.label(isDark), fontSize: 10 },
-      show: false,
+    },
+    calendar: {
+      top: 48,
+      left: 40,
+      right: 20,
+      cellSize: ['auto', 14],
+      range: calendar.range,
+      itemStyle: { borderWidth: 3, borderColor: isDark ? '#000' : '#fff' },
+      dayLabel: { color: CHART.axisLabel(isDark), fontSize: 10, firstDay: 1 },
+      monthLabel: { color: CHART.axisLabel(isDark), fontSize: 10 },
+      yearLabel: { show: false },
     },
     series: [{
       type: 'heatmap',
-      data: heatmapData.map((d: any, i: number) => [i % 7, Math.floor(i / 7), d.pnl]),
-      emphasis: { itemStyle: { shadowBlur: 8 } },
+      coordinateSystem: 'calendar',
+      data: calendar.data,
     }],
   }
+
+  const tickerTrack = trades.length > 0 ? [...trades, ...trades] : []
 
   return (
     <Layout>
       <PageHeader
         title={t('dashboard.title')}
         action={
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div className="pulse-dot" />
-            <span className="text-muted" style={{ fontSize: 13 }}>{t('dashboard.running')}</span>
+          <div className={`dash-live-badge${data?.settlement_blocked ? ' dash-live-badge--paused' : ''}`}>
+            <div className={data?.settlement_blocked ? 'pulse-dot pulse-dot--muted' : 'pulse-dot'} />
+            <span>{data?.settlement_blocked ? t('dashboard.settlementPaused') : t('dashboard.running')}</span>
           </div>
         }
       />
 
+      <SettlementGateBanner
+        blocked={data?.settlement_blocked}
+        settlement={data?.pending_settlement}
+      />
+
       {loading ? (
-        <div className="stat-grid">{[1, 2, 3, 4].map(n => <Skeleton key={n} height={88} />)}</div>
+        <div className="stat-grid">{[1, 2, 3, 4].map(n => <Skeleton key={n} height={96} />)}</div>
       ) : (
-        <div className="stat-grid">
+        <div className="stat-grid dash-stat-grid">
           <StatCard label={t('dashboard.balance')} countUp={{ end: data?.balance || 0, prefix: '$', decimals: 2 }} delay={0.1} />
           <StatCard label={t('dashboard.todayPnl')} countUp={{ end: data?.today_pnl || 0, pnl: true, decimals: 2 }} positive={(data?.today_pnl || 0) >= 0} delay={0.15} />
-          <StatCard label={t('dashboard.winRate')} countUp={{ end: analytics?.win_rate || 0, suffix: '%', decimals: 1 }} delay={0.18} />
-          <StatCard label={t('dashboard.totalPnl')} countUp={{ end: data?.total_pnl || 0, pnl: true, decimals: 2 }} positive={(data?.total_pnl || 0) >= 0} delay={0.2} />
+          <StatCard label={t('dashboard.totalPnl')} countUp={{ end: data?.total_pnl || 0, pnl: true, decimals: 2 }} positive={(data?.total_pnl || 0) >= 0} delay={0.18} />
+          <StatCard label={t('dashboard.winRate')} countUp={{ end: analytics?.win_rate || 0, suffix: '%', decimals: 1 }} delay={0.2} />
         </div>
       )}
 
-      <div className="dash-chart-grid">
-        <GlassCard className="p-6" delay={0.25}>
-          <h3 className="card-heading">{t('dashboard.pnlChart')}</h3>
-          {loading ? <Skeleton height={280} /> : <ReactECharts option={equityOption} style={{ height: 280 }} />}
+      <div className="dash-main-grid">
+        <GlassCard className="p-6" delay={0.22}>
+          <h3 className="card-heading">{t('dashboard.equityCurve')}</h3>
+          {loading ? <Skeleton height={280} /> : <ReactECharts option={equityOption} className="chart-h-md" />}
         </GlassCard>
-        <GlassCard className="p-6" delay={0.28}>
-          <h3 className="card-heading">{t('dashboard.pnlSource')}</h3>
-          {loading ? <Skeleton height={280} /> : <ReactECharts option={pieOption} style={{ height: 280 }} />}
+        <GlassCard className="p-6 dash-ai-card" delay={0.24}>
+          <h3 className="card-heading">{t('dashboard.aiScore')}</h3>
+          {loading ? <Skeleton height={200} /> : (
+            <>
+              <div className="dash-ai-confidence">
+                <span className="dash-ai-value">{signals?.confidence_score ?? 0}%</span>
+                <span className="text-muted">{t('dashboard.aiConfidence')}</span>
+              </div>
+              <div className="dash-ai-meta">
+                <div><span className="text-muted">{t('dashboard.aiBias')}</span><br /><strong>{signals?.direction_bias || t('dashboard.aiPending')}</strong></div>
+                <div><span className="text-muted">{t('dashboard.aiSuccessRate')}</span><br /><strong>{signals?.success_rate ?? 0}%</strong></div>
+                <div><span className="text-muted">{t('dashboard.aiLastSignal')}</span><br /><strong>{signals?.last_signal_at ? new Date(signals.last_signal_at).toLocaleString() : t('common.none')}</strong></div>
+              </div>
+            </>
+          )}
         </GlassCard>
       </div>
 
-      <GlassCard className="p-6" delay={0.32} style={{ marginBottom: 24 }}>
-        <h3 className="card-heading">{t('dashboard.heatmap')}</h3>
-        {loading ? <Skeleton height={180} /> : <ReactECharts option={heatmapOption} style={{ height: 180 }} />}
-      </GlassCard>
-
-      {trades.length > 0 && (
-        <GlassCard className="p-6" delay={0.35}>
-          <h3 className="card-heading">{t('dashboard.recentOrders')}</h3>
+      <GlassCard className="dash-ticker-strip" delay={0.12}>
+        <div className="dash-ticker-label">{t('dashboard.liveTicker')}</div>
+        {tickerTrack.length > 0 ? (
           <div className="recent-ticker">
-            {[...trades, ...trades].map((tr, i) => (
+            {tickerTrack.map((tr, i) => (
               <span key={`${tr.id}-${i}`} className={`ticker-item ${(tr.realized_pnl || 0) >= 0 ? 'up' : 'down'}`}>
-                {tr.side} · {tr.symbol} · {fmt(tr.realized_pnl || 0)}
+                {tr.action || tr.side} · {tr.symbol} · {tr.quantity} · {fmt(tr.realized_pnl || 0)}
               </span>
             ))}
           </div>
-        </GlassCard>
-      )}
+        ) : (
+          <p className="dash-ticker-empty">{t('dashboard.tickerEmpty')}</p>
+        )}
+      </GlassCard>
 
       {data?.open_position?.has_position && (
-        <GlassCard className="p-6" delay={0.38} style={{ marginTop: 24 }}>
+        <GlassCard className="p-6 section-mb-lg" delay={0.28}>
           <h3 className="card-heading">{t('dashboard.currentPosition')}</h3>
-          <div className="stat-grid" style={{ marginBottom: 0 }}>
+          <div className="stat-grid stat-grid-flush">
             <div className="stat-tile">
-              <p className="text-muted" style={{ fontSize: 12 }}>{t('dashboard.direction')}</p>
-              <p className={data.open_position.side === 'LONG' ? 'text-green' : 'text-red'} style={{ fontSize: 18, fontWeight: 600 }}>{data.open_position.side}</p>
+              <p className="text-muted text-xs">{t('dashboard.direction')}</p>
+              <p className={data.open_position.side === 'LONG' ? 'text-green stat-value-xl' : 'text-red stat-value-xl'}>{data.open_position.side}</p>
             </div>
             <div className="stat-tile">
-              <p className="text-muted" style={{ fontSize: 12 }}>{t('dashboard.qty')}</p>
-              <p style={{ fontSize: 18, fontWeight: 600 }}>{data.open_position.qty} ETH</p>
+              <p className="text-muted text-xs">{t('dashboard.qty')}</p>
+              <p className="stat-value-xl">{data.open_position.qty} {t('admin.ethUnit')}</p>
             </div>
             <div className="stat-tile">
-              <p className="text-muted" style={{ fontSize: 12 }}>{t('dashboard.entry')}</p>
-              <p style={{ fontSize: 18, fontWeight: 600 }}>${data.open_position.entry_price?.toFixed(2)}</p>
+              <p className="text-muted text-xs">{t('dashboard.entry')}</p>
+              <p className="stat-value-xl">${data.open_position.entry_price?.toFixed(2)}</p>
             </div>
             <div className="stat-tile">
-              <p className="text-muted" style={{ fontSize: 12 }}>{t('dashboard.floatingPnl')}</p>
-              <p className={data.open_position.unrealized_pnl >= 0 ? 'text-green' : 'text-red'} style={{ fontSize: 18, fontWeight: 600 }}>{fmt(data.open_position.unrealized_pnl)}</p>
+              <p className="text-muted text-xs">{t('dashboard.floatingPnl')}</p>
+              <p className={`stat-value-xl ${data.open_position.unrealized_pnl >= 0 ? 'text-green' : 'text-red'}`}>{fmt(data.open_position.unrealized_pnl)}</p>
             </div>
           </div>
         </GlassCard>
       )}
+
+      <GlassCard className="p-6 section-mb-lg" delay={0.3}>
+        <h3 className="card-heading">{t('dashboard.recentOrders')}</h3>
+        {trades.length > 0 ? (
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>{t('trades.signal')}</th>
+                  <th>{t('trades.side')}</th>
+                  <th>{t('common.time')}</th>
+                  <th>{t('trades.pnl')}</th>
+                  <th>{t('common.status')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trades.map(tr => (
+                  <tr key={tr.id}>
+                    <td><span className="badge badge-gray">{tr.action || '—'}</span></td>
+                    <td>{tr.side}</td>
+                    <td className="text-muted">{tr.closed_at ? new Date(tr.closed_at).toLocaleString() : new Date(tr.created_at).toLocaleString()}</td>
+                    <td className={(tr.realized_pnl || 0) >= 0 ? 'text-green' : 'text-red'}>{fmt(tr.realized_pnl || 0)}</td>
+                    <td>{tr.status || 'FILLED'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-muted dash-empty-hint">{t('trades.empty')}</p>
+        )}
+      </GlassCard>
+
+      <GlassCard className="p-4 dash-tv-card" delay={0.32}>
+        <h3 className="card-heading">{t('dashboard.marketChart')}</h3>
+        <TradingViewWidget
+          scriptSrc="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js"
+          className="chart-h-lg"
+          config={{
+            autosize: true,
+            symbol: 'BINANCE:ETHUSDT',
+            interval: '15',
+            timezone: 'Etc/UTC',
+            theme: isDark ? 'dark' : 'light',
+            style: '1',
+            locale: locale === 'zh' ? 'zh_CN' : 'en',
+            enable_publishing: false,
+            hide_top_toolbar: true,
+            hide_legend: false,
+            allow_symbol_change: false,
+            backgroundColor: 'transparent',
+          }}
+        />
+      </GlassCard>
+
+      <div className="dash-chart-grid">
+        <GlassCard className="p-6" delay={0.35}>
+          <h3 className="card-heading">{t('dashboard.pnlSource')}</h3>
+          {loading ? <Skeleton height={280} /> : <ReactECharts option={pieOption} className="chart-h-md" />}
+        </GlassCard>
+        <GlassCard className="p-6 dash-heatmap-card" delay={0.38}>
+          <h3 className="card-heading">{t('dashboard.heatmap')}</h3>
+          {loading ? <Skeleton height={220} /> : (
+            calendar.data.length > 0
+              ? <ReactECharts option={heatmapOption} className="chart-h-heatmap" />
+              : <p className="text-muted dash-empty-hint">{t('dashboard.heatmapEmpty')}</p>
+          )}
+        </GlassCard>
+      </div>
     </Layout>
   )
 }

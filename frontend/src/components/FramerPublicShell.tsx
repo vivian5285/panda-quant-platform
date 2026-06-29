@@ -14,8 +14,8 @@ export default function FramerPublicShell({ children }: Props) {
     <div className="framer-public-page">
       <header className="framer-public-nav">
         <FramerBrand />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <Link to="/login" className="framer-btn-ghost" style={{ fontSize: 14, textDecoration: 'none' }}>
+        <div className="framer-public-nav-actions">
+          <Link to="/login" className="framer-btn-ghost framer-public-login">
             {t('auth.login')}
           </Link>
           <TopToolbar />

@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import (
@@ -24,6 +24,8 @@ from app.services.chain_fees import (
     CHAIN_WITHDRAW_FEES_USD, INTERNAL_TRANSFER_FEE_USD,
     calc_withdraw_net, EXCHANGE_SOURCES, WALLET_SOURCES,
 )
+from app.services.platform_runtime import get_withdraw_thresholds
+from app.services.auto_payout import process_auto_payout
 from app.config import get_settings
 
 router = APIRouter(tags=["wallet"])
@@ -80,10 +82,11 @@ def reward_ledger(limit: int = 50, user=Depends(get_current_user), db: Session =
 
 @router.get("/withdraw/settings", response_model=WithdrawSettingsOut)
 def withdraw_settings():
+    thresholds = get_withdraw_thresholds()
     return WithdrawSettingsOut(
-        auto_max_usd=settings.WITHDRAW_AUTO_MAX_USD,
-        review_min_usd=settings.WITHDRAW_REVIEW_MIN_USD,
-        min_usd=settings.WITHDRAW_MIN_USD,
+        auto_max_usd=thresholds["auto_max_usd"],
+        review_min_usd=thresholds["review_min_usd"],
+        min_usd=thresholds["min_usd"],
         supported_chains=list(SUPPORTED_CHAINS),
         chain_fees=[ChainFeeOut(chain=k, fee_usd=v) for k, v in CHAIN_WITHDRAW_FEES_USD.items()],
         internal_transfer_fee=INTERNAL_TRANSFER_FEE_USD,
@@ -201,6 +204,7 @@ def delete_withdraw_address(
 @router.post("/withdraw", response_model=WithdrawalOut)
 def request_withdrawal(
     req: WithdrawalCreate,
+    background_tasks: BackgroundTasks,
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -229,7 +233,10 @@ def request_withdrawal(
         else:
             raise HTTPException(400, "Select an address from address book or provide chain + address")
 
-        return create_withdrawal(db, user.id, req.amount, chain, address, book_id)
+        withdrawal = create_withdrawal(db, user.id, req.amount, chain, address, book_id)
+        if withdrawal.auto_approved:
+            background_tasks.add_task(process_auto_payout, withdrawal.id)
+        return withdrawal
     except ValueError as e:
         raise HTTPException(400, str(e))
 

@@ -1,15 +1,6 @@
 import { useI18n } from '../../../i18n'
 
-const NODES = [
-  'aiEngine',
-  'cloud',
-  'execution',
-  'binance',
-  'websocket',
-  'riskEngine',
-  'analytics',
-  'settlement',
-] as const
+const NODES = ['aiEngine', 'riskEngine', 'execution', 'binance'] as const
 
 export default function FramerTechArchitecture() {
   const t = useI18n(s => s.t)
@@ -21,10 +12,10 @@ export default function FramerTechArchitecture() {
         <h2>{t('framer.tech.title')}</h2>
         <p>{t('framer.tech.subtitle')}</p>
       </div>
-      <div className="framer-tech-diagram">
+      <div className="framer-tech-diagram framer-tech-diagram-compact">
         {NODES.map((node, i) => (
           <div key={node} className="framer-tech-row">
-            <div className="framer-tech-node">
+            <div className="framer-tech-node glass">
               <span className="framer-tech-dot" />
               <div>
                 <strong>{t(`framer.tech.nodes.${node}.title`)}</strong>

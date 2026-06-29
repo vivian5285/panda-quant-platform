@@ -1,0 +1,119 @@
+/**
+
+ * Panda Quant · Framer-grade Design System
+
+ * Shared tokens: Landing · User Console · Admin Console
+
+ */
+
+:root,
+
+[data-theme="light"] {
+
+  --pq-bg-deep: #f8fafc;
+
+  --pq-bg-base: #f1f5f9;
+
+  --pq-surface: #ffffff;
+
+  --pq-surface-hover: #e2e8f0;
+
+  --pq-primary: #3b82f6;
+
+  --pq-primary-hover: #2563eb;
+
+  --pq-accent-purple: #8b5cf6;
+
+  --pq-accent-cyan: #0891b2;
+
+  --pq-success: #16a34a;
+
+  --pq-warning: #d97706;
+
+  --pq-danger: #dc2626;
+
+  --pq-text: #0f172a;
+
+  --pq-text-secondary: rgba(15, 23, 42, 0.62);
+
+  --pq-text-muted: rgba(15, 23, 42, 0.45);
+
+  --pq-border: rgba(148, 163, 184, 0.22);
+
+  --pq-border-hover: rgba(148, 163, 184, 0.35);
+
+  --pq-glass: rgba(255, 255, 255, 0.78);
+
+  --pq-blur: 20px;
+
+  --pq-radius: 12px;
+
+  --pq-radius-lg: 16px;
+
+  --pq-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+
+  --pq-font-display: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+
+  --pq-glow-blue: 0 0 40px rgba(59, 130, 246, 0.12);
+
+  --pq-glow-purple: 0 0 48px rgba(139, 92, 246, 0.08);
+
+}
+
+
+
+[data-theme="dark"] {
+
+  --bg-primary: #050816;
+  --surface: #0f172a;
+  --primary: #3b82f6;
+  --accent: #8b5cf6;
+  --highlight: #06b6d4;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+
+  --pq-bg-deep: #050816;
+
+  --pq-bg-base: #0a0f1c;
+
+  --pq-surface: #0f172a;
+
+  --pq-surface-hover: #1e293b;
+
+  --pq-primary: #3b82f6;
+
+  --pq-primary-hover: #2563eb;
+
+  --pq-accent-purple: #8b5cf6;
+
+  --pq-accent-cyan: #06b6d4;
+
+  --pq-success: #22c55e;
+
+  --pq-warning: #f59e0b;
+
+  --pq-danger: #ef4444;
+
+  --pq-text: #f8fafc;
+
+  --pq-text-secondary: rgba(248, 250, 252, 0.62);
+
+  --pq-text-muted: rgba(248, 250, 252, 0.42);
+
+  --pq-border: rgba(148, 163, 184, 0.12);
+
+  --pq-border-hover: rgba(148, 163, 184, 0.22);
+
+  --pq-glass: rgba(15, 23, 42, 0.72);
+
+  --pq-blur: 24px;
+
+  --pq-glow-blue: 0 0 40px rgba(59, 130, 246, 0.18);
+
+  --pq-glow-purple: 0 0 48px rgba(139, 92, 246, 0.14);
+
+}
+

@@ -52,6 +52,7 @@ class PositionManager:
             "side": self.get_position_side(symbol),
             "qty": self.get_position_qty(symbol),
             "entry_price": float(pos.get("entryPrice", 0)),
+            "mark_price": float(pos.get("markPrice", 0) or 0),
             "unrealized_pnl": self.get_unrealized_pnl(symbol),
             "leverage": pos.get("leverage", "N/A"),
         }

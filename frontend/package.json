@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "clean-i18n": "node scripts/clean-i18n.mjs"
   },
   "dependencies": {
     "axios": "^1.6.7",

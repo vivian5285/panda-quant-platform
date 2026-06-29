@@ -9,7 +9,7 @@ from app.database import engine, Base, SessionLocal
 from app.models import User, UserRole
 from app.api import auth, users, referrals, admin, wallet, public, strategies, notifications, settings_api, billing, system
 from app.services.dispatcher import supervisor_pool
-from app.services.startup_audit import validate_production_secrets, log_security_warnings
+from app.services.startup_audit import validate_production_secrets, log_security_warnings, assert_production_ready
 from app.utils.auth import hash_password, verify_password, generate_referral_code, generate_uid
 from app.i18n.middleware import LocaleMiddleware
 from app.i18n import translate_detail, get_locale
@@ -39,6 +39,16 @@ def _ensure_sqlite_columns():
                 conn.execute(text("ALTER TABLE users ADD COLUMN oauth_github_id VARCHAR(64)"))
             if "oauth_avatar_url" not in cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN oauth_avatar_url VARCHAR(512)"))
+    if "trades" in insp.get_table_names():
+        cols = {c["name"] for c in insp.get_columns("trades")}
+        with engine.begin() as conn:
+            if "funding_fee" not in cols:
+                conn.execute(text("ALTER TABLE trades ADD COLUMN funding_fee FLOAT DEFAULT 0"))
+    if "signal_dispatch_logs" in insp.get_table_names():
+        cols = {c["name"] for c in insp.get_columns("signal_dispatch_logs")}
+        with engine.begin() as conn:
+            if "skipped_count" not in cols:
+                conn.execute(text("ALTER TABLE signal_dispatch_logs ADD COLUMN skipped_count INTEGER DEFAULT 0"))
 
 
 def _seed_subscription_plans(db):
@@ -94,6 +104,8 @@ def init_db():
         if users_no_uid:
             db.commit()
         _seed_subscription_plans(db)
+        from app.services.signal_admin import seed_default_template
+        seed_default_template(db)
     except Exception as e:
         logger.exception("init_db failed: %s", e)
         from app.services.alert_service import notify_system
@@ -137,6 +149,7 @@ def start_webhook_server():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    assert_production_ready()
     init_db()
     threading.Thread(target=start_webhook_server, daemon=True, name="webhook").start()
     threading.Thread(target=load_supervisors_background, daemon=True, name="supervisors").start()
@@ -145,6 +158,8 @@ async def lifespan(app: FastAPI):
         settings.WEBHOOK_PORT,
     )
     yield
+    logger.info("Application shutdown initiated")
+    supervisor_pool.shutdown_all(wait_seconds=3.0)
 
 
 app = FastAPI(title="GEMINI AI · 双子星AI量化", version="1.0.0", lifespan=lifespan)
@@ -152,8 +167,13 @@ app = FastAPI(title="GEMINI AI · 双子星AI量化", version="1.0.0", lifespan=
 app.add_middleware(LocaleMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.FRONTEND_URL, "http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_origin_regex=r"https?://[\w\.-]+(:\d+)?",
+    allow_origins=[
+        settings.FRONTEND_URL,
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:6080",
+        "http://127.0.0.1:6080",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

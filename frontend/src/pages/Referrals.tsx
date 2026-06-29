@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import Layout from '../components/Layout'
 import PageHeader from '../components/PageHeader'
 import StatCard from '../components/StatCard'
 import GlassCard from '../components/GlassCard'
+import WithdrawCta from '../components/WithdrawCta'
 import { referralApi } from '../api'
 import { useI18n } from '../i18n'
 import { generateInvitePoster, downloadPoster } from '../utils/invitePoster'
 import { Copy, Check, Link2, Image, Download, Share2 } from 'lucide-react'
 import ReferralTree from '../components/ReferralTree'
+import DualPathIntro from '../components/DualPathIntro'
 
 export default function Referrals() {
   const locale = useI18n(s => s.locale)
@@ -19,13 +20,21 @@ export default function Referrals() {
   const [posterLoading, setPosterLoading] = useState(false)
   const [showPoster, setShowPoster] = useState(false)
 
-  useEffect(() => { referralApi.summary().then(setData) }, [])
+  useEffect(() => {
+    referralApi.summary().then(setData)
+    const timer = setInterval(() => referralApi.summary().then(setData), 30000)
+    return () => clearInterval(timer)
+  }, [])
 
   const copyText = (text: string, key: string) => {
     navigator.clipboard.writeText(text)
     setCopied(key)
     setTimeout(() => setCopied(''), 2000)
   }
+
+  const l1Rate = Math.round((data?.commission?.l1_rate ?? 0.1) * 100)
+  const l2Rate = Math.round((data?.commission?.l2_rate ?? 0.05) * 100)
+  const platformFeeRate = Math.round((data?.commission?.platform_fee_rate ?? 0.25) * 100)
 
   const generatePoster = async () => {
     if (!data) return
@@ -68,19 +77,22 @@ export default function Referrals() {
     <Layout>
       <PageHeader title={t('referrals.title')} subtitle={t('referrals.subtitle')} />
 
-      <GlassCard className="p-6" style={{ marginBottom: 24 }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}>
-          <div style={{ flex: 1, minWidth: 260 }}>
-            <p className="text-muted" style={{ fontSize: 13, marginBottom: 8 }}>{t('referrals.myLink')}</p>
-            <p className="link-box" style={{ fontSize: 14, lineHeight: 1.6 }}>
-              {data?.invite_url || '...'}
+      <DualPathIntro />
+
+      <GlassCard className="p-6 section-mb-lg">
+        <div className="referral-link-row">
+          <div className="referral-link-main">
+            <p className="text-muted referral-link-label">{t('referrals.myLink')}</p>
+            <p className="link-box link-box-lg">
+              {data?.invite_url || t('common.loading')}
             </p>
-            <p className="text-muted" style={{ fontSize: 12, marginTop: 8 }}>
-              {t('referrals.referralCode')} <span className="text-green" style={{ fontWeight: 600 }}>{data?.referral_code}</span>
-              {' · '}UID {data?.uid}
+            <p className="text-muted referral-code-meta">
+              {t('referrals.referralCode')}{' '}
+              <span className="text-green text-semibold">{data?.referral_code}</span>
+              {' · '}{t('referrals.uidLine', { uid: data?.uid ?? '—' })}
             </p>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 140 }}>
+          <div className="referral-actions">
             <button className="btn btn-primary" onClick={() => copyText(data?.invite_url, 'link')}>
               {copied === 'link' ? <Check size={16} /> : <Link2 size={16} />}
               {copied === 'link' ? t('referrals.copyLinkDone') : t('referrals.copyLink')}
@@ -100,14 +112,14 @@ export default function Referrals() {
       </GlassCard>
 
       {showPoster && posterUrl && (
-        <GlassCard className="p-6" style={{ marginBottom: 24, textAlign: 'center' }}>
+        <GlassCard className="p-6 section-mb-lg poster-preview-card">
           <h3 className="card-heading">{t('referrals.posterPreview')}</h3>
-          <img src={posterUrl} alt="邀请海报" style={{
-            maxWidth: '100%', width: 375, borderRadius: 16,
-            boxShadow: 'var(--glass-shadow-lg)',
-          }} />
-          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: 20, flexWrap: 'wrap' }}>
-            <button className="btn btn-primary" onClick={() => downloadPoster(posterUrl, `gemini-invite-${data?.referral_code}.png`)}>
+          <img src={posterUrl} alt={t('referrals.posterAlt')} className="poster-img" />
+          <div className="flex-center-gap section-mt-md">
+            <button
+              className="btn btn-primary"
+              onClick={() => downloadPoster(posterUrl, t('referrals.posterFilename', { code: data?.referral_code || 'invite' }))}
+            >
               <Download size={16} /> {t('referrals.downloadPoster')}
             </button>
             <button className="btn btn-ghost" onClick={() => setShowPoster(false)}>{t('referrals.closePreview')}</button>
@@ -115,26 +127,27 @@ export default function Referrals() {
         </GlassCard>
       )}
 
-      <GlassCard className="p-6" style={{ marginBottom: 24 }}>
+      <GlassCard className="p-6 section-mb-lg">
         <h3 className="card-heading">{t('referrals.rulesTitle')}</h3>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
+        <div className="commission-grid">
           <div className="stat-tile stat-tile-highlight">
-            <p style={{ fontSize: 28, fontWeight: 700, color: 'var(--accent-success)' }}>{Math.round((data?.commission?.l1_rate ?? 0.1) * 100)}%</p>
-            <p style={{ fontSize: 14, fontWeight: 500, marginTop: 4 }}>{t('referrals.l1Title')}</p>
-            <p className="text-muted" style={{ fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>{t('referrals.l1Desc')}</p>
+            <p className="stat-value-lg text-green">{l1Rate}%</p>
+            <p className="stat-label-md">{t('referrals.l1Title')}</p>
+            <p className="text-muted stat-desc-sm">{t('referrals.l1Desc')}</p>
           </div>
           <div className="stat-tile">
-            <p style={{ fontSize: 28, fontWeight: 700 }}>{Math.round((data?.commission?.l2_rate ?? 0.05) * 100)}%</p>
-            <p style={{ fontSize: 14, fontWeight: 500, marginTop: 4 }}>{t('referrals.l2Title')}</p>
-            <p className="text-muted" style={{ fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>{t('referrals.l2Desc')}</p>
+            <p className="stat-value-lg">{l2Rate}%</p>
+            <p className="stat-label-md">{t('referrals.l2Title')}</p>
+            <p className="text-muted stat-desc-sm">{t('referrals.l2Desc')}</p>
           </div>
           <div className="stat-tile">
-            <p style={{ fontSize: 28, fontWeight: 700 }}>25%</p>
-            <p style={{ fontSize: 14, fontWeight: 500, marginTop: 4 }}>{t('referrals.baseTitle')}</p>
-            <p className="text-muted" style={{ fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>{t('referrals.baseDesc')}</p>
+            <p className="stat-value-lg">{platformFeeRate}%</p>
+            <p className="stat-label-md">{t('referrals.baseTitle')}</p>
+            <p className="text-muted stat-desc-sm">{t('referrals.baseDesc')}</p>
           </div>
         </div>
-        <p className="text-muted" style={{ fontSize: 12, marginTop: 16 }}>✓ {t('referrals.autoCredit')}</p>
+        <p className="text-muted text-xs section-mt-md">✓ {t('referrals.autoCredit')}</p>
+        <p className="text-muted text-xs section-mt-xs">{t('perfFee.rewardPool')}</p>
       </GlassCard>
 
       <ReferralTree />
@@ -148,15 +161,19 @@ export default function Referrals() {
         <StatCard label={t('referrals.pendingRewards')} value={`$${(data?.pending_rewards || 0).toFixed(2)}`} />
       </div>
 
-      <GlassCard className="p-4" style={{ marginBottom: 24, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-        <p style={{ fontSize: 14 }}>{t('referrals.totalEarnings')} <span className="text-green" style={{ fontSize: 20, fontWeight: 600 }}>${(data?.total_rewards || 0).toFixed(2)}</span></p>
-        <Link to="/withdraw" className="btn btn-primary" style={{ textDecoration: 'none' }}>{t('referrals.withdrawLink')}</Link>
-      </GlassCard>
+      <WithdrawCta>
+        <p className="earnings-total">
+          {t('referrals.totalEarnings')}{' '}
+          <span className="text-green earnings-amount">${(data?.total_rewards || 0).toFixed(2)}</span>
+        </p>
+      </WithdrawCta>
 
-      <div key={locale} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+      <div key={locale} className="grid-2-col">
         <GlassCard className="p-0 table-wrap">
           <div className="panel-header">
-            <h3 style={{ fontSize: 15 }}>{t('referrals.l1Count')} <span className="text-green">{Math.round((data?.commission?.l1_rate ?? 0.1) * 100)}%</span></h3>
+            <h3 className="panel-title-sm">
+              {t('referrals.l1Count')} <span className="text-green">{l1Rate}%</span>
+            </h3>
           </div>
           <table className="data-table">
             <thead><tr><th>{t('referrals.user')}</th><th>{t('referrals.totalPnl')}</th><th>{t('referrals.myReward')}</th></tr></thead>
@@ -176,7 +193,9 @@ export default function Referrals() {
 
         <GlassCard className="p-0 table-wrap">
           <div className="panel-header">
-            <h3 style={{ fontSize: 15 }}>{t('referrals.l2Count')} <span className="text-green">{Math.round((data?.commission?.l2_rate ?? 0.05) * 100)}%</span></h3>
+            <h3 className="panel-title-sm">
+              {t('referrals.l2Count')} <span className="text-green">{l2Rate}%</span>
+            </h3>
           </div>
           <table className="data-table">
             <thead><tr><th>{t('referrals.user')}</th><th>{t('referrals.totalPnl')}</th><th>{t('referrals.myReward')}</th></tr></thead>
@@ -194,8 +213,6 @@ export default function Referrals() {
           </table>
         </GlassCard>
       </div>
-
-      <style>{`@media (max-width: 768px) { div[style*="grid-template-columns: 1fr 1fr"] { grid-template-columns: 1fr !important; } }`}</style>
     </Layout>
   )
 }

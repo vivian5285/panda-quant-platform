@@ -4,15 +4,23 @@ from typing import Optional
 
 
 class TokenResponse(BaseModel):
-    access_token: str
+    access_token: str = ""
     refresh_token: Optional[str] = None
     token_type: str = "bearer"
-    role: str
-    uid: str
+    role: str = "user"
+    uid: str = ""
     email: Optional[str] = None
     phone: Optional[str] = None
     nickname: Optional[str] = None
-    display_name: str
+    display_name: str = ""
+    requires_totp: bool = False
+    challenge_token: Optional[str] = None
+    api_status: Optional[str] = None
+
+
+class TotpLoginRequest(BaseModel):
+    challenge_token: str
+    code: str = Field(min_length=6, max_length=8)
 
 
 class RegisterRequest(BaseModel):
@@ -46,6 +54,8 @@ class NicknameUpdate(BaseModel):
 class ApiBindRequest(BaseModel):
     api_key: str
     api_secret: str
+    email_code: Optional[str] = Field(default=None, min_length=4, max_length=8)
+    phone_code: Optional[str] = Field(default=None, min_length=4, max_length=8)
 
 
 class ApiVerifyResponse(BaseModel):
@@ -58,6 +68,8 @@ class ApiVerifyResponse(BaseModel):
     can_trade: bool = True
     one_way_mode: bool = False
     leverage_ok: bool = False
+    withdraw_disabled: Optional[bool] = None
+    enable_futures: Optional[bool] = None
     symbol: str = "ETHUSDT"
     symbol_price: float = 0.0
     leverage: int = 15
@@ -109,6 +121,8 @@ class TradeOut(BaseModel):
     entry_price: float
     exit_price: float
     realized_pnl: float
+    funding_fee: float = 0.0
+    slippage: Optional[float] = None
     regime: int
     status: str
     created_at: datetime
@@ -140,6 +154,8 @@ class DashboardStats(BaseModel):
     cycle_pnl: float = 0.0
     initial_principal_at: Optional[datetime] = None
     open_position: Optional[dict] = None
+    settlement_blocked: bool = False
+    pending_settlement: Optional[dict] = None
 
 
 class ReferralUserOut(BaseModel):
@@ -188,7 +204,9 @@ class SettlementOut(BaseModel):
     id: int
     period_start: date
     period_end: date
+    gross_profit: float = 0.0
     net_profit: float
+    high_water_mark: float = 0.0
     platform_fee: float
     user_payable: float
     cycle_days: int = 7
@@ -220,6 +238,19 @@ class DepositAddressCreate(BaseModel):
     address: str
     label: str = ""
     sort_order: int = 0
+
+
+class DepositAddressUpdate(BaseModel):
+    chain: Optional[str] = None
+    address: Optional[str] = None
+    label: Optional[str] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class WithdrawThresholdsUpdate(BaseModel):
+    auto_max_usd: float = Field(gt=0)
+    review_min_usd: float = Field(gt=0)
 
 
 class SettlementPaymentSubmit(BaseModel):
@@ -295,6 +326,13 @@ class WithdrawalOut(BaseModel):
     admin_note: Optional[str]
     processed_at: Optional[datetime]
     created_at: datetime
+    explorer_url: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _explorer_url(self):
+        from app.services.chain_explorer import tx_explorer_url
+        self.explorer_url = tx_explorer_url(self.chain, self.tx_hash)
+        return self
 
     class Config:
         from_attributes = True
@@ -398,10 +436,32 @@ class AdminUserOut(BaseModel):
     api_status: str
     is_active: bool
     referrer_id: Optional[int]
+    trading_paused: bool = False
+    risk_level: str = "balanced"
     created_at: datetime
+    cumulative_pnl: float = 0.0
+    execution_success_rate: Optional[float] = None
+    risk_flag: bool = False
+    risk_flag_reason: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+
+class AdminBatchNotify(BaseModel):
+    user_ids: list[int] = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=120)
+    message: str = Field(min_length=1, max_length=2000)
+
+
+class AdminBatchTradingControl(BaseModel):
+    user_ids: list[int] = Field(min_length=1)
+    trading_paused: Optional[bool] = None
+    risk_level: Optional[str] = None
+
+
+class AdminWebhookTest(BaseModel):
+    payload: dict = Field(default_factory=dict)
 
 
 class AdminUserDetailOut(BaseModel):
@@ -410,6 +470,13 @@ class AdminUserDetailOut(BaseModel):
     trade_count: int = 0
     log_count: int = 0
     supervisor_active: bool = False
+    api_key_mask: Optional[str] = None
+    trading_paused: bool = False
+    risk_level: str = "balanced"
+    risk_flag: bool = False
+    risk_flag_reason: Optional[str] = None
+    cumulative_pnl: float = 0.0
+    execution_success_rate: Optional[float] = None
 
 
 class TransferRecipientPreview(BaseModel):
@@ -440,6 +507,9 @@ class AdminOverview(BaseModel):
     total_users: int
     active_api_users: int
     total_trades: int
+    today_executions: int = 0
+    today_success_rate: float = 0.0
+    active_supervisors: int = 0
     pending_settlements: int
     pending_withdrawals: int = 0
     pending_payments: int = 0
@@ -505,4 +575,7 @@ class SignalLogItem(BaseModel):
 class SignalStatsOut(BaseModel):
     total: int
     success_rate: float
+    confidence_score: float = 0.0
+    direction_bias: Optional[str] = None
+    last_signal_at: Optional[str] = None
     recent: list[SignalLogItem]

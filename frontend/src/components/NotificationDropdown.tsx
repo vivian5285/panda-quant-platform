@@ -33,7 +33,7 @@ export default function NotificationDropdown() {
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => notificationApi.markAllRead().then(load)}>{t('common.markAllRead')}</button>
           </div>
           <div className="notif-list">
-            {items.length === 0 ? <p className="text-muted" style={{ padding: 16, fontSize: 13 }}>{t('common.noData')}</p> : items.slice(0, 20).map(n => (
+            {items.length === 0 ? <p className="text-muted notif-empty">{t('common.noData')}</p> : items.slice(0, 20).map(n => (
               <button key={n.id} type="button" className={`notif-item ${n.is_read ? '' : 'unread'}`} onClick={() => notificationApi.markRead(n.id).then(load)}>
                 <strong>{n.title}</strong>
                 <span>{n.message}</span>

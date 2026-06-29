@@ -87,6 +87,21 @@ def log_security_warnings(warnings: list[str]) -> None:
     logger.warning("=" * 60)
 
 
+def assert_production_ready() -> None:
+    """Fail fast when PRODUCTION_STRICT=1 and secrets are insecure."""
+    import os
+
+    strict = os.getenv("PRODUCTION_STRICT", "").strip().lower() in ("1", "true", "yes")
+    if not strict and not settings.PRODUCTION_STRICT:
+        return
+    warnings = validate_production_secrets()
+    if warnings:
+        raise RuntimeError(
+            "PRODUCTION_STRICT: 拒绝启动，请先修复安全配置: " + "; ".join(warnings)
+        )
+    logger.info("[Security] PRODUCTION_STRICT 检查通过")
+
+
 def link_open_trade(db: Session, user_id: int) -> int | None:
     trade = (
         db.query(Trade)
