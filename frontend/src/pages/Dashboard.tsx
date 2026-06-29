@@ -172,10 +172,17 @@ export default function Dashboard() {
       ) : (
         <div className="stat-grid dash-stat-grid">
           <StatCard label={t('dashboard.balance')} countUp={{ end: data?.balance || 0, prefix: '$', decimals: 2 }} delay={0.1} />
+          <StatCard label={t('dashboard.tradeCyclePnl')} countUp={{ end: data?.trade_cycle_pnl || 0, pnl: true, decimals: 2 }} positive={(data?.trade_cycle_pnl || 0) >= 0} delay={0.12} />
           <StatCard label={t('dashboard.todayPnl')} countUp={{ end: data?.today_pnl || 0, pnl: true, decimals: 2 }} positive={(data?.today_pnl || 0) >= 0} delay={0.15} />
           <StatCard label={t('dashboard.totalPnl')} countUp={{ end: data?.total_pnl || 0, pnl: true, decimals: 2 }} positive={(data?.total_pnl || 0) >= 0} delay={0.18} />
-          <StatCard label={t('dashboard.winRate')} countUp={{ end: analytics?.win_rate || 0, suffix: '%', decimals: 1 }} delay={0.2} />
+          <StatCard label={t('dashboard.equityCyclePnl')} countUp={{ end: data?.cycle_pnl || 0, pnl: true, decimals: 2 }} positive={(data?.cycle_pnl || 0) >= 0} delay={0.2} />
         </div>
+      )}
+
+      {!loading && Math.abs(data?.profit_divergence || 0) >= 50 && (
+        <GlassCard className="p-4 section-mb-md admin-alert-banner">
+          <p className="text-sm">{t('dashboard.divergenceWarn', { amount: Math.abs(data?.profit_divergence || 0).toFixed(2) })}</p>
+        </GlassCard>
       )}
 
       <div className="dash-main-grid">

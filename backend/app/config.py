@@ -28,6 +28,17 @@ class Settings(BaseSettings):
 
     SETTLEMENT_PRIMARY_DAYS: int = 7
     SETTLEMENT_EXTENDED_DAYS: int = 10
+    SETTLEMENT_SCAN_INTERVAL_SEC: int = 3600
+    ENABLE_BACKGROUND_SCHEDULERS: bool = True
+
+    # Per-user HD deposit addresses (Binance-style unique recharge)
+    DEPOSIT_HD_MNEMONIC: str = ""
+    DEPOSIT_DERIVATION_OFFSET: int = 1_000_000
+    DEPOSIT_SCAN_INTERVAL_SEC: int = 180
+    DEPOSIT_EVM_SCAN_BLOCKS: int = 2000
+
+    # Dual profit monitor: warn when |equity_delta - trade_pnl| exceeds this (USD)
+    PROFIT_DIVERGENCE_WARN_USD: float = 50.0
     WITHDRAW_AUTO_MAX_USD: float = 100.0
     WITHDRAW_REVIEW_MIN_USD: float = 500.0
     WITHDRAW_MIN_USD: float = 10.0

@@ -156,15 +156,32 @@ export default function Referrals() {
               {t('referrals.l1Count')} <span className="text-green">{l1Rate}%</span>
             </h3>
           </div>
-          <table className="data-table">
-            <thead><tr><th>{t('referrals.user')}</th><th>{t('referrals.totalPnl')}</th><th>{t('referrals.myReward')}</th></tr></thead>
+          <table className="data-table data-table-sm">
+            <thead><tr>
+              <th>{t('referrals.user')}</th>
+              <th>{t('referrals.principal')}</th>
+              <th>{t('referrals.balance')}</th>
+              <th>{t('referrals.cyclePnl')}</th>
+              <th>{t('referrals.totalPnl')}</th>
+              <th>{t('referrals.position')}</th>
+              <th>{t('referrals.settlementStatus')}</th>
+              <th>{t('referrals.myReward')}</th>
+            </tr></thead>
             <tbody>
               {(data?.l1_users || []).length === 0 ? (
-                <tr><td colSpan={3} className="empty-cell">{t('referrals.inviteEmpty')}</td></tr>
+                <tr><td colSpan={8} className="empty-cell">{t('referrals.inviteEmpty')}</td></tr>
               ) : data.l1_users.map((u: any) => (
                 <tr key={u.id}>
-                  <td className="cell-ellipsis" title={u.email}>{u.email}</td>
-                  <td className={u.week_pnl >= 0 ? 'text-green' : 'text-red'}>${u.week_pnl?.toFixed(2)}</td>
+                  <td className="cell-ellipsis" title={u.display_name || u.email}>
+                    <div>{u.display_name || u.email}</div>
+                    <div className="text-muted text-xs">{u.uid}</div>
+                  </td>
+                  <td>${(u.initial_principal ?? 0).toFixed(2)}</td>
+                  <td>${(u.live_equity ?? 0).toFixed(2)}</td>
+                  <td className={(u.cycle_pnl ?? 0) >= 0 ? 'text-green' : 'text-red'}>${(u.cycle_pnl ?? 0).toFixed(2)}</td>
+                  <td className={(u.total_pnl ?? u.week_pnl ?? 0) >= 0 ? 'text-green' : 'text-red'}>${(u.total_pnl ?? u.week_pnl ?? 0).toFixed(2)}</td>
+                  <td>{u.has_open_position ? (u.position_side ? `${u.position_side} ${u.position_qty}` : t('referrals.hasPosition')) : '—'}</td>
+                  <td><span className="badge badge-gray">{u.settlement_status || 'none'}</span></td>
                   <td className="text-green">${u.total_reward?.toFixed(2)}</td>
                 </tr>
               ))}
@@ -178,15 +195,32 @@ export default function Referrals() {
               {t('referrals.l2Count')} <span className="text-green">{l2Rate}%</span>
             </h3>
           </div>
-          <table className="data-table">
-            <thead><tr><th>{t('referrals.user')}</th><th>{t('referrals.totalPnl')}</th><th>{t('referrals.myReward')}</th></tr></thead>
+          <table className="data-table data-table-sm">
+            <thead><tr>
+              <th>{t('referrals.user')}</th>
+              <th>{t('referrals.principal')}</th>
+              <th>{t('referrals.balance')}</th>
+              <th>{t('referrals.cyclePnl')}</th>
+              <th>{t('referrals.totalPnl')}</th>
+              <th>{t('referrals.position')}</th>
+              <th>{t('referrals.settlementStatus')}</th>
+              <th>{t('referrals.myReward')}</th>
+            </tr></thead>
             <tbody>
               {(data?.l2_users || []).length === 0 ? (
-                <tr><td colSpan={3} className="empty-cell">{t('referrals.l2Empty')}</td></tr>
+                <tr><td colSpan={8} className="empty-cell">{t('referrals.l2Empty')}</td></tr>
               ) : data.l2_users.map((u: any) => (
                 <tr key={u.id}>
-                  <td className="cell-ellipsis" title={u.email}>{u.email}</td>
-                  <td className={u.week_pnl >= 0 ? 'text-green' : 'text-red'}>${u.week_pnl?.toFixed(2)}</td>
+                  <td className="cell-ellipsis" title={u.display_name || u.email}>
+                    <div>{u.display_name || u.email}</div>
+                    <div className="text-muted text-xs">{u.uid}</div>
+                  </td>
+                  <td>${(u.initial_principal ?? 0).toFixed(2)}</td>
+                  <td>${(u.live_equity ?? 0).toFixed(2)}</td>
+                  <td className={(u.cycle_pnl ?? 0) >= 0 ? 'text-green' : 'text-red'}>${(u.cycle_pnl ?? 0).toFixed(2)}</td>
+                  <td className={(u.total_pnl ?? u.week_pnl ?? 0) >= 0 ? 'text-green' : 'text-red'}>${(u.total_pnl ?? u.week_pnl ?? 0).toFixed(2)}</td>
+                  <td>{u.has_open_position ? (u.position_side ? `${u.position_side} ${u.position_qty}` : t('referrals.hasPosition')) : '—'}</td>
+                  <td><span className="badge badge-gray">{u.settlement_status || 'none'}</span></td>
                   <td className="text-green">${u.total_reward?.toFixed(2)}</td>
                 </tr>
               ))}

@@ -29,7 +29,7 @@ from app.services.deposit_qr import save_deposit_qr, delete_deposit_qr, resolve_
 from app.api.deps import get_admin_user
 from app.services.dispatcher import supervisor_pool
 from app.services.trade_logger import TradeLogger
-from app.services.settlement import run_scheduled_settlements, confirm_settlement_payment
+from app.services.settlement import run_scheduled_settlements, confirm_settlement_payment, reject_settlement_payment
 from app.services.wallet import complete_withdrawal, reject_withdrawal
 from app.services.payout_secrets import (
     get_payout_settings, update_payout_keys, is_payout_auto_enabled,
@@ -377,7 +377,12 @@ def reject_settlement(
     s = db.query(Settlement).filter(Settlement.id == settlement_id).first()
     if not s:
         raise HTTPException(404, "Settlement not found")
-    s.payment_status = PaymentStatus.REJECTED.value
+    if s.payment_status == PaymentStatus.CONFIRMED.value:
+        raise HTTPException(400, "Settlement already confirmed")
+    try:
+        reject_settlement_payment(db, s)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     log_audit(
         db,
         "settlement.reject",

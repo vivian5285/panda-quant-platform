@@ -48,6 +48,9 @@ def validate_production_secrets() -> list[str]:
     if not settings.DINGTALK_WEBHOOK.strip():
         warnings.append("DINGTALK_WEBHOOK 未配置（交易异常将无法通知管理员）")
 
+    if not settings.DEPOSIT_HD_MNEMONIC.strip():
+        warnings.append("DEPOSIT_HD_MNEMONIC 未配置（无法为用户生成专属充值地址，仅支持手动提交 TxHash）")
+
     if settings.DINGTALK_WEBHOOK.strip() and not settings.DINGTALK_SECRET.strip():
         warnings.append("DINGTALK_SECRET 未配置（钉钉机器人若启用加签将推送失败）")
 

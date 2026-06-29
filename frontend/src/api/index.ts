@@ -144,6 +144,8 @@ export const referralApi = {
 
 export const walletApi = {
   depositAddresses: () => api.get('/deposit-addresses').then(r => r.data),
+  myDepositAddresses: () => api.get('/my-deposit-addresses').then(r => r.data),
+  settlementDeposits: () => api.get('/settlement-deposits').then(r => r.data),
   depositAddressQrUrl: (id: number) => `/api/deposit-addresses/${id}/qr`,
   paySettlement: (id: number, chain: string, tx_hash: string, amount: number) =>
     api.post(`/settlements/${id}/pay`, { chain, tx_hash, amount }).then(r => r.data),

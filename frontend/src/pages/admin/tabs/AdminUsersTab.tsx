@@ -187,21 +187,27 @@ export default function AdminUsersTab() {
                 <tr>
                   <th>{t('common.time')}</th>
                   <th>{t('admin.principalAmount')}</th>
+                  <th>{t('admin.principalTradePnl')}</th>
+                  <th>{t('admin.principalEquityDelta')}</th>
                   <th>{t('admin.principalType')}</th>
                   <th>{t('admin.principalNote')}</th>
-                  <th>{t('admin.cols.settlement')}</th>
                 </tr>
               </thead>
               <tbody>
                 {userPrincipalHistory.length === 0 ? (
-                  <tr><td colSpan={5} className="empty-cell">{t('common.noData')}</td></tr>
+                  <tr><td colSpan={6} className="empty-cell">{t('common.noData')}</td></tr>
                 ) : userPrincipalHistory.map((s: any) => (
                   <tr key={s.id}>
                     <td>{localeDate(s.created_at, locale)}</td>
-                    <td>${s.amount?.toFixed(2)}</td>
+                    <td>${(s.live_equity ?? s.amount)?.toFixed(2)}</td>
+                    <td className={(s.trade_pnl_cycle ?? 0) >= 0 ? 'text-green' : 'text-red'}>
+                      ${(s.trade_pnl_cycle ?? 0).toFixed(2)}
+                    </td>
+                    <td className={(s.equity_delta ?? 0) >= 0 ? 'text-green' : 'text-red'}>
+                      ${(s.equity_delta ?? 0).toFixed(2)}
+                    </td>
                     <td>{s.snapshot_type}</td>
-                    <td>{s.note || '—'}</td>
-                    <td>{s.settlement_id ? `#${s.settlement_id}` : '—'}</td>
+                    <td className="cell-ellipsis" title={s.note}>{s.note || '—'}</td>
                   </tr>
                 ))}
               </tbody>

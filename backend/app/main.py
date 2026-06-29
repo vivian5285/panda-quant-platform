@@ -60,12 +60,27 @@ def _ensure_schema_migrations():
     from sqlalchemy import text, inspect
 
     insp = inspect(engine)
-    if "platform_deposit_addresses" not in insp.get_table_names():
+    if "platform_deposit_addresses" in insp.get_table_names():
+        cols = {c["name"] for c in insp.get_columns("platform_deposit_addresses")}
+        if "qr_image_filename" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE platform_deposit_addresses ADD COLUMN qr_image_filename VARCHAR(128)"))
+
+    if "principal_snapshots" not in insp.get_table_names():
         return
-    cols = {c["name"] for c in insp.get_columns("platform_deposit_addresses")}
-    if "qr_image_filename" not in cols:
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE platform_deposit_addresses ADD COLUMN qr_image_filename VARCHAR(128)"))
+    cols = {c["name"] for c in insp.get_columns("principal_snapshots")}
+    patches = [
+        ("live_equity", "FLOAT"),
+        ("trade_pnl_cycle", "FLOAT"),
+        ("trade_pnl_total", "FLOAT"),
+        ("binance_fill_pnl_cycle", "FLOAT"),
+        ("binance_fill_pnl_total", "FLOAT"),
+        ("equity_delta", "FLOAT"),
+    ]
+    with engine.begin() as conn:
+        for name, typ in patches:
+            if name not in cols:
+                conn.execute(text(f"ALTER TABLE principal_snapshots ADD COLUMN {name} {typ}"))
 
 
 def _seed_subscription_plans(db):
@@ -124,6 +139,10 @@ def init_db():
         _seed_subscription_plans(db)
         from app.services.signal_admin import seed_default_template
         seed_default_template(db)
+        from app.services.user_deposit_wallet import backfill_all_user_deposit_addresses
+        n = backfill_all_user_deposit_addresses(db)
+        if n:
+            logger.info("Generated unique deposit addresses for %s user(s)", n)
     except Exception as e:
         logger.exception("init_db failed: %s", e)
         from app.services.alert_service import notify_system
@@ -171,6 +190,8 @@ async def lifespan(app: FastAPI):
     init_db()
     threading.Thread(target=start_webhook_server, daemon=True, name="webhook").start()
     threading.Thread(target=load_supervisors_background, daemon=True, name="supervisors").start()
+    from app.services.scheduler import start_background_schedulers
+    start_background_schedulers()
     logger.info(
         "API ready; webhook on :%s; supervisor takeover loading in background",
         settings.WEBHOOK_PORT,

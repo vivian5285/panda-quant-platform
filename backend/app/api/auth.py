@@ -257,6 +257,10 @@ def register(req: RegisterRequest, request: Request, db: Session = Depends(get_d
 
     db.refresh(user)
 
+    from app.services.user_deposit_wallet import ensure_user_deposit_addresses
+    ensure_user_deposit_addresses(db, user)
+    db.commit()
+
     return _token_response(user, db, request)
 
 

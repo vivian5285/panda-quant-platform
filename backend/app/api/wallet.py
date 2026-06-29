@@ -6,6 +6,7 @@ from app.database import get_db
 from app.models import (
     PlatformDepositAddress, Settlement, PaymentStatus, SUPPORTED_CHAINS,
     WithdrawalAddress, WithdrawalRequest, User, InternalTransfer,
+    UserDepositAddress, SettlementDeposit,
 )
 from app.schemas import (
     DepositAddressOut, SettlementOut, SettlementPaymentSubmit,
@@ -13,6 +14,7 @@ from app.schemas import (
     WithdrawalAddressCreate, WithdrawalAddressOut,
     WithdrawalCreate, WithdrawalOut, WithdrawSettingsOut, ChainFeeOut,
     InternalTransferCreate, InternalTransferOut, TransferRecipientPreview,
+    UserDepositAddressOut, SettlementDepositOut,
 )
 from app.api.deps import get_current_user
 from app.services.settlement import submit_settlement_payment
@@ -28,6 +30,7 @@ from app.services.chain_fees import (
 from app.services.platform_runtime import get_withdraw_thresholds
 from app.services.deposit_qr import resolve_deposit_qr_path
 from app.services.auto_payout import process_auto_payout
+from app.services.user_deposit_wallet import ensure_user_deposit_addresses
 from app.config import get_settings
 
 router = APIRouter(tags=["wallet"])
@@ -40,6 +43,29 @@ def list_deposit_addresses(db: Session = Depends(get_db)):
         PlatformDepositAddress.is_active == True
     ).order_by(PlatformDepositAddress.sort_order, PlatformDepositAddress.id).all()
     return [DepositAddressOut.from_model(a) for a in rows]
+
+
+@router.get("/my-deposit-addresses", response_model=list[UserDepositAddressOut])
+def my_deposit_addresses(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Per-user unique USDT deposit addresses (Binance-style)."""
+    rows = ensure_user_deposit_addresses(db, user)
+    db.commit()
+    return [
+        UserDepositAddressOut(
+            chain=r.chain,
+            address=r.address,
+            address_group=r.address_group,
+            is_unique=True,
+        )
+        for r in rows
+    ]
+
+
+@router.get("/settlement-deposits", response_model=list[SettlementDepositOut])
+def my_settlement_deposits(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    return db.query(SettlementDeposit).filter(
+        SettlementDeposit.user_id == user.id
+    ).order_by(SettlementDeposit.detected_at.desc()).limit(50).all()
 
 
 @router.get("/deposit-addresses/{addr_id}/qr")

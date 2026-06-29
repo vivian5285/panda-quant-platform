@@ -1,6 +1,5 @@
 from datetime import date, datetime, timedelta
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 from app.models import User, Trade, Settlement, ReferralReward, PaymentStatus, ApiStatus
 from app.services.wallet import credit_reward
 from app.services.dispatcher import supervisor_pool
@@ -58,14 +57,9 @@ def calculate_settlement(
     period_end: date,
     cycle_days: int,
 ) -> Settlement | None:
-    trades = db.query(Trade).filter(
-        Trade.user_id == user.id,
-        Trade.status == "closed",
-        func.date(Trade.closed_at) >= period_start,
-        func.date(Trade.closed_at) <= period_end,
-    ).all()
+    from app.services.profit_audit import settlement_profit_from_trades
 
-    gross_profit = sum(t.realized_pnl for t in trades)
+    gross_profit, audit = settlement_profit_from_trades(db, user, period_start, period_end)
     if gross_profit <= 0:
         return None
 
@@ -74,7 +68,16 @@ def calculate_settlement(
     if net_profit <= 0:
         return None
 
+    new_hwm = max(user.high_water_mark, user.high_water_mark + net_profit)
     platform_fee = round(net_profit * settings.PLATFORM_FEE_RATE, 2)
+
+    admin_note = (
+        f"profit_source=trades;"
+        f"trade_profit={audit['trade_profit']};"
+        f"binance_fill_pnl={audit['binance_fill_pnl']};"
+        f"equity_delta={audit['equity_delta']};"
+        f"divergence={audit['divergence']}"
+    )
 
     settlement = Settlement(
         user_id=user.id,
@@ -87,6 +90,7 @@ def calculate_settlement(
         user_payable=platform_fee,
         cycle_days=cycle_days,
         payment_status=PaymentStatus.PENDING.value,
+        admin_note=admin_note,
     )
     db.add(settlement)
     db.flush()
@@ -216,6 +220,40 @@ def submit_settlement_payment(
     settlement.payment_amount = round(amount, 2)
     settlement.payment_status = PaymentStatus.PAID.value
     settlement.paid_at = datetime.utcnow()
+    db.commit()
+    db.refresh(settlement)
+    return settlement
+
+
+def reject_settlement_payment(db: Session, settlement: Settlement, admin_note: str = "") -> Settlement:
+    if settlement.payment_status == PaymentStatus.CONFIRMED.value:
+        raise ValueError("Settlement already confirmed")
+
+    user = db.query(User).filter(User.id == settlement.user_id).first()
+    if user:
+        user.high_water_mark = max(0.0, float(settlement.high_water_mark or 0) - float(settlement.net_profit or 0))
+
+    db.query(ReferralReward).filter(
+        ReferralReward.settlement_id == settlement.id,
+        ReferralReward.status == PaymentStatus.PENDING.value,
+    ).delete(synchronize_session=False)
+
+    settlement.payment_status = PaymentStatus.REJECTED.value
+    settlement.admin_note = admin_note or settlement.admin_note or "rejected"
+    settlement.payment_chain = None
+    settlement.payment_tx_hash = None
+    settlement.payment_amount = None
+    settlement.paid_at = None
+
+    if user:
+        from app.services.trade_logger import TradeLogger
+        TradeLogger(db).log_event(
+            user.id,
+            "SETTLEMENT",
+            f"绩效结算单 #{settlement.id} 已被驳回，AI 执行限制已解除",
+            {"settlement_id": settlement.id},
+        )
+
     db.commit()
     db.refresh(settlement)
     return settlement

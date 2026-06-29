@@ -57,6 +57,11 @@ def build_dashboard_stats(db: Session, user: User) -> DashboardStats:
     initial = float(user.initial_principal or 0)
     cycle_pnl = round(equity - initial, 2) if initial > 0 else 0.0
 
+    from app.services.profit_audit import sum_closed_trade_pnl, cycle_bounds
+    period_start, period_end = cycle_bounds(user)
+    trade_cycle_pnl = sum_closed_trade_pnl(db, user.id, period_start, period_end)
+    profit_divergence = round(cycle_pnl - trade_cycle_pnl, 2) if initial > 0 else 0.0
+
     today = date.today()
     week_start = today - timedelta(days=today.weekday())
 
@@ -91,6 +96,8 @@ def build_dashboard_stats(db: Session, user: User) -> DashboardStats:
         total_pnl=float(total_pnl),
         initial_principal=initial,
         cycle_pnl=cycle_pnl,
+        trade_cycle_pnl=trade_cycle_pnl,
+        profit_divergence=profit_divergence,
         initial_principal_at=user.initial_principal_at,
         open_position=position,
         settlement_blocked=pending is not None,

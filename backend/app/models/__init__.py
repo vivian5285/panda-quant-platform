@@ -197,6 +197,40 @@ class PlatformDepositAddress(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class UserDepositAddress(Base):
+    """Per-user unique USDT deposit address (HD-derived, Binance-style)."""
+    __tablename__ = "user_deposit_addresses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    chain = Column(String(20), nullable=False, index=True)
+    address = Column(String(128), nullable=False, index=True)
+    address_group = Column(String(10), default="EVM")
+    derivation_index = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", backref="deposit_addresses")
+
+
+class SettlementDeposit(Base):
+    """On-chain USDT detected at a user's unique deposit address."""
+    __tablename__ = "settlement_deposits"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    settlement_id = Column(Integer, ForeignKey("settlements.id"), nullable=True, index=True)
+    chain = Column(String(20), nullable=False)
+    tx_hash = Column(String(128), unique=True, index=True, nullable=False)
+    amount = Column(Float, default=0.0)
+    from_address = Column(String(128), nullable=True)
+    status = Column(String(20), default="detected")
+    detected_at = Column(DateTime, default=datetime.utcnow)
+    matched_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", foreign_keys=[user_id])
+    settlement = relationship("Settlement", foreign_keys=[settlement_id])
+
+
 class RewardAccount(Base):
     __tablename__ = "reward_accounts"
 
@@ -273,7 +307,7 @@ class InternalTransfer(Base):
 
 
 class PrincipalSnapshot(Base):
-    """初始本金记载：API 绑定 / 分润结算确认后重置。"""
+    """初始本金记载：API 绑定 / 分润结算确认后重置；重启时双重监控快照。"""
     __tablename__ = "principal_snapshots"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -282,6 +316,12 @@ class PrincipalSnapshot(Base):
     snapshot_type = Column(String(30), nullable=False)
     settlement_id = Column(Integer, ForeignKey("settlements.id"), nullable=True)
     note = Column(Text, nullable=True)
+    live_equity = Column(Float, nullable=True)
+    trade_pnl_cycle = Column(Float, nullable=True)
+    trade_pnl_total = Column(Float, nullable=True)
+    binance_fill_pnl_cycle = Column(Float, nullable=True)
+    binance_fill_pnl_total = Column(Float, nullable=True)
+    equity_delta = Column(Float, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     user = relationship("User", foreign_keys=[user_id])

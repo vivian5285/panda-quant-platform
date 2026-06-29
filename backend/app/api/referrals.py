@@ -7,6 +7,7 @@ from app.models import User, ReferralReward, Trade, PaymentStatus
 from app.services.wallet import get_or_create_reward_account
 from app.services.user_lookup import display_name
 from app.services.referral import build_invite_url, commission_info
+from app.services.referral_stats import build_downline_stats
 from app.schemas import ReferralSummary, ReferralUserOut, ReferralInviteOut, ReferralCommissionOut, SettlementOut
 from app.api.deps import get_current_user
 from app.config import get_settings
@@ -30,6 +31,40 @@ def _commission_out() -> ReferralCommissionOut:
     return ReferralCommissionOut(**info)
 
 
+def _user_reward(db: Session, referrer_id: int, uid: int, level: int) -> float:
+    return db.query(func.coalesce(func.sum(ReferralReward.reward_amount), 0)).filter(
+        ReferralReward.referrer_id == referrer_id,
+        ReferralReward.source_user_id == uid,
+        ReferralReward.level == level,
+    ).scalar() or 0
+
+
+def _referral_user_out(db: Session, referrer_id: int, u: User, level: int) -> ReferralUserOut:
+    stats = build_downline_stats(db, u)
+    reward = _user_reward(db, referrer_id, u.id, level)
+    return ReferralUserOut(
+        id=u.id,
+        uid=stats["uid"],
+        email=stats["email"],
+        display_name=stats["display_name"],
+        level=level,
+        created_at=u.created_at,
+        total_pnl=stats["total_pnl"],
+        week_pnl=stats["total_pnl"],
+        total_reward=float(reward),
+        initial_principal=stats["initial_principal"],
+        live_equity=stats["live_equity"],
+        available_balance=stats["available_balance"],
+        cycle_pnl=stats["cycle_pnl"],
+        unrealized_pnl=stats["unrealized_pnl"],
+        has_open_position=stats["has_open_position"],
+        position_side=stats["position_side"],
+        position_qty=stats["position_qty"],
+        settlement_status=stats["settlement_status"],
+        api_status=stats["api_status"],
+    )
+
+
 @router.get("/referrals/invite", response_model=ReferralInviteOut)
 def referral_invite(user: User = Depends(get_current_user)):
     return ReferralInviteOut(
@@ -47,30 +82,8 @@ def referral_summary(user: User = Depends(get_current_user), db: Session = Depen
     l1_ids = [u.id for u in l1_users]
     l2_users = db.query(User).filter(User.referrer_id.in_(l1_ids)).all() if l1_ids else []
 
-    def _user_pnl(uid: int) -> float:
-        return db.query(func.coalesce(func.sum(Trade.realized_pnl), 0)).filter(
-            Trade.user_id == uid, Trade.status == "closed"
-        ).scalar() or 0
-
-    def _user_reward(uid: int, level: int) -> float:
-        return db.query(func.coalesce(func.sum(ReferralReward.reward_amount), 0)).filter(
-            ReferralReward.referrer_id == user.id,
-            ReferralReward.source_user_id == uid,
-            ReferralReward.level == level,
-        ).scalar() or 0
-
-    l1_out = [
-        ReferralUserOut(
-            id=u.id, email=_mask_identity(u), level=1,
-            created_at=u.created_at, week_pnl=_user_pnl(u.id), total_reward=_user_reward(u.id, 1),
-        ) for u in l1_users
-    ]
-    l2_out = [
-        ReferralUserOut(
-            id=u.id, email=_mask_identity(u), level=2,
-            created_at=u.created_at, week_pnl=_user_pnl(u.id), total_reward=_user_reward(u.id, 2),
-        ) for u in l2_users
-    ]
+    l1_out = [_referral_user_out(db, user.id, u, 1) for u in l1_users]
+    l2_out = [_referral_user_out(db, user.id, u, 2) for u in l2_users]
 
     total_rewards = db.query(func.coalesce(func.sum(ReferralReward.reward_amount), 0)).filter(
         ReferralReward.referrer_id == user.id

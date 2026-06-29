@@ -17,6 +17,7 @@ export default function Withdraw() {
   const [withdrawals, setWithdrawals] = useState<any[]>([])
   const [savedAddrs, setSavedAddrs] = useState<any[]>([])
   const [transfers, setTransfers] = useState<any[]>([])
+  const [rewardLedger, setRewardLedger] = useState<any[]>([])
   const [selectedAddrId, setSelectedAddrId] = useState<number | ''>('')
   const [amount, setAmount] = useState('')
   const [feePreview, setFeePreview] = useState<any>(null)
@@ -65,6 +66,7 @@ export default function Withdraw() {
       if (def && !selectedAddrId) setSelectedAddrId(def.id)
     })
     walletApi.transfers().then(setTransfers)
+    walletApi.rewardLedger().then(setRewardLedger).catch(() => setRewardLedger([]))
   }
 
   useEffect(() => { load() }, [])
@@ -401,6 +403,44 @@ export default function Withdraw() {
             </div>
             <button className="btn btn-primary" type="submit">{t('withdraw.confirmTransfer')}</button>
           </form>
+        </GlassCard>
+      )}
+
+      <GlassCard className="p-0 table-wrap card-overflow-hidden section-mt-lg">
+        <div className="card-section-head"><h3 className="panel-title-sm">{t('withdraw.rewardLedgerTitle')}</h3></div>
+        <table className="data-table data-table-sm">
+          <thead><tr><th>{t('common.time')}</th><th>{t('withdraw.ledgerType')}</th><th>{t('admin.cols.detail')}</th><th>{t('withdraw.ledgerBalance')}</th></tr></thead>
+          <tbody>
+            {rewardLedger.length === 0 ? (
+              <tr><td colSpan={4} className="text-muted empty-state">{t('withdraw.emptyLedger')}</td></tr>
+            ) : rewardLedger.map(r => (
+              <tr key={r.id}>
+                <td>{localeDate(r.created_at, locale)}</td>
+                <td><span className="badge badge-gray">{r.entry_type}</span></td>
+                <td className={r.amount >= 0 ? 'text-green' : 'text-red'}>${r.amount?.toFixed(2)}</td>
+                <td>${r.balance_after?.toFixed(2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </GlassCard>
+
+      {transfers.length > 0 && (
+        <GlassCard className="p-0 table-wrap card-overflow-hidden section-mt-lg">
+          <div className="card-section-head"><h3 className="panel-title-sm">{t('withdraw.transferHistoryTitle')}</h3></div>
+          <table className="data-table data-table-sm">
+            <thead><tr><th>{t('common.time')}</th><th>{t('withdraw.recipientLabel')}</th><th>{t('admin.cols.detail')}</th><th>{t('withdraw.notePh')}</th></tr></thead>
+            <tbody>
+              {transfers.map(tr => (
+                <tr key={tr.id}>
+                  <td>{localeDate(tr.created_at, locale)}</td>
+                  <td>{tr.to_display_name} <span className="text-muted text-xs">({tr.to_uid})</span></td>
+                  <td className="text-green">${tr.amount?.toFixed(2)}</td>
+                  <td className="cell-ellipsis">{tr.note || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </GlassCard>
       )}
 

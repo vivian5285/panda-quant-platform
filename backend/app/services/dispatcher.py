@@ -110,6 +110,12 @@ class UserSupervisorPool:
             audit["uid"] = user.uid
             log_takeover_audit(user, audit)
 
+            try:
+                from app.services.profit_audit import run_startup_dual_audit
+                run_startup_dual_audit(db, user)
+            except Exception as audit_err:
+                logger.warning("Dual profit audit failed user=%s: %s", user.id, audit_err)
+
             with self._lock:
                 self._supervisors[user.id] = supervisor
             logger.info("Supervisor added for user %s", user.id)

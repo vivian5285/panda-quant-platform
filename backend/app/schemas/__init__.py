@@ -89,6 +89,12 @@ class PrincipalSnapshotOut(BaseModel):
     snapshot_type: str
     settlement_id: Optional[int] = None
     note: Optional[str] = None
+    live_equity: Optional[float] = None
+    trade_pnl_cycle: Optional[float] = None
+    trade_pnl_total: Optional[float] = None
+    binance_fill_pnl_cycle: Optional[float] = None
+    binance_fill_pnl_total: Optional[float] = None
+    equity_delta: Optional[float] = None
     created_at: datetime
 
     class Config:
@@ -158,6 +164,8 @@ class DashboardStats(BaseModel):
     total_pnl: float
     initial_principal: float = 0.0
     cycle_pnl: float = 0.0
+    trade_cycle_pnl: float = 0.0
+    profit_divergence: float = 0.0
     initial_principal_at: Optional[datetime] = None
     open_position: Optional[dict] = None
     settlement_blocked: bool = False
@@ -166,11 +174,24 @@ class DashboardStats(BaseModel):
 
 class ReferralUserOut(BaseModel):
     id: int
+    uid: str = ""
     email: str
+    display_name: str = ""
     level: int
     created_at: datetime
-    week_pnl: float = 0.0
+    total_pnl: float = 0.0
+    week_pnl: float = 0.0  # deprecated alias for total_pnl
     total_reward: float = 0.0
+    initial_principal: float = 0.0
+    live_equity: float = 0.0
+    available_balance: float = 0.0
+    cycle_pnl: float = 0.0
+    unrealized_pnl: float = 0.0
+    has_open_position: bool = False
+    position_side: Optional[str] = None
+    position_qty: float = 0.0
+    settlement_status: str = "none"
+    api_status: str = "none"
 
 
 class ReferralCommissionOut(BaseModel):
@@ -246,6 +267,30 @@ class DepositAddressOut(BaseModel):
             is_active=bool(addr.is_active),
             has_qr=bool(getattr(addr, "qr_image_filename", None)),
         )
+
+    class Config:
+        from_attributes = True
+
+
+class UserDepositAddressOut(BaseModel):
+    chain: str
+    address: str
+    address_group: str = "EVM"
+    is_unique: bool = True
+
+    class Config:
+        from_attributes = True
+
+
+class SettlementDepositOut(BaseModel):
+    id: int
+    chain: str
+    tx_hash: str
+    amount: float
+    status: str
+    settlement_id: Optional[int] = None
+    detected_at: datetime
+    matched_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

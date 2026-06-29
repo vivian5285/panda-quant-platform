@@ -9,11 +9,14 @@ import { referralApi, walletApi } from '../api'
 import { useI18n } from '../i18n'
 import { toast } from '../store/toast'
 import { Copy, Check } from 'lucide-react'
+import UserUniqueDepositPanel from '../components/UserUniqueDepositPanel'
 
 export default function Settlements() {
   const { t } = useI18n()
   const [items, setItems] = useState<any[]>([])
   const [addresses, setAddresses] = useState<any[]>([])
+  const [myAddresses, setMyAddresses] = useState<any[]>([])
+  const [deposits, setDeposits] = useState<any[]>([])
   const [payingId, setPayingId] = useState<number | null>(null)
   const [chain, setChain] = useState('TRC20')
   const [txHash, setTxHash] = useState('')
@@ -22,7 +25,9 @@ export default function Settlements() {
 
   const load = () => {
     referralApi.settlements().then(setItems)
-    walletApi.depositAddresses().then(setAddresses)
+    walletApi.depositAddresses().then(setAddresses).catch(() => setAddresses([]))
+    walletApi.myDepositAddresses().then(setMyAddresses).catch(() => setMyAddresses([]))
+    walletApi.settlementDeposits().then(setDeposits).catch(() => setDeposits([]))
   }
 
   useEffect(() => {
@@ -40,6 +45,10 @@ export default function Settlements() {
   }
 
   const submitPay = async (id: number, payable: number) => {
+    if (!txHash.trim()) {
+      toast.error(t('settlements.txHashRequired'))
+      return
+    }
     try {
       await walletApi.paySettlement(id, chain, txHash, parseFloat(amount) || payable)
       toast.success(t('settlements.proofSubmitted'))
@@ -102,6 +111,9 @@ export default function Settlements() {
 
       <WithdrawCta />
 
+      <UserUniqueDepositPanel addresses={myAddresses} />
+
+      {myAddresses.length === 0 && (
       <GlassCard className="p-6 section-mb-lg">
         <h3 className="panel-title-sm mb-md">{t('settlements.platformAddr')}</h3>
         {addresses.length === 0 ? (
@@ -133,6 +145,35 @@ export default function Settlements() {
           </div>
         )}
       </GlassCard>
+      )}
+
+      {deposits.length > 0 && (
+        <GlassCard className="p-0 table-wrap card-overflow-hidden section-mb-lg">
+          <div className="card-section-head"><h3 className="panel-title-sm">{t('settlements.depositLog')}</h3></div>
+          <table className="data-table data-table-sm">
+            <thead>
+              <tr>
+                <th>{t('common.time')}</th>
+                <th>{t('common.chain')}</th>
+                <th>{t('settlements.cols.payable')}</th>
+                <th>{t('common.status')}</th>
+                <th>TxHash</th>
+              </tr>
+            </thead>
+            <tbody>
+              {deposits.map(d => (
+                <tr key={d.id}>
+                  <td>{new Date(d.detected_at).toLocaleString()}</td>
+                  <td><span className="badge badge-gray">{d.chain}</span></td>
+                  <td>${d.amount?.toFixed(2)}</td>
+                  <td><span className="badge badge-gray">{d.status}</span></td>
+                  <td className="mono-cell cell-ellipsis" title={d.tx_hash}>{d.tx_hash?.slice(0, 16)}…</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </GlassCard>
+      )}
 
       <GlassCard className="p-0 table-wrap card-overflow-hidden">
         <table className="data-table">
@@ -204,7 +245,8 @@ export default function Settlements() {
             </div>
             <div>
               <label className="text-secondary field-label">{t('settlements.txHashLabel')}</label>
-              <input className="input" value={txHash} onChange={e => setTxHash(e.target.value)} placeholder={t('settlements.txHashPh')} required />
+              <input className="input" value={txHash} onChange={e => setTxHash(e.target.value)} placeholder={t('settlements.txHashPh')} />
+              <p className="text-muted text-xs section-mt-xs">{t('settlements.manualPayHint')}</p>
             </div>
             <div className="flex-gap-sm">
               <button className="btn btn-primary" type="button" onClick={() => submitPay(payingId, parseFloat(amount))}>{t('settlements.confirmSubmit')}</button>
