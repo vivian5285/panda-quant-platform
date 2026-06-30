@@ -39,12 +39,12 @@ export default function Referrals() {
 
   const posterLabels = () => ({
     headline: t('referrals.posterHeadline'),
-    badges: [t('referrals.posterBadge1'), t('referrals.posterBadge2'), t('referrals.posterBadge3')] as [string, string, string],
-    commissionTitle: t('referrals.posterCommissionTitle'),
-    l1Title: t('referrals.l1Title'),
-    l1Sub: t('referrals.posterL1Sub'),
-    l2Title: t('referrals.l2Title'),
-    l2Sub: t('referrals.posterL2Sub'),
+    advantagesTitle: t('referrals.posterAdvantagesTitle'),
+    advantages: [
+      { title: t('referrals.posterAdv1Title'), desc: t('referrals.posterAdv1Desc') },
+      { title: t('referrals.posterAdv2Title'), desc: t('referrals.posterAdv2Desc') },
+      { title: t('referrals.posterAdv3Title'), desc: t('referrals.posterAdv3Desc') },
+    ] as [{ title: string; desc: string }, { title: string; desc: string }, { title: string; desc: string }],
     scanHint: t('referrals.scanToRegister'),
     inviterLine: t('referrals.posterInviterLine'),
     inviterUidLabel: t('referrals.posterInviterUid', { uid: data?.uid ?? '—' }),
@@ -60,8 +60,6 @@ export default function Referrals() {
         referralCode: data.referral_code,
         displayName: data.display_name || t('referrals.defaultName'),
         uid: data.uid,
-        l1Rate: data.commission?.l1_rate ?? 0.1,
-        l2Rate: data.commission?.l2_rate ?? 0.05,
         brandName: t('brand.name'),
         brandTagline: t('brand.tagline'),
         posterTagline: t('referrals.posterTagline'),

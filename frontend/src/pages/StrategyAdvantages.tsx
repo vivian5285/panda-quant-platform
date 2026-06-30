@@ -25,7 +25,7 @@ export default function StrategyAdvantages() {
     { key: 'winRate', accent: 0 },
     { key: 'profitFactor', accent: 1 },
     { key: 'maxDrawdown', accent: 2 },
-    { key: 'annualReturn', accent: 3 },
+    { key: 'totalReturn', accent: 3 },
     { key: 'tradeCount', accent: 4 },
   ] as const
 

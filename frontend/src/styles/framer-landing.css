@@ -3493,9 +3493,13 @@ html[lang="en"] .framer-nav-actions .framer-btn-primary {
 
 .framer-site.app-console .stat-card-label {
   font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+}
+
+html[lang="en"] .framer-site.app-console .stat-card-label {
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--text-muted);
 }
 
 .framer-site.app-console .card-heading {
