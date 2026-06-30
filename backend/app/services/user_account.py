@@ -78,6 +78,10 @@ def build_dashboard_stats(db: Session, user: User) -> DashboardStats:
     ).scalar() or 0
 
     pending = get_pending_settlement(db, user.id)
+    from app.services.trading_control import get_user_control
+
+    ctrl = get_user_control(db, user.id)
+    settlement_fee_deferred = bool(ctrl.get("settlement_fee_deferred")) and pending is not None
     pending_out = None
     if pending:
         pending_out = {
@@ -101,5 +105,6 @@ def build_dashboard_stats(db: Session, user: User) -> DashboardStats:
         initial_principal_at=user.initial_principal_at,
         open_position=position,
         settlement_blocked=pending is not None,
+        settlement_fee_deferred=settlement_fee_deferred,
         pending_settlement=pending_out,
     )

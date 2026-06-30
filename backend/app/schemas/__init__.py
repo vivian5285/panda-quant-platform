@@ -154,6 +154,28 @@ class WalletOverviewOut(BaseModel):
     platform_addresses: list[PlatformWalletBalanceOut] = []
 
 
+class WebhookReceiveLogOut(BaseModel):
+    id: int
+    event_status: str
+    http_status: int
+    client_ip: str = ""
+    fingerprint: Optional[str] = None
+    action: Optional[str] = None
+    tv_summary: dict = {}
+    payload: Optional[dict] = None
+    dispatch_log_id: Optional[int] = None
+    dispatch: Optional[dict] = None
+    error_message: Optional[str] = None
+    response_status: Optional[str] = None
+    latency_ms: Optional[int] = None
+    created_at: datetime
+
+
+class WebhookReceiveLogDetailOut(WebhookReceiveLogOut):
+    user_results: list[dict] = []
+    dispatch_payload: Optional[dict] = None
+
+
 class ApiBindRequest(BaseModel):
     api_key: str
     api_secret: str
@@ -266,6 +288,7 @@ class DashboardStats(BaseModel):
     initial_principal_at: Optional[datetime] = None
     open_position: Optional[dict] = None
     settlement_blocked: bool = False
+    settlement_fee_deferred: bool = False
     pending_settlement: Optional[dict] = None
 
 
@@ -762,6 +785,13 @@ class AdminOverview(BaseModel):
     pending_withdrawals: int = 0
     pending_payments: int = 0
     unread_alerts: int = 0
+    settlement_blocked_users: int = 0
+    settlement_deferred_users: int = 0
+
+
+class AdminSettlementOut(SettlementOut):
+    user_id: int
+    settlement_fee_deferred: bool = False
 
 
 class AdminAlertOut(BaseModel):

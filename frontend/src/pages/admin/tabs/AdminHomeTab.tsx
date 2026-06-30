@@ -10,6 +10,19 @@ export default function AdminHomeTab() {
 
   return (
     <>
+      {(overview?.settlement_blocked_users ?? 0) > 0 && (
+        <GlassCard className="p-4 section-mb-md admin-settlement-alert">
+          <p className="text-sm section-mb-sm">
+            {t('admin.settlementDeferBanner', {
+              blocked: overview?.settlement_blocked_users ?? 0,
+              deferred: overview?.settlement_deferred_users ?? 0,
+            })}
+          </p>
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => setTab('settlements')}>
+            {t('admin.settlementDeferBannerAction')}
+          </button>
+        </GlassCard>
+      )}
       <div className="stat-grid admin-home-stats">
         <StatCard label={t('admin.totalUsers')} countUp={{ end: overview?.total_users || 0, decimals: 0 }} />
         <StatCard label={t('admin.todayExecutions')} countUp={{ end: overview?.today_executions || 0, decimals: 0 }} />

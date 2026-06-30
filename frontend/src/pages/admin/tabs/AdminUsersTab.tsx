@@ -14,7 +14,7 @@ export default function AdminUsersTab() {
     userFlagFilter, setUserFlagFilter, selectedUserId, userDetail, userTrades, userLogs,
     userDetailTab, setUserDetailTab, userReferralStats, userPrincipalHistory, userTradingCtrl,
     load, loadUserDetail, closeUserDetail, exportUsersCsv, toggleUserSelect, toggleSelectAllUsers,
-    runBatchNotify, runBatchPause, forceUserPause, forceCloseUser, setUserRisk,
+    runBatchNotify, runBatchPause, forceUserPause, forceCloseUser, setUserRisk, toggleSettlementDefer,
     exportUserLogsCsv, setUserLogs,
   } = useAdmin()
 
@@ -47,6 +47,23 @@ export default function AdminUsersTab() {
             <div><span className="text-muted">{t('dashboard.principal')}:</span> ${userDetail.profile?.initial_principal?.toFixed(2) ?? '0'}</div>
             {userDetail.risk_flag && (
               <div className="text-red"><span className="text-muted">{t('admin.flagged')}:</span> {t(`admin.flagReason.${userDetail.risk_flag_reason}` as any) || userDetail.risk_flag_reason}</div>
+            )}
+            {userTradingCtrl?.settlement_blocked && (
+              <div className="section-mt-md p-4 settlement-defer-panel">
+                <p className="text-sm text-muted section-mb-sm">{t('admin.settlementDeferHint')}</p>
+                {userTradingCtrl?.settlement_fee_deferred ? (
+                  <>
+                    <span className="badge badge-green">{t('admin.settlementDeferAllowed')}</span>
+                    <button className="btn btn-ghost btn-sm section-mt-sm" type="button" onClick={() => toggleSettlementDefer(false)}>
+                      {t('admin.settlementDeferRevoke')}
+                    </button>
+                  </>
+                ) : (
+                  <button className="btn btn-primary btn-sm" type="button" onClick={() => toggleSettlementDefer(true)}>
+                    {t('admin.settlementDeferAllow')}
+                  </button>
+                )}
+              </div>
             )}
           </div>
           <div className="flex-gap-sm section-mt-md">

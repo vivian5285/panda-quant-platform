@@ -272,6 +272,9 @@ def reject_settlement_payment(db: Session, settlement: Settlement, admin_note: s
 
     if user:
         from app.services.trade_logger import TradeLogger
+        from app.services.trading_control import clear_settlement_fee_deferred
+
+        clear_settlement_fee_deferred(db, user.id)
         TradeLogger(db).log_event(
             user.id,
             "SETTLEMENT",
@@ -304,7 +307,10 @@ def confirm_settlement_payment(db: Session, settlement: Settlement, admin_note: 
     user = db.query(User).filter(User.id == settlement.user_id).first()
     if user:
         from app.services.principal import reset_after_settlement_confirmed
+        from app.services.trading_control import clear_settlement_fee_deferred
+
         reset_after_settlement_confirmed(db, user, settlement.id)
+        clear_settlement_fee_deferred(db, user.id)
         from app.services.trade_logger import TradeLogger
 
         TradeLogger(db).log_event(

@@ -43,6 +43,7 @@ export default function Trading() {
       <PageHeader title={t('nav.trading')} subtitle={t('trading.subtitle')} />
       <SettlementGateBanner
         blocked={dash?.settlement_blocked}
+        deferred={dash?.settlement_fee_deferred}
         settlement={dash?.pending_settlement}
       />
       <div className="stat-grid">

@@ -60,6 +60,12 @@ export default function Admin() {
   const [auditSearch, setAuditSearch] = useState('')
   const [riskDraft, setRiskDraft] = useState('1.0')
   const [auditLogs, setAuditLogs] = useState<any[]>([])
+  const [webhookLogs, setWebhookLogs] = useState<any[]>([])
+  const [webhookSearch, setWebhookSearch] = useState('')
+  const [webhookStatusFilter, setWebhookStatusFilter] = useState('')
+  const [selectedWebhookId, setSelectedWebhookId] = useState<number | null>(null)
+  const [webhookDetail, setWebhookDetail] = useState<any>(null)
+  const [webhookDetailLoading, setWebhookDetailLoading] = useState(false)
   const [orders, setOrders] = useState<any[]>([])
   const [strategies, setStrategies] = useState<any[]>([])
   const [tradeLogs, setTradeLogs] = useState<any[]>([])
@@ -153,6 +159,7 @@ export default function Admin() {
     setAlerts,
     setMonitor,
     setAuditLogs,
+    setWebhookLogs,
     setOrders,
     setStrategies,
     setTradeLogs,
@@ -605,6 +612,17 @@ export default function Admin() {
     }
   }
 
+  const toggleSettlementDefer = async (allow: boolean) => {
+    if (!selectedUserId) return
+    try {
+      setUserTradingCtrl(await adminApi.userTradingControl(selectedUserId, { settlement_fee_deferred: allow }))
+      toast.success(t('admin.settlementDeferSuccess'))
+      load()
+    } catch {
+      toast.error(t('admin.settlementDeferFail'))
+    }
+  }
+
   const saveTemplateEdit = async () => {
     if (!editTemplate) return
     try {
@@ -631,6 +649,26 @@ export default function Admin() {
     ip: l.ip_address,
     time: localeDate(l.created_at, locale),
   })))
+
+  const exportWebhookCsv = () => downloadCsv('webhook-logs', webhookLogs.map(l => ({
+    id: l.id,
+    event_status: l.event_status,
+    action: l.action,
+    http_status: l.http_status,
+    client_ip: l.client_ip,
+    fingerprint: l.fingerprint,
+    tv_summary: l.tv_summary ? JSON.stringify(l.tv_summary) : '',
+    dispatch_log_id: l.dispatch_log_id,
+    error_message: l.error_message,
+    latency_ms: l.latency_ms,
+    time: localeDate(l.created_at, locale),
+  })))
+
+  const webhookEventStatusLabel = (status: string) => {
+    const key = `admin.webhookEventStatus.${status}` as const
+    const translated = t(key)
+    return translated !== key ? translated : status
+  }
 
   const saveSignalTemplate = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -735,6 +773,20 @@ export default function Admin() {
       .then(setDispatchUserResults)
       .catch(() => setDispatchUserResults([]))
       .finally(() => setDispatchResultsLoading(false))
+  }
+
+  const loadWebhookDetail = (logId: number) => {
+    setSelectedWebhookId(logId)
+    setWebhookDetailLoading(true)
+    adminApi.webhookLogDetail(logId)
+      .then(setWebhookDetail)
+      .catch(() => setWebhookDetail(null))
+      .finally(() => setWebhookDetailLoading(false))
+  }
+
+  const closeWebhookDetail = () => {
+    setSelectedWebhookId(null)
+    setWebhookDetail(null)
   }
 
   const dispatchResultStatusLabel = (status: string) => {
@@ -956,6 +1008,9 @@ export default function Admin() {
     webhookPayload, setWebhookPayload,
     selectedDispatchId, setSelectedDispatchId, dispatchUserResults, dispatchResultsLoading,
     auditSearch, setAuditSearch,
+    webhookLogs, webhookSearch, setWebhookSearch, webhookStatusFilter, setWebhookStatusFilter,
+    selectedWebhookId, webhookDetail, webhookDetailLoading,
+    loadWebhookDetail, closeWebhookDetail, exportWebhookCsv, webhookEventStatusLabel,
     riskDraft, setRiskDraft,
     auditLogs, orders, strategies, tradeLogs, online, loginRecords, riskAlerts,
     newAddr, setNewAddr, editingAddr, setEditingAddr,
@@ -984,7 +1039,7 @@ export default function Admin() {
     runSettlement, confirm, addAddr, saveEditingAddr, uploadAddrQr, removeAddrQr, saveWithdrawThresholds,
     saveDepositWalletSettings, clearDepositWalletSettings,
     savePayoutSettings, completeWd,
-    setAdminConfirm, forceUserPause, forceCloseUser, setUserRisk,
+    setAdminConfirm, forceUserPause, forceCloseUser, setUserRisk, toggleSettlementDefer,
     saveTemplateEdit, exportAuditCsv, saveSignalTemplate, testTemplate, reviewStrategy,
     exportUsersCsv, toggleUserSelect, toggleSelectAllUsers, runBatchNotify, runBatchPause,
     runWebhookTest, loadDispatchResults, renderDispatchUserResults,

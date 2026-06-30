@@ -18,6 +18,7 @@ export type AdminTabSetters = {
   setAlerts: (v: any[]) => void
   setMonitor: (v: any) => void
   setAuditLogs: (v: any[]) => void
+  setWebhookLogs: (v: any[]) => void
   setOrders: (v: any[]) => void
   setStrategies: (v: any[]) => void
   setTradeLogs: (v: any[]) => void
@@ -163,9 +164,12 @@ export async function loadAdminTab(
       break
     }
     case 'audit': {
-      setters.setAuditLogs(
-        await adminApi.auditLogs({ q: auditSearch.trim() || undefined, limit: 200 }).catch(() => []),
-      )
+      const [auditLogs, webhookLogs] = await Promise.all([
+        adminApi.auditLogs({ q: auditSearch.trim() || undefined, limit: 200 }).catch(() => []),
+        adminApi.webhookLogs({ limit: 200 }).catch(() => []),
+      ])
+      setters.setAuditLogs(auditLogs)
+      setters.setWebhookLogs?.(webhookLogs)
       break
     }
     case 'withdrawals':

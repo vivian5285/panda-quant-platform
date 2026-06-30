@@ -48,7 +48,11 @@ export default function Positions() {
           </button>
         }
       />
-      <SettlementGateBanner blocked={dash?.settlement_blocked} settlement={dash?.pending_settlement} />
+      <SettlementGateBanner
+        blocked={dash?.settlement_blocked}
+        deferred={dash?.settlement_fee_deferred}
+        settlement={dash?.pending_settlement}
+      />
 
       <div className="stat-grid section-mb-lg">
         <StatCard label={t('dashboard.balance')} countUp={{ end: data?.balance ?? dash?.balance ?? 0, prefix: '$', decimals: 2 }} />

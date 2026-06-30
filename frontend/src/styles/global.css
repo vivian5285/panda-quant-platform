@@ -4142,3 +4142,143 @@ html[lang="zh-CN"] .framer-logo-text strong {
   flex-direction: column;
   gap: 4px;
 }
+
+/* Password input toggle */
+.input-password-wrap {
+  position: relative;
+  width: 100%;
+}
+.input-password {
+  width: 100%;
+  padding-right: 44px;
+}
+.input-password-toggle {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.input-password-toggle:hover {
+  color: var(--text-primary);
+}
+
+/* Settlement admin defer + user deferred banner */
+.settlement-defer-panel {
+  grid-column: 1 / -1;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+}
+.admin-settlement-alert {
+  border-left: 3px solid var(--accent-gold);
+  background: color-mix(in srgb, var(--accent-gold) 8%, var(--surface-muted));
+}
+.settlement-gate-banner--deferred {
+  border-left: 3px solid var(--accent-success);
+}
+
+/* ─── Responsive: desktop / iPad / mobile ─── */
+@media (max-width: 1024px) {
+  .app-main {
+    padding: 24px 28px;
+    padding-top: 68px;
+    max-width: 100%;
+  }
+  .stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .admin-home-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .page-header-inner {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .table-toolbar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .auth-framer-right {
+    padding: 32px 20px;
+  }
+  .auth-glass-shell {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 768px) {
+  .app-main {
+    padding: 16px !important;
+    padding-top: 64px !important;
+  }
+  .stat-grid,
+  .admin-home-stats,
+  .risk-stat-grid,
+  .dash-chart-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .page-title {
+    font-size: 22px;
+  }
+  .auth-framer-left {
+    min-height: 220px;
+    padding: 24px 16px;
+  }
+  .auth-framer-right {
+    padding: 24px 16px;
+    align-items: flex-start;
+  }
+  .auth-mode-tabs {
+    flex-wrap: wrap;
+  }
+  .auth-code-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .auth-code-row .btn {
+    width: 100%;
+  }
+  .admin-quick-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .admin-quick-actions .btn {
+    width: 100%;
+  }
+  .flex-between-wrap {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .table-toolbar.form-stack {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .table-toolbar.form-stack .input,
+  .table-toolbar.form-stack select,
+  .table-toolbar.form-stack .btn {
+    width: 100%;
+  }
+  .confirm-modal-overlay {
+    padding: 12px;
+  }
+}
+
+@media (min-width: 769px) and (max-width: 1024px) {
+  .app-sidebar,
+  .admin-shell .desktop-sidebar {
+    width: 220px;
+  }
+  .nav-link {
+    font-size: 13px;
+    padding: 9px 12px;
+  }
+}

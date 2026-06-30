@@ -4,17 +4,18 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import (
-    User, Trade, TradeLog, Settlement, ReferralReward, PaymentStatus, ApiStatus,
+    User, UserRole, Trade, TradeLog, Settlement, ReferralReward, PaymentStatus, ApiStatus,
     PlatformDepositAddress, WithdrawalRequest, WithdrawalStatus, SUPPORTED_CHAINS,
     AdminAlert, PrincipalSnapshot, SettlementDeposit, SettlementPaymentAppeal, DepositSweepLog,
 )
 from app.schemas import (
-    AdminUserOut, AdminOverview, SettlementOut,
+    AdminUserOut, AdminOverview, AdminSettlementOut, SettlementOut,
     DepositAddressOut, DepositAddressCreate, DepositAddressUpdate,
     PayoutSettingsOut, PayoutSettingsUpdate,
     DepositWalletSettingsOut, DepositWalletSettingsUpdate, DepositWalletSettingsUpdateResult,
     DepositSweepSettingsOut, DepositSweepSettingsUpdate, DepositSweepLogOut,
     WalletOverviewOut,
+    WebhookReceiveLogOut, WebhookReceiveLogDetailOut,
     DingTalkSettingsOut, DingTalkSettingsUpdate, AdminPasswordChange,
     AdminSettlementDepositOut, AdminSettlementAppealOut, SettlementAppealReview,
     WithdrawThresholdsUpdate,
@@ -49,12 +50,20 @@ from app.services.settlement_appeal import approve_payment_appeal, reject_paymen
 from app.services.deposit_sweep_config import get_sweep_settings, update_sweep_settings
 from app.services.deposit_sweep import run_deposit_sweep
 from app.services.wallet_overview import get_wallet_overview
+from app.services.webhook_receive_log import webhook_log_to_dict, get_webhook_log_detail
+from app.models.platform import WebhookReceiveLog
 from app.utils.auth import verify_password, hash_password
 from app.services.chain_payout import get_payout_status
 from app.models.platform import Strategy
 from app.services.audit import log_audit
 from app.services.alert_service import list_alerts, mark_alert_read, mark_all_read
-from app.services.trading_control import get_user_control, set_user_control
+from app.services.trading_control import (
+    get_user_control,
+    set_user_control,
+    build_trading_control_response,
+    count_settlement_gate_stats,
+)
+from app.services.settlement import get_pending_settlement, user_has_unsettled_payment
 from app.models.platform import TvSignalTemplate
 from app.services.signal_admin import (
     template_to_dict, build_test_payload, run_signal_dispatch,
@@ -72,6 +81,7 @@ def overview(admin=Depends(get_admin_user), db: Session = Depends(get_db)):
     closed_today = [t for t in today_trades if t.status == "closed"]
     wins = sum(1 for t in closed_today if (t.realized_pnl or 0) > 0)
     success_rate = round((wins / len(closed_today) * 100), 1) if closed_today else 0.0
+    gate_stats = count_settlement_gate_stats(db)
     return AdminOverview(
         total_users=db.query(User).count(),
         active_api_users=db.query(User).filter(User.api_status == ApiStatus.ACTIVE.value).count(),
@@ -96,6 +106,8 @@ def overview(admin=Depends(get_admin_user), db: Session = Depends(get_db)):
             AdminAlert.is_read == False,
             AdminAlert.user_id.is_(None),
         ).count(),
+        settlement_blocked_users=gate_stats["blocked"],
+        settlement_deferred_users=gate_stats["deferred"],
     )
 
 
@@ -340,9 +352,36 @@ def admin_sync_user_exchange_logs(
     return sync_user_binance_fills(db, user, days=min(max(days, 1), 180))
 
 
-@router.get("/settlements", response_model=list[SettlementOut])
+@router.get("/settlements", response_model=list[AdminSettlementOut])
 def all_settlements(admin=Depends(get_admin_user), db: Session = Depends(get_db)):
-    return db.query(Settlement).order_by(Settlement.created_at.desc()).limit(100).all()
+    rows = db.query(Settlement).order_by(Settlement.created_at.desc()).limit(100).all()
+    out: list[AdminSettlementOut] = []
+    for s in rows:
+        pending = get_pending_settlement(db, s.user_id)
+        deferred = False
+        if pending and pending.id == s.id:
+            deferred = bool(get_user_control(db, s.user_id).get("settlement_fee_deferred"))
+        out.append(AdminSettlementOut(
+            id=s.id,
+            user_id=s.user_id,
+            period_start=s.period_start,
+            period_end=s.period_end,
+            gross_profit=s.gross_profit or 0.0,
+            net_profit=s.net_profit,
+            high_water_mark=s.high_water_mark or 0.0,
+            platform_fee=s.platform_fee,
+            user_payable=s.user_payable,
+            cycle_days=s.cycle_days or 7,
+            payment_status=s.payment_status,
+            payment_chain=s.payment_chain,
+            payment_tx_hash=s.payment_tx_hash,
+            payment_amount=s.payment_amount,
+            paid_at=s.paid_at,
+            confirmed_at=s.confirmed_at,
+            created_at=s.created_at,
+            settlement_fee_deferred=deferred,
+        ))
+    return out
 
 
 @router.post("/settlements/run")
@@ -856,6 +895,35 @@ def admin_run_sweep(
     return stats
 
 
+@router.get("/webhook/logs", response_model=list[WebhookReceiveLogOut])
+def admin_webhook_logs(
+    limit: int = 100,
+    action: str | None = None,
+    event_status: str | None = None,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    q = db.query(WebhookReceiveLog).order_by(WebhookReceiveLog.created_at.desc())
+    if action:
+        q = q.filter(WebhookReceiveLog.action == action.upper())
+    if event_status:
+        q = q.filter(WebhookReceiveLog.event_status == event_status.lower())
+    rows = q.limit(min(limit, 500)).all()
+    return [webhook_log_to_dict(row, include_payload=False) for row in rows]
+
+
+@router.get("/webhook/logs/{log_id}", response_model=WebhookReceiveLogDetailOut)
+def admin_webhook_log_detail(
+    log_id: int,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    detail = get_webhook_log_detail(db, log_id)
+    if not detail:
+        raise HTTPException(404, "Webhook log not found")
+    return detail
+
+
 @router.get("/dingtalk/settings", response_model=DingTalkSettingsOut)
 def admin_dingtalk_settings(admin=Depends(get_admin_user)):
     return get_dingtalk_settings()
@@ -1193,7 +1261,7 @@ def admin_get_user_trading_control(user_id: int, admin=Depends(get_admin_user), 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(404, "User not found")
-    return {**get_user_control(db, user_id), "api_status": user.api_status}
+    return build_trading_control_response(db, user)
 
 
 @router.patch("/users/{user_id}/trading-control")
@@ -1207,15 +1275,29 @@ def admin_user_trading_control(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(404, "User not found")
+    if "settlement_fee_deferred" in body:
+        want_defer = bool(body["settlement_fee_deferred"])
+        if want_defer and not user_has_unsettled_payment(db, user_id):
+            raise HTTPException(400, "No pending settlement to defer")
+        if want_defer and user.role == UserRole.ADMIN.value:
+            raise HTTPException(400, "Cannot defer settlement for admin account")
     try:
         ctrl = set_user_control(
             db,
             user_id,
             trading_paused=body.get("trading_paused") if "trading_paused" in body else None,
             risk_level=body.get("risk_level") if "risk_level" in body else None,
+            settlement_fee_deferred=body.get("settlement_fee_deferred") if "settlement_fee_deferred" in body else None,
+            settlement_defer_note=body.get("settlement_defer_note") if "settlement_defer_note" in body else None,
         )
     except ValueError:
         raise HTTPException(400, "Invalid risk_level")
+    audit_detail = {
+        "trading_paused": ctrl.get("trading_paused"),
+        "risk_level": ctrl.get("risk_level"),
+    }
+    if "settlement_fee_deferred" in body:
+        audit_detail["settlement_fee_deferred"] = ctrl.get("settlement_fee_deferred")
     log_audit(
         db,
         "admin.trading_control",
@@ -1223,10 +1305,10 @@ def admin_user_trading_control(
         actor_id=admin.id,
         resource_type="trading_control",
         resource_id=str(user_id),
-        detail={"trading_paused": ctrl.get("trading_paused"), "risk_level": ctrl.get("risk_level")},
+        detail=audit_detail,
         request=request,
     )
-    return {**ctrl, "api_status": user.api_status}
+    return build_trading_control_response(db, user)
 
 
 @router.post("/users/{user_id}/force-close")

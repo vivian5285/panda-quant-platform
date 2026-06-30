@@ -265,6 +265,10 @@ export const adminApi = {
   systemMonitor: () => api.get('/admin/system/monitor').then(r => r.data),
   auditLogs: (params?: { limit?: number; action?: string; user_id?: number; actor_id?: number; q?: string }) =>
     api.get('/admin/system/audit-logs', { params }).then(r => r.data),
+  webhookLogs: (params?: { limit?: number; action?: string; event_status?: string }) =>
+    api.get('/admin/webhook/logs', { params }).then(r => r.data),
+  webhookLogDetail: (id: number) =>
+    api.get(`/admin/webhook/logs/${id}`).then(r => r.data),
   loginRecords: () => api.get('/admin/system/login-records').then(r => r.data),
   riskAlerts: () => api.get('/admin/system/risk-alerts').then(r => r.data),
   allOrders: () => api.get('/admin/system/orders').then(r => r.data),
@@ -278,7 +282,7 @@ export const adminApi = {
   strategies: (status?: string) => api.get('/admin/strategies', { params: status ? { status } : {} }).then(r => r.data),
   reviewStrategy: (id: number, action: 'approve' | 'reject' | 'pause', note?: string) =>
     api.post(`/admin/strategies/${id}/review`, { action, note }).then(r => r.data),
-  userTradingControl: (userId: number, data?: { trading_paused?: boolean; risk_level?: string }) =>
+  userTradingControl: (userId: number, data?: { trading_paused?: boolean; risk_level?: string; settlement_fee_deferred?: boolean; settlement_defer_note?: string }) =>
     data
       ? api.patch(`/admin/users/${userId}/trading-control`, data).then(r => r.data)
       : api.get(`/admin/users/${userId}/trading-control`).then(r => r.data),

@@ -15,6 +15,7 @@ import { toast } from '../store/toast'
 type Control = {
   trading_paused: boolean
   settlement_blocked?: boolean
+  settlement_fee_deferred?: boolean
   effective_paused?: boolean
   pending_settlement?: {
     id: number
@@ -82,7 +83,7 @@ export default function RiskControl() {
   }
 
   const resumeTrading = async () => {
-    if (ctrl?.settlement_blocked) {
+    if (ctrl?.settlement_blocked && !ctrl?.settlement_fee_deferred) {
       toast.error(t('risk.resumeBlockedSettlement'))
       return
     }
@@ -99,7 +100,7 @@ export default function RiskControl() {
   }
 
   const statusLabel = () => {
-    if (ctrl?.settlement_blocked) return t('risk.statusSettlementPaused')
+    if (ctrl?.settlement_blocked && !ctrl?.settlement_fee_deferred) return t('risk.statusSettlementPaused')
     if (ctrl?.trading_paused) return t('risk.statusPaused')
     return t('risk.statusActive')
   }
@@ -119,6 +120,7 @@ export default function RiskControl() {
 
       <SettlementGateBanner
         blocked={ctrl?.settlement_blocked}
+        deferred={ctrl?.settlement_fee_deferred}
         settlement={ctrl?.pending_settlement}
       />
 
@@ -154,7 +156,7 @@ export default function RiskControl() {
       <GlassCard className="p-6 section-mb-lg">
         <h3 className="card-heading">{t('risk.controlTitle')}</h3>
         <p className="text-muted text-sm mb-md">{t('risk.controlHint')}</p>
-        {ctrl?.settlement_blocked && (
+        {ctrl?.settlement_blocked && !ctrl?.settlement_fee_deferred && (
           <p className="text-muted text-sm mb-md">{t('risk.settlementBlockedHint')}</p>
         )}
         <div className="flex-gap-md">
@@ -165,7 +167,7 @@ export default function RiskControl() {
           ) : (
             <RippleButton
               className="btn btn-primary"
-              disabled={loading || ctrl?.global_paused || ctrl?.settlement_blocked}
+              disabled={loading || ctrl?.global_paused || (ctrl?.settlement_blocked && !ctrl?.settlement_fee_deferred)}
               onClick={resumeTrading}
             >
               <PlayCircle size={18} /> {t('risk.resumeTrading')}

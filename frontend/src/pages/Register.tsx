@@ -7,6 +7,7 @@ import { toast } from '../store/toast'
 import GlassCard from '../components/GlassCard'
 import AuthShell from '../components/AuthShell'
 import RippleButton from '../components/ui/RippleButton'
+import PasswordInput from '../components/PasswordInput'
 
 export default function Register() {
   const locale = useI18n(s => s.locale)
@@ -15,6 +16,7 @@ export default function Register() {
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [code, setCode] = useState('')
   const [referralCode, setReferralCode] = useState('')
   const [countdown, setCountdown] = useState(0)
@@ -50,6 +52,11 @@ export default function Register() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (password !== confirmPassword) {
+      toast.error(t('auth.passwordMismatch'))
+      setError(t('auth.passwordMismatch'))
+      return
+    }
     setLoading(true)
     setError('')
     try {
@@ -108,7 +115,11 @@ export default function Register() {
           {devCode && <p className="text-muted auth-dev-hint">{t('auth.devCode')}: {devCode}</p>}
           <div className="form-field">
             <label className="form-label">{t('auth.loginPassword')}</label>
-            <input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)} minLength={6} required />
+            <PasswordInput value={password} onChange={setPassword} minLength={6} required autoComplete="new-password" />
+          </div>
+          <div className="form-field">
+            <label className="form-label">{t('auth.confirmPassword')}</label>
+            <PasswordInput value={confirmPassword} onChange={setConfirmPassword} minLength={6} required autoComplete="new-password" />
           </div>
           <div className="form-field">
             <label className="form-label">{t('auth.referralOptional')}</label>

@@ -14,7 +14,12 @@ RISK_MULTIPLIERS = {"conservative": 0.6, "balanced": 1.0, "aggressive": 1.4}
 
 
 def _default_state() -> dict:
-    return {"trading_paused": False, "risk_level": "balanced"}
+    return {
+        "trading_paused": False,
+        "risk_level": "balanced",
+        "settlement_fee_deferred": False,
+        "settlement_defer_note": "",
+    }
 
 
 def _parse(row: UserTradingState | None) -> dict:
@@ -31,6 +36,8 @@ def _parse(row: UserTradingState | None) -> dict:
         "trading_paused": bool(data.get("trading_paused", False)),
         "risk_level": level,
         "risk_multiplier": RISK_MULTIPLIERS[level],
+        "settlement_fee_deferred": bool(data.get("settlement_fee_deferred", False)),
+        "settlement_defer_note": str(data.get("settlement_defer_note") or ""),
     }
 
 
@@ -45,6 +52,8 @@ def set_user_control(
     *,
     trading_paused: bool | None = None,
     risk_level: str | None = None,
+    settlement_fee_deferred: bool | None = None,
+    settlement_defer_note: str | None = None,
 ) -> dict:
     row = db.query(UserTradingState).filter(UserTradingState.user_id == user_id).first()
     state = _parse(row)
@@ -55,7 +64,18 @@ def set_user_control(
             raise ValueError("invalid risk_level")
         state["risk_level"] = risk_level
         state["risk_multiplier"] = RISK_MULTIPLIERS[risk_level]
-    payload = {"trading_paused": state["trading_paused"], "risk_level": state["risk_level"]}
+    if settlement_fee_deferred is not None:
+        state["settlement_fee_deferred"] = settlement_fee_deferred
+        if not settlement_fee_deferred:
+            state["settlement_defer_note"] = ""
+    if settlement_defer_note is not None:
+        state["settlement_defer_note"] = settlement_defer_note[:500]
+    payload = {
+        "trading_paused": state["trading_paused"],
+        "risk_level": state["risk_level"],
+        "settlement_fee_deferred": state.get("settlement_fee_deferred", False),
+        "settlement_defer_note": state.get("settlement_defer_note", ""),
+    }
     if row:
         row.state_json = json.dumps(payload)
     else:
@@ -64,12 +84,38 @@ def set_user_control(
     return get_user_control(db, user_id)
 
 
+def clear_settlement_fee_deferred(db: Session, user_id: int) -> None:
+    set_user_control(db, user_id, settlement_fee_deferred=False, settlement_defer_note="")
+
+
+def count_settlement_gate_stats(db: Session) -> dict[str, int]:
+    from app.models import Settlement, PaymentStatus
+
+    unsettled = (
+        db.query(Settlement.user_id)
+        .filter(Settlement.payment_status.in_((PaymentStatus.PENDING.value, PaymentStatus.PAID.value)))
+        .distinct()
+        .all()
+    )
+    blocked = 0
+    deferred = 0
+    for (uid,) in unsettled:
+        if get_user_control(db, uid).get("settlement_fee_deferred"):
+            deferred += 1
+        else:
+            blocked += 1
+    return {"blocked": blocked, "deferred": deferred}
+
+
 def is_user_paused(db: Session, user_id: int) -> bool:
-    if get_user_control(db, user_id)["trading_paused"]:
+    ctrl = get_user_control(db, user_id)
+    if ctrl["trading_paused"]:
         return True
     from app.services.settlement import user_has_unsettled_payment
 
-    return user_has_unsettled_payment(db, user_id)
+    if user_has_unsettled_payment(db, user_id):
+        return not ctrl.get("settlement_fee_deferred", False)
+    return False
 
 
 def build_trading_control_response(db: Session, user) -> dict:
@@ -78,6 +124,7 @@ def build_trading_control_response(db: Session, user) -> dict:
     ctrl = get_user_control(db, user.id)
     pending = get_pending_settlement(db, user.id)
     settlement_blocked = pending is not None
+    settlement_fee_deferred = bool(ctrl.get("settlement_fee_deferred")) and settlement_blocked
     pending_out = None
     if pending:
         pending_out = {
@@ -88,11 +135,13 @@ def build_trading_control_response(db: Session, user) -> dict:
             "period_end": pending.period_end.isoformat(),
         }
     global_paused = is_globally_paused()
+    settlement_pause = settlement_blocked and not settlement_fee_deferred
     return {
         **ctrl,
         "trading_paused": ctrl["trading_paused"],
         "settlement_blocked": settlement_blocked,
-        "effective_paused": ctrl["trading_paused"] or settlement_blocked or global_paused,
+        "settlement_fee_deferred": settlement_fee_deferred,
+        "effective_paused": ctrl["trading_paused"] or settlement_pause or global_paused,
         "pending_settlement": pending_out,
         "api_status": user.api_status,
         "global_paused": global_paused,

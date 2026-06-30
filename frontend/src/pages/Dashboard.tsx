@@ -165,6 +165,7 @@ export default function Dashboard() {
 
       <SettlementGateBanner
         blocked={data?.settlement_blocked}
+        deferred={data?.settlement_fee_deferred}
         settlement={data?.pending_settlement}
       />
 

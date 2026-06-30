@@ -13,10 +13,11 @@ export type PendingSettlement = {
 
 type Props = {
   blocked?: boolean
+  deferred?: boolean
   settlement?: PendingSettlement | null
 }
 
-export default function SettlementGateBanner({ blocked, settlement }: Props) {
+export default function SettlementGateBanner({ blocked, deferred, settlement }: Props) {
   const { t } = useI18n()
   if (!blocked) return null
 
@@ -27,14 +28,18 @@ export default function SettlementGateBanner({ blocked, settlement }: Props) {
     : t('settlementGate.awaitingPayment')
 
   return (
-    <GlassCard className="p-4 settlement-gate-banner">
+    <GlassCard className={`p-4 settlement-gate-banner${deferred ? ' settlement-gate-banner--deferred' : ''}`}>
       <Wallet size={20} />
       <div className="settlement-gate-body">
-        <strong>{t('settlementGate.title')}</strong>
+        <strong>{deferred ? t('settlementGate.deferredTitle') : t('settlementGate.title')}</strong>
         <p className="text-muted text-sm">
-          {t('settlementGate.body', { amount })}
-          {' '}
-          {statusHint}
+          {deferred ? t('settlementGate.deferredBody', { amount }) : t('settlementGate.body', { amount })}
+          {!deferred && (
+            <>
+              {' '}
+              {statusHint}
+            </>
+          )}
         </p>
         <Link to="/settlements" className="settlement-gate-link">
           {t('settlementGate.cta')}

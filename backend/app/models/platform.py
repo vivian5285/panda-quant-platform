@@ -222,6 +222,27 @@ class SignalDispatchLog(Base):
     user_results = relationship("SignalDispatchUserResult", back_populates="dispatch_log", cascade="all, delete-orphan")
 
 
+class WebhookReceiveLog(Base):
+    """Full TradingView webhook HTTP receive log (including rejects & duplicates)."""
+    __tablename__ = "webhook_receive_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_status = Column(String(24), default="received", index=True)
+    http_status = Column(Integer, default=200)
+    client_ip = Column(String(64), default="")
+    fingerprint = Column(String(128), nullable=True, index=True)
+    action = Column(String(32), nullable=True, index=True)
+    tv_summary_json = Column(Text, default="{}")
+    payload_json = Column(Text, default="{}")
+    dispatch_log_id = Column(Integer, ForeignKey("signal_dispatch_logs.id"), nullable=True, index=True)
+    error_message = Column(Text, nullable=True)
+    response_status = Column(String(32), nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    dispatch_log = relationship("SignalDispatchLog", foreign_keys=[dispatch_log_id])
+
+
 class SignalDispatchUserResult(Base):
     """Per-user outcome for a single signal dispatch."""
     __tablename__ = "signal_dispatch_user_results"

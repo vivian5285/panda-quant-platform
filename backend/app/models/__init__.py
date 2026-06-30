@@ -418,5 +418,5 @@ from app.models.platform import (  # noqa: E402
     Strategy, StrategyVersion, UserNotification, AuditLog, UserOpenApiKey,
     UserPreference, LoginRecord, RefreshToken, SubscriptionPlan, UserSubscription,
     Invoice, RiskAlert, StaffRole, STAFF_ROLES, TvSignalTemplate, SignalDispatchLog, SignalDispatchUserResult,
-    WebhookIdempotencyKey,
+    WebhookIdempotencyKey, WebhookReceiveLog,
 )

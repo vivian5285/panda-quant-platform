@@ -7,6 +7,7 @@ import { toast } from '../store/toast'
 import GlassCard from '../components/GlassCard'
 import AuthShell from '../components/AuthShell'
 import RippleButton from '../components/ui/RippleButton'
+import PasswordInput from '../components/PasswordInput'
 
 export default function Login() {
   const locale = useI18n(s => s.locale)
@@ -169,7 +170,7 @@ export default function Login() {
             </div>
             <div className="form-field">
               <label className="form-label">{t('common.password')}</label>
-              <input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder={t('auth.passwordPh')} required />
+              <PasswordInput value={password} onChange={setPassword} placeholder={t('auth.passwordPh')} required autoComplete="current-password" />
             </div>
             <label className="auth-remember">
               <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />
