@@ -23,6 +23,7 @@ services:
       - ./backend/data:/app/data
       - ./backend/state:/app/state
       - ./backend/logs:/app/logs
+      - ./backend/.env:/app/.env:ro
     depends_on:
       redis:
         condition: service_healthy

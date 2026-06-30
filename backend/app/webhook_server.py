@@ -8,7 +8,6 @@ from app.config import get_settings
 from app.services.webhook_guard import check_webhook_access, validate_signal_payload, _client_ip
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
 webhook_app = Flask(__name__)
 
@@ -115,7 +114,7 @@ def webhook():
         return jsonify({"status": "error", "message": "Empty payload"}), 400
 
     secret = str(data.get("secret", "")).strip()
-    if secret != settings.WEBHOOK_SECRET:
+    if secret != get_settings().WEBHOOK_SECRET:
         _persist_webhook_log(
             payload=data,
             event_status="rejected",
