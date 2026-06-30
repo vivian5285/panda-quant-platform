@@ -79,15 +79,18 @@ deploy_nginx() {
   mkdir -p /var/www/certbot /etc/nginx/snippets
   cp "${APP_DIR}/deploy/nginx-twinstar-locations.conf" /etc/nginx/snippets/twinstar-locations.conf
   sed "s/twinstar.pro/${DOMAIN}/g; s/187.77.130.144/${VPS_IP}/g" \
-    "${APP_DIR}/deploy/${template}" > /etc/nginx/sites-available/twinstar.pro
-  ln -sf /etc/nginx/sites-available/twinstar.pro /etc/nginx/sites-enabled/twinstar.pro
-  rm -f /etc/nginx/sites-enabled/default
+    "${APP_DIR}/deploy/${template}" > /etc/nginx/sites-available/twinstar.conf
+  ln -sf /etc/nginx/sites-available/twinstar.conf /etc/nginx/sites-enabled/twinstar.conf
+  rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/twinstar.pro
+  rm -f /etc/nginx/sites-available/twinstar.pro
   nginx -t
   systemctl enable nginx
   systemctl restart nginx
   sleep 1
   verify_nginx_listeners || {
-    echo "[FAIL] Nginx 未能监听 443，请把上方日志发给管理员"
+    echo "[FAIL] Nginx 未能监听 443"
+    echo "--- journalctl nginx ---"
+    journalctl -u nginx -n 30 --no-pager 2>/dev/null || true
     exit 1
   }
 }

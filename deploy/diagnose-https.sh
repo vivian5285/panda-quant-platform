@@ -30,5 +30,9 @@ curl -sI --max-time 5 "http://127.0.0.1/" -H "Host: ${DOMAIN}" | head -3 || echo
 curl -skI --max-time 5 "https://127.0.0.1/" -H "Host: ${DOMAIN}" | head -3 || echo "HTTPS 本机失败"
 
 echo ""
-echo "=== 7. Nginx 错误日志 (最后 15 行) ==="
-tail -15 /var/log/nginx/error.log 2>/dev/null || true
+echo "=== 8. journalctl nginx (最后 20 行) ==="
+journalctl -u nginx -n 20 --no-pager 2>/dev/null || true
+
+echo ""
+echo "=== 9. nginx 是否编译 SSL 模块 ==="
+nginx -V 2>&1 | tr ' ' '\n' | grep -i ssl || true
