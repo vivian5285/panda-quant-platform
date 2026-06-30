@@ -7,6 +7,7 @@ from typing import Callable, Optional
 
 from app.core.binance_client import BinanceClient
 from app.core.position_manager import PositionManager
+from app.core.symbol_precision import normalize_tv_targets, round_price, round_quantity
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,7 @@ class PositionSupervisor:
                     self.regime = int(s.get("regime", 3) or 3)
                     self.current_atr = float(s.get("current_atr", 30) or 30)
                     self.monitoring = bool(s.get("monitoring", False))
-                    self.tv_tps = s.get("tv_tps", [0.0, 0.0, 0.0])
+                    self.tv_tps = normalize_tv_targets(s.get("tv_tps", [0.0, 0.0, 0.0]))
         except Exception as e:
             logger.error(f"[User {self.user_id}] load state failed: {e}")
 
@@ -118,12 +119,12 @@ class PositionSupervisor:
             self.regime = 3
 
         self.current_atr = float(payload.get("atr", 30.0))
-        self.tv_price = float(payload.get("price", 0.0))
-        self.tv_tps = [
-            float(payload.get("tv_tp1", 0)),
-            float(payload.get("tv_tp2", 0)),
-            float(payload.get("tv_tp3", 0)),
-        ]
+        self.tv_price = round_price(payload.get("price", 0))
+        self.tv_tps = normalize_tv_targets([
+            payload.get("tv_tp1", 0),
+            payload.get("tv_tp2", 0),
+            payload.get("tv_tp3", 0),
+        ])
         self.risk_multiplier = float(payload.get("risk_multiplier", 1.0))
         close_reason = payload.get("reason", "策略指标反转/波动率安全退出")
 
@@ -177,7 +178,7 @@ class PositionSupervisor:
         balance = self.client.get_available_balance()
         margin_pct = self.regime_settings[self.regime]["margin"] * self.risk_multiplier
         self.client.set_leverage(self.symbol, leverage=self.leverage)
-        qty = round((balance * margin_pct * self.leverage) / curr_px, 3)
+        qty = round_quantity((balance * margin_pct * self.leverage) / curr_px)
         if qty <= 0:
             self._log("ERROR", "余额不足，无法开仓")
             self._alert("warning", "INSUFFICIENT_BALANCE", "余额不足", f"用户 {self.user_id} 无法开仓")
@@ -232,9 +233,9 @@ class PositionSupervisor:
     def _protect_and_monitor(self, qty: float, entry_price: float):
         close_side = "SHORT" if self.current_side == "LONG" else "LONG"
         ratios = self.regime_settings[self.regime]["ratios"]
-        qty1 = round(qty * ratios[0], 3)
-        qty2 = round(qty * ratios[1], 3)
-        qty3 = round(qty - qty1 - qty2, 3)
+        qty1 = round_quantity(qty * ratios[0])
+        qty2 = round_quantity(qty * ratios[1])
+        qty3 = round_quantity(qty - qty1 - qty2)
         tp_pxs = self.tv_tps
         self.current_sl = entry_price
 
@@ -335,8 +336,8 @@ class PositionSupervisor:
                         fee_buffer = self.watched_entry * 0.0015
 
                         if self.current_side == "LONG":
-                            breakeven_floor = self.watched_entry + fee_buffer
-                            new_sl = max(round(self.best_price - trail_offset, 2), breakeven_floor)
+                            breakeven_floor = round_price(self.watched_entry + fee_buffer)
+                            new_sl = round_price(max(self.best_price - trail_offset, breakeven_floor))
                             if new_sl > self.current_sl + 1.0:
                                 self.client.cancel_all_open_orders(self.symbol)
                                 time.sleep(0.5)
@@ -362,8 +363,8 @@ class PositionSupervisor:
                                     trail_detail,
                                 )
                         else:
-                            breakeven_floor = self.watched_entry - fee_buffer
-                            new_sl = min(round(self.best_price + trail_offset, 2), breakeven_floor)
+                            breakeven_floor = round_price(self.watched_entry - fee_buffer)
+                            new_sl = round_price(min(self.best_price + trail_offset, breakeven_floor))
                             if self.current_sl >= self.watched_entry or new_sl < self.current_sl - 1.0:
                                 self.client.cancel_all_open_orders(self.symbol)
                                 time.sleep(0.5)
@@ -406,9 +407,9 @@ class PositionSupervisor:
     def _rebuild_defenses(self, qty: float, entry: float, dynamic_sl=None):
         close_side = "SHORT" if self.current_side == "LONG" else "LONG"
         ratios = self.regime_settings[self.regime]["ratios"]
-        qty1 = round(qty * ratios[0], 3)
-        qty2 = round(qty * ratios[1], 3)
-        qty3 = round(qty - qty1 - qty2, 3)
+        qty1 = round_quantity(qty * ratios[0])
+        qty2 = round_quantity(qty * ratios[1])
+        qty3 = round_quantity(qty - qty1 - qty2)
         tp_pxs = self.tv_tps
 
         if qty1 > 0 and tp_pxs[0] > 0:
@@ -418,7 +419,7 @@ class PositionSupervisor:
         if qty3 > 0 and tp_pxs[2] > 0:
             self.client.place_limit_order(close_side, qty3, tp_pxs[2], self.symbol, reduce_only=True)
         if dynamic_sl:
-            self.client.place_stop_market_order(close_side, dynamic_sl, self.symbol)
+            self.client.place_stop_market_order(close_side, round_price(dynamic_sl), self.symbol)
 
     def _close_all(self, reason: str = ""):
         self.client.cancel_all_open_orders(self.symbol)

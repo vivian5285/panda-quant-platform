@@ -557,7 +557,7 @@ class WithdrawalAddressCreate(BaseModel):
     memo: Optional[str] = None
     is_default: bool = False
     email_code: str = Field(min_length=4, max_length=8)
-    phone_code: str = Field(min_length=4, max_length=8)
+    phone_code: Optional[str] = Field(default=None, min_length=4, max_length=8)
 
 
 class WithdrawalAddressOut(BaseModel):
@@ -581,7 +581,7 @@ class WithdrawalCreate(BaseModel):
     address: Optional[str] = None
     withdraw_password: str = Field(min_length=6)
     email_code: str = Field(min_length=4, max_length=8)
-    phone_code: str = Field(min_length=4, max_length=8)
+    phone_code: Optional[str] = Field(default=None, min_length=4, max_length=8)
 
 
 class WithdrawalOut(BaseModel):
@@ -647,20 +647,20 @@ class SmsLoginRequest(BaseModel):
 
 class DualVerifyCodes(BaseModel):
     email_code: str = Field(min_length=4, max_length=8)
-    phone_code: str = Field(min_length=4, max_length=8)
+    phone_code: Optional[str] = Field(default=None, min_length=4, max_length=8)
 
 
 class ChangePasswordRequest(BaseModel):
     old_password: str
     new_password: str = Field(min_length=6)
     email_code: str = Field(min_length=4, max_length=8)
-    phone_code: str = Field(min_length=4, max_length=8)
+    phone_code: Optional[str] = Field(default=None, min_length=4, max_length=8)
 
 
 class WithdrawPasswordRequest(BaseModel):
     withdraw_password: str = Field(min_length=6)
     email_code: str = Field(min_length=4, max_length=8)
-    phone_code: str = Field(min_length=4, max_length=8)
+    phone_code: Optional[str] = Field(default=None, min_length=4, max_length=8)
 
 
 class BindEmailRequest(BaseModel):

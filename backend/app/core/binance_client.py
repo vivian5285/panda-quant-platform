@@ -1,6 +1,8 @@
 import logging
 from binance.client import Client
 
+from app.core.symbol_precision import format_price, format_quantity
+
 logger = logging.getLogger(__name__)
 
 
@@ -97,16 +99,20 @@ class BinanceClient:
     def place_market_order(self, side, quantity, symbol="ETHUSDT", reduce_only=False):
         try:
             binance_side = "BUY" if side.upper() in ["BUY", "LONG"] else "SELL"
+            qty_str = format_quantity(quantity)
+            if float(qty_str) <= 0:
+                logger.error(f"[User {self.user_id}] market order qty invalid: {quantity}")
+                return None
             params = {
                 "symbol": symbol,
                 "side": binance_side,
                 "type": "MARKET",
-                "quantity": quantity,
+                "quantity": qty_str,
             }
             if reduce_only:
                 params["reduceOnly"] = "true"
             order = self.client.futures_create_order(**params)
-            logger.info(f"[User {self.user_id}] market {side} {quantity} reduce={reduce_only}")
+            logger.info(f"[User {self.user_id}] market {side} {qty_str} reduce={reduce_only}")
             return order
         except Exception as e:
             logger.error(f"[User {self.user_id}] market order failed: {e}")
@@ -115,27 +121,49 @@ class BinanceClient:
     def place_limit_order(self, side, quantity, price, symbol="ETHUSDT", reduce_only=True):
         try:
             binance_side = "BUY" if side.upper() in ["BUY", "LONG"] else "SELL"
+            qty_str = format_quantity(quantity)
+            price_str = format_price(price)
+            if float(qty_str) <= 0 or float(price_str) <= 0:
+                logger.error(
+                    f"[User {self.user_id}] limit order invalid qty={quantity} price={price}"
+                )
+                return None
             params = {
-                "symbol": symbol, "side": binance_side, "type": "LIMIT",
-                "timeInForce": "GTC", "quantity": quantity, "price": str(round(price, 2))
+                "symbol": symbol,
+                "side": binance_side,
+                "type": "LIMIT",
+                "timeInForce": "GTC",
+                "quantity": qty_str,
+                "price": price_str,
             }
             if reduce_only:
                 params["reduceOnly"] = "true"
-            return self.client.futures_create_order(**params)
+            order = self.client.futures_create_order(**params)
+            logger.info(f"[User {self.user_id}] limit {side} {qty_str} @ {price_str} reduce={reduce_only}")
+            return order
         except Exception as e:
-            logger.error(f"[User {self.user_id}] limit order failed: {e}")
+            logger.error(f"[User {self.user_id}] limit order failed: {e} qty={quantity} price={price}")
             return None
 
     def place_stop_market_order(self, side, stop_price, symbol="ETHUSDT"):
         try:
             binance_side = "BUY" if side.upper() in ["BUY", "LONG"] else "SELL"
+            stop_str = format_price(stop_price)
+            if float(stop_str) <= 0:
+                logger.error(f"[User {self.user_id}] stop order invalid price: {stop_price}")
+                return None
             params = {
-                "symbol": symbol, "side": binance_side, "type": "STOP_MARKET",
-                "stopPrice": str(round(stop_price, 2)), "closePosition": "true"
+                "symbol": symbol,
+                "side": binance_side,
+                "type": "STOP_MARKET",
+                "stopPrice": stop_str,
+                "closePosition": "true",
             }
-            return self.client.futures_create_order(**params)
+            order = self.client.futures_create_order(**params)
+            logger.info(f"[User {self.user_id}] stop {side} @ {stop_str}")
+            return order
         except Exception as e:
-            logger.error(f"[User {self.user_id}] stop order failed: {e}")
+            logger.error(f"[User {self.user_id}] stop order failed: {e} stop={stop_price}")
             return None
 
     def cancel_all_open_orders(self, symbol="ETHUSDT"):

@@ -4,16 +4,16 @@ import { useI18n } from '../i18n'
 
 type Props = {
   emailCode: string
-  phoneCode: string
+  phoneCode?: string
   onEmailCode: (v: string) => void
-  onPhoneCode: (v: string) => void
+  onPhoneCode?: (v: string) => void
   devEmail?: string
   devPhone?: string
   onDevCodes?: (email?: string, phone?: string) => void
 }
 
 export default function DualVerifyFields({
-  emailCode, phoneCode, onEmailCode, onPhoneCode, devEmail, devPhone, onDevCodes,
+  emailCode, onEmailCode, devEmail, onDevCodes,
 }: Props) {
   const { t } = useI18n()
   const [countdown, setCountdown] = useState(0)
@@ -23,7 +23,7 @@ export default function DualVerifyFields({
     setError('')
     try {
       const res = await authApi.sendSecurityCodes()
-      onDevCodes?.(res.dev_email_code, res.dev_phone_code)
+      onDevCodes?.(res.dev_email_code, undefined)
       setCountdown(60)
       const timer = setInterval(() => {
         setCountdown(c => {
@@ -38,21 +38,19 @@ export default function DualVerifyFields({
 
   return (
     <div className="security-notice dual-verify-panel">
-      <p className="dual-verify-lead">{t('security.dualTitle')}</p>
+      <p className="dual-verify-lead">{t('security.emailOnlyTitle')}</p>
       <button type="button" className="btn btn-ghost dual-verify-send"
         disabled={countdown > 0} onClick={sendCodes}>
         {countdown > 0 ? t('security.resendIn', { n: countdown }) : t('security.getCodes')}
       </button>
-      {(devEmail || devPhone) && (
+      {devEmail && (
         <p className="text-muted dual-verify-dev">
-          {t('security.devMode')} — {t('common.email')}: {devEmail || '—'} / {t('common.phone')}: {devPhone || '—'}
+          {t('security.devMode')} — {t('common.email')}: {devEmail}
         </p>
       )}
-      <div className="dual-verify-codes">
+      <div className="dual-verify-codes dual-verify-codes--single">
         <input className="input" placeholder={t('security.emailCodePh')} value={emailCode}
           onChange={e => onEmailCode(e.target.value)} required />
-        <input className="input" placeholder={t('security.phoneCodePh')} value={phoneCode}
-          onChange={e => onPhoneCode(e.target.value)} required />
       </div>
       {error && <p className="text-red dual-verify-error">{error}</p>}
     </div>

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.core.symbol_precision import normalize_entry_payload, round_price
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -27,11 +28,11 @@ def compute_fingerprint(payload: dict) -> str:
     core = {
         "action": action,
         "regime": payload.get("regime"),
-        "price": round(float(payload.get("price") or 0), 2),
+        "price": round_price(payload.get("price") or 0),
         "atr": round(float(payload.get("atr") or 0), 4),
-        "tv_tp1": round(float(payload.get("tv_tp1") or 0), 2),
-        "tv_tp2": round(float(payload.get("tv_tp2") or 0), 2),
-        "tv_tp3": round(float(payload.get("tv_tp3") or 0), 2),
+        "tv_tp1": round_price(payload.get("tv_tp1") or 0),
+        "tv_tp2": round_price(payload.get("tv_tp2") or 0),
+        "tv_tp3": round_price(payload.get("tv_tp3") or 0),
         "reason": str(payload.get("reason") or "")[:200],
     }
     raw = json.dumps(core, sort_keys=True, ensure_ascii=False)

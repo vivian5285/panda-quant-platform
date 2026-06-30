@@ -158,6 +158,9 @@ def check_execution() -> None:
 
     s = get_settings()
     ok(f"交易对 {s.SYMBOL} · 杠杆 {s.LEVERAGE}x · Regime 1~4 保证金已配置")
+    from app.core.symbol_precision import format_price, format_quantity
+
+    ok(f"ETHUSDT 价格精度 {format_price(3500.123)} · 数量精度 {format_quantity(1.2345)}")
 
     for m in ("handle_signal", "recover_on_startup", "_sentinel_loop", "_close_all"):
         if hasattr(PositionSupervisor, m):

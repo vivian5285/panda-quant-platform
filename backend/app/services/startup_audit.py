@@ -44,7 +44,7 @@ def validate_production_secrets() -> list[str]:
         warnings.append(f"FRONTEND_URL 未配置为生产域名: {settings.FRONTEND_URL}")
 
     if settings.SMS_DEV_MODE:
-        warnings.append("SMS_DEV_MODE=true（生产应 false + 配置 SMS_ALIYUN_*）")
+        warnings.append("SMS_DEV_MODE=true（仅邮箱注册时可忽略，无需配置 SMS_ALIYUN_*）")
 
     if settings.EMAIL_DEV_MODE:
         warnings.append("EMAIL_DEV_MODE=true（生产应 false + 配置 SMTP_*）")

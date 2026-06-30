@@ -173,24 +173,34 @@ def verify_register_code(db: Session, channel: str, target: str, code: str) -> N
     verify_code(db, channel, target, code, "register")
 
 
-def require_both_contacts(user: User) -> None:
-    if not user.email or not user.phone:
-        raise ValueError("请先在个人资料中绑定邮箱和手机号，才能进行安全操作")
+def require_email_contact(user: User) -> None:
+    if not user.email:
+        raise ValueError("请先在个人资料中绑定邮箱")
 
 
-def verify_security_dual(db: Session, user: User, email_code: str, phone_code: str) -> None:
-    require_both_contacts(user)
+def verify_security_email(db: Session, user: User, email_code: str) -> None:
+    require_email_contact(user)
     verify_code(db, "email", user.email, email_code, "security")
-    verify_code(db, "phone", user.phone, phone_code, "security")
+
+
+def send_security_email_code(db: Session, user: User) -> dict:
+    require_email_contact(user)
+    return send_code(db, "email", user.email, "security", user_id=user.id)
+
+
+def require_both_contacts(user: User) -> None:
+    """Legacy alias — email-only security verification."""
+    require_email_contact(user)
+
+
+def verify_security_dual(db: Session, user: User, email_code: str, phone_code: str = "") -> None:
+    """Email verification only (phone_code ignored)."""
+    verify_security_email(db, user, email_code)
 
 
 def send_security_dual_codes(db: Session, user: User) -> dict:
-    require_both_contacts(user)
-    email_res = send_code(db, "email", user.email, "security", user_id=user.id)
-    phone_res = send_code(db, "phone", user.phone, "security", user_id=user.id)
-    out = {"message": "安全验证码已发送至邮箱和手机", "expires_in": email_res["expires_in"]}
+    res = send_security_email_code(db, user)
+    out = {"message": "安全验证码已发送至邮箱", "expires_in": res["expires_in"]}
     if settings.EMAIL_DEV_MODE:
-        out["dev_email_code"] = email_res.get("dev_code")
-    if settings.SMS_DEV_MODE:
-        out["dev_phone_code"] = phone_res.get("dev_code")
+        out["dev_email_code"] = res.get("dev_code")
     return out

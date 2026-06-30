@@ -91,6 +91,8 @@ def run_signal_dispatch(
     from app.services.dispatcher import signal_dispatcher
 
     action = str(payload.get("action", "UNKNOWN")).upper()
+    if action in ("LONG", "SHORT"):
+        payload = normalize_entry_payload(payload)
     row = log_dispatch(
         db,
         action=action,

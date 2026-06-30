@@ -13,9 +13,7 @@ export default function Login() {
   const locale = useI18n(s => s.locale)
   const t = useI18n(s => s.t)
   const [mode, setMode] = useState<'password' | 'code'>('password')
-  const [codeChannel, setCodeChannel] = useState<'phone' | 'email'>('phone')
   const [account, setAccount] = useState('')
-  const [phone, setPhone] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
@@ -32,7 +30,10 @@ export default function Login() {
 
   useEffect(() => {
     const saved = localStorage.getItem('remember_account')
-    if (saved) setAccount(saved)
+    if (saved) {
+      setAccount(saved)
+      setEmail(saved)
+    }
   }, [])
 
   const navigatePostLogin = (data: { role?: string; api_status?: string }) => {
@@ -54,7 +55,8 @@ export default function Login() {
       return
     }
     setAuth(data.access_token, data.uid, data.display_name, data.role)
-    if (remember && account) localStorage.setItem('remember_account', account)
+    const remembered = mode === 'password' ? account : email
+    if (remember && remembered) localStorage.setItem('remember_account', remembered)
     else localStorage.removeItem('remember_account')
     navigatePostLogin(data)
   }
@@ -90,9 +92,7 @@ export default function Login() {
   const sendCode = async () => {
     setError('')
     try {
-      const res = codeChannel === 'phone'
-        ? await authApi.sendSms(phone, 'login')
-        : await authApi.sendEmail(email, 'login')
+      const res = await authApi.sendEmail(email, 'login')
       setDevCode(res.dev_code || '')
       setCountdown(60)
       const timer = setInterval(() => {
@@ -110,10 +110,7 @@ export default function Login() {
     setLoading(true)
     setError('')
     try {
-      const data = codeChannel === 'phone'
-        ? await authApi.loginSms(phone, code)
-        : await authApi.loginEmail(email, code)
-      finishLogin(data)
+      finishLogin(await authApi.loginEmail(email, code))
     } catch (err: any) {
       const msg = err.response?.data?.detail || t('auth.codeError')
       toast.error(msg)
@@ -159,14 +156,14 @@ export default function Login() {
           <button type="button" className={`btn ${mode === 'password' ? 'btn-primary' : 'btn-ghost'}`}
             onClick={() => setMode('password')}>{t('auth.passwordLogin')}</button>
           <button type="button" className={`btn ${mode === 'code' ? 'btn-primary' : 'btn-ghost'}`}
-            onClick={() => setMode('code')}>{t('auth.codeLogin')}</button>
+            onClick={() => setMode('code')}>{t('auth.emailCodeLogin')}</button>
         </div>
 
         {mode === 'password' ? (
           <form onSubmit={handlePasswordLogin}>
             <div className="form-field">
-              <label className="form-label">{t('auth.account')}</label>
-              <input className="input" value={account} onChange={e => setAccount(e.target.value)} placeholder={t('auth.accountPh')} required />
+              <label className="form-label">{t('common.email')}</label>
+              <input className="input" type="email" value={account} onChange={e => setAccount(e.target.value)} placeholder={t('auth.emailPh')} required />
             </div>
             <div className="form-field">
               <label className="form-label">{t('common.password')}</label>
@@ -183,33 +180,20 @@ export default function Login() {
           </form>
         ) : (
           <form key={locale} onSubmit={handleCodeLogin}>
-            <div className="auth-mode-tabs auth-mode-tabs--compact">
-              <button type="button" className={`btn ${codeChannel === 'phone' ? 'btn-primary' : 'btn-ghost'}`}
-                onClick={() => setCodeChannel('phone')}>{t('auth.phoneCode')}</button>
-              <button type="button" className={`btn ${codeChannel === 'email' ? 'btn-primary' : 'btn-ghost'}`}
-                onClick={() => setCodeChannel('email')}>{t('auth.emailCode')}</button>
+            <div className="form-field">
+              <label className="form-label">{t('common.email')}</label>
+              <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder={t('auth.emailPh')} required />
             </div>
-            {codeChannel === 'phone' ? (
-              <div className="form-field">
-                <label className="form-label">{t('common.phone')}</label>
-                <input className="input" value={phone} onChange={e => setPhone(e.target.value)} placeholder={t('auth.phonePh')} required />
-              </div>
-            ) : (
-              <div className="form-field">
-                <label className="form-label">{t('common.email')}</label>
-                <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} required />
-              </div>
-            )}
             <div className="auth-code-row">
               <input className="input" value={code} onChange={e => setCode(e.target.value)} placeholder={t('auth.codePh')} required />
-              <button type="button" className="btn btn-ghost" disabled={countdown > 0 || (codeChannel === 'phone' ? !phone : !email)} onClick={sendCode}>
+              <button type="button" className="btn btn-ghost" disabled={countdown > 0 || !email} onClick={sendCode}>
                 {countdown > 0 ? `${countdown}s` : t('auth.getCode')}
               </button>
             </div>
             {devCode && <p className="text-muted auth-dev-hint">{t('auth.devCode')}: {devCode}</p>}
             {error && <p className="form-error">{error}</p>}
             <RippleButton type="submit" className="btn btn-auth-primary auth-submit" disabled={loading}>
-              {loading ? t('auth.loggingIn') : t('auth.codeLogin')}
+              {loading ? t('auth.loggingIn') : t('auth.emailCodeLogin')}
             </RippleButton>
           </form>
         )}

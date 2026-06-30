@@ -12,9 +12,7 @@ import PasswordInput from '../components/PasswordInput'
 export default function Register() {
   const locale = useI18n(s => s.locale)
   const t = useI18n(s => s.t)
-  const [mode, setMode] = useState<'email' | 'phone'>('email')
   const [email, setEmail] = useState('')
-  const [phone, setPhone] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [code, setCode] = useState('')
@@ -35,9 +33,7 @@ export default function Register() {
   const sendCode = async () => {
     setError('')
     try {
-      const res = mode === 'email'
-        ? await authApi.sendEmail(email, 'register')
-        : await authApi.sendSms(phone, 'register')
+      const res = await authApi.sendEmail(email, 'register')
       setDevCode(res.dev_code || '')
       setCountdown(60)
       const timer = setInterval(() => {
@@ -61,8 +57,7 @@ export default function Register() {
     setError('')
     try {
       const data = await authApi.register({
-        email: mode === 'email' ? email : undefined,
-        phone: mode === 'phone' ? phone : undefined,
+        email,
         password,
         verification_code: code,
         referral_code: referralCode || undefined,
@@ -87,28 +82,14 @@ export default function Register() {
           <p className="register-inviter-banner">{t('register.inviterBanner', { uid: searchParams.get('from') ?? '' })}</p>
         )}
 
-        <div className="auth-mode-tabs">
-          <button type="button" className={`btn ${mode === 'email' ? 'btn-primary' : 'btn-ghost'}`}
-            onClick={() => setMode('email')}>{t('auth.emailRegister')}</button>
-          <button type="button" className={`btn ${mode === 'phone' ? 'btn-primary' : 'btn-ghost'}`}
-            onClick={() => setMode('phone')}>{t('auth.phoneRegister')}</button>
-        </div>
-
         <form key={locale} onSubmit={handleSubmit}>
-          {mode === 'email' ? (
-            <div className="form-field">
-              <label className="form-label">{t('common.email')}</label>
-              <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} required />
-            </div>
-          ) : (
-            <div className="form-field">
-              <label className="form-label">{t('auth.phoneLabel')}</label>
-              <input className="input" value={phone} onChange={e => setPhone(e.target.value)} placeholder={t('auth.phonePh')} required />
-            </div>
-          )}
+          <div className="form-field">
+            <label className="form-label">{t('common.email')}</label>
+            <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} required />
+          </div>
           <div className="auth-code-row">
             <input className="input" value={code} onChange={e => setCode(e.target.value)} placeholder={t('auth.codePh')} required />
-            <button type="button" className="btn btn-ghost" disabled={countdown > 0 || (mode === 'email' ? !email : !phone)} onClick={sendCode}>
+            <button type="button" className="btn btn-ghost" disabled={countdown > 0 || !email} onClick={sendCode}>
               {countdown > 0 ? `${countdown}s` : t('auth.getCode')}
             </button>
           </div>

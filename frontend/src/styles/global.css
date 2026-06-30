@@ -4087,6 +4087,9 @@ html[lang="zh-CN"] .framer-logo-text strong {
 .dual-verify-send { width: 100%; margin-bottom: 12px; font-size: 12px; }
 .dual-verify-dev { font-size: 11px; margin: 0 0 8px; }
 .dual-verify-codes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.dual-verify-codes--single {
+  grid-template-columns: 1fr;
+}
 .dual-verify-error { font-size: 12px; margin: 8px 0 0; }
 @media (max-width: 480px) {
   .dual-verify-codes { grid-template-columns: 1fr; }

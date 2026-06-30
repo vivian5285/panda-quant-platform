@@ -125,7 +125,7 @@ export default function Profile() {
     }
   }
 
-  const bothBound = profile?.has_email && profile?.has_phone
+  const bothBound = profile?.has_email
 
   const savePrefs = async () => {
     if (!prefs) return
@@ -205,8 +205,7 @@ export default function Profile() {
           <h3 className="card-heading">{t('profile.accountInfo')}</h3>
           <div className="account-info-grid">
             <div><span className="text-muted">{t('common.email')}</span><p>{profile?.email || t('profile.notBound')}</p></div>
-            <div><span className="text-muted">{t('common.phone')}</span><p>{profile?.phone || t('profile.notBound')}</p></div>
-            {!bothBound && (
+            {!profile?.has_email && (
               <p className="text-muted form-hint-sm">{t('profile.bindHint')}</p>
             )}
           </div>
@@ -225,23 +224,6 @@ export default function Profile() {
                 <input className="input" placeholder={t('profile.existingPhoneCodePh')} value={bindOtherCode} onChange={e => setBindOtherCode(e.target.value)} />
               )}
               <button className="btn btn-primary" type="submit">{t('profile.bindEmailBtn')}</button>
-            </form>
-          </GlassCard>
-        )}
-
-        {!profile?.has_phone && (
-          <GlassCard className="p-6 page-panel">
-            <h3 className="card-heading">{t('profile.bindPhone')}</h3>
-            <form onSubmit={bindPhone} className="form-stack">
-              <input className="input" placeholder={t('auth.phonePh')} value={bindPhoneVal} onChange={e => setBindPhoneVal(e.target.value)} required />
-              <div className="form-row">
-                <input className="input" placeholder={t('profile.phoneCodePh')} value={bindPhoneCode} onChange={e => setBindPhoneCode(e.target.value)} required />
-                <button type="button" className="btn btn-ghost" onClick={() => authApi.sendSms(bindPhoneVal, 'register')}>{t('common.get')}</button>
-              </div>
-              {profile?.has_email && (
-                <input className="input" placeholder={t('profile.existingEmailCodePh')} value={bindOtherCode} onChange={e => setBindOtherCode(e.target.value)} />
-              )}
-              <button className="btn btn-primary" type="submit">{t('profile.bindPhoneBtn')}</button>
             </form>
           </GlassCard>
         )}
