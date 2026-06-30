@@ -18,7 +18,10 @@ ss -tlnp | grep -E ':80 |:443 ' || echo "80/443 均未监听"
 
 echo ""
 echo "=== 4. 站点配置 ==="
-grep -E 'listen|server_name|ssl_certificate' /etc/nginx/sites-enabled/* 2>/dev/null || true
+echo "sites-enabled:"
+ls -la /etc/nginx/sites-enabled/ 2>/dev/null || true
+echo "--- listen / ssl ---"
+nginx -T 2>/dev/null | grep -E '^\s*listen|server_name|ssl_certificate' || true
 
 echo ""
 echo "=== 5. UFW ==="
