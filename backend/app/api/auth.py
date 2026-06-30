@@ -216,11 +216,9 @@ def register(req: RegisterRequest, request: Request, db: Session = Depends(get_d
     referrer_id = None
 
     if req.referral_code:
-
-        referrer = db.query(User).filter(User.referral_code == req.referral_code).first()
-
+        from app.services.referral_code import resolve_referral_user
+        referrer = resolve_referral_user(db, req.referral_code)
         if referrer:
-
             referrer_id = referrer.id
 
 

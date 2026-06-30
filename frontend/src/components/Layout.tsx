@@ -9,7 +9,7 @@ import ToastHost from './ui/ToastHost'
 import {
   LayoutDashboard, ArrowLeftRight, Wallet, LogOut,
   Menu, X, UserCircle, TrendingUp, KeyRound, BarChart3, ShieldAlert, Share2, Layers,
-  Sparkles, HelpCircle, History,
+  Sparkles, HelpCircle, History, Link2,
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
@@ -30,6 +30,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     { to: '/api', icon: KeyRound, label: t('nav.api') },
     { to: '/analytics', icon: BarChart3, label: t('nav.analytics') },
     { to: '/help', icon: HelpCircle, label: t('nav.help') },
+    { to: '/invite', icon: Link2, label: t('nav.inviteLink') },
     { to: '/referrals', icon: Share2, label: t('nav.referrals') },
     { to: '/settlements', icon: Wallet, label: t('nav.settlements') },
     { to: '/snapshots', icon: History, label: t('nav.snapshots') },

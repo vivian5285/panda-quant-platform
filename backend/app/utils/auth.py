@@ -41,7 +41,7 @@ def decode_access_token(token: str) -> dict | None:
 
 def generate_referral_code(length: int = 8) -> str:
     chars = string.ascii_uppercase + string.digits
-    return "PANDA-" + "".join(secrets.choice(chars) for _ in range(length))
+    return "GEMINI-" + "".join(secrets.choice(chars) for _ in range(length))
 
 
 def generate_uid(db, length: int = 8) -> str:

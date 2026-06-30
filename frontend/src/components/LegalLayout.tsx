@@ -43,6 +43,7 @@ export default function LegalLayout({ titleKey, updatedKey, sectionKeys, ns }: P
         <div className="framer-legal-links">
           <Link to="/privacy">{t('framer.footer.privacy')}</Link>
           <Link to="/terms">{t('framer.footer.terms')}</Link>
+          <Link to="/guide">{t('nav.guide')}</Link>
           <Link to="/help">{t('nav.help')}</Link>
         </div>
         <p>{t('framer.footer.rights')}</p>

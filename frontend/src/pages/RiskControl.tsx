@@ -106,6 +106,8 @@ export default function RiskControl() {
   }
 
   const effectivelyPaused = ctrl?.effective_paused ?? ctrl?.trading_paused
+  const canResume = !ctrl?.global_paused && !(ctrl?.settlement_blocked && !ctrl?.settlement_fee_deferred)
+  const canPause = !ctrl?.global_paused
 
   return (
     <Layout>
@@ -134,6 +136,48 @@ export default function RiskControl() {
         />
       </div>
 
+      <GlassCard className="p-6 section-mb-lg risk-toggle-card">
+        <div className="risk-toggle-head">
+          <div>
+            <h3 className="card-heading">{t('risk.controlTitle')}</h3>
+            <p className="text-muted text-sm mb-0">{t('risk.controlHint')}</p>
+          </div>
+          <span className={`badge risk-status-badge ${effectivelyPaused ? 'badge-gray' : 'badge-green'}`}>
+            {statusLabel()}
+          </span>
+        </div>
+        {ctrl?.settlement_blocked && !ctrl?.settlement_fee_deferred && (
+          <p className="text-muted text-sm section-mt-sm">{t('risk.settlementBlockedHint')}</p>
+        )}
+        <div className="risk-toggle-actions">
+          <RippleButton
+            className="btn btn-primary risk-toggle-btn"
+            disabled={loading || !effectivelyPaused || !canResume}
+            onClick={resumeTrading}
+          >
+            <PlayCircle size={20} />
+            <span>
+              <strong>{t('risk.startTrading')}</strong>
+              <small>{t('risk.startTradingHint')}</small>
+            </span>
+          </RippleButton>
+          <RippleButton
+            className="btn btn-danger risk-toggle-btn"
+            disabled={loading || effectivelyPaused || !canPause}
+            onClick={() => setPauseConfirmOpen(true)}
+          >
+            <PauseCircle size={20} />
+            <span>
+              <strong>{t('risk.pauseTrading')}</strong>
+              <small>{t('risk.pauseTradingHint')}</small>
+            </span>
+          </RippleButton>
+        </div>
+        {!canPause && ctrl?.global_paused && (
+          <p className="text-muted text-xs section-mt-sm">{t('risk.globalPausedHint')}</p>
+        )}
+      </GlassCard>
+
       <GlassCard className="p-6 section-mb-lg">
         <h3 className="card-heading">{t('risk.levelTitle')}</h3>
         <p className="text-muted text-sm section-mb-sm">{t('risk.levelHint')}</p>
@@ -150,29 +194,6 @@ export default function RiskControl() {
               <span className="text-muted">{t(`risk.levelsDesc.${level}`)}</span>
             </button>
           ))}
-        </div>
-      </GlassCard>
-
-      <GlassCard className="p-6 section-mb-lg">
-        <h3 className="card-heading">{t('risk.controlTitle')}</h3>
-        <p className="text-muted text-sm mb-md">{t('risk.controlHint')}</p>
-        {ctrl?.settlement_blocked && !ctrl?.settlement_fee_deferred && (
-          <p className="text-muted text-sm mb-md">{t('risk.settlementBlockedHint')}</p>
-        )}
-        <div className="flex-gap-md">
-          {!effectivelyPaused ? (
-            <RippleButton className="btn btn-danger risk-pause-btn" disabled={loading} onClick={() => setPauseConfirmOpen(true)}>
-              <PauseCircle size={18} /> {t('risk.pauseTrading')}
-            </RippleButton>
-          ) : (
-            <RippleButton
-              className="btn btn-primary"
-              disabled={loading || ctrl?.global_paused || (ctrl?.settlement_blocked && !ctrl?.settlement_fee_deferred)}
-              onClick={resumeTrading}
-            >
-              <PlayCircle size={18} /> {t('risk.resumeTrading')}
-            </RippleButton>
-          )}
         </div>
       </GlassCard>
 

@@ -192,6 +192,7 @@ export function drawGeminiLogoCanvas(
   cx: number,
   cy: number,
   box: number,
+  variant: 'dark' | 'light' = 'dark',
 ) {
   const r = box * 0.22
   const half = box / 2
@@ -201,8 +202,13 @@ export function drawGeminiLogoCanvas(
 
   ctx.save()
   roundRect(ctx, x, y, box, box, r)
-  ctx.fillStyle = '#000000'
+  ctx.fillStyle = variant === 'light' ? '#ffffff' : '#000000'
   ctx.fill()
+  if (variant === 'light') {
+    ctx.strokeStyle = 'rgba(148,163,184,0.35)'
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+  }
 
   const grad = ctx.createLinearGradient(x, y, x + box, y + box)
   grad.addColorStop(0, '#60a5fa')

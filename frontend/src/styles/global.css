@@ -4030,7 +4030,100 @@ html[lang="zh-CN"] .framer-logo-text strong {
   gap: 8px;
   margin-top: 16px;
 }
-.invite-poster-btn { grid-column: 1 / -1; }
+.invite-poster-btn { width: 100%; }
+.poster-theme-picker { margin-top: 4px; }
+.poster-theme-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+@media (max-width: 520px) {
+  .poster-theme-grid { grid-template-columns: 1fr; }
+}
+.poster-theme-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--glass-border);
+  background: var(--surface-muted);
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.poster-theme-card:hover { border-color: var(--highlight, #3b82f6); }
+.poster-theme-card-active {
+  border-color: var(--highlight, #3b82f6);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--highlight, #3b82f6) 35%, transparent);
+}
+.poster-theme-swatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+}
+.poster-theme-swatch-dark {
+  background: linear-gradient(135deg, #020617, #1e3a8a);
+  color: #93c5fd;
+}
+.poster-theme-swatch-light {
+  background: linear-gradient(135deg, #f8fafc, #dbeafe);
+  color: #2563eb;
+  border: 1px solid rgba(148,163,184,0.3);
+}
+.poster-theme-name { font-size: 14px; font-weight: 600; }
+.poster-theme-desc { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
+
+.risk-toggle-card { border: 1px solid var(--glass-border); }
+.risk-toggle-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.risk-status-badge { font-size: 13px; padding: 6px 12px; }
+.risk-toggle-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 20px;
+}
+@media (max-width: 560px) {
+  .risk-toggle-actions { grid-template-columns: 1fr; }
+}
+.risk-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 18px;
+  text-align: left;
+  min-height: 72px;
+}
+.risk-toggle-btn span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+.risk-toggle-btn strong { font-size: 15px; font-weight: 600; }
+.risk-toggle-btn small { font-size: 12px; opacity: 0.85; font-weight: 400; }
+
+.invite-promo-banner-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.inline-flex-gap { display: inline-flex; align-items: center; gap: 6px; }
+
 .invite-qr-panel { text-align: center; }
 .invite-qr-frame {
   padding: 12px;
@@ -4380,4 +4473,105 @@ html[lang="zh-CN"] .framer-logo-text strong {
     font-size: 13px;
     padding: 9px 12px;
   }
+}
+
+/* ── Platform Guide (public + console) ── */
+.platform-guide-public { max-width: 920px; margin: 0 auto; padding: 24px 20px 48px; }
+.platform-guide-public-footer {
+  max-width: 920px;
+  margin: 0 auto 32px;
+  padding: 0 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+}
+.platform-guide-hero {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--highlight, #3b82f6) 8%, transparent), transparent);
+  border: 1px solid var(--glass-border);
+}
+.platform-guide-hero-title {
+  font-size: clamp(22px, 4vw, 28px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 8px 0 12px;
+  line-height: 1.25;
+}
+.platform-guide-lead { font-size: 15px; line-height: 1.75; max-width: 720px; }
+.platform-guide-hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+.platform-guide-section { margin-bottom: 36px; }
+.platform-guide-section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.platform-guide-section-head h2 { font-size: 20px; font-weight: 700; margin: 0; letter-spacing: -0.02em; }
+.platform-guide-section-head svg { color: var(--highlight, #3b82f6); flex-shrink: 0; }
+.platform-guide-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.platform-guide-card h3 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
+.platform-guide-icon { color: var(--highlight, #3b82f6); margin-bottom: 8px; }
+.platform-guide-steps { display: flex; flex-direction: column; gap: 10px; }
+.platform-guide-step {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.platform-guide-step-num {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--highlight, #3b82f6) 14%, transparent);
+  color: var(--highlight, #3b82f6);
+  border: 1px solid color-mix(in srgb, var(--highlight, #3b82f6) 25%, transparent);
+}
+.platform-guide-step h3 { font-size: 15px; font-weight: 600; margin: 0 0 6px; }
+.platform-guide-note { border-left: 3px solid var(--highlight, #3b82f6); }
+.platform-guide-list {
+  margin: 0;
+  padding-left: 1.2em;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text-muted);
+}
+.platform-guide-final-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+@media (max-width: 640px) {
+  .platform-guide-final-grid { grid-template-columns: 1fr; }
+}
+.platform-guide-final-col h3 { font-size: 16px; font-weight: 600; margin: 8px 0; }
+.platform-guide-disclaimer { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--glass-border); }
+
+.invite-guide-banner {
+  border: 1px solid color-mix(in srgb, var(--highlight, #3b82f6) 22%, var(--glass-border));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--highlight, #3b82f6) 6%, transparent), transparent);
+}
+.invite-guide-banner-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 20px;
+}
+.invite-guide-icon { color: var(--highlight, #3b82f6); flex-shrink: 0; }
+.invite-guide-text { flex: 1; min-width: 200px; }
+.invite-guide-text .card-heading { margin-bottom: 4px; }
+.invite-guide-cta { flex-shrink: 0; margin-left: auto; }
+@media (max-width: 560px) {
+  .invite-guide-cta { margin-left: 0; width: 100%; justify-content: center; }
 }

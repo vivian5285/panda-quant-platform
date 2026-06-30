@@ -268,6 +268,19 @@ html[lang="en"] .framer-nav-links button {
 
 .framer-nav-links button:hover { color: var(--fr-nav-link-hover); }
 
+.framer-nav-page-link {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fr-nav-link);
+  text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: color 0.2s ease;
+}
+.framer-nav-page-link:hover { color: var(--fr-nav-link-hover); }
+html[lang="zh-CN"] .framer-nav-page-link { font-size: 14px; letter-spacing: 0.01em; }
+html[lang="en"] .framer-nav-page-link { font-size: 12.5px; letter-spacing: -0.01em; }
+
 .framer-logo-text strong { color: var(--fr-logo-strong); font-weight: 600; }
 .framer-logo-text small { color: var(--fr-logo-sub); }
 

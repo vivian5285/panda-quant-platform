@@ -104,7 +104,7 @@ export default function Register() {
           </div>
           <div className="form-field">
             <label className="form-label">{t('auth.referralOptional')}</label>
-            <input className="input" value={referralCode} onChange={e => setReferralCode(e.target.value)} placeholder="PANDA-XXXXXXXX" readOnly={!!searchParams.get('ref')} />
+            <input className="input" value={referralCode} onChange={e => setReferralCode(e.target.value)} placeholder="GEMINI-XXXXXXXX" readOnly={!!searchParams.get('ref')} />
           </div>
           {error && <p className="form-error">{error}</p>}
           <RippleButton type="submit" className="btn btn-auth-primary auth-submit" disabled={loading}>

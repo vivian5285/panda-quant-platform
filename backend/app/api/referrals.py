@@ -7,6 +7,7 @@ from app.models import User, ReferralReward, Trade, TradeLog, PaymentStatus
 from app.services.wallet import get_or_create_reward_account
 from app.services.user_lookup import display_name
 from app.services.referral import build_invite_url, commission_info
+from app.services.referral_code import canonical_referral_code
 from app.services.referral_stats import build_downline_stats
 from app.schemas import (
     ReferralSummary, ReferralUserOut, ReferralInviteOut, ReferralCommissionOut,
@@ -95,8 +96,9 @@ def _assert_downline_access(db: Session, referrer: User, target_id: int) -> tupl
 
 @router.get("/referrals/invite", response_model=ReferralInviteOut)
 def referral_invite(user: User = Depends(get_current_user)):
+    code = canonical_referral_code(user.referral_code)
     return ReferralInviteOut(
-        referral_code=user.referral_code,
+        referral_code=code,
         invite_url=build_invite_url(user.referral_code, user.uid),
         uid=user.uid,
         display_name=display_name(user),
@@ -130,7 +132,7 @@ def referral_summary(user: User = Depends(get_current_user), db: Session = Depen
     db.commit()
 
     return ReferralSummary(
-        referral_code=user.referral_code,
+        referral_code=canonical_referral_code(user.referral_code),
         invite_url=build_invite_url(user.referral_code, user.uid),
         uid=user.uid,
         display_name=display_name(user),

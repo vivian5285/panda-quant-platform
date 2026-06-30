@@ -16,6 +16,9 @@ export default function FramerPublicShell({ children }: Props) {
       <header className="framer-public-nav">
         <FramerBrand />
         <div className="framer-public-nav-actions">
+          <Link to="/guide" className="framer-btn-ghost framer-public-guide">
+            {t('nav.guide')}
+          </Link>
           <Link to="/login" className="framer-btn-ghost framer-public-login">
             {t('auth.login')}
           </Link>

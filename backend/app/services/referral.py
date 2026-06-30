@@ -1,12 +1,13 @@
 from urllib.parse import urlencode
 from app.config import get_settings
+from app.services.referral_code import canonical_referral_code
 
 settings = get_settings()
 
 
 def build_invite_url(referral_code: str, inviter_uid: str | None = None) -> str:
     base = settings.FRONTEND_URL.rstrip("/")
-    params: dict[str, str] = {"ref": referral_code}
+    params: dict[str, str] = {"ref": canonical_referral_code(referral_code)}
     if inviter_uid:
         params["from"] = str(inviter_uid)
     return f"{base}/register?{urlencode(params)}"

@@ -8,6 +8,7 @@ import Landing from './pages/Landing'
 import Login from './pages/Login'
 import Register from './pages/Register'
 import Help from './pages/Help'
+import PlatformGuide from './pages/PlatformGuide'
 import Privacy from './pages/Privacy'
 import Terms from './pages/Terms'
 
@@ -17,6 +18,7 @@ const Positions = lazy(() => import('./pages/Positions'))
 const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'))
 const Trades = lazy(() => import('./pages/Trades'))
 const ApiManage = lazy(() => import('./pages/ApiManage'))
+const InviteLink = lazy(() => import('./pages/InviteLink'))
 const Referrals = lazy(() => import('./pages/Referrals'))
 const Settlements = lazy(() => import('./pages/Settlements'))
 const RiskControl = lazy(() => import('./pages/RiskControl'))
@@ -61,6 +63,7 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
           <Route path="/help" element={<Help />} />
+          <Route path="/guide" element={<PlatformGuide />} />
           <Route path="/privacy" element={<Privacy />} />
           <Route path="/terms" element={<Terms />} />
           <Route path="/dashboard" element={<UserRoute><Dashboard /></UserRoute>} />
@@ -70,6 +73,7 @@ export default function App() {
           <Route path="/trades" element={<UserRoute><Trades /></UserRoute>} />
           <Route path="/risk" element={<UserRoute><RiskControl /></UserRoute>} />
           <Route path="/api" element={<UserRoute><ApiManage /></UserRoute>} />
+          <Route path="/invite" element={<UserRoute><InviteLink /></UserRoute>} />
           <Route path="/referrals" element={<UserRoute><Referrals /></UserRoute>} />
           <Route path="/settlements" element={<UserRoute><Settlements /></UserRoute>} />
           <Route path="/snapshots" element={<UserRoute><AccountSnapshots /></UserRoute>} />
