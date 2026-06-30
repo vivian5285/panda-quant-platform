@@ -309,7 +309,8 @@ def check_wallet_hub() -> None:
     from app.services.wallet_balance import NATIVE_SYMBOLS
 
     ok(f"钱包链: {', '.join(WALLET_CHAINS)}")
-    ok(f"原生 Gas 符号: {', '.join(f'{c}={NATIVE_SYMBOLS.get(c, '?')}' for c in WALLET_CHAINS)}")
+    gas_labels = ", ".join(f"{c}={NATIVE_SYMBOLS.get(c, '?')}" for c in WALLET_CHAINS)
+    ok(f"原生 Gas 符号: {gas_labels}")
     try:
         importlib.import_module("app.services.wallet_overview")
         ok("wallet_overview 模块就绪 (GET /api/admin/wallet/overview)")
