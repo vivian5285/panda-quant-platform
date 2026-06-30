@@ -17,7 +17,7 @@ echo "=== 3. 监听端口 (80/443) ==="
 ss -tlnp | grep -E ':80 |:443 ' || echo "80/443 均未监听"
 
 echo ""
-echo "=== 4. 站点配置 ==="
+echo "=== 4. 站点配置（共存：twinstar 与币安/深币分开）==="
 echo "nginx.conf include 规则:"
 grep -E 'include.*conf\.d|include.*sites-enabled' /etc/nginx/nginx.conf 2>/dev/null || true
 echo "conf.d:"

@@ -76,26 +76,29 @@ verify_nginx_listeners() {
 
 deploy_nginx() {
   local template=$1
-  mkdir -p /var/www/certbot /etc/nginx/snippets /etc/nginx/conf.d
-  cp "${APP_DIR}/deploy/nginx-twinstar-locations.conf" /etc/nginx/snippets/twinstar-locations.conf
+  mkdir -p /var/www/certbot /etc/nginx/conf.d
   local confd="/etc/nginx/conf.d/twinstar-https.conf"
-  sed "s/twinstar.pro/${DOMAIN}/g; s/187.77.130.144/${VPS_IP}/g" \
-    "${APP_DIR}/deploy/${template}" > "${confd}"
-  rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/twinstar.conf \
-    /etc/nginx/sites-enabled/twinstar.pro /etc/nginx/sites-available/twinstar.conf
-  if [ -f /etc/nginx/conf.d/default.conf ]; then
-    mv /etc/nginx/conf.d/default.conf "/etc/nginx/conf.d/default.conf.bak.$(date +%s)" 2>/dev/null || true
+  if [ "$template" = "nginx-twinstar.pro.ssl.conf" ] || [ "$template" = "nginx-twinstar-https-only.conf" ]; then
+    sed "s/twinstar.pro/${DOMAIN}/g; s/187.77.130.144/${VPS_IP}/g" \
+      "${APP_DIR}/deploy/nginx-twinstar-https-only.conf" > "${confd}"
+  else
+    mkdir -p /etc/nginx/snippets
+    cp "${APP_DIR}/deploy/nginx-twinstar-locations.conf" /etc/nginx/snippets/twinstar-locations.conf
+    sed "s/twinstar.pro/${DOMAIN}/g; s/187.77.130.144/${VPS_IP}/g" \
+      "${APP_DIR}/deploy/${template}" > "${confd}"
   fi
+  rm -f /etc/nginx/sites-enabled/twinstar.conf /etc/nginx/sites-enabled/twinstar.pro \
+    /etc/nginx/sites-available/twinstar.conf /etc/nginx/sites-available/twinstar.pro
   if ! grep -qE 'conf\.d/\*\.conf|conf\.d/' /etc/nginx/nginx.conf 2>/dev/null; then
     cp /etc/nginx/nginx.conf "/etc/nginx/nginx.conf.bak.$(date +%s)"
     sed -i '/^http {/a \    include /etc/nginx/conf.d/*.conf;' /etc/nginx/nginx.conf
   fi
-  echo ">>> 已写入 ${confd}"
-  grep -E 'include.*conf\.d|include.*sites-enabled' /etc/nginx/nginx.conf || true
+  echo ">>> 已新增 ${confd}（不修改币安/深币现有配置）"
   ls -la /etc/nginx/conf.d/ 2>/dev/null || true
+  ls -la /etc/nginx/sites-enabled/ 2>/dev/null || true
   nginx -t
   systemctl enable nginx
-  systemctl restart nginx
+  systemctl reload nginx
   sleep 1
   verify_nginx_listeners || {
     echo "[FAIL] Nginx 未能监听 443"
