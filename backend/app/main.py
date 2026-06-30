@@ -19,6 +19,30 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+def _cors_origins() -> list[str]:
+    """Allow configured frontend URL plus http/https + www variants for the platform domain."""
+    origins = [
+        settings.FRONTEND_URL,
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:6080",
+        "http://127.0.0.1:6080",
+    ]
+    domain = getattr(settings, "PLATFORM_DOMAIN", "") or ""
+    if domain:
+        for scheme in ("https", "http"):
+            origins.append(f"{scheme}://{domain}")
+            origins.append(f"{scheme}://www.{domain}")
+    # De-dupe while preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for o in origins:
+        if o and o not in seen:
+            seen.add(o)
+            out.append(o)
+    return out
+
+
 def _ensure_sqlite_columns():
     """SQLite 无自动迁移：为已有表补列。"""
     if not settings.DATABASE_URL.startswith("sqlite"):
@@ -222,13 +246,7 @@ if settings.PRODUCTION_STRICT:
 app.add_middleware(LocaleMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        settings.FRONTEND_URL,
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:6080",
-        "http://127.0.0.1:6080",
-    ],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
