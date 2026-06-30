@@ -20,7 +20,17 @@ echo ""
 echo "=== 4. 站点配置 ==="
 echo "sites-enabled:"
 ls -la /etc/nginx/sites-enabled/ 2>/dev/null || true
-echo "--- listen / ssl ---"
+SITE_FILE="/etc/nginx/sites-available/${DOMAIN}"
+if [ -f "$SITE_FILE" ]; then
+  echo "--- ${SITE_FILE} ($(wc -l < "$SITE_FILE") 行) ---"
+  grep -n 'listen\|server_name\|ssl_certificate' "$SITE_FILE" || true
+  if ! grep -q 'listen 443' "$SITE_FILE"; then
+    echo "[!!] 配置文件里没有 listen 443 — 这就是 HTTPS 不工作的原因"
+  fi
+else
+  echo "[!!] 不存在: $SITE_FILE"
+fi
+echo "--- nginx -T (listen / ssl) ---"
 nginx -T 2>/dev/null | grep -E '^\s*listen|server_name|ssl_certificate' || true
 
 echo ""
