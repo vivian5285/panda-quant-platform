@@ -104,7 +104,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           <Shield size={14} />
           <span>{t('admin.consoleBadge')}</span>
         </div>
-        <div className="animate-in app-content">{children}</div>
+        <div className="animate-in app-content" key={locale}>{children}</div>
       </main>
       <ToastHost />
     </div>

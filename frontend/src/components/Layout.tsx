@@ -100,7 +100,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <span>{t('scope.userAccount')}</span>
           {uid && <span className="user-scope-uid">UID {uid}</span>}
         </div>
-        <div className="animate-in app-content">{children}</div>
+        <div className="animate-in app-content" key={locale}>{children}</div>
       </main>
       <ToastHost />
     </div>

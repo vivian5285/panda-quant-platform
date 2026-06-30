@@ -51,6 +51,14 @@ export const useI18n = create<I18nState>((set, get) => ({
   },
 }))
 
+/** Prefer this over `useI18n(s => s.t)` — subscribes to locale so UI re-renders on language switch */
+export function useTranslation() {
+  const locale = useI18n(s => s.locale)
+  const t = useI18n(s => s.t)
+  const setLocale = useI18n(s => s.setLocale)
+  return { t, locale, setLocale }
+}
+
 export function initI18n() {
   const locale = detectLocale()
   syncDocumentMeta(locale)

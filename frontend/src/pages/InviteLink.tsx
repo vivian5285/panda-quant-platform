@@ -6,12 +6,12 @@ import PageHeader from '../components/PageHeader'
 import GlassCard from '../components/GlassCard'
 import InviteSharePanel from '../components/InviteSharePanel'
 import { referralApi } from '../api'
-import { useI18n } from '../i18n'
+import { useTranslation } from '../i18n'
 import { generateInvitePoster, downloadPoster, type PosterTheme } from '../utils/invitePoster'
 import { displayReferralCode } from '../utils/referralCode'
 
 export default function InviteLink() {
-  const t = useI18n(s => s.t)
+  const { t } = useTranslation()
   const [data, setData] = useState<any>(null)
   const [copied, setCopied] = useState('')
   const [posterUrl, setPosterUrl] = useState('')

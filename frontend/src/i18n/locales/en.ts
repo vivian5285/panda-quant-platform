@@ -680,6 +680,7 @@ export default {
     signalTemplates: "TV Alert Templates",
     signalHistory: "Signal Dispatch Log",
     testSend: "Test Send",
+    testSent: "Test signal sent",
     newTemplate: "New Template",
     editTemplate: "Edit Template",
     templateName: "Template Name",

@@ -9,7 +9,7 @@ import GlassCard from '../components/GlassCard'
 import PageHeader from '../components/PageHeader'
 import FramerBrand from '../components/FramerBrand'
 import { useAuth } from '../store/auth'
-import { useI18n } from '../i18n'
+import { useTranslation } from '../i18n'
 
 const HOSTING_STEPS = ['s1', 's2', 's3', 's4'] as const
 const LOGIC_ITEMS = ['signal', 'risk', 'execute', 'audit'] as const
@@ -17,7 +17,7 @@ const PHILOSOPHY_ITEMS = ['discipline', 'trend', 'nonCustodial', 'transparent'] 
 const PARTNER_STEPS = ['p1', 'p2', 'p3'] as const
 
 function GuideFooter() {
-  const t = useI18n(s => s.t)
+  const { t } = useTranslation()
   return (
     <footer className="framer-legal-footer platform-guide-public-footer">
       <FramerBrand />
@@ -32,7 +32,7 @@ function GuideFooter() {
 }
 
 function GuideContent() {
-  const t = useI18n(s => s.t)
+  const { t } = useTranslation()
 
   return (
     <div className="platform-guide">

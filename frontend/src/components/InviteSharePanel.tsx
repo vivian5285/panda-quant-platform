@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import QRCode from 'qrcode'
 import { Copy, Check, Link2, Image, Download, Share2, QrCode, Moon, Sun } from 'lucide-react'
-import { useI18n } from '../i18n'
+import { useTranslation } from '../i18n'
 import GlassCard from './GlassCard'
 import { displayReferralCode } from '../utils/referralCode'
 import type { PosterTheme } from '../utils/invitePoster'
@@ -42,7 +42,7 @@ export default function InviteSharePanel({
   onDownloadPoster,
   onClosePoster,
 }: Props) {
-  const t = useI18n(s => s.t)
+  const { t } = useTranslation()
   const [qrUrl, setQrUrl] = useState('')
   const displayCode = displayReferralCode(data?.referral_code)
 
