@@ -1185,11 +1185,11 @@ export default {
         },
         rights: {
           title: "6. 您的权利",
-          body: "您可申请查阅、更正或删除账户信息（法律要求保留的交易/结算记录除外）。注销账户请联系 support@gemini-quant.com。"
+          body: "您可申请查阅、更正或删除账户信息（法律要求保留的交易/结算记录除外）。注销账户请联系 support@twinstar.pro。"
         },
         contact: {
           title: "7. 联系我们",
-          body: "隐私相关问题请发送邮件至 privacy@gemini-quant.com。我们将在合理时间内回复。"
+          body: "隐私相关问题请发送邮件至 privacy@twinstar.pro。我们将在合理时间内回复。"
         }
       }
     },
@@ -1269,7 +1269,7 @@ export default {
     support: "工单支持",
     supportDesc: "提交问题，团队 24h 内响应。",
     contact: "联系我们",
-    contactDesc: "support@gemini-quant.com",
+    contactDesc: "support@twinstar.pro",
     transparencyTitle: "透明与可控",
     transparencyItems: {
       howTrade: { title: "平台如何为我交易？", desc: "绑定 API 后，GEMINI AI 在您的账户内按高置信度信号自动执行合约订单。资金始终在您的交易所账户，平台不托管。" },

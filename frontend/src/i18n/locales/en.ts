@@ -1184,11 +1184,11 @@ export default {
         },
         rights: {
           title: "6. Your Rights",
-          body: "You may request access, correction, or deletion of account data (except records we must retain by law). Contact support@gemini-quant.com to close an account."
+          body: "You may request access, correction, or deletion of account data (except records we must retain by law). Contact support@twinstar.pro to close an account."
         },
         contact: {
           title: "7. Contact",
-          body: "Privacy inquiries: privacy@gemini-quant.com. We respond within a reasonable timeframe."
+          body: "Privacy inquiries: privacy@twinstar.pro. We respond within a reasonable timeframe."
         }
       }
     },
@@ -1268,7 +1268,7 @@ export default {
     support: "Support Tickets",
     supportDesc: "Submit issues — 24h response.",
     contact: "Contact",
-    contactDesc: "support@gemini-quant.com",
+    contactDesc: "support@twinstar.pro",
     transparencyTitle: "Transparency & Control",
     transparencyItems: {
       howTrade: { title: "How does the platform trade for me?", desc: "After API binding, GEMINI AI executes futures orders in your account on high-confidence signals. Funds stay on your exchange — non-custodial." },

@@ -37,7 +37,7 @@ export default {
       loading: '加载演示…',
     },
     toolbar: {
-      site: 'gemini-quant.app',
+      site: 'twinstar.pro',
       branch: 'GEMINI AI',
       invite: 'API 密钥',
       publish: '实时交易',

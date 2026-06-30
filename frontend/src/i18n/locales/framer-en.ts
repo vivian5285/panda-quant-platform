@@ -37,7 +37,7 @@ export default {
       loading: 'Loading demo…',
     },
     toolbar: {
-      site: 'gemini-quant.app',
+      site: 'twinstar.pro',
       branch: 'GEMINI AI',
       invite: 'API Keys',
       publish: 'Live Trading',

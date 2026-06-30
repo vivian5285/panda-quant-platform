@@ -8,7 +8,7 @@ import { useAuth } from '../store/auth'
 import { useI18n } from '../i18n'
 import { BookOpen, Mail, MessageSquare, ShieldCheck } from 'lucide-react'
 
-const SUPPORT_EMAIL = 'support@gemini-quant.com'
+import { SUPPORT_EMAIL } from '../config/site'
 
 function HelpContent() {
   const t = useI18n(s => s.t)

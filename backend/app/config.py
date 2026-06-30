@@ -11,7 +11,10 @@ class Settings(BaseSettings):
     WEBHOOK_RATE_LIMIT_PER_MIN: int = 120
     WEBHOOK_IDEMPOTENCY_TTL_SEC: int = 120
     PRODUCTION_STRICT: bool = False
-    ADMIN_EMAIL: str = "admin@pandaquant.com"
+    PLATFORM_DOMAIN: str = "twinstar.pro"
+    ADMIN_EMAIL: str = "admin@twinstar.pro"
+    SUPPORT_EMAIL: str = "support@twinstar.pro"
+    PRIVACY_EMAIL: str = "privacy@twinstar.pro"
     ADMIN_PASSWORD: str = "admin123456"
     PLATFORM_FEE_RATE: float = 0.25
     REFERRAL_L1_RATE: float = 0.10
@@ -75,7 +78,7 @@ class Settings(BaseSettings):
     SMTP_TLS: bool = True
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
-    SMTP_FROM: str = "noreply@pandaquant.com"
+    SMTP_FROM: str = "noreply@twinstar.pro"
 
     class Config:
         env_file = ".env"

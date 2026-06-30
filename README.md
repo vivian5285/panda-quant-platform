@@ -328,7 +328,7 @@ TRON_API_KEY=可选
 默认管理员（首次启动自动创建）：
 
 ```
-邮箱: admin@pandaquant.com
+邮箱: admin@twinstar.pro
 密码: 见 backend/.env → ADMIN_PASSWORD（部署前必须修改）
 ```
 
