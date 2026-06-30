@@ -140,6 +140,11 @@ export const referralApi = {
   settlements: () => api.get('/settlements').then(r => r.data),
   tree: () => api.get('/referrals/tree').then(r => r.data),
   settlementPdf: (id: number) => api.get(`/settlements/${id}/pdf`, { responseType: 'blob' }).then(r => r.data),
+  downlineAccount: (userId: number) => api.get(`/referrals/downline/${userId}/account`).then(r => r.data),
+  downlineLogs: (userId: number, params?: LogQueryParams) =>
+    api.get(`/referrals/downline/${userId}/logs`, { params }).then(r => r.data),
+  downlineTrades: (userId: number, params?: TradeQueryParams) =>
+    api.get(`/referrals/downline/${userId}/trades`, { params }).then(r => r.data),
 }
 
 export const walletApi = {

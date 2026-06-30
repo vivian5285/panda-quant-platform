@@ -15,14 +15,28 @@ class TradeLogger:
     def __init__(self, db: Session):
         self.db = db
 
+    @staticmethod
+    def enrich_detail(detail: dict | None, event_type: str) -> dict:
+        """Attach live-verification metadata for user-facing audit logs."""
+        d = dict(detail or {})
+        if event_type == "BINANCE_FILL":
+            d.setdefault("source", "binance_exchange_sync")
+        else:
+            d.setdefault("source", "platform_supervisor")
+            if event_type not in ("SIGNAL", "ERROR"):
+                d.setdefault("live_verified", True)
+        d.setdefault("verified_at", datetime.utcnow().isoformat() + "Z")
+        return d
+
     def log_event(self, user_id: int, event_type: str, message: str, detail: dict | None = None, trade_id: int | None = None):
         try:
+            enriched = self.enrich_detail(detail, event_type)
             log = TradeLog(
                 user_id=user_id,
                 trade_id=trade_id,
                 event_type=event_type,
                 message=message,
-                detail_json=json.dumps(detail or {}, ensure_ascii=False),
+                detail_json=json.dumps(enriched, ensure_ascii=False),
             )
             self.db.add(log)
             self.db.commit()

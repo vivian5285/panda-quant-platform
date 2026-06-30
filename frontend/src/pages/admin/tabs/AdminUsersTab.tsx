@@ -1,6 +1,7 @@
 import StatCard from '../../../components/StatCard'
 import GlassCard from '../../../components/GlassCard'
 import TabBar from '../../../components/TabBar'
+import TradeLogDetailPanel from '../../../components/TradeLogDetailPanel'
 import { adminApi } from '../../../api'
 import { toast } from '../../../store/toast'
 import { localeDate } from '../../../i18n'
@@ -151,10 +152,13 @@ export default function AdminUsersTab() {
             </div>
             <div className="log-list-stack">
               {userLogs.map((log: any) => (
-                <GlassCard key={log.id} className="p-4">
-                  <span className="badge badge-gray badge-spaced">{log.event_type}</span>
-                  <span className="text-sm">{log.message}</span>
-                  <p className="text-muted text-xs mt-xs">{localeDate(log.created_at, locale)}</p>
+                <GlassCard key={log.id} className="p-4 trade-log-card">
+                  <div className="trade-log-card-head-static">
+                    <span className="badge badge-gray badge-spaced">{log.event_type}</span>
+                    <span className="text-sm">{log.message}</span>
+                    <p className="text-muted text-xs mt-xs">{localeDate(log.created_at, locale)}</p>
+                  </div>
+                  <TradeLogDetailPanel log={log} compact />
                 </GlassCard>
               ))}
             </div>

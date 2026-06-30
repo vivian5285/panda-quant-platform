@@ -304,7 +304,8 @@ def get_user_logs(
         sync_user_binance_fills(db, user)
     q = db.query(TradeLog).filter(TradeLog.user_id == user.id)
     q = apply_log_date_filter(q, parse_date_param(start), parse_date_param(end), TradeLog)
-    return q.order_by(TradeLog.created_at.desc()).offset(offset).limit(min(limit, 500)).all()
+    rows = q.order_by(TradeLog.created_at.desc()).offset(offset).limit(min(limit, 500)).all()
+    return [TradeLogOut.model_validate(r) for r in rows]
 
 
 @router.get("/users/{user_id}/principal-history", response_model=list[PrincipalSnapshotOut])

@@ -191,6 +191,15 @@ class BinanceClient:
             logger.error(f"[User {self.user_id}] stop order failed: {e} stop={stop_price}")
             return None
 
+    def cancel_order(self, symbol: str, order_id: int) -> bool:
+        try:
+            self.client.futures_cancel_order(symbol=symbol, orderId=int(order_id))
+            logger.info(f"[User {self.user_id}] cancel order {order_id}")
+            return True
+        except Exception as e:
+            logger.warning(f"[User {self.user_id}] cancel order {order_id} failed: {e}")
+            return False
+
     def cancel_all_open_orders(self, symbol="ETHUSDT"):
         try:
             self.client.futures_cancel_all_open_orders(symbol=symbol)

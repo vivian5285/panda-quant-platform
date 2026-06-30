@@ -192,18 +192,28 @@ def all_trade_logs(
     if user_id:
         q = q.filter(TradeLog.user_id == user_id)
     rows = q.order_by(TradeLog.created_at.desc()).limit(min(limit, 500)).all()
-    return [{
-        "id": log.id,
-        "user_id": log.user_id,
-        "user_uid": u.uid,
-        "user_email": u.email or "",
-        "user_nickname": u.nickname or "",
-        "event_type": log.event_type,
-        "message": log.message,
-        "trade_id": log.trade_id,
-        "detail_json": log.detail_json,
-        "created_at": log.created_at.isoformat() if log.created_at else None,
-    } for log, u in rows]
+    out = []
+    for log, u in rows:
+        detail = None
+        if log.detail_json:
+            try:
+                detail = json.loads(log.detail_json)
+            except Exception:
+                detail = {}
+        out.append({
+            "id": log.id,
+            "user_id": log.user_id,
+            "user_uid": u.uid,
+            "user_email": u.email or "",
+            "user_nickname": u.nickname or "",
+            "event_type": log.event_type,
+            "message": log.message,
+            "trade_id": log.trade_id,
+            "detail_json": log.detail_json,
+            "detail": detail,
+            "created_at": log.created_at.isoformat() if log.created_at else None,
+        })
+    return out
 
 
 @router.get("/online")

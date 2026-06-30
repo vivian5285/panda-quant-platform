@@ -35,7 +35,7 @@ def notify_admin(
     message: str,
     detail: dict | None = None,
 ) -> None:
-    """用户账户状态仅写入 TradeLog（由 TradeLogger 负责），不推送钉钉、不入 admin_alerts。"""
+    """用户实盘事件写 TradeLog（PositionSupervisor._log）；钉钉仅抄送关键动作给管理员。"""
     log_line = f"[UserEvent][{alert_type}] user={user_id} {title}: {message}"
     if severity == "critical":
         logger.warning(log_line)
@@ -45,6 +45,33 @@ def notify_admin(
         logger.info(log_line)
     if detail:
         logger.debug("[UserEvent][%s] detail=%s", alert_type, detail)
+
+    try:
+        from app.services.trading_alerts import push_trading_alert, should_push_trading_dingtalk
+        from app.database import SessionLocal
+        from app.models import User
+
+        if not should_push_trading_dingtalk(alert_type, severity):
+            return
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == user_id).first()
+            uid = (user.uid if user else None) or str(user_id)
+            display = (user.nickname or user.email or f"User {user_id}") if user else f"User {user_id}"
+        finally:
+            db.close()
+        push_trading_alert(
+            user_id,
+            uid,
+            display,
+            alert_type,
+            severity,
+            title,
+            message,
+            detail,
+        )
+    except Exception as e:
+        logger.warning("Trading DingTalk push skipped: %s", e)
 
 
 def notify_system(

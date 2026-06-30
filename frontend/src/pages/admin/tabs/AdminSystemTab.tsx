@@ -1,5 +1,8 @@
+import { Fragment, useState } from 'react'
+import { ChevronDown, ChevronUp } from 'lucide-react'
 import StatCard from '../../../components/StatCard'
 import GlassCard from '../../../components/GlassCard'
+import TradeLogDetailPanel, { resolveDetail } from '../../../components/TradeLogDetailPanel'
 import { localeDate } from '../../../i18n'
 import { useAdmin } from '../AdminContext'
 
@@ -11,6 +14,7 @@ export default function AdminSystemTab() {
     dingtalkSettings, dingtalkDraft, setDingtalkDraft, saveDingtalkSettings,
     adminPwdDraft, setAdminPwdDraft, changeAdminPassword,
   } = useAdmin()
+  const [expandedLog, setExpandedLog] = useState<number | null>(null)
 
   const audits = startupAudit?.audits || []
   const failures = startupAudit?.failures || []
@@ -193,18 +197,39 @@ export default function AdminSystemTab() {
             <tr>
               <th>{t('common.time')}</th><th>{t('admin.cols.owner')}</th><th>{t('admin.cols.type')}</th>
               <th>{t('admin.cols.detail')}</th>
+              <th />
             </tr>
           </thead>
           <tbody>
-            {tradeLogs.length === 0 && <tr><td colSpan={4} className="empty-cell">{t('common.noData')}</td></tr>}
-            {tradeLogs.slice(0, 50).map((l: any) => (
-              <tr key={l.id}>
-                <td className="text-xs">{localeDate(l.created_at, locale)}</td>
-                <td>{l.user_uid || `#${l.user_id}`}</td>
-                <td><span className="badge badge-gray">{l.event_type}</span></td>
-                <td className="text-sm cell-max-md">{l.message}</td>
-              </tr>
-            ))}
+            {tradeLogs.length === 0 && <tr><td colSpan={5} className="empty-cell">{t('common.noData')}</td></tr>}
+            {tradeLogs.slice(0, 50).map((l: any) => {
+              const d = resolveDetail(l)
+              const isOpen = expandedLog === l.id
+              const verified = d.live_verified === true
+              return (
+                <Fragment key={l.id}>
+                  <tr className="trades-row" onClick={() => setExpandedLog(isOpen ? null : l.id)}>
+                    <td className="text-xs">{localeDate(l.created_at, locale)}</td>
+                    <td>{l.user_uid || `#${l.user_id}`}</td>
+                    <td>
+                      <span className={`badge ${verified ? 'badge-green' : 'badge-gray'}`}>{l.event_type}</span>
+                    </td>
+                    <td className="text-sm cell-max-md">{l.message}</td>
+                    <td className="trades-expand-icon">{isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</td>
+                  </tr>
+                  {isOpen && (
+                    <tr className="trades-detail-row">
+                      <td colSpan={5}>
+                        <div className="trades-detail-panel">
+                          <p><strong>{t('tradeLog.logDetail')}</strong></p>
+                          <TradeLogDetailPanel log={l} />
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
           </tbody>
         </table>
       </GlassCard>

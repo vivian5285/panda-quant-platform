@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models.platform import SignalDispatchLog, TvSignalTemplate
+from app.core.symbol_precision import normalize_entry_payload
 from app.services.dispatch_persistence import finalize_dispatch_log, save_dispatch_user_results
 
 
@@ -17,7 +18,9 @@ DEFAULT_TEMPLATE = {
     "regime": 1,
     "atr": 12.5,
     "price": 3500,
-    "tps": [3600, 3700, 3800],
+    "tv_tp1": 3600,
+    "tv_tp2": 3700,
+    "tv_tp3": 3800,
     "reason": "AI high confidence",
 }
 

@@ -6,6 +6,7 @@ import PageHeader from '../components/PageHeader'
 import GlassCard from '../components/GlassCard'
 import RippleButton from '../components/ui/RippleButton'
 import TabBar from '../components/TabBar'
+import TradeLogDetailPanel, { resolveDetail } from '../components/TradeLogDetailPanel'
 import { userApi, type LogQueryParams, type TradeQueryParams } from '../api'
 import { useI18n, localeDate } from '../i18n'
 import { downloadCsv } from '../utils/exportCsv'
@@ -33,6 +34,7 @@ type LogRow = {
   event_type?: string
   message?: string
   detail_json?: string
+  detail?: Record<string, unknown>
   trade_id?: number
   created_at: string
 }
@@ -80,6 +82,7 @@ export default function Trades() {
   const [dateTo, setDateTo] = useState('')
   const [regimeFilter, setRegimeFilter] = useState('all')
   const [expanded, setExpanded] = useState<number | null>(null)
+  const [expandedLog, setExpandedLog] = useState<number | null>(null)
   const [syncing, setSyncing] = useState(false)
   const [page, setPage] = useState(0)
   const PAGE_SIZE = 30
@@ -408,23 +411,43 @@ export default function Trades() {
                 <th>{t('trades.qty')}</th>
                 <th>{t('trades.avgPrice')}</th>
                 <th>{t('trades.pnl')}</th>
+                <th />
               </tr>
             </thead>
             <tbody>
               {displayLogs.length === 0 ? (
-                <tr><td colSpan={7} className="empty-cell">{t('trades.logsEmpty')}</td></tr>
+                <tr><td colSpan={8} className="empty-cell">{t('trades.logsEmpty')}</td></tr>
               ) : displayLogs.map(l => {
-                const d = parseDetail(l.detail_json)
+                const d = resolveDetail(l)
+                const isOpen = expandedLog === l.id
+                const verified = d.live_verified === true
                 return (
-                  <tr key={l.id}>
-                    <td>{localeDate(l.created_at, locale)}</td>
-                    <td><span className={`badge ${l.event_type === 'BINANCE_FILL' ? 'badge-green' : 'badge-gray'}`}>{l.event_type}</span></td>
-                    <td className="trades-log-msg">{l.message}</td>
-                    <td>{String(d.side ?? '—')}</td>
-                    <td>{d.qty != null ? String(d.qty) : '—'}</td>
-                    <td>{d.price != null ? `$${Number(d.price).toFixed(2)}` : '—'}</td>
-                    <td>{d.realized_pnl != null ? `$${Number(d.realized_pnl).toFixed(4)}` : '—'}</td>
-                  </tr>
+                  <Fragment key={l.id}>
+                    <tr className="trades-row" onClick={() => setExpandedLog(isOpen ? null : l.id)}>
+                      <td>{localeDate(l.created_at, locale)}</td>
+                      <td>
+                        <span className={`badge ${l.event_type === 'BINANCE_FILL' ? 'badge-green' : verified ? 'badge-green' : 'badge-gray'}`}>
+                          {l.event_type}
+                        </span>
+                      </td>
+                      <td className="trades-log-msg">{l.message}</td>
+                      <td>{String(d.side ?? '—')}</td>
+                      <td>{d.qty != null ? String(d.qty) : '—'}</td>
+                      <td>{d.price != null || d.entry != null ? `$${Number(d.price ?? d.entry).toFixed(2)}` : '—'}</td>
+                      <td>{d.realized_pnl != null || d.pnl != null ? `$${Number(d.realized_pnl ?? d.pnl).toFixed(4)}` : '—'}</td>
+                      <td className="trades-expand-icon">{isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</td>
+                    </tr>
+                    {isOpen && (
+                      <tr className="trades-detail-row">
+                        <td colSpan={8}>
+                          <div className="trades-detail-panel">
+                            <p><strong>{t('tradeLog.logDetail')}</strong></p>
+                            <TradeLogDetailPanel log={l} />
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 )
               })}
             </tbody>

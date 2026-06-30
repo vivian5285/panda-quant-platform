@@ -7,11 +7,16 @@ from typing import Callable, Optional
 
 from app.core.binance_client import BinanceClient
 from app.core.position_manager import PositionManager
-from app.core.symbol_precision import normalize_tv_targets, round_price, round_quantity
+from app.core.symbol_precision import normalize_tv_targets, round_price, round_quantity, PRICE_TICK
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+MIN_SL_MOVE = float(PRICE_TICK)  # ETHUSDT tick 0.01 — minimum SL trail step
+TP_RETRY_MAX = 3
+TP_RETRY_DELAY = 0.8  # seconds; multiplied by attempt index
+CANCEL_VERIFY_ROUNDS = 5
+HEAL_PLACE_ROUNDS = 2
 
 
 class PositionSupervisor:
@@ -65,6 +70,7 @@ class PositionSupervisor:
         self.tv_tps = [0.0, 0.0, 0.0]
         self.current_trade_id = None
         self.risk_multiplier = 1.0
+        self.consumed_tp_levels: list[int] = []
 
         os.makedirs("state", exist_ok=True)
         self.state_file = f"state/user_{user_id}.json"
@@ -90,6 +96,7 @@ class PositionSupervisor:
                     "current_atr": self.current_atr,
                     "monitoring": self.monitoring,
                     "tv_tps": self.tv_tps,
+                    "consumed_tp_levels": self.consumed_tp_levels,
                 }, f)
         except Exception as e:
             logger.error(f"[User {self.user_id}] save state failed: {e}")
@@ -109,6 +116,9 @@ class PositionSupervisor:
                     self.current_atr = float(s.get("current_atr", 30) or 30)
                     self.monitoring = bool(s.get("monitoring", False))
                     self.tv_tps = normalize_tv_targets(s.get("tv_tps", [0.0, 0.0, 0.0]))
+                    self.consumed_tp_levels = [
+                        int(x) for x in (s.get("consumed_tp_levels") or []) if int(x) in (1, 2, 3)
+                    ]
         except Exception as e:
             logger.error(f"[User {self.user_id}] load state failed: {e}")
 
@@ -131,7 +141,9 @@ class PositionSupervisor:
         if not raw_action:
             return {"status": "skipped", "reason": "empty_action"}
         if not self._lock.acquire(timeout=10.0):
-            self._alert("warning", "LOCK_TIMEOUT", "信号处理超时", f"用户 {self.user_id} 锁等待超时，信号被丢弃")
+            lock_detail = {"action": raw_action, "reason": "lock_timeout"}
+            self._log("LOCK_TIMEOUT", f"信号处理超时，丢弃 [{raw_action}]", lock_detail)
+            self._alert("warning", "LOCK_TIMEOUT", "信号处理超时", f"用户 {self.user_id} 锁等待超时，信号被丢弃", lock_detail)
             return {"status": "skipped", "reason": "lock_timeout"}
 
         try:
@@ -195,6 +207,7 @@ class PositionSupervisor:
             real_qty = abs(float(pos["positionAmt"]))
             entry_price = float(pos["entryPrice"])
             self.initial_qty = real_qty
+            self.consumed_tp_levels = []
             self.current_trade_id = self.on_trade_open(
                 self.user_id, action, real_qty, entry_price, self.regime, self.tv_tps
             )
@@ -230,28 +243,604 @@ class PositionSupervisor:
             }
         return {"status": "error", "reason": "open_failed", "message": "下单后未检测到持仓"}
 
-    def _protect_and_monitor(self, qty: float, entry_price: float):
-        close_side = "SHORT" if self.current_side == "LONG" else "LONG"
+    def _close_order_side(self) -> str:
+        """Binance order side to flatten current position."""
+        return "SELL" if self.current_side == "LONG" else "BUY"
+
+    def _compute_tp_slices(
+        self, qty: float, exclude_levels: set[int] | None = None
+    ) -> list[tuple[int, float, float]]:
+        """按 regime 比例为当前头寸切 TP 份；已成交档位跳过并重归一化剩余比例。"""
+        exclude_levels = exclude_levels or set()
         ratios = self.regime_settings[self.regime]["ratios"]
-        qty1 = round_quantity(qty * ratios[0])
-        qty2 = round_quantity(qty * ratios[1])
-        qty3 = round_quantity(qty - qty1 - qty2)
-        tp_pxs = self.tv_tps
+        active: list[tuple[int, float, float]] = []
+        for i, ratio in enumerate(ratios):
+            level = i + 1
+            price = self.tv_tps[i]
+            if level in exclude_levels or price <= 0:
+                continue
+            active.append((level, ratio, price))
+        if not active or qty <= 0:
+            return []
+
+        total_ratio = sum(r for _, r, _ in active)
+        slices: list[tuple[int, float, float]] = []
+        allocated = 0.0
+        for idx, (level, ratio, price) in enumerate(active):
+            if idx == len(active) - 1:
+                part_qty = round_quantity(qty - allocated)
+            else:
+                part_qty = round_quantity(qty * (ratio / total_ratio))
+                allocated += part_qty
+            if part_qty > 0:
+                slices.append((level, part_qty, price))
+        return slices
+
+    def _infer_filled_tp_levels(self, qty: float, curr_px: float) -> set[int]:
+        """推断已成交 TP 档位（state 记录 + 价格越过且无挂单）。"""
+        filled = set(self.consumed_tp_levels or [])
+        if curr_px <= 0:
+            return filled
+
+        probe = self._compute_tp_slices(qty, exclude_levels=set())
+        scan = self._scan_open_defenses(probe, None)
+        open_levels = {m["level"] for m in scan.get("matched_tps", [])}
+
+        for level, _slice_qty, price in probe:
+            if level in filled or level in open_levels or price <= 0:
+                continue
+            crossed = (
+                (self.current_side == "LONG" and curr_px >= price)
+                or (self.current_side == "SHORT" and curr_px <= price)
+            )
+            if crossed:
+                filled.add(level)
+        return filled
+
+    def _active_tp_exclude_levels(self, qty: float, curr_px: float) -> set[int]:
+        return self._infer_filled_tp_levels(qty, curr_px)
+
+    def _classify_qty_change(self, old_qty: float, new_qty: float) -> str:
+        if new_qty <= 0:
+            return "full_close"
+        if new_qty > old_qty + 0.001:
+            return "manual_add"
+        reduced = old_qty - new_qty
+        if reduced <= 0.001:
+            return "unchanged"
+        old_slices = self._compute_tp_slices(
+            old_qty, exclude_levels=set(self.consumed_tp_levels)
+        )
+        for level, slice_qty, _ in old_slices:
+            if self._qty_matches(reduced, slice_qty):
+                if level not in self.consumed_tp_levels:
+                    self.consumed_tp_levels.append(level)
+                return f"tp{level}_filled"
+        return "manual_reduce"
+
+    def _reconcile_radar_context(self, recovery: dict | None) -> dict:
+        """重启：开仓日志 + 最新 TV + DB 交易 三方核实雷达参数。"""
+        report: dict = {"sources": [], "warnings": list(recovery.get("checks") or []) if recovery else []}
+        if not recovery:
+            return report
+
+        trade = recovery.get("trade") or {}
+        open_log = recovery.get("open_log") or {}
+        latest_tv = recovery.get("latest_tv") or {}
+
+        if trade:
+            report["sources"].append("db_trade")
+            if not any(self.tv_tps) and trade.get("tv_tps"):
+                self.tv_tps = normalize_tv_targets(trade["tv_tps"])
+            if trade.get("regime"):
+                self.regime = int(trade["regime"])
+            if trade.get("side") and not self.last_tv_side:
+                self.last_tv_side = trade["side"]
+
+        if open_log:
+            report["sources"].append("open_log")
+            report["open_log_side"] = open_log.get("side")
+            report["open_log_qty"] = open_log.get("qty")
+            report["open_log_entry"] = open_log.get("entry")
+            if open_log.get("tv_tps"):
+                self.tv_tps = normalize_tv_targets(open_log["tv_tps"])
+            if open_log.get("regime"):
+                self.regime = int(open_log["regime"])
+            if open_log.get("side"):
+                self.last_tv_side = open_log["side"]
+            if open_log.get("atr"):
+                self.current_atr = float(open_log["atr"])
+
+        if latest_tv:
+            report["sources"].append("latest_tv")
+            report["latest_tv_action"] = latest_tv.get("action")
+            report["latest_tv_at"] = latest_tv.get("created_at")
+            tv_action = (latest_tv.get("action") or "").upper()
+            if tv_action in ("LONG", "SHORT"):
+                self.last_tv_side = tv_action
+                if any(latest_tv.get("tv_tps") or []):
+                    self.tv_tps = normalize_tv_targets(latest_tv["tv_tps"])
+                if latest_tv.get("regime"):
+                    self.regime = int(latest_tv["regime"])
+                if latest_tv.get("atr"):
+                    self.current_atr = float(latest_tv["atr"])
+            elif tv_action.startswith("CLOSE"):
+                report["warnings"].append("tv_close_while_position")
+
+        report["last_tv_side"] = self.last_tv_side
+        report["tv_tps"] = list(self.tv_tps)
+        report["regime"] = self.regime
+        return report
+
+    def _price_matches(self, a: float, b: float) -> bool:
+        return abs(round_price(a) - round_price(b)) < MIN_SL_MOVE
+
+    def _qty_matches(self, a: float, b: float) -> bool:
+        return abs(round_quantity(a) - round_quantity(b)) < 0.0005
+
+    def _place_limit_with_retry(
+        self, close_side: str, qty: float, price: float, label: str
+    ) -> dict:
+        last_err = None
+        for attempt in range(1, TP_RETRY_MAX + 1):
+            order = self.client.place_limit_order(
+                close_side, qty, price, self.symbol, reduce_only=True
+            )
+            if order:
+                return {
+                    "ok": True,
+                    "label": label,
+                    "order_id": order.get("orderId"),
+                    "qty": round_quantity(qty),
+                    "price": round_price(price),
+                    "attempt": attempt,
+                }
+            last_err = f"{label} attempt {attempt}/{TP_RETRY_MAX} failed"
+            logger.warning(f"[User {self.user_id}] {last_err} qty={qty} price={price}")
+            if attempt < TP_RETRY_MAX:
+                time.sleep(TP_RETRY_DELAY * attempt)
+        return {
+            "ok": False,
+            "label": label,
+            "qty": round_quantity(qty),
+            "price": round_price(price),
+            "attempts": TP_RETRY_MAX,
+            "error": last_err,
+        }
+
+    def _place_stop_with_retry(self, close_side: str, stop_price: float) -> dict:
+        stop_price = round_price(stop_price)
+        last_err = None
+        for attempt in range(1, TP_RETRY_MAX + 1):
+            order = self.client.place_stop_market_order(close_side, stop_price, self.symbol)
+            if order:
+                return {
+                    "ok": True,
+                    "label": "SL",
+                    "order_id": order.get("orderId"),
+                    "stop_price": stop_price,
+                    "attempt": attempt,
+                }
+            last_err = f"SL attempt {attempt}/{TP_RETRY_MAX} failed"
+            logger.warning(f"[User {self.user_id}] {last_err} stop={stop_price}")
+            if attempt < TP_RETRY_MAX:
+                time.sleep(TP_RETRY_DELAY * attempt)
+        return {
+            "ok": False,
+            "label": "SL",
+            "stop_price": stop_price,
+            "attempts": TP_RETRY_MAX,
+            "error": last_err,
+        }
+
+    def _scan_open_defenses(
+        self,
+        slices: list[tuple[int, float, float]],
+        dynamic_sl: float | None = None,
+    ) -> dict:
+        """Compare expected TP/SL grid with Binance open orders."""
+        close_side = self._close_order_side()
+        open_orders = self.client.get_open_orders(self.symbol) or []
+
+        live_limits = []
+        live_stops = []
+        for o in open_orders:
+            otype = (o.get("type") or "").upper()
+            if otype == "LIMIT" and o.get("side") == close_side:
+                live_limits.append({
+                    "order_id": o.get("orderId"),
+                    "price": round_price(o.get("price", 0)),
+                    "qty": round_quantity(o.get("origQty", 0)),
+                })
+            elif otype in ("STOP_MARKET", "STOP") and o.get("side") == close_side:
+                live_stops.append({
+                    "order_id": o.get("orderId"),
+                    "stop_price": round_price(o.get("stopPrice", 0)),
+                })
+
+        matched_tps = []
+        missing_tps = []
+        qty_mismatch_tps = []
+        duplicate_tps = []
+        for level, qty, price in slices:
+            if qty <= 0 or price <= 0:
+                continue
+            at_price = [
+                lo for lo in live_limits
+                if self._price_matches(lo["price"], price)
+            ]
+            if len(at_price) > 1:
+                duplicate_tps.append({
+                    "level": level,
+                    "price": round_price(price),
+                    "expected_qty": qty,
+                    "orders": at_price,
+                })
+            elif len(at_price) == 1:
+                live = at_price[0]
+                if self._qty_matches(live["qty"], qty):
+                    matched_tps.append({"level": level, **live})
+                else:
+                    qty_mismatch_tps.append({
+                        "level": level,
+                        "price": round_price(price),
+                        "expected_qty": qty,
+                        "live_qty": live["qty"],
+                        "order_id": live["order_id"],
+                    })
+            else:
+                missing_tps.append({"level": level, "qty": qty, "price": round_price(price)})
+
+        sl_live = live_stops[0] if live_stops else None
+        missing_sl = False
+        if dynamic_sl and dynamic_sl > 0:
+            missing_sl = not any(
+                self._price_matches(s["stop_price"], dynamic_sl) for s in live_stops
+            )
+
+        expected_prices = {round_price(p) for _, _, p in slices if p > 0}
+        orphan_limits = [
+            lo for lo in live_limits
+            if not any(self._price_matches(lo["price"], ep) for ep in expected_prices)
+        ]
+
+        needs_rebuild = bool(qty_mismatch_tps or duplicate_tps or orphan_limits)
+        aligned = not missing_tps and not missing_sl and not needs_rebuild
+
+        return {
+            "close_side": close_side,
+            "live_limits": live_limits,
+            "live_stops": live_stops,
+            "matched_tps": matched_tps,
+            "missing_tps": missing_tps,
+            "qty_mismatch_tps": qty_mismatch_tps,
+            "duplicate_tps": duplicate_tps,
+            "orphan_limits": orphan_limits,
+            "sl_expected": round_price(dynamic_sl) if dynamic_sl else None,
+            "sl_live": sl_live,
+            "missing_sl": missing_sl,
+            "needs_rebuild": needs_rebuild,
+            "aligned": aligned,
+            "expected_tp_count": len([s for s in slices if s[1] > 0 and s[2] > 0]),
+            "matched_tp_count": len(matched_tps),
+        }
+
+    def _summarize_defense_scan(
+        self, scan: dict, slices: list[tuple[int, float, float]]
+    ) -> str:
+        """Human-readable TP alignment report (for logs / DingTalk)."""
+        parts: list[str] = []
+        matched = {m["level"]: m for m in scan.get("matched_tps", [])}
+        missing = {m["level"]: m for m in scan.get("missing_tps", [])}
+        dup_map = {d["level"]: d for d in scan.get("duplicate_tps", [])}
+        mismatch = {m["level"]: m for m in scan.get("qty_mismatch_tps", [])}
+
+        for level, qty, price in slices:
+            if qty <= 0 or price <= 0:
+                continue
+            label = f"TP{level} ({qty} @ {round_price(price)})"
+            if level in matched:
+                parts.append(f"{label} ✓")
+            elif level in dup_map:
+                n = len(dup_map[level].get("orders", []))
+                parts.append(f"{label} (duplicate ×{n})")
+            elif level in mismatch:
+                mm = mismatch[level]
+                parts.append(
+                    f"{label} (qty mismatch live={mm.get('live_qty')} want={qty})"
+                )
+            elif level in missing:
+                parts.append(f"{label} (missing)")
+            else:
+                parts.append(f"{label} (unknown)")
+
+        n_exp = scan.get("expected_tp_count", len(parts))
+        n_ok = scan.get("matched_tp_count", len(matched))
+        head = f"{n_ok}/{n_exp} TP aligned"
+        return head + " | " + "; ".join(parts) if parts else head
+
+    def _cancel_all_verified(self) -> dict:
+        """Cancel all open orders; verify empty; fallback to per-order cancel."""
+        cancelled_ids: list[int] = []
+        for round_i in range(CANCEL_VERIFY_ROUNDS):
+            open_orders = self.client.get_open_orders(self.symbol) or []
+            if not open_orders:
+                return {"ok": True, "rounds": round_i, "cancelled_ids": cancelled_ids}
+
+            self.client.cancel_all_open_orders(self.symbol)
+            time.sleep(0.4 + round_i * 0.25)
+
+            remaining = self.client.get_open_orders(self.symbol) or []
+            if not remaining:
+                return {"ok": True, "rounds": round_i + 1, "cancelled_ids": cancelled_ids}
+
+            for order in remaining:
+                oid = order.get("orderId")
+                if oid and self.client.cancel_order(self.symbol, int(oid)):
+                    cancelled_ids.append(int(oid))
+            time.sleep(0.35)
+
+        remaining = self.client.get_open_orders(self.symbol) or []
+        return {
+            "ok": not remaining,
+            "rounds": CANCEL_VERIFY_ROUNDS,
+            "remaining": len(remaining),
+            "cancelled_ids": cancelled_ids,
+        }
+
+    def _place_all_defense_orders(
+        self,
+        slices: list[tuple[int, float, float]],
+        dynamic_sl: float | None,
+    ) -> tuple[list, list]:
+        close_side = "SHORT" if self.current_side == "LONG" else "LONG"
+        placed: list = []
+        failed: list = []
+        for level, qty, price in slices:
+            if qty <= 0 or price <= 0:
+                continue
+            result = self._place_limit_with_retry(close_side, qty, price, f"TP{level}")
+            if result["ok"]:
+                placed.append(result)
+            else:
+                failed.append(result)
+        if dynamic_sl and dynamic_sl > 0:
+            sl_result = self._place_stop_with_retry(close_side, dynamic_sl)
+            if sl_result["ok"]:
+                placed.append(sl_result)
+            else:
+                failed.append(sl_result)
+        return placed, failed
+
+    def _aggressive_heal_defenses(
+        self,
+        qty: float,
+        entry: float,
+        dynamic_sl: float | None,
+        scan: dict,
+        slices: list[tuple[int, float, float]],
+        *,
+        reason: str,
+    ) -> dict:
+        """
+        智能撤销重挂：重复/缺失/比例错 → 验证清空全部挂单 → 按当前头寸全量重挂。
+        （解决重启叠单、cancel 失败只告警不修复的问题）
+        """
+        before_summary = self._summarize_defense_scan(scan, slices)
+        self._log(
+            "DEFENSE_HEAL",
+            f"🔧 [{reason}] 止盈未对齐，启动撤销重挂 | {before_summary}",
+            {"scan": scan, "slices": [(l, q, p) for l, q, p in slices], "entry": entry, "qty": qty},
+        )
+        self._alert(
+            "warning", "DEFENSE_HEAL",
+            "重启接管后限价止盈未对齐 · 执行智能撤销重挂",
+            before_summary,
+            {"scan": scan, "reason": reason},
+        )
+
+        cancel_result = self._cancel_all_verified()
+        placed: list = []
+        failed: list = []
+        post = scan
+
+        for attempt in range(HEAL_PLACE_ROUNDS):
+            if not cancel_result.get("ok"):
+                cancel_result = self._cancel_all_verified()
+            placed, failed = self._place_all_defense_orders(slices, dynamic_sl)
+            time.sleep(0.5)
+            post = self._scan_open_defenses(slices, dynamic_sl)
+            if post.get("aligned") and not failed:
+                break
+
+        after_summary = self._summarize_defense_scan(post, slices)
+        aligned = bool(post.get("aligned")) and not failed
+        detail = {
+            "entry": entry,
+            "qty": qty,
+            "regime": self.regime,
+            "tv_tps": list(self.tv_tps),
+            "reason": reason,
+            "before_summary": before_summary,
+            "after_summary": after_summary,
+            "cancel": cancel_result,
+            "placed": placed,
+            "failed": failed,
+            "live_audit": post,
+            "aligned": aligned,
+            "skipped": False,
+            "healed": True,
+        }
+
+        if aligned:
+            self._log("DEFENSE_HEAL", f"✅ 撤销重挂完成 | {after_summary}", detail)
+            self._alert("info", "DEFENSE_HEAL_OK", "限价止盈已对齐", after_summary, detail)
+        else:
+            self._log("DEFENSE_HEAL", f"❌ 撤销重挂后仍不对齐 | {after_summary}", detail)
+            self._alert(
+                "critical", "DEFENSE_HEAL_FAIL",
+                "撤销重挂后止盈仍不对齐",
+                after_summary,
+                detail,
+            )
+
+        self._save_state()
+        return detail
+
+    def _place_missing_defenses(
+        self,
+        qty: float,
+        entry: float,
+        dynamic_sl: float | None,
+        scan: dict,
+        slices: list[tuple[int, float, float]] | None = None,
+    ) -> dict:
+        """Only place TPs/SL that scan says are missing — never re-place matched levels."""
+        close_side = "SHORT" if self.current_side == "LONG" else "LONG"
+        repaired = []
+        failed = []
+
+        for item in scan.get("missing_tps", []):
+            label = f"TP{item['level']}"
+            result = self._place_limit_with_retry(
+                close_side, item["qty"], item["price"], label
+            )
+            if result["ok"]:
+                repaired.append(result)
+                self._log(
+                    "TP_RETRY",
+                    f"✅ 补挂 {label} 成功 @ {result['price']} qty={result['qty']}",
+                    result,
+                )
+            else:
+                failed.append(result)
+                self._alert(
+                    "warning", "TP_RETRY_FAIL",
+                    f"止盈补挂失败 · {label}",
+                    f"{label} @ {item['price']} qty={item['qty']} 重试 {TP_RETRY_MAX} 次仍失败",
+                    result,
+                )
+
+        if scan.get("missing_sl") and dynamic_sl:
+            sl_result = self._place_stop_with_retry(close_side, dynamic_sl)
+            if sl_result["ok"]:
+                repaired.append(sl_result)
+                self._log(
+                    "TP_RETRY",
+                    f"✅ 补挂 SL 成功 @ {sl_result['stop_price']}",
+                    sl_result,
+                )
+            else:
+                failed.append(sl_result)
+                self._alert(
+                    "warning", "SL_RETRY_FAIL",
+                    "止损补挂失败",
+                    f"SL @ {dynamic_sl} 重试 {TP_RETRY_MAX} 次仍失败",
+                    sl_result,
+                )
+
+        if slices is None:
+            slices = self._compute_tp_slices(qty)
+        post = self._scan_open_defenses(slices, dynamic_sl)
+        detail = {
+            "entry": entry,
+            "qty": qty,
+            "before": scan,
+            "after": post,
+            "repaired": repaired,
+            "failed": failed,
+            "aligned": post.get("aligned", False),
+        }
+        if repaired or failed or not scan.get("aligned"):
+            status = "一致" if post["aligned"] and not failed else "已修复" if repaired else "异常"
+            self._log(
+                "DEFENSE_AUDIT",
+                f"📋 防线实盘核实: {status} | 缺TP={len(scan.get('missing_tps', []))} "
+                f"补挂={len(repaired)} 失败={len(failed)}",
+                detail,
+            )
+        return detail
+
+    def _ensure_defenses(
+        self,
+        qty: float,
+        entry: float,
+        dynamic_sl: float | None = None,
+        *,
+        force_rebuild: bool = False,
+        curr_px: float | None = None,
+    ) -> dict:
+        """
+        确保 TP/SL 与当前头寸比例一致。
+        - 已对齐 → 跳过（不重复挂单）
+        - 任何不对齐 / 强制重构 → 验证撤销 + 全量重挂（智能 heal）
+        """
+        if curr_px is None:
+            curr_px = self.client.get_current_price(self.symbol)
+        exclude = self._active_tp_exclude_levels(qty, curr_px)
+        slices = self._compute_tp_slices(qty, exclude_levels=exclude)
+        scan = self._scan_open_defenses(slices, dynamic_sl)
+
+        if scan["aligned"] and not force_rebuild:
+            detail = {
+                "entry": entry,
+                "qty": qty,
+                "regime": self.regime,
+                "tv_tps": list(self.tv_tps),
+                "excluded_tp_levels": sorted(exclude),
+                "skipped": True,
+                "reason": "defenses_already_aligned",
+                "live_audit": scan,
+                "aligned": True,
+                "summary": self._summarize_defense_scan(scan, slices),
+            }
+            self._log(
+                "DEFENSE",
+                f"🛡️ 防线核实 [实盘一致·跳过] {detail['summary']} "
+                f"SL={'有' if scan.get('sl_live') else '无'}",
+                detail,
+            )
+            return detail
+
+        heal_reason = "force_rebuild" if force_rebuild else "misaligned"
+        if scan.get("duplicate_tps"):
+            heal_reason = "duplicate_tp_orders"
+        elif scan.get("qty_mismatch_tps"):
+            heal_reason = "tp_qty_mismatch"
+        elif scan.get("missing_tps"):
+            heal_reason = "missing_tp_orders"
+        elif scan.get("orphan_limits"):
+            heal_reason = "orphan_tp_orders"
+
+        return self._aggressive_heal_defenses(
+            qty, entry, dynamic_sl, scan, slices, reason=heal_reason
+        )
+
+    def _verify_and_repair_defenses(
+        self, qty: float, entry: float, dynamic_sl: float | None = None
+    ) -> dict:
+        """哨兵轮询：先核实再补挂，已对齐则不动作。"""
+        return self._ensure_defenses(qty, entry, dynamic_sl, force_rebuild=False)
+
+    def _protect_and_monitor(self, qty: float, entry_price: float):
         self.current_sl = entry_price
-
-        if qty1 > 0 and tp_pxs[0] > 0:
-            self.client.place_limit_order(close_side, qty1, tp_pxs[0], self.symbol, reduce_only=True)
-        if qty2 > 0 and tp_pxs[1] > 0:
-            self.client.place_limit_order(close_side, qty2, tp_pxs[1], self.symbol, reduce_only=True)
-        if qty3 > 0 and tp_pxs[2] > 0:
-            self.client.place_limit_order(close_side, qty3, tp_pxs[2], self.symbol, reduce_only=True)
-
         self.best_price = entry_price
         self.watched_qty = qty
         self.watched_entry = entry_price
         self.monitoring = True
+        self._ensure_defenses(qty, entry_price, force_rebuild=True)
         self._save_state()
         threading.Thread(target=self._sentinel_loop, daemon=True).start()
+
+    def _breakeven_sl_active(self) -> bool:
+        """保本/锁润止损已激活（SL 越过入场价）。"""
+        if not self.watched_entry or not self.current_sl:
+            return False
+        if self.current_side == "LONG":
+            return self.current_sl > self.watched_entry
+        if self.current_side == "SHORT":
+            return self.current_sl < self.watched_entry
+        return False
 
     def _sentinel_loop(self):
         while self.monitoring:
@@ -279,35 +868,67 @@ class PositionSupervisor:
                         self._close_all(f"致命方向背离：实盘({actual_side}) vs TV({self.last_tv_side})")
                         break
 
+                    curr_px = self.client.get_current_price(self.symbol)
+
                     if abs(actual_qty - self.watched_qty) > 0.001:
                         old_qty = self.watched_qty
+                        change_type = self._classify_qty_change(old_qty, actual_qty)
                         self.watched_qty = actual_qty
                         self.watched_entry = float(pos["entryPrice"])
-                        self.client.cancel_all_open_orders(self.symbol)
-                        time.sleep(0.5)
-                        sl_to_pass = (
-                            self.current_sl
-                            if (self.current_side == "LONG" and self.current_sl > self.watched_entry)
-                            or (self.current_side == "SHORT" and self.current_sl < self.watched_entry)
-                            else None
+                        sl_to_pass = self.current_sl if self._breakeven_sl_active() else None
+
+                        if change_type == "manual_add":
+                            self.consumed_tp_levels = []
+                            self.client.cancel_all_open_orders(self.symbol)
+                            time.sleep(0.5)
+                            self._rebuild_defenses(
+                                actual_qty, self.watched_entry, dynamic_sl=sl_to_pass
+                            )
+                        elif change_type.startswith("tp"):
+                            self._ensure_defenses(
+                                actual_qty,
+                                self.watched_entry,
+                                dynamic_sl=sl_to_pass,
+                                force_rebuild=True,
+                                curr_px=curr_px,
+                            )
+                        else:
+                            self.client.cancel_all_open_orders(self.symbol)
+                            time.sleep(0.5)
+                            self._rebuild_defenses(
+                                actual_qty, self.watched_entry, dynamic_sl=sl_to_pass
+                            )
+
+                        action_labels = {
+                            "manual_add": "手动加仓",
+                            "manual_reduce": "手动减仓",
+                            "full_close": "人工全平",
+                        }
+                        action_msg = action_labels.get(
+                            change_type,
+                            f"部分止盈吃单 · {change_type}",
                         )
-                        self._rebuild_defenses(actual_qty, self.watched_entry, dynamic_sl=sl_to_pass)
-                        action_msg = "手动加仓" if actual_qty > old_qty else "部分止盈吃单 / 手动减仓"
                         detail = {
                             "old_qty": old_qty,
                             "new_qty": actual_qty,
                             "entry": self.watched_entry,
+                            "change_type": change_type,
+                            "consumed_tp_levels": list(self.consumed_tp_levels),
                             "action_msg": action_msg,
                         }
-                        self._log("ADJUST", f"🔄 感知到仓位变化: {old_qty} ➔ {actual_qty}，重新重构防线", detail)
+                        self._log(
+                            "ADJUST",
+                            f"🔄 智能感知仓位变化 [{change_type}]: {old_qty} ➔ {actual_qty}",
+                            detail,
+                        )
                         self._alert(
                             "warning", "MANUAL_ADJUST",
                             f"阵地异动 · {action_msg}",
                             f"数量 {old_qty} → {actual_qty} @ {self.watched_entry}",
                             detail,
                         )
+                        self._save_state()
 
-                    curr_px = self.client.get_current_price(self.symbol)
                     self.best_price = (
                         max(self.best_price, curr_px)
                         if self.current_side == "LONG"
@@ -338,7 +959,7 @@ class PositionSupervisor:
                         if self.current_side == "LONG":
                             breakeven_floor = round_price(self.watched_entry + fee_buffer)
                             new_sl = round_price(max(self.best_price - trail_offset, breakeven_floor))
-                            if new_sl > self.current_sl + 1.0:
+                            if new_sl > self.current_sl + MIN_SL_MOVE:
                                 self.client.cancel_all_open_orders(self.symbol)
                                 time.sleep(0.5)
                                 self.current_sl = new_sl
@@ -365,7 +986,7 @@ class PositionSupervisor:
                         else:
                             breakeven_floor = round_price(self.watched_entry - fee_buffer)
                             new_sl = round_price(min(self.best_price + trail_offset, breakeven_floor))
-                            if self.current_sl >= self.watched_entry or new_sl < self.current_sl - 1.0:
+                            if self.current_sl >= self.watched_entry or new_sl < self.current_sl - MIN_SL_MOVE:
                                 self.client.cancel_all_open_orders(self.symbol)
                                 time.sleep(0.5)
                                 self.current_sl = new_sl
@@ -389,6 +1010,14 @@ class PositionSupervisor:
                                     f"SL {new_sl} | 仓位 {actual_qty} @ {self.watched_entry}",
                                     trail_detail,
                                 )
+
+                    sl_active = self._breakeven_sl_active()
+                    dynamic_sl = self.current_sl if sl_active else None
+                    self._ensure_defenses(
+                        actual_qty, self.watched_entry, dynamic_sl,
+                        force_rebuild=False, curr_px=curr_px,
+                    )
+
                     self._sentinel_error_notified = False
                 finally:
                     self._lock.release()
@@ -404,22 +1033,9 @@ class PositionSupervisor:
                     self._sentinel_error_notified = True
             time.sleep(6)
 
-    def _rebuild_defenses(self, qty: float, entry: float, dynamic_sl=None):
-        close_side = "SHORT" if self.current_side == "LONG" else "LONG"
-        ratios = self.regime_settings[self.regime]["ratios"]
-        qty1 = round_quantity(qty * ratios[0])
-        qty2 = round_quantity(qty * ratios[1])
-        qty3 = round_quantity(qty - qty1 - qty2)
-        tp_pxs = self.tv_tps
-
-        if qty1 > 0 and tp_pxs[0] > 0:
-            self.client.place_limit_order(close_side, qty1, tp_pxs[0], self.symbol, reduce_only=True)
-        if qty2 > 0 and tp_pxs[1] > 0:
-            self.client.place_limit_order(close_side, qty2, tp_pxs[1], self.symbol, reduce_only=True)
-        if qty3 > 0 and tp_pxs[2] > 0:
-            self.client.place_limit_order(close_side, qty3, tp_pxs[2], self.symbol, reduce_only=True)
-        if dynamic_sl:
-            self.client.place_stop_market_order(close_side, round_price(dynamic_sl), self.symbol)
+    def _rebuild_defenses(self, qty: float, entry: float, dynamic_sl=None) -> dict:
+        """Cancel-all then rebuild — for trail update / manual qty change only."""
+        return self._ensure_defenses(qty, entry, dynamic_sl, force_rebuild=True)
 
     def _close_all(self, reason: str = ""):
         self.client.cancel_all_open_orders(self.symbol)
@@ -464,13 +1080,19 @@ class PositionSupervisor:
 
         self.monitoring = False
         self.watched_qty = 0.0
+        self.consumed_tp_levels = []
         self.current_trade_id = None
         self.trade_opened_at = None
         self._save_state()
         self.client.cancel_all_open_orders(self.symbol)
 
-    def recover_on_startup(self, open_trade_id: int | None = None) -> dict:
-        """VPS 自启账户接管（与单账户 recover_state_on_startup 一致）。"""
+    def recover_on_startup(
+        self,
+        open_trade_id: int | None = None,
+        trade_context: dict | None = None,
+        recovery_context: dict | None = None,
+    ) -> dict:
+        """VPS 自启：核实开仓日志+最新TV+实盘头寸，智能补挂止盈/续跑雷达。"""
         audit = {
             "user_id": self.user_id,
             "has_position": False,
@@ -481,21 +1103,32 @@ class PositionSupervisor:
             "direction_aligned": True,
             "tv_tps": list(self.tv_tps),
             "current_sl": self.current_sl,
+            "best_price": self.best_price,
+            "breakeven_active": False,
             "monitoring": False,
             "defenses_rebuilt": False,
+            "defenses_skipped": False,
             "open_trade_id": open_trade_id,
         }
         try:
-            if os.path.exists(self.state_file):
-                with open(self.state_file) as f:
-                    s = json.load(f)
-                    self.last_tv_side = s.get("last_tv_side", self.last_tv_side)
-                    self.tv_tps = s.get("tv_tps", self.tv_tps)
+            self._load_state()
+
+            if recovery_context is None and trade_context:
+                recovery_context = {"trade": trade_context}
+
+            if recovery_context:
+                trade = recovery_context.get("trade") or {}
+                if open_trade_id is None and trade.get("id"):
+                    open_trade_id = trade["id"]
+                    audit["open_trade_id"] = open_trade_id
+
+            reconcile = self._reconcile_radar_context(recovery_context)
+            audit.update(reconcile)
 
             pos = self.position_manager.get_position(self.symbol)
             if not pos or float(pos.get("positionAmt", 0)) == 0:
                 self.monitoring = False
-                self._log("STARTUP", "VPS 自启审计：空仓待机")
+                self._log("STARTUP", "VPS 自启审计：空仓待机", reconcile)
                 return audit
 
             real_amt = float(pos["positionAmt"])
@@ -506,10 +1139,36 @@ class PositionSupervisor:
             self.watched_qty = abs(real_amt)
             self.initial_qty = abs(real_amt)
             self.watched_entry = float(pos["entryPrice"])
-            self.best_price = self.watched_entry
-            self.current_sl = self.watched_entry
             self.current_trade_id = open_trade_id
+
+            if self.best_price <= 0:
+                self.best_price = self.watched_entry
+            if self.current_sl <= 0:
+                self.current_sl = self.watched_entry
+
+            curr_px = self.client.get_current_price(self.symbol)
+            if curr_px > 0:
+                if self.current_side == "LONG":
+                    self.best_price = max(self.best_price, curr_px)
+                else:
+                    self.best_price = min(self.best_price, curr_px)
+
+            audit["direction_aligned"] = (
+                self.current_side == self.last_tv_side if self.last_tv_side else True
+            )
+            if reconcile.get("warnings"):
+                audit["radar_warnings"] = reconcile["warnings"]
+
             self.monitoring = True
+
+            dynamic_sl = self.current_sl if self._breakeven_sl_active() else None
+            defense = self._ensure_defenses(
+                self.watched_qty,
+                self.watched_entry,
+                dynamic_sl,
+                force_rebuild=False,
+                curr_px=curr_px,
+            )
 
             audit.update({
                 "has_position": True,
@@ -517,24 +1176,38 @@ class PositionSupervisor:
                 "qty": self.watched_qty,
                 "entry": self.watched_entry,
                 "last_tv_side": self.last_tv_side,
-                "direction_aligned": self.current_side == self.last_tv_side,
                 "tv_tps": list(self.tv_tps),
                 "current_sl": self.current_sl,
+                "best_price": self.best_price,
+                "breakeven_active": self._breakeven_sl_active(),
+                "consumed_tp_levels": list(self.consumed_tp_levels),
                 "monitoring": True,
+                "defenses_rebuilt": defense.get("healed", False) or not defense.get("skipped", False),
+                "defenses_skipped": defense.get("skipped", False),
+                "defenses_aligned": defense.get("aligned", False),
+                "defenses_healed": defense.get("healed", False),
+                "defense_summary": defense.get("after_summary") or defense.get("summary"),
             })
             self._save_state()
             threading.Thread(target=self._sentinel_loop, daemon=True).start()
 
-            self._log("STARTUP", f"账户接管 {self.current_side} {self.watched_qty} @ {self.watched_entry}", audit)
+            self._log(
+                "STARTUP",
+                f"雷达接管 {self.current_side} {self.watched_qty} @ {self.watched_entry} | "
+                f"TV={self.last_tv_side} TP={self.tv_tps}",
+                audit,
+            )
             self._alert(
                 "info", "STARTUP",
-                "VPS 账户接管完成",
-                f"{self.current_side} {self.watched_qty} @ {self.watched_entry}",
+                "VPS 雷达智能接管完成",
+                f"{self.current_side} {self.watched_qty} @ {self.watched_entry} | "
+                f"{'防线就绪·未重复挂单' if defense.get('skipped') else '防线已智能补挂'}",
                 audit,
             )
         except Exception as e:
             logger.error(f"[User {self.user_id}] recover failed: {e}")
             audit["error"] = str(e)
+            self._log("STARTUP_FAIL", f"自启接管失败: {e}", audit)
             self._alert(
                 "critical", "STARTUP_FAIL",
                 "自启接管失败",

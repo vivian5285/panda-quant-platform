@@ -7,7 +7,8 @@ from app.models import User, ApiStatus
 from app.core.binance_client import BinanceClient
 from app.core.position_supervisor import PositionSupervisor
 from app.services.trade_logger import TradeLogger
-from app.services.startup_audit import link_open_trade, log_takeover_audit, broadcast_startup_summary
+from app.services.radar_context import build_radar_recovery_context
+from app.services.startup_audit import log_takeover_audit, broadcast_startup_summary
 from app.services.alert_service import notify_admin, notify_system
 from app.utils.crypto import decrypt_text
 from app.database import SessionLocal
@@ -16,11 +17,9 @@ logger = logging.getLogger(__name__)
 
 
 def _user_event_handler(db: Session):
-    """用户账户事件写入 TradeLog；不推送钉钉。"""
-    trade_logger = TradeLogger(db)
+    """用户实盘关键动作 → 管理员钉钉抄送（明细已由 PositionSupervisor._log 写入 TradeLog）。"""
 
     def handler(user_id: int, severity: str, alert_type: str, title: str, message: str, detail: dict | None = None):
-        trade_logger.log_event(user_id, alert_type, f"{title}: {message}", detail)
         notify_admin(user_id, severity, alert_type, title, message, detail)
 
     return handler
@@ -105,8 +104,13 @@ class UserSupervisorPool:
                 on_trade_close=trade_logger.on_trade_close,
                 on_alert=user_events,
             )
-            open_trade_id = link_open_trade(db, user.id)
-            audit = supervisor.recover_on_startup(open_trade_id=open_trade_id)
+            recovery = build_radar_recovery_context(db, user.id)
+            trade = recovery.get("trade") or {}
+            open_trade_id = trade.get("id")
+            audit = supervisor.recover_on_startup(
+                open_trade_id=open_trade_id,
+                recovery_context=recovery,
+            )
             audit["uid"] = user.uid
             log_takeover_audit(user, audit)
 

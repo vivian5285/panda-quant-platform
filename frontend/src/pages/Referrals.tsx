@@ -10,6 +10,7 @@ import { useI18n } from '../i18n'
 import { generateInvitePoster, downloadPoster } from '../utils/invitePoster'
 import ReferralTree from '../components/ReferralTree'
 import DualPathIntro from '../components/DualPathIntro'
+import DownlineLogsModal from '../components/DownlineLogsModal'
 
 export default function Referrals() {
   const locale = useI18n(s => s.locale)
@@ -19,6 +20,7 @@ export default function Referrals() {
   const [posterUrl, setPosterUrl] = useState('')
   const [posterLoading, setPosterLoading] = useState(false)
   const [showPoster, setShowPoster] = useState(false)
+  const [logsUser, setLogsUser] = useState<{ id: number; name?: string } | null>(null)
 
   useEffect(() => {
     referralApi.summary().then(setData)
@@ -164,10 +166,11 @@ export default function Referrals() {
               <th>{t('referrals.position')}</th>
               <th>{t('referrals.settlementStatus')}</th>
               <th>{t('referrals.myReward')}</th>
+              <th />
             </tr></thead>
             <tbody>
               {(data?.l1_users || []).length === 0 ? (
-                <tr><td colSpan={8} className="empty-cell">{t('referrals.inviteEmpty')}</td></tr>
+                <tr><td colSpan={9} className="empty-cell">{t('referrals.inviteEmpty')}</td></tr>
               ) : data.l1_users.map((u: any) => (
                 <tr key={u.id}>
                   <td className="cell-ellipsis" title={u.display_name || u.email}>
@@ -181,6 +184,11 @@ export default function Referrals() {
                   <td>{u.has_open_position ? (u.position_side ? `${u.position_side} ${u.position_qty}` : t('referrals.hasPosition')) : '—'}</td>
                   <td><span className="badge badge-gray">{u.settlement_status || 'none'}</span></td>
                   <td className="text-green">${u.total_reward?.toFixed(2)}</td>
+                  <td>
+                    <button type="button" className="btn btn-ghost btn-xs" onClick={() => setLogsUser({ id: u.id, name: u.display_name || u.email })}>
+                      {t('referrals.viewLogs')}
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -203,10 +211,11 @@ export default function Referrals() {
               <th>{t('referrals.position')}</th>
               <th>{t('referrals.settlementStatus')}</th>
               <th>{t('referrals.myReward')}</th>
+              <th />
             </tr></thead>
             <tbody>
               {(data?.l2_users || []).length === 0 ? (
-                <tr><td colSpan={8} className="empty-cell">{t('referrals.l2Empty')}</td></tr>
+                <tr><td colSpan={9} className="empty-cell">{t('referrals.l2Empty')}</td></tr>
               ) : data.l2_users.map((u: any) => (
                 <tr key={u.id}>
                   <td className="cell-ellipsis" title={u.display_name || u.email}>
@@ -220,12 +229,25 @@ export default function Referrals() {
                   <td>{u.has_open_position ? (u.position_side ? `${u.position_side} ${u.position_qty}` : t('referrals.hasPosition')) : '—'}</td>
                   <td><span className="badge badge-gray">{u.settlement_status || 'none'}</span></td>
                   <td className="text-green">${u.total_reward?.toFixed(2)}</td>
+                  <td>
+                    <button type="button" className="btn btn-ghost btn-xs" onClick={() => setLogsUser({ id: u.id, name: u.display_name || u.email })}>
+                      {t('referrals.viewLogs')}
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </GlassCard>
       </div>
+
+      {logsUser && (
+        <DownlineLogsModal
+          userId={logsUser.id}
+          displayName={logsUser.name}
+          onClose={() => setLogsUser(null)}
+        />
+      )}
     </Layout>
   )
 }

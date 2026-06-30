@@ -147,13 +147,16 @@ def assert_production_ready() -> None:
 
 
 def link_open_trade(db: Session, user_id: int) -> int | None:
-    trade = (
-        db.query(Trade)
-        .filter(Trade.user_id == user_id, Trade.status == "open")
-        .order_by(Trade.created_at.desc())
-        .first()
-    )
-    return trade.id if trade else None
+    from app.services.radar_context import build_radar_recovery_context
+    ctx = build_radar_recovery_context(db, user_id)
+    trade = ctx.get("trade")
+    return trade["id"] if trade else None
+
+
+def get_open_trade_context(db: Session, user_id: int) -> dict | None:
+    """Backward-compatible wrapper; prefer build_radar_recovery_context."""
+    from app.services.radar_context import get_open_trade_context as _get
+    return _get(db, user_id)
 
 
 def format_takeover_banner(user: User, audit: dict) -> str:
@@ -169,13 +172,16 @@ def format_takeover_banner(user: User, audit: dict) -> str:
         aligned = "一致" if audit.get("direction_aligned") else "背离（哨兵将强制对齐）"
         lines.extend([
             f"  实盘持仓: {audit.get('side')} {audit.get('qty')} @ {audit.get('entry')}",
+            f"  TV最新: {audit.get('latest_tv_action', '—')} ({audit.get('latest_tv_at', '—')})",
+            f"  开仓日志: {audit.get('open_log_side', '—')} {audit.get('open_log_qty', '—')} @ {audit.get('open_log_entry', '—')}",
             f"  TV方向: {audit.get('last_tv_side')} | 方向校验: {aligned}",
             f"  恢复止盈: TP1={audit.get('tv_tps', [0, 0, 0])[0]} "
             f"TP2={audit.get('tv_tps', [0, 0, 0])[1]} "
             f"TP3={audit.get('tv_tps', [0, 0, 0])[2]}",
-            f"  恢复止损参考: SL={audit.get('current_sl')}",
+            f"  恢复止损参考: SL={audit.get('current_sl')} | 极值={audit.get('best_price')}",
+            f"  保本雷达: {'已激活' if audit.get('breakeven_active') else '待激活'}",
             f"  哨兵监控: {'已启动' if audit.get('monitoring') else '未启动'}",
-            f"  防线重构: {'已完成' if audit.get('defenses_rebuilt') else '跳过'}",
+            f"  防线重构: {'已完成' if audit.get('defenses_rebuilt') else '跳过(实盘已对齐)'}",
         ])
         if audit.get("open_trade_id"):
             lines.append(f"  关联 open trade_id: {audit['open_trade_id']}")

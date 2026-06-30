@@ -1,6 +1,7 @@
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, model_validator, ConfigDict
 from datetime import datetime, date
 from typing import Optional
+import json
 
 
 class TokenResponse(BaseModel):
@@ -280,11 +281,20 @@ class TradeLogOut(BaseModel):
     event_type: Optional[str]
     message: Optional[str]
     detail_json: Optional[str] = None
+    detail: Optional[dict] = None
     trade_id: Optional[int] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="after")
+    def _parse_detail(self):
+        if self.detail_json and self.detail is None:
+            try:
+                object.__setattr__(self, "detail", json.loads(self.detail_json))
+            except Exception:
+                object.__setattr__(self, "detail", {})
+        return self
 
 
 class DashboardStats(BaseModel):
@@ -357,6 +367,13 @@ class ReferralSummary(BaseModel):
     commission: Optional[ReferralCommissionOut] = None
     l1_users: list[ReferralUserOut]
     l2_users: list[ReferralUserOut]
+
+
+class ReferralDownlineDetailOut(BaseModel):
+    level: int
+    account: ReferralUserOut
+    open_trades: int = 0
+    closed_trades: int = 0
 
 
 class SettlementOut(BaseModel):
