@@ -12,7 +12,7 @@ import ToastHost from './ui/ToastHost'
 
 export type AdminTabKey =
   | 'home' | 'users' | 'signals' | 'execution' | 'risk' | 'analytics' | 'audit'
-  | 'finance' | 'settlements' | 'withdrawals' | 'referrals' | 'addresses' | 'system'
+  | 'finance' | 'settlements' | 'deposits' | 'withdrawals' | 'referrals' | 'addresses' | 'system'
 
 const ADMIN_TABS: { key: AdminTabKey; icon: typeof LayoutDashboard; labelKey: string }[] = [
   { key: 'home', icon: LayoutDashboard, labelKey: 'admin.tabOverview' },
@@ -24,6 +24,7 @@ const ADMIN_TABS: { key: AdminTabKey; icon: typeof LayoutDashboard; labelKey: st
   { key: 'audit', icon: FileText, labelKey: 'admin.tabAudit' },
   { key: 'finance', icon: Wallet, labelKey: 'admin.tabFinance' },
   { key: 'settlements', icon: Landmark, labelKey: 'admin.tabSettlements' },
+  { key: 'deposits', icon: Wallet, labelKey: 'admin.tabDeposits' },
   { key: 'referrals', icon: Share2, labelKey: 'admin.tabReferrals' },
   { key: 'withdrawals', icon: Banknote, labelKey: 'admin.tabWithdrawals' },
   { key: 'addresses', icon: KeyRound, labelKey: 'admin.tabAddresses' },

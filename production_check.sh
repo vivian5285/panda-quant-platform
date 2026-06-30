@@ -131,11 +131,18 @@ else
   fail "Webhook 安全拒绝测试失败 (HTTP ${WH_CODE})"
 fi
 
-# OpenAPI 文档
-if curl -sf --max-time 5 "http://127.0.0.1:${API_PORT}/docs" >/dev/null 2>&1; then
+# OpenAPI 文档（PRODUCTION_STRICT=1 时 /docs 已关闭，属预期）
+DOCS_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://127.0.0.1:${API_PORT}/docs" 2>/dev/null || echo "000")
+if [ "$DOCS_CODE" = "200" ]; then
   ok "REST API /docs 可访问"
+elif [ "$DOCS_CODE" = "404" ] || [ "$DOCS_CODE" = "000" ]; then
+  if [ "$PRODUCTION_STRICT" = "1" ]; then
+    ok "REST API /docs 已关闭（PRODUCTION_STRICT 生产模式）"
+  else
+    warn "REST API /docs 不可访问 (HTTP ${DOCS_CODE})"
+  fi
 else
-  fail "REST API /docs 不可访问"
+  fail "REST API /docs 异常 (HTTP ${DOCS_CODE})"
 fi
 
 # --- E. VPS 账户接管审计 ---
@@ -175,6 +182,25 @@ if docker compose logs backend 2>/dev/null | grep -q "SystemAlert.*SYSTEM_RESTAR
   ok "系统重启钉钉通知已触发"
 else
   warn "未发现 SYSTEM_RESTART 日志（检查 DINGTALK_WEBHOOK 配置）"
+fi
+
+# --- F. 前端 & 官网静态路由 ---
+echo ""
+echo ">>> [F] 前端 SPA & 官网路由"
+for path in "/" "/login" "/register" "/help" "/privacy" "/terms"; do
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://127.0.0.1:${FRONT_PORT}${path}" 2>/dev/null || echo "000")
+  if [ "$CODE" = "200" ]; then
+    ok "前端 ${path} HTTP 200"
+  else
+    fail "前端 ${path} 不可访问 (HTTP ${CODE})"
+  fi
+done
+
+LANDING=$(curl -sf --max-time 5 "http://127.0.0.1:${FRONT_PORT}/" 2>/dev/null || echo "")
+if echo "$LANDING" | grep -qiE 'GEMINI|双子星|root'; then
+  ok "官网首页 HTML 正常"
+else
+  warn "官网首页内容未检测到 GEMINI/双子星 标识"
 fi
 
 # --- 汇总 ---

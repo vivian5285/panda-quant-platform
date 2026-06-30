@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 import requests
 from sqlalchemy.orm import Session
@@ -14,13 +14,13 @@ from app.models import (
     UserDepositAddress, SettlementDeposit, Settlement, PaymentStatus, User,
 )
 from app.services.settlement import submit_settlement_payment, get_pending_settlement
+from app.services.deposit_chains import EVM_USDT_CONFIG, get_rpc_url, MONITORED_DEPOSIT_CHAINS
+from app.services.deposit_secrets import is_deposit_mnemonic_configured
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 USDT_TRC20 = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
-USDT_ERC20 = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
-USDT_BEP20 = "0x55d398326f99059fF775485246999027B3197955"
 
 TRANSFER_TOPIC = Web3.keccak(text="Transfer(address,address,uint256)").hex()
 
@@ -39,6 +39,8 @@ def _record_deposit(
     tx_hash: str,
     amount: float,
     from_address: str | None = None,
+    deposit_address: str | None = None,
+    source: str = "auto",
 ) -> SettlementDeposit | None:
     exists = db.query(SettlementDeposit).filter(SettlementDeposit.tx_hash == tx_hash).first()
     if exists:
@@ -49,6 +51,8 @@ def _record_deposit(
         tx_hash=tx_hash,
         amount=round(amount, 6),
         from_address=from_address,
+        deposit_address=deposit_address,
+        source=source,
         status="detected",
     )
     db.add(dep)
@@ -71,9 +75,14 @@ def _try_match_settlement(db: Session, user: User, dep: SettlementDeposit) -> bo
         )
         return False
 
-    submit_settlement_payment(
-        db, pending, dep.chain, dep.tx_hash, min(dep.amount, payable),
-    )
+    try:
+        submit_settlement_payment(
+            db, pending, dep.chain, dep.tx_hash, min(dep.amount, payable),
+        )
+    except ValueError as e:
+        logger.warning("[DepositMonitor] match blocked tx=%s: %s", dep.tx_hash, e)
+        return False
+
     dep.settlement_id = pending.id
     dep.status = "matched"
     dep.matched_at = datetime.utcnow()
@@ -91,7 +100,7 @@ def _try_match_settlement(db: Session, user: User, dep: SettlementDeposit) -> bo
 
 
 def scan_trc20_deposits(db: Session) -> int:
-    if not settings.DEPOSIT_HD_MNEMONIC.strip():
+    if not is_deposit_mnemonic_configured():
         return 0
     rows = db.query(UserDepositAddress).filter(UserDepositAddress.chain == "TRC20").all()
     if not rows:
@@ -127,7 +136,9 @@ def scan_trc20_deposits(db: Session) -> int:
             user = db.query(User).filter(User.id == row.user_id).first()
             if not user:
                 continue
-            dep = _record_deposit(db, user.id, "TRC20", tx_hash, amount, from_addr)
+            dep = _record_deposit(
+                db, user.id, "TRC20", tx_hash, amount, from_addr, deposit_address=row.address,
+            )
             if not dep:
                 continue
             db.commit()
@@ -136,10 +147,16 @@ def scan_trc20_deposits(db: Session) -> int:
     return matched
 
 
-def _scan_evm_chain(db: Session, chain: str, rpc_url: str, usdt_contract: str) -> int:
+def _scan_evm_chain(db: Session, chain: str) -> int:
+    cfg = EVM_USDT_CONFIG.get(chain.upper())
+    if not cfg:
+        return 0
+    usdt_contract, decimals, _ = cfg
+    rpc_url = get_rpc_url(chain)
     if not rpc_url.strip():
         return 0
-    rows = db.query(UserDepositAddress).filter(UserDepositAddress.chain == chain).all()
+
+    rows = db.query(UserDepositAddress).filter(UserDepositAddress.chain == chain.upper()).all()
     if not rows:
         return 0
 
@@ -155,6 +172,7 @@ def _scan_evm_chain(db: Session, chain: str, rpc_url: str, usdt_contract: str) -
 
     addr_set = {Web3.to_checksum_address(r.address) for r in rows}
     addr_to_user = {Web3.to_checksum_address(r.address): r.user_id for r in rows}
+    addr_to_address = {Web3.to_checksum_address(r.address): r.address for r in rows}
 
     try:
         logs = w3.eth.get_logs({
@@ -167,7 +185,6 @@ def _scan_evm_chain(db: Session, chain: str, rpc_url: str, usdt_contract: str) -
         logger.warning("[DepositMonitor] EVM logs failed chain=%s: %s", chain, e)
         return 0
 
-    decimals = 6 if chain == "ERC20" else 18
     for log in logs:
         if len(log["topics"]) < 3:
             continue
@@ -181,7 +198,10 @@ def _scan_evm_chain(db: Session, chain: str, rpc_url: str, usdt_contract: str) -
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             continue
-        dep = _record_deposit(db, user.id, chain, tx_hash, amount)
+        dep = _record_deposit(
+            db, user.id, chain.upper(), tx_hash, amount,
+            deposit_address=addr_to_address.get(to_addr),
+        )
         if not dep:
             continue
         db.commit()
@@ -191,10 +211,13 @@ def _scan_evm_chain(db: Session, chain: str, rpc_url: str, usdt_contract: str) -
 
 
 def scan_all_deposits(db: Session) -> dict:
-    stats = {"trc20": 0, "erc20": 0, "bep20": 0}
+    stats: dict[str, int] = {}
+    if not is_deposit_mnemonic_configured():
+        return stats
     stats["trc20"] = scan_trc20_deposits(db)
-    stats["erc20"] = _scan_evm_chain(db, "ERC20", settings.ETH_RPC_URL, USDT_ERC20)
-    stats["bep20"] = _scan_evm_chain(db, "BEP20", settings.BSC_RPC_URL, USDT_BEP20)
+    for chain in ("ERC20", "BEP20", "ARBITRUM", "POLYGON"):
+        key = chain.lower()
+        stats[key] = _scan_evm_chain(db, chain)
     return stats
 
 

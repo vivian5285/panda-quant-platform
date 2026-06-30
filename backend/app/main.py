@@ -82,6 +82,17 @@ def _ensure_schema_migrations():
             if name not in cols:
                 conn.execute(text(f"ALTER TABLE principal_snapshots ADD COLUMN {name} {typ}"))
 
+    if "settlement_deposits" in insp.get_table_names():
+        cols = {c["name"] for c in insp.get_columns("settlement_deposits")}
+        dep_patches = [
+            ("deposit_address", "VARCHAR(128)"),
+            ("source", "VARCHAR(20) DEFAULT 'auto'"),
+        ]
+        with engine.begin() as conn:
+            for name, typ in dep_patches:
+                if name not in cols:
+                    conn.execute(text(f"ALTER TABLE settlement_deposits ADD COLUMN {name} {typ}"))
+
 
 def _seed_subscription_plans(db):
     from app.models.platform import SubscriptionPlan
@@ -203,6 +214,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="GEMINI AI · 双子星AI量化", version="1.0.0", lifespan=lifespan)
 
+if settings.PRODUCTION_STRICT:
+    app.openapi_url = None
+    app.docs_url = None
+    app.redoc_url = None
+
 app.add_middleware(LocaleMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -241,6 +257,7 @@ async def i18n_exception_handler(_request: Request, exc: HTTPException):
 @app.get("/api/health")
 def health():
     from app.services.startup_audit import validate_production_secrets
+    from app.services.dingtalk_secrets import is_dingtalk_configured
 
     audits = supervisor_pool.last_startup_audits
     with_position = sum(1 for a in audits if a.get("has_position"))
@@ -256,7 +273,7 @@ def health():
         "users_with_position": with_position,
         "security_warnings": len(sec_warnings),
         "production_ready": len(sec_warnings) == 0,
-        "dingtalk_configured": bool(settings.DINGTALK_WEBHOOK.strip()),
+        "dingtalk_configured": is_dingtalk_configured(),
         "startup_failures": len(supervisor_pool.last_startup_failures),
         "symbol": settings.SYMBOL,
         "leverage": settings.LEVERAGE,

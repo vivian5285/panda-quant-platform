@@ -62,6 +62,7 @@ def system_monitor(admin=Depends(get_admin_user)):
     global_ctrl = get_global_control()
 
     from app.config import get_settings
+    from app.services.dingtalk_secrets import is_dingtalk_configured
     cfg = get_settings()
 
     return {
@@ -81,7 +82,7 @@ def system_monitor(admin=Depends(get_admin_user)):
         "dispatch_mode": "inline_thread",
         "global_trading_paused": global_ctrl.get("global_trading_paused", False),
         "global_risk_multiplier": global_ctrl.get("global_risk_multiplier", 1.0),
-        "dingtalk_configured": bool(cfg.DINGTALK_WEBHOOK and cfg.DINGTALK_SECRET),
+        "dingtalk_configured": is_dingtalk_configured(),
     }
 
 

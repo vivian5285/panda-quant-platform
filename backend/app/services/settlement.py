@@ -215,8 +215,33 @@ def submit_settlement_payment(
     tx_hash: str,
     amount: float,
 ) -> Settlement:
+    from app.models import SettlementDeposit
+
+    normalized = tx_hash.strip()
+    if not normalized or len(normalized) < 8:
+        raise ValueError("Invalid transaction hash")
+
+    dup_variants = {normalized, normalized.lower()}
+    if normalized.startswith("0x") or normalized.startswith("0X"):
+        dup_variants.add(normalized.lower())
+        dup_variants.add(normalized[2:].lower())
+
+    existing_dep = db.query(SettlementDeposit).filter(
+        SettlementDeposit.tx_hash.in_(list(dup_variants))
+    ).first()
+    if existing_dep:
+        raise ValueError("该 TxHash 已被使用")
+
+    existing_settlement = db.query(Settlement).filter(
+        Settlement.id != settlement.id,
+        Settlement.payment_tx_hash.isnot(None),
+        Settlement.payment_tx_hash.in_(list(dup_variants)),
+    ).first()
+    if existing_settlement:
+        raise ValueError("该 TxHash 已被其他结算单使用")
+
     settlement.payment_chain = chain.upper()
-    settlement.payment_tx_hash = tx_hash.strip()
+    settlement.payment_tx_hash = normalized
     settlement.payment_amount = round(amount, 2)
     settlement.payment_status = PaymentStatus.PAID.value
     settlement.paid_at = datetime.utcnow()

@@ -6,12 +6,17 @@ from app.database import get_db
 from app.models import (
     User, Trade, TradeLog, Settlement, ReferralReward, PaymentStatus, ApiStatus,
     PlatformDepositAddress, WithdrawalRequest, WithdrawalStatus, SUPPORTED_CHAINS,
-    AdminAlert, PrincipalSnapshot,
+    AdminAlert, PrincipalSnapshot, SettlementDeposit, SettlementPaymentAppeal, DepositSweepLog,
 )
 from app.schemas import (
     AdminUserOut, AdminOverview, SettlementOut,
     DepositAddressOut, DepositAddressCreate, DepositAddressUpdate,
     PayoutSettingsOut, PayoutSettingsUpdate,
+    DepositWalletSettingsOut, DepositWalletSettingsUpdate, DepositWalletSettingsUpdateResult,
+    DepositSweepSettingsOut, DepositSweepSettingsUpdate, DepositSweepLogOut,
+    WalletOverviewOut,
+    DingTalkSettingsOut, DingTalkSettingsUpdate, AdminPasswordChange,
+    AdminSettlementDepositOut, AdminSettlementAppealOut, SettlementAppealReview,
     WithdrawThresholdsUpdate,
     WithdrawalOut, WithdrawalComplete, WithdrawalReject,
     AdminAlertOut, AdminUserDetailOut, TradeOut, TradeLogOut, PrincipalSnapshotOut,
@@ -34,6 +39,17 @@ from app.services.wallet import complete_withdrawal, reject_withdrawal
 from app.services.payout_secrets import (
     get_payout_settings, update_payout_keys, is_payout_auto_enabled,
 )
+from app.services.deposit_secrets import (
+    get_deposit_wallet_settings, update_deposit_mnemonic, is_deposit_mnemonic_configured,
+)
+from app.services.user_deposit_wallet import backfill_all_user_deposit_addresses
+from app.services.dingtalk_secrets import get_dingtalk_settings, update_dingtalk_settings
+from app.services.settlement_deposit_log import build_admin_deposit_row, build_admin_appeal_row
+from app.services.settlement_appeal import approve_payment_appeal, reject_payment_appeal
+from app.services.deposit_sweep_config import get_sweep_settings, update_sweep_settings
+from app.services.deposit_sweep import run_deposit_sweep
+from app.services.wallet_overview import get_wallet_overview
+from app.utils.auth import verify_password, hash_password
 from app.services.chain_payout import get_payout_status
 from app.models.platform import Strategy
 from app.services.audit import log_audit
@@ -351,8 +367,12 @@ def confirm_settlement(
     s = db.query(Settlement).filter(Settlement.id == settlement_id).first()
     if not s:
         raise HTTPException(404, "Settlement not found")
-    if s.payment_status not in (PaymentStatus.PAID.value, PaymentStatus.PENDING.value):
-        raise HTTPException(400, "Settlement already confirmed or rejected")
+    if s.payment_status == PaymentStatus.CONFIRMED.value:
+        raise HTTPException(400, "Settlement already confirmed")
+    if s.payment_status == PaymentStatus.REJECTED.value:
+        raise HTTPException(400, "Settlement was rejected")
+    if s.payment_status != PaymentStatus.PAID.value:
+        raise HTTPException(400, "Settlement must be paid before confirmation")
     confirm_settlement_payment(db, s)
     log_audit(
         db,
@@ -695,6 +715,288 @@ def admin_update_payout_settings(
         request=request,
     )
     return updated
+
+
+@router.get("/deposit/wallet-settings", response_model=DepositWalletSettingsOut)
+def admin_deposit_wallet_settings(admin=Depends(get_admin_user)):
+    return get_deposit_wallet_settings()
+
+
+@router.patch("/deposit/wallet-settings", response_model=DepositWalletSettingsUpdateResult)
+def admin_update_deposit_wallet_settings(
+    req: DepositWalletSettingsUpdate,
+    request: Request,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        if req.clear:
+            updated = update_deposit_mnemonic(clear=True)
+        elif req.mnemonic and req.mnemonic.strip():
+            updated = update_deposit_mnemonic(mnemonic=req.mnemonic)
+        else:
+            raise HTTPException(400, "请提供助记词 mnemonic，或设置 clear=true 清除后台配置")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    backfilled = 0
+    if req.backfill and is_deposit_mnemonic_configured():
+        backfilled = backfill_all_user_deposit_addresses(db)
+
+    log_audit(
+        db,
+        "deposit_wallet_settings.update",
+        actor_id=admin.id,
+        resource_type="platform_settings",
+        resource_id="deposit_hd_mnemonic",
+        detail={
+            "configured": updated.get("configured"),
+            "source": updated.get("source"),
+            "cleared": req.clear,
+            "users_backfilled": backfilled,
+        },
+        request=request,
+    )
+    return {**updated, "users_backfilled": backfilled}
+
+
+def _sweep_log_out(db: Session, row: DepositSweepLog) -> dict:
+    user = db.query(User).filter(User.id == row.user_id).first()
+    return {
+        "id": row.id,
+        "user_id": row.user_id,
+        "user_uid": user.uid if user else "",
+        "chain": row.chain,
+        "from_address": row.from_address,
+        "to_address": row.to_address,
+        "amount": row.amount,
+        "status": row.status,
+        "gas_tx_hash": row.gas_tx_hash,
+        "sweep_tx_hash": row.sweep_tx_hash,
+        "error_message": row.error_message,
+        "created_at": row.created_at,
+    }
+
+
+@router.get("/wallet/overview", response_model=WalletOverviewOut)
+def admin_wallet_overview(admin=Depends(get_admin_user), db: Session = Depends(get_db)):
+    """On-chain balances + wallet config summary for admin hub."""
+    return get_wallet_overview(db)
+
+
+@router.get("/sweep/settings", response_model=DepositSweepSettingsOut)
+def admin_sweep_settings(admin=Depends(get_admin_user)):
+    return get_sweep_settings()
+
+
+@router.patch("/sweep/settings", response_model=DepositSweepSettingsOut)
+def admin_update_sweep_settings(
+    req: DepositSweepSettingsUpdate,
+    request: Request,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        updated = update_sweep_settings(
+            auto_enabled=req.auto_enabled,
+            min_usdt=req.min_usdt,
+            require_matched_deposit=req.require_matched_deposit,
+            cold_wallets=req.cold_wallets,
+            gas_funder_keys=req.gas_funder_keys,
+            clear_gas_funder=req.clear_gas_funder,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    log_audit(
+        db,
+        "sweep_settings.update",
+        actor_id=admin.id,
+        resource_type="platform_settings",
+        resource_id="deposit_sweep",
+        detail={
+            "auto_enabled": updated.get("auto_enabled"),
+            "ready_chains": updated.get("ready_chains"),
+        },
+        request=request,
+    )
+    return updated
+
+
+@router.get("/sweep/logs", response_model=list[DepositSweepLogOut])
+def admin_sweep_logs(
+    limit: int = 100,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(DepositSweepLog)
+        .order_by(DepositSweepLog.created_at.desc())
+        .limit(min(limit, 500))
+        .all()
+    )
+    return [_sweep_log_out(db, r) for r in rows]
+
+
+@router.post("/sweep/run")
+def admin_run_sweep(
+    request: Request,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    stats = run_deposit_sweep(db, force=True)
+    log_audit(
+        db,
+        "sweep.manual_run",
+        actor_id=admin.id,
+        resource_type="platform_settings",
+        resource_id="deposit_sweep",
+        detail=stats,
+        request=request,
+    )
+    return stats
+
+
+@router.get("/dingtalk/settings", response_model=DingTalkSettingsOut)
+def admin_dingtalk_settings(admin=Depends(get_admin_user)):
+    return get_dingtalk_settings()
+
+
+@router.patch("/dingtalk/settings", response_model=DingTalkSettingsOut)
+def admin_update_dingtalk_settings(
+    req: DingTalkSettingsUpdate,
+    request: Request,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        updated = update_dingtalk_settings(
+            webhook=req.webhook,
+            secret=req.secret,
+            clear=req.clear,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    log_audit(
+        db,
+        "dingtalk_settings.update",
+        actor_id=admin.id,
+        resource_type="platform_settings",
+        resource_id="dingtalk",
+        detail={"configured": updated.get("configured"), "cleared": req.clear},
+        request=request,
+    )
+    return updated
+
+
+@router.post("/settings/change-password")
+def admin_change_password(
+    req: AdminPasswordChange,
+    request: Request,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    if not verify_password(req.current_password, admin.password_hash):
+        raise HTTPException(400, "当前密码不正确")
+    if verify_password(req.new_password, admin.password_hash):
+        raise HTTPException(400, "新密码不能与当前密码相同")
+    admin.password_hash = hash_password(req.new_password)
+    log_audit(
+        db,
+        "admin.password_change",
+        actor_id=admin.id,
+        resource_type="user",
+        resource_id=str(admin.id),
+        request=request,
+    )
+    db.commit()
+    return {"status": "ok"}
+
+
+@router.get("/settlement-deposits", response_model=list[AdminSettlementDepositOut])
+def admin_list_settlement_deposits(
+    status: str | None = None,
+    user_id: int | None = None,
+    limit: int = 100,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    q = db.query(SettlementDeposit).order_by(SettlementDeposit.detected_at.desc())
+    if status:
+        q = q.filter(SettlementDeposit.status == status)
+    if user_id:
+        q = q.filter(SettlementDeposit.user_id == user_id)
+    rows = q.limit(min(limit, 500)).all()
+    return [build_admin_deposit_row(db, r) for r in rows]
+
+
+@router.get("/settlement-appeals", response_model=list[AdminSettlementAppealOut])
+def admin_list_settlement_appeals(
+    status: str | None = None,
+    limit: int = 100,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    q = db.query(SettlementPaymentAppeal).order_by(SettlementPaymentAppeal.created_at.desc())
+    if status:
+        q = q.filter(SettlementPaymentAppeal.status == status)
+    rows = q.limit(min(limit, 500)).all()
+    return [build_admin_appeal_row(db, r) for r in rows]
+
+
+@router.post("/settlement-appeals/{appeal_id}/approve", response_model=AdminSettlementAppealOut)
+def admin_approve_settlement_appeal(
+    appeal_id: int,
+    body: SettlementAppealReview,
+    request: Request,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    appeal = db.query(SettlementPaymentAppeal).filter(SettlementPaymentAppeal.id == appeal_id).first()
+    if not appeal:
+        raise HTTPException(404, "Appeal not found")
+    try:
+        updated = approve_payment_appeal(db, appeal, admin.id, body.admin_note or "")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    log_audit(
+        db,
+        "settlement.appeal_approve",
+        user_id=appeal.user_id,
+        actor_id=admin.id,
+        resource_type="settlement_appeal",
+        resource_id=str(appeal.id),
+        detail={"settlement_id": appeal.settlement_id, "tx_hash": appeal.tx_hash},
+        request=request,
+    )
+    return build_admin_appeal_row(db, updated)
+
+
+@router.post("/settlement-appeals/{appeal_id}/reject", response_model=AdminSettlementAppealOut)
+def admin_reject_settlement_appeal(
+    appeal_id: int,
+    body: SettlementAppealReview,
+    request: Request,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    appeal = db.query(SettlementPaymentAppeal).filter(SettlementPaymentAppeal.id == appeal_id).first()
+    if not appeal:
+        raise HTTPException(404, "Appeal not found")
+    try:
+        updated = reject_payment_appeal(db, appeal, admin.id, body.admin_note or "")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    log_audit(
+        db,
+        "settlement.appeal_reject",
+        user_id=appeal.user_id,
+        actor_id=admin.id,
+        resource_type="settlement_appeal",
+        resource_id=str(appeal.id),
+        detail={"settlement_id": appeal.settlement_id, "admin_note": body.admin_note},
+        request=request,
+    )
+    return build_admin_appeal_row(db, updated)
 
 
 # --- Withdrawals ---

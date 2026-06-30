@@ -156,7 +156,7 @@ def positions(user: User = Depends(get_current_user), db: Session = Depends(get_
 
 @router.get("/principal-history", response_model=list[PrincipalSnapshotOut])
 def principal_history(
-    limit: int = 20,
+    limit: int = 50,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):

@@ -8,6 +8,8 @@ export default function AdminSystemTab() {
     t, locale, webhookPayload, setWebhookPayload, runWebhookTest,
     online, monitor, signalLogs, riskAlerts, loginRecords, auditLogs,
     tradeLogs, exportTradeLogsCsv, orders, formatOrderUser, startupAudit, setTab,
+    dingtalkSettings, dingtalkDraft, setDingtalkDraft, saveDingtalkSettings,
+    adminPwdDraft, setAdminPwdDraft, changeAdminPassword,
   } = useAdmin()
 
   const audits = startupAudit?.audits || []
@@ -19,6 +21,35 @@ export default function AdminSystemTab() {
 
   return (
     <>
+      <div className="grid-2-col-gap section-mb-lg">
+        <GlassCard className="p-6">
+          <h3 className="panel-title-sm mb-md">{t('admin.dingtalkSettingsTitle')}</h3>
+          <p className="text-muted text-sm section-mb-sm">{t('admin.dingtalkSettingsHint')}</p>
+          <p className={`text-xs section-mb-sm ${dingtalkSettings?.configured ? 'text-green' : 'text-muted'}`}>
+            {dingtalkSettings?.configured ? t('admin.dingtalkConfigured') : t('admin.dingtalkMissing')}
+          </p>
+          <form onSubmit={saveDingtalkSettings} className="form-stack">
+            <input className="input" placeholder={t('admin.dingtalkWebhookPh')} value={dingtalkDraft.webhook}
+              onChange={e => setDingtalkDraft((d: { webhook: string; secret: string }) => ({ ...d, webhook: e.target.value }))} />
+            <input className="input" type="password" autoComplete="new-password" placeholder={t('admin.dingtalkSecretPh')}
+              value={dingtalkDraft.secret} onChange={e => setDingtalkDraft((d: { webhook: string; secret: string }) => ({ ...d, secret: e.target.value }))} />
+            <button className="btn btn-primary btn-sm" type="submit" disabled={!dingtalkDraft.webhook.trim()}>{t('common.save')}</button>
+          </form>
+        </GlassCard>
+        <GlassCard className="p-6">
+          <h3 className="panel-title-sm mb-md">{t('admin.adminPasswordTitle')}</h3>
+          <p className="text-muted text-sm section-mb-sm">{t('admin.adminPasswordHint')}</p>
+          <form onSubmit={changeAdminPassword} className="form-stack">
+            <input className="input" type="password" autoComplete="current-password" placeholder={t('admin.currentPasswordPh')}
+              value={adminPwdDraft.current} onChange={e => setAdminPwdDraft((d: { current: string; next: string; confirm: string }) => ({ ...d, current: e.target.value }))} required />
+            <input className="input" type="password" autoComplete="new-password" placeholder={t('admin.newPasswordPh')}
+              value={adminPwdDraft.next} onChange={e => setAdminPwdDraft((d: { current: string; next: string; confirm: string }) => ({ ...d, next: e.target.value }))} required />
+            <input className="input" type="password" autoComplete="new-password" placeholder={t('admin.confirmPasswordPh')}
+              value={adminPwdDraft.confirm} onChange={e => setAdminPwdDraft((d: { current: string; next: string; confirm: string }) => ({ ...d, confirm: e.target.value }))} required />
+            <button className="btn btn-primary btn-sm" type="submit">{t('admin.changePassword')}</button>
+          </form>
+        </GlassCard>
+      </div>
       {productionReady === false && (
         <GlassCard className="p-6 section-mb-lg production-checklist-card">
           <h3 className="card-heading">{t('admin.productionChecklistTitle')}</h3>

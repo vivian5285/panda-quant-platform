@@ -4,7 +4,7 @@ import { Copy, Check } from 'lucide-react'
 import GlassCard from './GlassCard'
 import { useI18n } from '../i18n'
 
-type Addr = { chain: string; address: string; address_group?: string }
+type Addr = { chain: string; address: string; address_group?: string; auto_monitor?: boolean }
 
 export default function UserUniqueDepositPanel({ addresses }: { addresses: Addr[] }) {
   const t = useI18n(s => s.t)
@@ -34,6 +34,7 @@ export default function UserUniqueDepositPanel({ addresses }: { addresses: Addr[
     <GlassCard className="p-6 section-mb-lg">
       <h3 className="panel-title-sm mb-xs">{t('settlements.myUniqueAddr')}</h3>
       <p className="text-muted text-sm section-mb-md">{t('settlements.uniqueAddrHint')}</p>
+      <p className="text-muted text-xs section-mb-md">{t('settlements.monitoredChainsHint')}</p>
       {shown.length === 0 ? (
         <p className="text-muted">{t('settlements.noUniqueAddr')}</p>
       ) : (
@@ -43,6 +44,9 @@ export default function UserUniqueDepositPanel({ addresses }: { addresses: Addr[
               <div className="addr-panel-main">
                 <div>
                   <span className="badge badge-green">{a.chain}</span>
+                  {a.auto_monitor !== false && (
+                    <span className="badge badge-gray label-inline">{t('settlements.autoMonitor')}</span>
+                  )}
                   {a.address_group === 'EVM' && (
                     <span className="text-muted label-inline">{t('settlements.evmSharedNote')}</span>
                   )}

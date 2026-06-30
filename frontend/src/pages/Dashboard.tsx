@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import ReactECharts from 'echarts-for-react'
 import Layout from '../components/Layout'
@@ -182,6 +183,7 @@ export default function Dashboard() {
       {!loading && Math.abs(data?.profit_divergence || 0) >= 50 && (
         <GlassCard className="p-4 section-mb-md admin-alert-banner">
           <p className="text-sm">{t('dashboard.divergenceWarn', { amount: Math.abs(data?.profit_divergence || 0).toFixed(2) })}</p>
+          <Link to="/snapshots" className="text-sm link-inline section-mt-xs">{t('dashboard.viewSnapshots')}</Link>
         </GlassCard>
       )}
 

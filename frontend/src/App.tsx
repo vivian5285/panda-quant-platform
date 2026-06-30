@@ -23,6 +23,7 @@ const RiskControl = lazy(() => import('./pages/RiskControl'))
 const Admin = lazy(() => import('./pages/Admin'))
 const Withdraw = lazy(() => import('./pages/Withdraw'))
 const Profile = lazy(() => import('./pages/Profile'))
+const AccountSnapshots = lazy(() => import('./pages/AccountSnapshots'))
 const StrategyAdvantages = lazy(() => import('./pages/StrategyAdvantages'))
 
 function PageFallback() {
@@ -71,6 +72,7 @@ export default function App() {
           <Route path="/api" element={<UserRoute><ApiManage /></UserRoute>} />
           <Route path="/referrals" element={<UserRoute><Referrals /></UserRoute>} />
           <Route path="/settlements" element={<UserRoute><Settlements /></UserRoute>} />
+          <Route path="/snapshots" element={<UserRoute><AccountSnapshots /></UserRoute>} />
           <Route path="/withdraw" element={<UserRoute><Withdraw /></UserRoute>} />
           <Route path="/profile" element={<UserRoute><Profile /></UserRoute>} />
           <Route path="/admin" element={<AdminRoute><Admin /></AdminRoute>} />

@@ -1,12 +1,12 @@
-from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import (
     PlatformDepositAddress, Settlement, PaymentStatus, SUPPORTED_CHAINS,
     WithdrawalAddress, WithdrawalRequest, User, InternalTransfer,
-    UserDepositAddress, SettlementDeposit,
+    UserDepositAddress, SettlementDeposit, SettlementPaymentAppeal,
 )
 from app.schemas import (
     DepositAddressOut, SettlementOut, SettlementPaymentSubmit,
@@ -15,9 +15,13 @@ from app.schemas import (
     WithdrawalCreate, WithdrawalOut, WithdrawSettingsOut, ChainFeeOut,
     InternalTransferCreate, InternalTransferOut, TransferRecipientPreview,
     UserDepositAddressOut, SettlementDepositOut,
+    SettlementPaymentAppealCreate, SettlementPaymentAppealOut,
 )
 from app.api.deps import get_current_user
 from app.services.settlement import submit_settlement_payment
+from app.services.settlement_appeal import create_payment_appeal
+from app.services.settlement_deposit_log import user_deposit_address
+from app.services.audit import log_audit
 from app.services.user_lookup import find_user_by_identifier, mask_user_public, display_name
 from app.services.wallet import (
     get_or_create_reward_account, create_withdrawal, internal_transfer,
@@ -31,6 +35,7 @@ from app.services.platform_runtime import get_withdraw_thresholds
 from app.services.deposit_qr import resolve_deposit_qr_path
 from app.services.auto_payout import process_auto_payout
 from app.services.user_deposit_wallet import ensure_user_deposit_addresses
+from app.services.deposit_chains import MONITORED_DEPOSIT_CHAINS, monitored_chains_status, is_chain_monitored
 from app.config import get_settings
 
 router = APIRouter(tags=["wallet"])
@@ -45,6 +50,16 @@ def list_deposit_addresses(db: Session = Depends(get_db)):
     return [DepositAddressOut.from_model(a) for a in rows]
 
 
+@router.get("/deposit-chains")
+def deposit_chains_info():
+    """Monitored deposit chains for UI (auto-match enabled)."""
+    return {
+        "monitored": list(MONITORED_DEPOSIT_CHAINS),
+        "all_supported": list(SUPPORTED_CHAINS),
+        "status": monitored_chains_status(),
+    }
+
+
 @router.get("/my-deposit-addresses", response_model=list[UserDepositAddressOut])
 def my_deposit_addresses(user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Per-user unique USDT deposit addresses (Binance-style)."""
@@ -56,8 +71,10 @@ def my_deposit_addresses(user=Depends(get_current_user), db: Session = Depends(g
             address=r.address,
             address_group=r.address_group,
             is_unique=True,
+            auto_monitor=is_chain_monitored(r.chain),
         )
         for r in rows
+        if is_chain_monitored(r.chain)
     ]
 
 
@@ -92,6 +109,7 @@ def get_deposit_qr_image(addr_id: int, db: Session = Depends(get_db)):
 def pay_settlement(
     settlement_id: int,
     req: SettlementPaymentSubmit,
+    request: Request,
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -107,7 +125,89 @@ def pay_settlement(
     if s.payment_status not in (PaymentStatus.PENDING.value, PaymentStatus.REJECTED.value):
         raise HTTPException(400, "Settlement payment already submitted")
 
-    return submit_settlement_payment(db, s, req.chain, req.tx_hash, req.amount)
+    try:
+        result = submit_settlement_payment(db, s, req.chain, req.tx_hash, req.amount)
+        dep_addr = user_deposit_address(db, user.id, req.chain)
+        existing = db.query(SettlementDeposit).filter(
+            SettlementDeposit.tx_hash == req.tx_hash.strip()
+        ).first()
+        if not existing:
+            dep = SettlementDeposit(
+                user_id=user.id,
+                settlement_id=s.id,
+                chain=req.chain.upper(),
+                tx_hash=req.tx_hash.strip(),
+                amount=round(req.amount, 6),
+                deposit_address=dep_addr,
+                source="manual",
+                status="matched",
+                matched_at=datetime.utcnow(),
+            )
+            db.add(dep)
+        else:
+            existing.settlement_id = s.id
+            existing.status = "matched"
+            existing.matched_at = datetime.utcnow()
+            existing.source = existing.source or "manual"
+        db.commit()
+        log_audit(
+            db,
+            "settlement.manual_pay",
+            user_id=user.id,
+            actor_id=user.id,
+            resource_type="settlement",
+            resource_id=str(s.id),
+            detail={
+                "chain": req.chain.upper(),
+                "tx_hash": req.tx_hash.strip(),
+                "amount": req.amount,
+                "payable": s.user_payable,
+                "deposit_address": dep_addr,
+            },
+            request=request,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/settlements/{settlement_id}/appeal", response_model=SettlementPaymentAppealOut)
+def appeal_settlement_payment(
+    settlement_id: int,
+    req: SettlementPaymentAppealCreate,
+    request: Request,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        appeal = create_payment_appeal(
+            db, user, settlement_id, req.chain, req.tx_hash, req.amount, req.note or "",
+        )
+        log_audit(
+            db,
+            "settlement.appeal_submit",
+            user_id=user.id,
+            actor_id=user.id,
+            resource_type="settlement_appeal",
+            resource_id=str(appeal.id),
+            detail={
+                "settlement_id": settlement_id,
+                "chain": req.chain.upper(),
+                "tx_hash": req.tx_hash.strip(),
+                "amount": req.amount,
+            },
+            request=request,
+        )
+        return appeal
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/settlement-appeals", response_model=list[SettlementPaymentAppealOut])
+def my_settlement_appeals(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    return db.query(SettlementPaymentAppeal).filter(
+        SettlementPaymentAppeal.user_id == user.id
+    ).order_by(SettlementPaymentAppeal.created_at.desc()).limit(50).all()
 
 
 @router.get("/reward-account", response_model=RewardAccountOut)

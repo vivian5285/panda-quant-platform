@@ -57,6 +57,103 @@ class PayoutSettingsUpdate(BaseModel):
     clear_chains: Optional[list[str]] = None
 
 
+class DepositWalletSettingsOut(BaseModel):
+    configured: bool = False
+    source: Optional[str] = None
+    derivation_offset: int = 1_000_000
+
+
+class DepositWalletSettingsUpdate(BaseModel):
+    mnemonic: Optional[str] = None
+    clear: bool = False
+    backfill: bool = True
+
+
+class DepositWalletSettingsUpdateResult(DepositWalletSettingsOut):
+    users_backfilled: int = 0
+
+
+class DepositSweepSettingsOut(BaseModel):
+    auto_enabled: bool = False
+    min_usdt: float = 1.0
+    require_matched_deposit: bool = True
+    mnemonic_configured: bool = False
+    cold_wallets: dict[str, str] = {}
+    cold_wallets_configured: dict[str, bool] = {}
+    gas_funder_configured: dict[str, bool] = {}
+    rpc_ready: dict[str, bool] = {}
+    ready_chains: list[str] = []
+
+
+class DepositSweepSettingsUpdate(BaseModel):
+    auto_enabled: Optional[bool] = None
+    min_usdt: Optional[float] = None
+    require_matched_deposit: Optional[bool] = None
+    cold_wallets: Optional[dict[str, str]] = None
+    gas_funder_keys: Optional[dict[str, str]] = None
+    clear_gas_funder: bool = False
+
+
+class DepositSweepLogOut(BaseModel):
+    id: int
+    user_id: int
+    user_uid: str = ""
+    chain: str
+    from_address: str
+    to_address: str
+    amount: float
+    status: str
+    gas_tx_hash: Optional[str] = None
+    sweep_tx_hash: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: datetime
+
+
+class WalletBalanceSlotOut(BaseModel):
+    role: str = ""
+    chain: str
+    configured: bool = False
+    address: str = ""
+    usdt: Optional[float] = None
+    native: Optional[float] = None
+    native_symbol: str = ""
+    rpc_ready: bool = False
+    error: Optional[str] = None
+    gas_topup_hint: Optional[str] = None
+    native_low: bool = False
+    auto_payout_enabled: Optional[bool] = None
+    uses_hot_wallet: Optional[bool] = None
+
+
+class PlatformWalletBalanceOut(BaseModel):
+    id: int
+    chain: str
+    label: str = ""
+    address: str
+    is_active: bool = True
+    has_qr: bool = False
+    usdt: Optional[float] = None
+    native: Optional[float] = None
+    native_symbol: str = ""
+    rpc_ready: bool = False
+    error: Optional[str] = None
+    native_low: bool = False
+
+
+class WalletOverviewOut(BaseModel):
+    updated_at: str
+    chains: list[str] = []
+    rpc_status: dict[str, bool] = {}
+    totals: dict[str, float] = {}
+    hd_deposit: dict = {}
+    sweep: dict = {}
+    payout: dict = {}
+    cold_wallets: list[WalletBalanceSlotOut] = []
+    hot_wallets: list[WalletBalanceSlotOut] = []
+    gas_funders: list[WalletBalanceSlotOut] = []
+    platform_addresses: list[PlatformWalletBalanceOut] = []
+
+
 class ApiBindRequest(BaseModel):
     api_key: str
     api_secret: str
@@ -277,6 +374,7 @@ class UserDepositAddressOut(BaseModel):
     address: str
     address_group: str = "EVM"
     is_unique: bool = True
+    auto_monitor: bool = True
 
     class Config:
         from_attributes = True
@@ -289,11 +387,98 @@ class SettlementDepositOut(BaseModel):
     amount: float
     status: str
     settlement_id: Optional[int] = None
+    deposit_address: Optional[str] = None
+    source: Optional[str] = None
     detected_at: datetime
     matched_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
+
+
+class SettlementPaymentAppealCreate(BaseModel):
+    chain: str
+    tx_hash: str
+    amount: float
+    note: Optional[str] = None
+
+
+class SettlementPaymentAppealOut(BaseModel):
+    id: int
+    settlement_id: int
+    chain: str
+    tx_hash: str
+    claimed_amount: float
+    deposit_address: Optional[str] = None
+    user_note: Optional[str] = None
+    status: str
+    admin_note: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AdminSettlementDepositOut(BaseModel):
+    id: int
+    user_id: int
+    user_uid: str
+    user_display: str
+    settlement_id: Optional[int] = None
+    settlement_payable: Optional[float] = None
+    settlement_status: Optional[str] = None
+    chain: str
+    tx_hash: str
+    amount: float
+    deposit_address: Optional[str] = None
+    from_address: Optional[str] = None
+    source: str
+    status: str
+    fee_fully_paid: Optional[bool] = None
+    detected_at: datetime
+    matched_at: Optional[datetime] = None
+
+
+class AdminSettlementAppealOut(BaseModel):
+    id: int
+    user_id: int
+    user_uid: str
+    user_display: str
+    settlement_id: int
+    settlement_payable: Optional[float] = None
+    settlement_status: Optional[str] = None
+    chain: str
+    tx_hash: str
+    claimed_amount: float
+    deposit_address: Optional[str] = None
+    user_note: Optional[str] = None
+    status: str
+    fee_fully_paid: Optional[bool] = None
+    admin_note: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    created_at: datetime
+
+
+class DingTalkSettingsOut(BaseModel):
+    configured: bool = False
+    has_secret: bool = False
+    source: Optional[str] = None
+
+
+class DingTalkSettingsUpdate(BaseModel):
+    webhook: Optional[str] = None
+    secret: Optional[str] = None
+    clear: bool = False
+
+
+class AdminPasswordChange(BaseModel):
+    current_password: str = Field(min_length=6)
+    new_password: str = Field(min_length=8)
+
+
+class SettlementAppealReview(BaseModel):
+    admin_note: Optional[str] = None
 
 
 class DepositAddressCreate(BaseModel):

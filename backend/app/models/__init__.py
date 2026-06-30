@@ -223,12 +223,56 @@ class SettlementDeposit(Base):
     tx_hash = Column(String(128), unique=True, index=True, nullable=False)
     amount = Column(Float, default=0.0)
     from_address = Column(String(128), nullable=True)
+    deposit_address = Column(String(128), nullable=True)
+    source = Column(String(20), default="auto")
     status = Column(String(20), default="detected")
     detected_at = Column(DateTime, default=datetime.utcnow)
     matched_at = Column(DateTime, nullable=True)
 
     user = relationship("User", foreign_keys=[user_id])
     settlement = relationship("Settlement", foreign_keys=[settlement_id])
+
+
+class SettlementPaymentAppeal(Base):
+    """User-submitted payment proof when auto-detection failed."""
+    __tablename__ = "settlement_payment_appeals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    settlement_id = Column(Integer, ForeignKey("settlements.id"), nullable=False, index=True)
+    chain = Column(String(20), nullable=False)
+    tx_hash = Column(String(128), nullable=False, index=True)
+    claimed_amount = Column(Float, default=0.0)
+    deposit_address = Column(String(128), nullable=True)
+    user_note = Column(Text, nullable=True)
+    status = Column(String(20), default="submitted", index=True)
+    admin_note = Column(Text, nullable=True)
+    reviewed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    settlement_deposit_id = Column(Integer, ForeignKey("settlement_deposits.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", foreign_keys=[user_id])
+    settlement = relationship("Settlement", foreign_keys=[settlement_id])
+
+
+class DepositSweepLog(Base):
+    """USDT sweep from user HD sub-address to cold wallet."""
+    __tablename__ = "deposit_sweep_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    chain = Column(String(20), nullable=False, index=True)
+    from_address = Column(String(128), nullable=False)
+    to_address = Column(String(128), nullable=False)
+    amount = Column(Float, default=0.0)
+    status = Column(String(20), default="pending", index=True)
+    gas_tx_hash = Column(String(128), nullable=True)
+    sweep_tx_hash = Column(String(128), nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    user = relationship("User", foreign_keys=[user_id])
 
 
 class RewardAccount(Base):

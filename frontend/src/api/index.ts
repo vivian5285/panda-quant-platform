@@ -88,7 +88,7 @@ export const userApi = {
   unbindApi: (email_code: string, phone_code: string) =>
     api.delete('/users/bind-api', { params: { email_code, phone_code } }).then(r => r.data),
   positions: () => api.get('/users/positions').then(r => r.data),
-  principalHistory: () => api.get('/users/principal-history').then(r => r.data),
+  principalHistory: () => api.get('/users/principal-history', { params: { limit: 50 } }).then(r => r.data),
   profile: () => api.get('/users/profile').then(r => r.data),
   tradingControl: () => api.get('/users/trading-control').then(r => r.data),
   updateTradingControl: (data: { trading_paused?: boolean; risk_level?: string }) =>
@@ -145,7 +145,11 @@ export const referralApi = {
 export const walletApi = {
   depositAddresses: () => api.get('/deposit-addresses').then(r => r.data),
   myDepositAddresses: () => api.get('/my-deposit-addresses').then(r => r.data),
+  depositChains: () => api.get('/deposit-chains').then(r => r.data),
   settlementDeposits: () => api.get('/settlement-deposits').then(r => r.data),
+  settlementAppeals: () => api.get('/settlement-appeals').then(r => r.data),
+  appealSettlement: (id: number, chain: string, tx_hash: string, amount: number, note?: string) =>
+    api.post(`/settlements/${id}/appeal`, { chain, tx_hash, amount, note }).then(r => r.data),
   depositAddressQrUrl: (id: number) => `/api/deposit-addresses/${id}/qr`,
   paySettlement: (id: number, chain: string, tx_hash: string, amount: number) =>
     api.post(`/settlements/${id}/pay`, { chain, tx_hash, amount }).then(r => r.data),
@@ -219,6 +223,34 @@ export const adminApi = {
   payoutSettings: () => api.get('/admin/payout/settings').then(r => r.data),
   updatePayoutSettings: (data: { auto_enabled?: boolean; private_keys?: Record<string, string> }) =>
     api.patch('/admin/payout/settings', data).then(r => r.data),
+  depositWalletSettings: () => api.get('/admin/deposit/wallet-settings').then(r => r.data),
+  updateDepositWalletSettings: (data: { mnemonic?: string; clear?: boolean; backfill?: boolean }) =>
+    api.patch('/admin/deposit/wallet-settings', data).then(r => r.data),
+  sweepSettings: () => api.get('/admin/sweep/settings').then(r => r.data),
+  updateSweepSettings: (data: {
+    auto_enabled?: boolean
+    min_usdt?: number
+    require_matched_deposit?: boolean
+    cold_wallets?: Record<string, string>
+    gas_funder_keys?: Record<string, string>
+    clear_gas_funder?: boolean
+  }) => api.patch('/admin/sweep/settings', data).then(r => r.data),
+  sweepLogs: (limit?: number) => api.get('/admin/sweep/logs', { params: { limit: limit || 50 } }).then(r => r.data),
+  runSweep: () => api.post('/admin/sweep/run').then(r => r.data),
+  walletOverview: () => api.get('/admin/wallet/overview').then(r => r.data),
+  dingtalkSettings: () => api.get('/admin/dingtalk/settings').then(r => r.data),
+  updateDingtalkSettings: (data: { webhook?: string; secret?: string; clear?: boolean }) =>
+    api.patch('/admin/dingtalk/settings', data).then(r => r.data),
+  changeAdminPassword: (current_password: string, new_password: string) =>
+    api.post('/admin/settings/change-password', { current_password, new_password }).then(r => r.data),
+  settlementDepositsAdmin: (params?: { status?: string; user_id?: number; limit?: number }) =>
+    api.get('/admin/settlement-deposits', { params }).then(r => r.data),
+  settlementAppealsAdmin: (params?: { status?: string; limit?: number }) =>
+    api.get('/admin/settlement-appeals', { params }).then(r => r.data),
+  approveSettlementAppeal: (id: number, admin_note?: string) =>
+    api.post(`/admin/settlement-appeals/${id}/approve`, { admin_note }).then(r => r.data),
+  rejectSettlementAppeal: (id: number, admin_note?: string) =>
+    api.post(`/admin/settlement-appeals/${id}/reject`, { admin_note }).then(r => r.data),
   withdrawals: () => api.get('/admin/withdrawals').then(r => r.data),
   approveWithdrawal: (id: number) => api.post(`/admin/withdrawals/${id}/approve`).then(r => r.data),
   completeWithdrawal: (id: number, tx_hash: string, admin_note?: string) =>

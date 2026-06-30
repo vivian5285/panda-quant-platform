@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import Trade, User, PlatformDepositAddress, SUPPORTED_CHAINS
+from app.services.dingtalk_secrets import is_dingtalk_configured, get_dingtalk_secret
+from app.services.deposit_secrets import is_deposit_mnemonic_configured
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -17,6 +19,8 @@ INSECURE_SECRET_MARKERS = (
     "admin123456",
     "528586",
     "your_vps_ip",
+    "0000:6080",
+    "0000:8000",
 )
 
 
@@ -36,7 +40,7 @@ def validate_production_secrets() -> list[str]:
         elif any(m in low for m in INSECURE_SECRET_MARKERS):
             warnings.append(f"{name} 仍为默认值，生产环境必须修改")
 
-    if "localhost" in settings.FRONTEND_URL.lower() or "your_vps" in settings.FRONTEND_URL.lower():
+    if "localhost" in settings.FRONTEND_URL.lower() or "your_vps" in settings.FRONTEND_URL.lower() or "0000:" in settings.FRONTEND_URL:
         warnings.append(f"FRONTEND_URL 未配置为生产域名: {settings.FRONTEND_URL}")
 
     if settings.SMS_DEV_MODE:
@@ -45,13 +49,13 @@ def validate_production_secrets() -> list[str]:
     if settings.EMAIL_DEV_MODE:
         warnings.append("EMAIL_DEV_MODE=true（生产应 false + 配置 SMTP_*）")
 
-    if not settings.DINGTALK_WEBHOOK.strip():
-        warnings.append("DINGTALK_WEBHOOK 未配置（交易异常将无法通知管理员）")
+    if not is_dingtalk_configured():
+        warnings.append("钉钉 Webhook 未配置（交易异常将无法通知管理员）")
 
-    if not settings.DEPOSIT_HD_MNEMONIC.strip():
-        warnings.append("DEPOSIT_HD_MNEMONIC 未配置（无法为用户生成专属充值地址，仅支持手动提交 TxHash）")
+    if not is_deposit_mnemonic_configured():
+        warnings.append("充值 HD 助记词未配置（无法为用户生成专属充值地址，仅支持手动提交 TxHash）")
 
-    if settings.DINGTALK_WEBHOOK.strip() and not settings.DINGTALK_SECRET.strip():
+    if is_dingtalk_configured() and not get_dingtalk_secret().strip():
         warnings.append("DINGTALK_SECRET 未配置（钉钉机器人若启用加签将推送失败）")
 
     return warnings
@@ -76,7 +80,7 @@ def validate_production_infra(db: Session | None = None) -> list[str]:
             PlatformDepositAddress.is_active == True
         ).all()
         if not active_addrs:
-            notes.append("未配置平台 USDT 收款地址（管理后台 → 收款地址）")
+            notes.append("未配置平台 USDT 收款地址（管理后台 → 钱包中心 → 公共备用）")
         else:
             chains = {a.chain for a in active_addrs}
             missing_chains = [c for c in SUPPORTED_CHAINS if c not in chains]
@@ -85,8 +89,33 @@ def validate_production_infra(db: Session | None = None) -> list[str]:
             missing_qr = [a for a in active_addrs if not a.qr_image_filename]
             if missing_qr:
                 notes.append(
-                    f"{len(missing_qr)} 条启用收款地址未上传钱包二维码（管理后台 → 收款地址）"
+                    f"{len(missing_qr)} 条启用收款地址未上传钱包二维码（管理后台 → 钱包中心）"
                 )
+
+        if is_deposit_mnemonic_configured():
+            from app.services.deposit_chains import monitored_chains_status
+            for item in monitored_chains_status():
+                if not item.get("ready"):
+                    notes.append(f"充值监控链 {item['chain']} RPC/API 未配置")
+        else:
+            notes.append("充值 HD 助记词未配置时无法生成用户专属充值地址")
+
+        if not settings.ENABLE_BACKGROUND_SCHEDULERS:
+            notes.append("ENABLE_BACKGROUND_SCHEDULERS=false（结算扫描与充值监控未启用）")
+
+        rpc_checks = [
+            ("ETH_RPC_URL", settings.ETH_RPC_URL, "ERC20/Arbitrum 充值监控与 EVM 打款"),
+            ("BSC_RPC_URL", settings.BSC_RPC_URL, "BEP20 充值监控与 BSC 打款"),
+        ]
+        if is_deposit_mnemonic_configured() or settings.PAYOUT_AUTO_ENABLED:
+            for name, val, purpose in rpc_checks:
+                if not (val or "").strip():
+                    notes.append(f"{name} 未配置（{purpose}）")
+            if is_deposit_mnemonic_configured():
+                if not settings.ARBITRUM_RPC_URL.strip():
+                    notes.append("ARBITRUM_RPC_URL 未配置（Arbitrum USDT 充值监控）")
+                if not settings.POLYGON_RPC_URL.strip():
+                    notes.append("POLYGON_RPC_URL 未配置（Polygon USDT 充值监控）")
 
     return notes
 

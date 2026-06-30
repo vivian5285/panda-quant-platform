@@ -9,6 +9,7 @@ from tronpy.keys import PrivateKey
 
 from app.config import get_settings
 from app.models import User, UserDepositAddress, SUPPORTED_CHAINS
+from app.services.deposit_secrets import get_deposit_hd_mnemonic, is_deposit_mnemonic_configured
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -22,7 +23,7 @@ def _derivation_index(user_id: int) -> int:
 
 
 def _mnemonic_configured() -> bool:
-    return bool(settings.DEPOSIT_HD_MNEMONIC.strip())
+    return is_deposit_mnemonic_configured()
 
 
 def derive_evm_address(mnemonic: str, index: int) -> tuple[str, str]:
@@ -47,10 +48,10 @@ def ensure_user_deposit_addresses(db: Session, user: User) -> list[UserDepositAd
         return existing
 
     if not _mnemonic_configured():
-        logger.warning("[DepositWallet] DEPOSIT_HD_MNEMONIC not set — skip address generation for user %s", user.id)
+        logger.warning("[DepositWallet] deposit HD mnemonic not set — skip address generation for user %s", user.id)
         return []
 
-    mnemonic = settings.DEPOSIT_HD_MNEMONIC.strip()
+    mnemonic = get_deposit_hd_mnemonic()
     index = _derivation_index(user.id)
     evm_address, _ = derive_evm_address(mnemonic, index)
     tron_address = derive_tron_address(mnemonic, index)
@@ -103,6 +104,24 @@ def backfill_all_user_deposit_addresses(db: Session) -> int:
 def user_deposit_address_map(db: Session, user_id: int) -> dict[str, str]:
     rows = db.query(UserDepositAddress).filter(UserDepositAddress.user_id == user_id).all()
     return {r.chain: r.address for r in rows}
+
+
+def get_user_deposit_key_material(user_id: int) -> dict | None:
+    """Return derived addresses and private keys for sweep (server-side only)."""
+    if not _mnemonic_configured():
+        return None
+    mnemonic = get_deposit_hd_mnemonic()
+    index = _derivation_index(user_id)
+    evm_address, evm_pk = derive_evm_address(mnemonic, index)
+    tron_address = derive_tron_address(mnemonic, index)
+    pk_hex = evm_pk[2:] if evm_pk.startswith("0x") else evm_pk
+    return {
+        "derivation_index": index,
+        "evm_address": evm_address,
+        "evm_private_key": evm_pk,
+        "tron_address": tron_address,
+        "tron_private_key_hex": pk_hex,
+    }
 
 
 def find_user_by_deposit_address(db: Session, address: str) -> User | None:

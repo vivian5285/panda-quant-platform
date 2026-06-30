@@ -31,7 +31,7 @@ export default function AdminSettlementsTab() {
               </td>
               <td><span className="badge badge-gray">{payStatus(s.payment_status)}</span></td>
               <td className="table-actions">
-                {(s.payment_status === 'paid' || s.payment_status === 'pending') && (
+                {(s.payment_status === 'paid') && (
                   <button className="btn btn-ghost btn-xs" onClick={() => confirm(s.id)}>{t('common.confirm')}</button>
                 )}
                 {s.payment_status === 'paid' && (

@@ -13,6 +13,7 @@ const TAB_LOADERS: Record<AdminTabKey, ReturnType<typeof lazy>> = {
   audit: lazy(() => import('./tabs/AdminAuditTab')),
   finance: lazy(() => import('./tabs/AdminFinanceTab')),
   settlements: lazy(() => import('./tabs/AdminSettlementsTab')),
+  deposits: lazy(() => import('./tabs/AdminDepositsTab')),
   referrals: lazy(() => import('./tabs/AdminReferralsTab')),
   withdrawals: lazy(() => import('./tabs/AdminWithdrawalsTab')),
   addresses: lazy(() => import('./tabs/AdminAddressesTab')),

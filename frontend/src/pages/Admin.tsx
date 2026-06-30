@@ -79,6 +79,29 @@ export default function Admin() {
   const [payoutSettings, setPayoutSettings] = useState<{ auto_enabled: boolean; chains: Record<string, boolean> } | null>(null)
   const [payoutKeyDraft, setPayoutKeyDraft] = useState<Record<string, string>>({})
   const [payoutAutoDraft, setPayoutAutoDraft] = useState(false)
+  const [depositWalletSettings, setDepositWalletSettings] = useState<{
+    configured: boolean
+    source?: string | null
+    derivation_offset: number
+  } | null>(null)
+  const [depositMnemonicDraft, setDepositMnemonicDraft] = useState('')
+  const [depositBackfillDraft, setDepositBackfillDraft] = useState(true)
+  const [sweepSettings, setSweepSettings] = useState<any>(null)
+  const [sweepLogs, setSweepLogs] = useState<any[]>([])
+  const [sweepColdDraft, setSweepColdDraft] = useState<Record<string, string>>({})
+  const [sweepGasDraft, setSweepGasDraft] = useState<Record<string, string>>({})
+  const [sweepAutoDraft, setSweepAutoDraft] = useState(false)
+  const [sweepMinDraft, setSweepMinDraft] = useState('1')
+  const [sweepRequireMatched, setSweepRequireMatched] = useState(true)
+  const [walletOverview, setWalletOverview] = useState<any>(null)
+  const [walletOverviewLoading, setWalletOverviewLoading] = useState(false)
+  const [dingtalkSettings, setDingtalkSettings] = useState<{ configured: boolean; has_secret: boolean; source?: string } | null>(null)
+  const [dingtalkDraft, setDingtalkDraft] = useState({ webhook: '', secret: '' })
+  const [adminPwdDraft, setAdminPwdDraft] = useState({ current: '', next: '', confirm: '' })
+  const [settlementDeposits, setSettlementDeposits] = useState<any[]>([])
+  const [settlementAppeals, setSettlementAppeals] = useState<any[]>([])
+  const [depositFilter, setDepositFilter] = useState('')
+  const [appealFilter, setAppealFilter] = useState('submitted')
   const [completeTx, setCompleteTx] = useState<Record<number, string>>({})
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null)
   const [userDetail, setUserDetail] = useState<any>(null)
@@ -145,8 +168,21 @@ export default function Admin() {
     setThresholdDraft,
     setPayoutSettings,
     setPayoutKeyDraft,
+    setDepositWalletSettings,
+    setDepositMnemonicDraft,
+    setSweepSettings,
+    setSweepLogs,
+    setSweepColdDraft,
+    setSweepGasDraft,
+    setDingtalkSettings,
+    setDingtalkDraft,
+    setSettlementDeposits,
+    setSettlementAppeals,
+    setDepositFilter,
+    setAppealFilter,
     setPlatformAnalytics,
     setStartupAudit,
+    setWalletOverview,
   }), [])
 
   const userListFilters = useMemo((): UserListFilters => ({
@@ -278,6 +314,160 @@ export default function Admin() {
     }
   }
 
+  useEffect(() => {
+    if (sweepSettings) {
+      setSweepAutoDraft(!!sweepSettings.auto_enabled)
+      setSweepMinDraft(String(sweepSettings.min_usdt ?? 1))
+      setSweepRequireMatched(sweepSettings.require_matched_deposit !== false)
+    }
+  }, [sweepSettings])
+
+  const refreshWalletOverview = useCallback(async () => {
+    setWalletOverviewLoading(true)
+    try {
+      setWalletOverview(await adminApi.walletOverview())
+    } catch {
+      /* ignore */
+    } finally {
+      setWalletOverviewLoading(false)
+    }
+  }, [])
+
+  const saveSweepSettings = async (e: React.FormEvent) => {
+    e.preventDefault()
+    try {
+      const cold_wallets: Record<string, string> = { ...sweepColdDraft }
+      const gas_funder_keys: Record<string, string> = {}
+      for (const [k, v] of Object.entries(sweepGasDraft)) {
+        if (v?.trim()) gas_funder_keys[k] = v.trim()
+      }
+      const res = await adminApi.updateSweepSettings({
+        auto_enabled: sweepAutoDraft,
+        min_usdt: parseFloat(sweepMinDraft) || 1,
+        require_matched_deposit: sweepRequireMatched,
+        cold_wallets,
+        gas_funder_keys: Object.keys(gas_funder_keys).length ? gas_funder_keys : undefined,
+      })
+      setSweepSettings(res)
+      setSweepColdDraft(res.cold_wallets || {})
+      setSweepGasDraft({})
+      toast.success(t('admin.sweepSettingsSaved'))
+      load()
+      refreshWalletOverview()
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('admin.sweepSettingsFail'))
+    }
+  }
+
+  const runSweepNow = async () => {
+    try {
+      const stats = await adminApi.runSweep()
+      toast.success(t('admin.sweepRunDone', { swept: stats.swept || 0, failed: stats.failed || 0 }))
+      load()
+      refreshWalletOverview()
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('admin.sweepRunFail'))
+    }
+  }
+
+  const saveDepositWalletSettings = async (e: React.FormEvent) => {
+    e.preventDefault()
+    try {
+      const res = await adminApi.updateDepositWalletSettings({
+        mnemonic: depositMnemonicDraft.trim() || undefined,
+        backfill: depositBackfillDraft,
+      })
+      setDepositWalletSettings(res)
+      setDepositMnemonicDraft('')
+      toast.success(
+        res.users_backfilled
+          ? t('admin.depositMnemonicSavedBackfill', { count: res.users_backfilled })
+          : t('admin.depositMnemonicSaved'),
+      )
+      load()
+      refreshWalletOverview()
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('admin.depositMnemonicFail'))
+    }
+  }
+
+  const clearDepositWalletSettings = async () => {
+    try {
+      const res = await adminApi.updateDepositWalletSettings({ clear: true, backfill: false })
+      setDepositWalletSettings(res)
+      setDepositMnemonicDraft('')
+      toast.success(t('admin.depositMnemonicCleared'))
+      load()
+      refreshWalletOverview()
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('admin.depositMnemonicFail'))
+    }
+  }
+
+  const saveDingtalkSettings = async (e: React.FormEvent) => {
+    e.preventDefault()
+    try {
+      const res = await adminApi.updateDingtalkSettings({
+        webhook: dingtalkDraft.webhook.trim() || undefined,
+        secret: dingtalkDraft.secret.trim() || undefined,
+      })
+      setDingtalkSettings(res)
+      setDingtalkDraft({ webhook: '', secret: '' })
+      toast.success(t('admin.dingtalkSaved'))
+      load()
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('admin.dingtalkFail'))
+    }
+  }
+
+  const changeAdminPassword = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (adminPwdDraft.next !== adminPwdDraft.confirm) {
+      toast.error(t('admin.passwordMismatch'))
+      return
+    }
+    try {
+      await adminApi.changeAdminPassword(adminPwdDraft.current, adminPwdDraft.next)
+      setAdminPwdDraft({ current: '', next: '', confirm: '' })
+      toast.success(t('admin.passwordChanged'))
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('admin.passwordChangeFail'))
+    }
+  }
+
+  const approveAppeal = async (id: number) => {
+    try {
+      await adminApi.approveSettlementAppeal(id)
+      toast.success(t('admin.appealApproved'))
+      load()
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('admin.appealActionFail'))
+    }
+  }
+
+  const rejectAppeal = async (id: number) => {
+    const note = window.prompt(t('admin.appealRejectNote')) || ''
+    try {
+      await adminApi.rejectSettlementAppeal(id, note || undefined)
+      toast.success(t('admin.appealRejected'))
+      load()
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('admin.appealActionFail'))
+    }
+  }
+
+  useEffect(() => {
+    if (tab !== 'deposits') return
+    adminApi.settlementDepositsAdmin({ status: depositFilter || undefined, limit: 200 })
+      .then(setSettlementDeposits).catch(() => setSettlementDeposits([]))
+  }, [tab, depositFilter])
+
+  useEffect(() => {
+    if (tab !== 'deposits') return
+    adminApi.settlementAppealsAdmin({ status: appealFilter || undefined, limit: 200 })
+      .then(setSettlementAppeals).catch(() => setSettlementAppeals([]))
+  }, [tab, appealFilter])
+
   const savePayoutSettings = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
@@ -293,6 +483,7 @@ export default function Admin() {
       setPayoutKeyDraft({})
       toast.success(t('admin.payoutKeysSaved'))
       load()
+      refreshWalletOverview()
     } catch (err: any) {
       toast.error(err.response?.data?.detail || t('admin.payoutKeysFail'))
     }
@@ -747,6 +938,7 @@ export default function Admin() {
       home: t('admin.tabOverview'), users: t('admin.tabUsers'), signals: t('admin.tabSignals'),
       execution: t('admin.tabExecution'), risk: t('admin.tabRisk'), analytics: t('admin.tabAnalytics'),
       audit: t('admin.tabAudit'), finance: t('admin.tabFinance'), settlements: t('admin.tabSettlements'),
+      deposits: t('admin.tabDeposits'),
       referrals: t('admin.tabReferrals'),
       withdrawals: t('admin.tabWithdrawals'), addresses: t('admin.tabAddresses'), system: t('admin.tabSystem'),
     }
@@ -769,6 +961,17 @@ export default function Admin() {
     newAddr, setNewAddr, editingAddr, setEditingAddr,
     withdrawThresholds, thresholdDraft, setThresholdDraft,
     payoutSettings, payoutKeyDraft, setPayoutKeyDraft, payoutAutoDraft, setPayoutAutoDraft,
+    depositWalletSettings, depositMnemonicDraft, setDepositMnemonicDraft,
+    depositBackfillDraft, setDepositBackfillDraft,
+    sweepSettings, sweepLogs, sweepColdDraft, setSweepColdDraft,
+    sweepGasDraft, setSweepGasDraft, sweepAutoDraft, setSweepAutoDraft,
+    sweepMinDraft, setSweepMinDraft, sweepRequireMatched, setSweepRequireMatched,
+    saveSweepSettings, runSweepNow,
+    walletOverview, walletOverviewLoading, refreshWalletOverview,
+    dingtalkSettings, dingtalkDraft, setDingtalkDraft,
+    adminPwdDraft, setAdminPwdDraft,
+    settlementDeposits, settlementAppeals, depositFilter, setDepositFilter, appealFilter, setAppealFilter,
+    saveDingtalkSettings, changeAdminPassword, approveAppeal, rejectAppeal,
     completeTx, setCompleteTx,
     selectedUserId, userDetail, userTrades, userLogs, setUserLogs,
     userDetailTab, setUserDetailTab,
@@ -778,7 +981,9 @@ export default function Admin() {
     platformAnalytics,
     startupAudit,
     load, loadUserDetail, closeUserDetail,
-    runSettlement, confirm, addAddr, saveEditingAddr, uploadAddrQr, removeAddrQr, saveWithdrawThresholds, savePayoutSettings, completeWd,
+    runSettlement, confirm, addAddr, saveEditingAddr, uploadAddrQr, removeAddrQr, saveWithdrawThresholds,
+    saveDepositWalletSettings, clearDepositWalletSettings,
+    savePayoutSettings, completeWd,
     setAdminConfirm, forceUserPause, forceCloseUser, setUserRisk,
     saveTemplateEdit, exportAuditCsv, saveSignalTemplate, testTemplate, reviewStrategy,
     exportUsersCsv, toggleUserSelect, toggleSelectAllUsers, runBatchNotify, runBatchPause,

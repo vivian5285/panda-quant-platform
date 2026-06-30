@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     DEPOSIT_DERIVATION_OFFSET: int = 1_000_000
     DEPOSIT_SCAN_INTERVAL_SEC: int = 180
     DEPOSIT_EVM_SCAN_BLOCKS: int = 2000
+    DEPOSIT_SWEEP_AUTO_ENABLED: bool = False
+    DEPOSIT_SWEEP_MIN_USDT: float = 1.0
+    DEPOSIT_SWEEP_INTERVAL_SEC: int = 3600
 
     # Dual profit monitor: warn when |equity_delta - trade_pnl| exceeds this (USD)
     PROFIT_DIVERGENCE_WARN_USD: float = 50.0

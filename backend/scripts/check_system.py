@@ -77,6 +77,15 @@ def check_imports() -> None:
         "app.services.startup_audit",
         "app.services.api_validation",
         "app.services.principal",
+        "app.services.profit_audit",
+        "app.services.deposit_monitor",
+        "app.services.deposit_chains",
+        "app.services.scheduler",
+        "app.services.user_deposit_wallet",
+        "app.services.deposit_sweep",
+        "app.services.deposit_sweep_config",
+        "app.services.wallet_balance",
+        "app.services.wallet_overview",
     ]
     for mod in modules:
         try:
@@ -182,6 +191,50 @@ def check_auth_stack() -> None:
         ok("verification_codes 表已定义")
 
 
+def check_deposit_and_scheduler() -> None:
+    print("\n[11] 充值监控 & 后台调度")
+    from app.services.deposit_chains import MONITORED_DEPOSIT_CHAINS, monitored_chains_status
+    from app.config import get_settings
+
+    from app.services.deposit_secrets import is_deposit_mnemonic_configured
+
+    s = get_settings()
+    ok(f"监控链: {', '.join(MONITORED_DEPOSIT_CHAINS)}")
+    if s.ENABLE_BACKGROUND_SCHEDULERS:
+        ok("ENABLE_BACKGROUND_SCHEDULERS=true")
+    else:
+        warn("ENABLE_BACKGROUND_SCHEDULERS=false")
+
+    if is_deposit_mnemonic_configured():
+        src = "后台配置" if not s.DEPOSIT_HD_MNEMONIC.strip() else "env/后台"
+        ok(f"充值 HD 助记词已配置 ({src})")
+        from app.services.deposit_sweep_config import get_sweep_settings, is_sweep_auto_enabled
+        sweep = get_sweep_settings()
+        if is_sweep_auto_enabled():
+            ok(f"USDT 自动归集已启用 · 就绪链 {', '.join(sweep.get('ready_chains') or []) or '无'}")
+        else:
+            warn("USDT 自动归集未启用（管理后台 → 钱包中心 → 冷钱包/归集）")
+        for item in monitored_chains_status():
+            if item.get("ready"):
+                ok(f"充值监控 {item['chain']} RPC/API 就绪")
+            else:
+                warn(f"充值监控 {item['chain']} RPC/API 未配置")
+    else:
+        warn("充值 HD 助记词未配置（专属充值地址不可用）")
+
+
+def check_txhash_guard() -> None:
+    print("\n[12] 结算 TxHash 防重复")
+    import inspect
+    from app.services.settlement import submit_settlement_payment
+
+    src = inspect.getsource(submit_settlement_payment)
+    if "SettlementDeposit" in src and "已被使用" in src:
+        ok("submit_settlement_payment 含 TxHash 重复校验")
+    else:
+        fail("submit_settlement_payment 缺少 TxHash 重复校验")
+
+
 def check_api_principal() -> None:
     print("\n[10] API 校验 & 初始本金周期")
     from app.models import PrincipalSnapshot, User
@@ -191,7 +244,7 @@ def check_api_principal() -> None:
     )
 
     ok("validate_binance_api 已加载")
-    ok("principal 周期: api_bind / settlement_reset")
+    ok("principal 周期: api_bind / settlement_reset / supervisor_restart")
     if hasattr(User, "initial_principal"):
         ok("User.initial_principal 字段")
     else:
@@ -200,6 +253,10 @@ def check_api_principal() -> None:
         ok("principal_snapshots 表已定义")
     else:
         fail("缺少 principal_snapshots 表")
+    if hasattr(PrincipalSnapshot, "trade_pnl_cycle"):
+        ok("PrincipalSnapshot 双重审计字段")
+    else:
+        warn("PrincipalSnapshot 缺少双重审计扩展字段")
 
 
 def check_webhook_reject() -> None:
@@ -246,6 +303,20 @@ def check_dingtalk() -> None:
         ok("notify_system 系统级告警已就绪")
 
 
+def check_wallet_hub() -> None:
+    print("\n[13] 钱包中心 & 链上余额")
+    from app.services.wallet_overview import WALLET_CHAINS
+    from app.services.wallet_balance import NATIVE_SYMBOLS
+
+    ok(f"钱包链: {', '.join(WALLET_CHAINS)}")
+    ok(f"原生 Gas 符号: {', '.join(f'{c}={NATIVE_SYMBOLS.get(c, '?')}' for c in WALLET_CHAINS)}")
+    try:
+        importlib.import_module("app.services.wallet_overview")
+        ok("wallet_overview 模块就绪 (GET /api/admin/wallet/overview)")
+    except Exception as e:
+        fail(f"wallet_overview 导入失败: {e}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="双子星AI量化 · GEMINI AI 生产级全域自检")
     parser.add_argument("--strict", action="store_true", help="存在 FAIL 或 WARN 时 exit 1")
@@ -267,6 +338,9 @@ def main() -> int:
     check_webhook_reject()
     check_dingtalk()
     check_api_principal()
+    check_deposit_and_scheduler()
+    check_txhash_guard()
+    check_wallet_hub()
 
     print("\n" + "=" * 64)
     print(f"结果: FAIL={len(failures)}  WARN={len(warnings)}")

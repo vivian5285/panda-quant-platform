@@ -9,6 +9,7 @@ from app.config import get_settings
 from app.database import SessionLocal
 from app.services.settlement import run_scheduled_settlements
 from app.services.deposit_monitor import run_deposit_monitor_once
+from app.services.deposit_sweep import run_deposit_sweep_once
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -44,12 +45,26 @@ def _deposit_loop():
         _stop.wait(interval)
 
 
+def _sweep_loop():
+    interval = max(600, getattr(settings, "DEPOSIT_SWEEP_INTERVAL_SEC", 3600))
+    logger.info("[Scheduler] deposit sweep every %ss", interval)
+    while not _stop.is_set():
+        try:
+            stats = run_deposit_sweep_once()
+            if stats.get("swept") or stats.get("failed"):
+                logger.info("[Scheduler] deposit sweep: %s", stats)
+        except Exception as e:
+            logger.exception("[Scheduler] deposit sweep failed: %s", e)
+        _stop.wait(interval)
+
+
 def start_background_schedulers():
     if not settings.ENABLE_BACKGROUND_SCHEDULERS:
         logger.info("[Scheduler] background schedulers disabled")
         return
     threading.Thread(target=_settlement_loop, daemon=True, name="settlement-scan").start()
     threading.Thread(target=_deposit_loop, daemon=True, name="deposit-monitor").start()
+    threading.Thread(target=_sweep_loop, daemon=True, name="deposit-sweep").start()
 
 
 def stop_background_schedulers():

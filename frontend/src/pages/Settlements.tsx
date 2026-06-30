@@ -17,8 +17,12 @@ export default function Settlements() {
   const [addresses, setAddresses] = useState<any[]>([])
   const [myAddresses, setMyAddresses] = useState<any[]>([])
   const [deposits, setDeposits] = useState<any[]>([])
+  const [appeals, setAppeals] = useState<any[]>([])
   const [payingId, setPayingId] = useState<number | null>(null)
+  const [appealingId, setAppealingId] = useState<number | null>(null)
+  const [appealNote, setAppealNote] = useState('')
   const [chain, setChain] = useState('TRC20')
+  const [monitoredChains, setMonitoredChains] = useState<string[]>(['TRC20', 'ERC20', 'BEP20', 'ARBITRUM', 'POLYGON'])
   const [txHash, setTxHash] = useState('')
   const [amount, setAmount] = useState('')
   const [copied, setCopied] = useState('')
@@ -28,6 +32,12 @@ export default function Settlements() {
     walletApi.depositAddresses().then(setAddresses).catch(() => setAddresses([]))
     walletApi.myDepositAddresses().then(setMyAddresses).catch(() => setMyAddresses([]))
     walletApi.settlementDeposits().then(setDeposits).catch(() => setDeposits([]))
+    walletApi.settlementAppeals().then(setAppeals).catch(() => setAppeals([]))
+    walletApi.depositChains().then((info: { monitored?: string[] }) => {
+      const chains = info?.monitored?.length ? info.monitored : ['TRC20', 'ERC20', 'BEP20', 'ARBITRUM', 'POLYGON']
+      setMonitoredChains(chains)
+      setChain(prev => (chains.includes(prev) ? prev : chains[0]))
+    }).catch(() => {})
   }
 
   useEffect(() => {
@@ -58,6 +68,24 @@ export default function Settlements() {
       load()
     } catch (err: any) {
       toast.error(err.response?.data?.detail || t('settlements.submitFail'))
+    }
+  }
+
+  const submitAppeal = async (id: number, payable: number) => {
+    if (!txHash.trim()) {
+      toast.error(t('settlements.txHashRequired'))
+      return
+    }
+    try {
+      await walletApi.appealSettlement(id, chain, txHash, parseFloat(amount) || payable, appealNote || undefined)
+      toast.success(t('settlements.appealSubmitted'))
+      setAppealingId(null)
+      setTxHash('')
+      setAmount('')
+      setAppealNote('')
+      load()
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('settlements.appealFail'))
     }
   }
 
@@ -175,6 +203,34 @@ export default function Settlements() {
         </GlassCard>
       )}
 
+      {appeals.length > 0 && (
+        <GlassCard className="p-0 table-wrap card-overflow-hidden section-mb-lg">
+          <div className="card-section-head"><h3 className="panel-title-sm">{t('settlements.appealLog')}</h3></div>
+          <table className="data-table data-table-sm">
+            <thead>
+              <tr>
+                <th>{t('common.time')}</th>
+                <th>{t('common.chain')}</th>
+                <th>{t('settlements.cols.payable')}</th>
+                <th>{t('common.status')}</th>
+                <th>TxHash</th>
+              </tr>
+            </thead>
+            <tbody>
+              {appeals.map(a => (
+                <tr key={a.id}>
+                  <td>{new Date(a.created_at).toLocaleString()}</td>
+                  <td><span className="badge badge-gray">{a.chain}</span></td>
+                  <td>${a.claimed_amount?.toFixed(2)}</td>
+                  <td><span className="badge badge-gray">{t(`settlements.appealStatus.${a.status}`) || a.status}</span></td>
+                  <td className="mono-cell cell-ellipsis" title={a.tx_hash}>{a.tx_hash?.slice(0, 16)}…</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </GlassCard>
+      )}
+
       <GlassCard className="p-0 table-wrap card-overflow-hidden">
         <table className="data-table">
           <thead>
@@ -210,10 +266,28 @@ export default function Settlements() {
                     <button type="button" className="btn btn-ghost btn-sm" onClick={() => downloadPdf(s.id)}>{t('settlements.downloadPdf')}</button>
                   )}
                   {s.payment_status === 'pending' && (
-                    <button className="btn btn-ghost btn-compact-md"
-                      onClick={() => { setPayingId(s.id); setAmount(String(s.user_payable)) }}>
-                      {t('settlements.submitPay')}
-                    </button>
+                    <>
+                      <button className="btn btn-ghost btn-compact-md"
+                        onClick={() => { setPayingId(s.id); setAppealingId(null); setAmount(String(s.user_payable)) }}>
+                        {t('settlements.submitPay')}
+                      </button>
+                      <button className="btn btn-ghost btn-compact-md"
+                        onClick={() => { setAppealingId(s.id); setPayingId(null); setAmount(String(s.user_payable)) }}>
+                        {t('settlements.submitAppeal')}
+                      </button>
+                    </>
+                  )}
+                  {s.payment_status === 'rejected' && (
+                    <>
+                      <button className="btn btn-ghost btn-compact-md"
+                        onClick={() => { setPayingId(s.id); setAppealingId(null); setAmount(String(s.user_payable)) }}>
+                        {t('settlements.resubmitPay')}
+                      </button>
+                      <button className="btn btn-ghost btn-compact-md"
+                        onClick={() => { setAppealingId(s.id); setPayingId(null); setAmount(String(s.user_payable)) }}>
+                        {t('settlements.submitAppeal')}
+                      </button>
+                    </>
                   )}
                   {s.payment_tx_hash && (
                     <span className="text-muted text-xs" title={s.payment_tx_hash}>
@@ -234,10 +308,11 @@ export default function Settlements() {
             <div>
               <label className="text-secondary field-label">{t('settlements.chainLabel')}</label>
               <select className="input" value={chain} onChange={e => setChain(e.target.value)}>
-                {['TRC20', 'ERC20', 'BEP20', 'ARBITRUM', 'POLYGON', 'SOL'].map(c => (
+                {monitoredChains.map(c => (
                   <option key={c} value={c}>{c}</option>
                 ))}
               </select>
+              <p className="text-muted text-xs section-mt-xs">{t('settlements.monitoredChainsHint')}</p>
             </div>
             <div>
               <label className="text-secondary field-label">{t('settlements.amountLabel')}</label>
@@ -251,6 +326,39 @@ export default function Settlements() {
             <div className="flex-gap-sm">
               <button className="btn btn-primary" type="button" onClick={() => submitPay(payingId, parseFloat(amount))}>{t('settlements.confirmSubmit')}</button>
               <button className="btn btn-ghost" type="button" onClick={() => setPayingId(null)}>{t('common.cancel')}</button>
+            </div>
+          </div>
+        </GlassCard>
+      )}
+
+      {appealingId && (
+        <GlassCard className="p-6 section-mt-lg page-panel-form-sm">
+          <h3 className="panel-title-sm mb-md">{t('settlements.appealFormTitle')}</h3>
+          <p className="text-muted text-sm section-mb-md">{t('settlements.appealFormHint')}</p>
+          <div className="form-stack">
+            <div>
+              <label className="text-secondary field-label">{t('settlements.chainLabel')}</label>
+              <select className="input" value={chain} onChange={e => setChain(e.target.value)}>
+                {monitoredChains.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-secondary field-label">{t('settlements.amountLabel')}</label>
+              <input className="input" type="number" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-secondary field-label">{t('settlements.txHashLabel')}</label>
+              <input className="input" value={txHash} onChange={e => setTxHash(e.target.value)} placeholder={t('settlements.txHashPh')} />
+            </div>
+            <div>
+              <label className="text-secondary field-label">{t('settlements.appealNoteLabel')}</label>
+              <textarea className="input" rows={2} value={appealNote} onChange={e => setAppealNote(e.target.value)} placeholder={t('settlements.appealNotePh')} />
+            </div>
+            <div className="flex-gap-sm">
+              <button className="btn btn-primary" type="button" onClick={() => submitAppeal(appealingId, parseFloat(amount))}>{t('settlements.confirmAppeal')}</button>
+              <button className="btn btn-ghost" type="button" onClick={() => setAppealingId(null)}>{t('common.cancel')}</button>
             </div>
           </div>
         </GlassCard>
