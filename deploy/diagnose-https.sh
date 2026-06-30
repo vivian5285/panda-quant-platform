@@ -18,20 +18,32 @@ ss -tlnp | grep -E ':80 |:443 ' || echo "80/443 均未监听"
 
 echo ""
 echo "=== 4. 站点配置 ==="
+echo "nginx.conf include 规则:"
+grep -E 'include.*sites-enabled|include.*conf\.d' /etc/nginx/nginx.conf 2>/dev/null || true
 echo "sites-enabled:"
 ls -la /etc/nginx/sites-enabled/ 2>/dev/null || true
-SITE_FILE="/etc/nginx/sites-available/${DOMAIN}"
-if [ -f "$SITE_FILE" ]; then
-  echo "--- ${SITE_FILE} ($(wc -l < "$SITE_FILE") 行) ---"
-  grep -n 'listen\|server_name\|ssl_certificate' "$SITE_FILE" || true
-  if ! grep -q 'listen 443' "$SITE_FILE"; then
-    echo "[!!] 配置文件里没有 listen 443 — 这就是 HTTPS 不工作的原因"
-  fi
-else
-  echo "[!!] 不存在: $SITE_FILE"
+SITE_FILE="/etc/nginx/sites-available/twinstar.conf"
+LEGACY="/etc/nginx/sites-available/${DOMAIN}"
+for f in "$SITE_FILE" "$LEGACY"; do
+  [ -f "$f" ] || continue
+  echo "--- ${f} ($(wc -l < "$f") 行) ---"
+  grep -n 'listen\|server_name\|ssl_certificate' "$f" || true
+done
+if [ -f "$LEGACY" ] && [ ! -f "$SITE_FILE" ]; then
+  echo "[!!] 只有 twinstar.pro 无 twinstar.conf — 若 nginx.conf 为 sites-enabled/*.conf 则不会加载"
+fi
+if [ -f "$SITE_FILE" ] && ! grep -q 'listen 443' "$SITE_FILE"; then
+  echo "[!!] twinstar.conf 里没有 listen 443"
+fi
+if ls /etc/nginx/sites-enabled/*.conf >/dev/null 2>&1; then
+  echo "[INFO] sites-enabled 下 .conf 文件:"
+  ls /etc/nginx/sites-enabled/*.conf 2>/dev/null || echo "  (无 .conf 文件 — 站点不会被加载!)"
 fi
 echo "--- nginx -T (listen / ssl) ---"
 nginx -T 2>/dev/null | grep -E '^\s*listen|server_name|ssl_certificate' || true
+if ! nginx -T 2>/dev/null | grep -q 'listen.*443'; then
+  echo "[!!] nginx 运行时未加载 443 — 请改用 sites-enabled/twinstar.conf"
+fi
 
 echo ""
 echo "=== 5. UFW ==="

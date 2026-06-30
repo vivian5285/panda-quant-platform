@@ -78,14 +78,17 @@ deploy_nginx() {
   local template=$1
   mkdir -p /var/www/certbot /etc/nginx/snippets
   cp "${APP_DIR}/deploy/nginx-twinstar-locations.conf" /etc/nginx/snippets/twinstar-locations.conf
-  local site="/etc/nginx/sites-available/${DOMAIN}"
+  local site="/etc/nginx/sites-available/twinstar.conf"
   sed "s/twinstar.pro/${DOMAIN}/g; s/187.77.130.144/${VPS_IP}/g" \
     "${APP_DIR}/deploy/${template}" > "${site}"
-  ln -sf "${site}" "/etc/nginx/sites-enabled/${DOMAIN}"
+  ln -sf "${site}" /etc/nginx/sites-enabled/twinstar.conf
   rm -f /etc/nginx/sites-enabled/default \
-    /etc/nginx/sites-enabled/twinstar.conf \
-    /etc/nginx/sites-available/twinstar.conf
+    /etc/nginx/sites-enabled/twinstar.pro \
+    /etc/nginx/sites-enabled/"${DOMAIN}" \
+    /etc/nginx/sites-available/twinstar.pro \
+    /etc/nginx/sites-available/"${DOMAIN}"
   echo ">>> 已写入 ${site}"
+  grep -E 'sites-enabled|conf\.d' /etc/nginx/nginx.conf || true
   ls -la /etc/nginx/sites-enabled/ 2>/dev/null || true
   nginx -t
   systemctl enable nginx

@@ -6,7 +6,8 @@ set -euo pipefail
 
 DOMAIN="${DOMAIN:-twinstar.pro}"
 VPS_IP="${VPS_IP:-187.77.130.144}"
-SITE="/etc/nginx/sites-available/${DOMAIN}"
+# Ubuntu 常见 nginx.conf 仅 include sites-enabled/*.conf，必须用 .conf 后缀
+SITE="/etc/nginx/sites-available/twinstar.conf"
 CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
 KEY="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
 
@@ -127,15 +128,22 @@ server {
 }
 EOF
 
-rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/twinstar.conf
-ln -sf "$SITE" "/etc/nginx/sites-enabled/${DOMAIN}"
+rm -f /etc/nginx/sites-enabled/default \
+  /etc/nginx/sites-enabled/twinstar.pro \
+  /etc/nginx/sites-available/twinstar.pro
+ln -sf "$SITE" /etc/nginx/sites-enabled/twinstar.conf
 
 echo ">>> 已写入 $SITE ($(wc -l < "$SITE") 行)"
+echo ">>> nginx.conf include:"
+grep -E 'sites-enabled|conf\.d' /etc/nginx/nginx.conf || true
 grep -n 'listen' "$SITE" || true
 
 nginx -t
 systemctl restart nginx
 sleep 1
+
+echo ">>> nginx -T 是否已加载 443:"
+nginx -T 2>/dev/null | grep -E 'listen.*443|ssl_certificate' || echo "[!!] 443 未出现在 nginx 配置中"
 
 echo ">>> 监听端口:"
 ss -tlnp | grep -E ':80 |:443 ' || true
