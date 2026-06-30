@@ -5,6 +5,7 @@
 set -euo pipefail
 
 DOMAIN="${DOMAIN:-twinstar.pro}"
+VPS_IP="${VPS_IP:-187.77.130.144}"
 CONFD="/etc/nginx/conf.d/twinstar-https.conf"
 CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
 KEY="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
@@ -81,6 +82,21 @@ if ss -tlnp | grep -q ':443 '; then
   echo "  http://187.77.130.144/binance/webhook"
   echo "  http://187.77.130.144/deepcoin/webhook"
   echo "TwinStar 平台: https://${DOMAIN}/"
+  echo ""
+  echo ">>> 清理 sites-enabled 中抢占 IP:80 的旧 twinstar（避免深币 404）"
+  rm -f /etc/nginx/sites-enabled/twinstar.conf /etc/nginx/sites-enabled/twinstar.pro
+  if [ -f /etc/nginx/sites-available/twinstar.conf ] && grep -qF "${VPS_IP}" /etc/nginx/sites-available/twinstar.conf 2>/dev/null; then
+    rm -f /etc/nginx/sites-available/twinstar.conf
+    echo "[OK] 已删除含 IP server 的 twinstar.conf"
+  fi
+  nginx -t && systemctl reload nginx
+  DEEP=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1/deepcoin/webhook" \
+    -H "Host: ${VPS_IP}" -H "Content-Type: application/json" -d '{"action":"PING"}' 2>/dev/null || echo "000")
+  if [ "$DEEP" = "404" ]; then
+    echo "[WARN] 深币仍 404，请执行: sudo bash deploy/fix-deepcoin-nginx.sh"
+  else
+    echo "[OK] 深币 HTTP ${DEEP}（非 404）"
+  fi
 else
   echo "[FAIL] 443 仍未监听"
   journalctl -u nginx -n 30 --no-pager || true
