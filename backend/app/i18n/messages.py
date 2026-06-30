@@ -32,8 +32,20 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "Futures balance is 0. Transfer USDT to your USDT-M futures account first",
     },
     "api.verify_ok": {
-        "zh": "API 验证通过 · 合约账户可正常交易",
-        "en": "API verified · Futures account ready for trading",
+        "zh": "全部检测通过 · 可以绑定 API",
+        "en": "All checks passed · ready to bind API",
+    },
+    "api.verify_incomplete": {
+        "zh": "部分检测未通过 · 请按下方清单逐项修正后重新验证",
+        "en": "Some checks failed · fix items below and verify again",
+    },
+    "api.one_way_failed": {
+        "zh": "单向持仓未就绪 — 请先平掉所有合约持仓与挂单，或在币安手动切换为单向持仓",
+        "en": "One-way mode not ready — close all futures positions/orders or switch manually on Binance",
+    },
+    "api.leverage_failed": {
+        "zh": "无法将 ETHUSDT 杠杆设为 15x — 请检查 API 合约交易权限",
+        "en": "Could not set ETHUSDT leverage to 15x — check Futures trading permission",
     },
     "api.withdraw_enabled": {
         "zh": "API 仍开启提现权限 — 请在币安关闭 Withdraw 后重新验证",

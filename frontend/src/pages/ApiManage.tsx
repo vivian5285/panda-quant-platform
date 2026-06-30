@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { ShieldAlert, CheckCircle2, XCircle, RefreshCw } from 'lucide-react'
+import { ShieldAlert, CheckCircle2, XCircle, RefreshCw, ListChecks } from 'lucide-react'
 import Layout from '../components/Layout'
 import PageHeader from '../components/PageHeader'
 import GlassCard from '../components/GlassCard'
@@ -8,6 +8,12 @@ import DualVerifyFields from '../components/DualVerifyFields'
 import { authApi, settingsApi, userApi } from '../api'
 import { useI18n } from '../i18n'
 import { toast } from '../store/toast'
+
+type ApiCheckItem = {
+  id: string
+  ok: boolean
+  hint_key?: string | null
+}
 
 type VerifyResult = {
   valid: boolean
@@ -26,7 +32,23 @@ type VerifyResult = {
   leverage: number
   initial_principal: number
   detail?: string
+  checks?: ApiCheckItem[]
+  checks_passed?: number
+  checks_total?: number
+  open_orders_count?: number
+  open_positions_count?: number
+  hedge_mode?: boolean | null
 }
+
+const CHECK_IDS = [
+  'connect',
+  'withdraw_off',
+  'futures_on',
+  'can_trade',
+  'balance',
+  'one_way',
+  'leverage',
+] as const
 
 export default function ApiManage() {
   const locale = useI18n(s => s.locale)
@@ -49,6 +71,9 @@ export default function ApiManage() {
 
   const isBindReady = (v: VerifyResult | null) => {
     if (!v?.valid) return false
+    if (v.checks && v.checks.length > 0) {
+      return v.checks.every(c => c.ok)
+    }
     if (v.withdraw_disabled !== true) return false
     if (!v.can_trade) return false
     if (!v.one_way_mode) return false
@@ -66,6 +91,45 @@ export default function ApiManage() {
     authApi.me().then(setProfile).catch(() => {})
     settingsApi.get().then(p => setTotpEnabled(!!p.totp_enabled)).catch(() => {})
   }, [])
+
+  const checkLabel = (id: string) => {
+    const labels: Record<string, string> = {
+      connect: t('api.checkConnect'),
+      withdraw_off: t('api.checkWithdrawOff'),
+      futures_on: t('api.checkFuturesOn'),
+      can_trade: t('api.checkCanTrade'),
+      balance: t('api.checkBalance'),
+      one_way: t('api.checkOneWay'),
+      leverage: t('api.checkLeverage'),
+    }
+    return labels[id] || id
+  }
+
+  const checkHint = (item: ApiCheckItem) => {
+    if (item.ok) return null
+    const byKey: Record<string, string> = {
+      'api.hint.connect': t('api.hintConnect'),
+      'api.hint.withdraw_off': t('api.hintWithdrawOff'),
+      'api.hint.futures_on': t('api.hintFuturesOn'),
+      'api.hint.can_trade': t('api.hintCanTrade'),
+      'api.hint.balance': t('api.hintBalance'),
+      'api.hint.one_way_need_flat': t('api.hintOneWayNeedFlat'),
+      'api.hint.one_way_manual': t('api.hintOneWayManual'),
+      'api.hint.one_way_failed': t('api.hintOneWayFailed'),
+      'api.hint.leverage': t('api.hintLeverage'),
+    }
+    if (item.hint_key && byKey[item.hint_key]) return byKey[item.hint_key]
+    const fallback: Record<string, string> = {
+      connect: t('api.hintConnect'),
+      withdraw_off: t('api.hintWithdrawOff'),
+      futures_on: t('api.hintFuturesOn'),
+      can_trade: t('api.hintCanTrade'),
+      balance: t('api.hintBalance'),
+      one_way: t('api.hintOneWayFailed'),
+      leverage: t('api.hintLeverage'),
+    }
+    return fallback[item.id] || null
+  }
 
   const handleVerify = async () => {
     if (!apiKey || !apiSecret) {
@@ -134,24 +198,69 @@ export default function ApiManage() {
     }
   }
 
-  const flag = (ok: boolean | null | undefined) => {
-    if (ok === null || ok === undefined) return '—'
-    return ok ? '✓' : '✗'
+  const renderChecklist = (v: VerifyResult) => {
+    const items = v.checks?.length
+      ? v.checks
+      : CHECK_IDS.map(id => ({
+          id,
+          ok:
+            (id === 'connect' && true) ||
+            (id === 'withdraw_off' && v.withdraw_disabled === true) ||
+            (id === 'futures_on' && v.enable_futures !== false && v.can_trade) ||
+            (id === 'can_trade' && v.can_trade) ||
+            (id === 'balance' && v.total_balance > 0) ||
+            (id === 'one_way' && v.one_way_mode) ||
+            (id === 'leverage' && v.leverage_ok),
+        }))
+    const passed = v.checks_passed ?? items.filter(i => i.ok).length
+    const total = v.checks_total ?? items.length
+
+    return (
+      <div className="api-checklist">
+        <div className="api-checklist-head">
+          <ListChecks size={18} />
+          <span>{t('api.checkListTitle')}</span>
+          <span className={`api-checklist-score ${v.valid ? 'ok' : 'fail'}`}>
+            {t('api.checkSummary', { passed, total })}
+          </span>
+        </div>
+        <ul className="api-checklist-items">
+          {items.map(item => (
+            <li key={item.id} className={item.ok ? 'check-ok' : 'check-fail'}>
+              <span className="api-check-icon">{item.ok ? <CheckCircle2 size={16} /> : <XCircle size={16} />}</span>
+              <div className="api-check-body">
+                <span className="api-check-label">{checkLabel(item.id)}</span>
+                {!item.ok && checkHint(item) && (
+                  <p className="api-check-hint">{checkHint(item)}</p>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+        {(v.open_orders_count ?? 0) > 0 || (v.open_positions_count ?? 0) > 0 ? (
+          <p className="api-activity-note text-muted">
+            {t('api.activityNote', {
+              orders: v.open_orders_count ?? 0,
+              positions: v.open_positions_count ?? 0,
+            })}
+          </p>
+        ) : null}
+        <p className={`api-checklist-footer ${v.valid ? 'ok' : 'fail'}`}>
+          {v.valid ? t('api.allChecksPass') : t('api.checksPending')}
+        </p>
+      </div>
+    )
   }
 
   const renderVerifyPanel = (v: VerifyResult, title: string) => (
     <div className={`verify-panel ${v.valid ? 'verify-ok' : 'verify-fail'}`}>
       <p className="verify-panel-title">{title}</p>
       <p className="verify-panel-msg">{v.message}</p>
+      {renderChecklist(v)}
       <div className="verify-grid">
         <div><span className="text-muted">{t('api.futuresEquity')}</span><br />${v.total_balance.toFixed(2)}</div>
         <div><span className="text-muted">{t('api.availableBalance')}</span><br />${v.available_balance.toFixed(2)}</div>
         <div><span className="text-muted">{t('api.unrealizedPnl')}</span><br />${v.unrealized_pnl.toFixed(2)}</div>
-        <div><span className="text-muted">{t('api.tradePermission')}</span><br />{v.can_trade ? '✓' : '✗'}</div>
-        <div><span className="text-muted">{t('api.withdrawDisabled')}</span><br />{flag(v.withdraw_disabled)}</div>
-        <div><span className="text-muted">{t('api.futuresFlag')}</span><br />{flag(v.enable_futures ?? v.can_trade)}</div>
-        <div><span className="text-muted">{t('api.oneWayMode')}</span><br />{v.one_way_mode ? '✓' : '✗'}</div>
-        <div><span className="text-muted">{t('api.leverage')} {v.leverage}x</span><br />{v.leverage_ok ? '✓' : '✗'}</div>
         {v.initial_principal > 0 && (
           <div><span className="text-muted">{t('api.initialPrincipal')}</span><br />${v.initial_principal.toFixed(2)}</div>
         )}
@@ -188,6 +297,29 @@ export default function ApiManage() {
           <strong>{t('api.intro3')}</strong>
           {t('api.intro4')}
         </p>
+
+        <div className="api-prep-guide">
+          <h3 className="api-prep-title">{t('api.prepTitle')}</h3>
+          <p className="text-muted api-prep-intro">{t('api.prepIntro')}</p>
+          <ol className="api-prep-steps">
+            <li>
+              <strong>{t('api.prepStep1Title')}</strong>
+              <p>{t('api.prepStep1Body')}</p>
+            </li>
+            <li>
+              <strong>{t('api.prepStep2Title')}</strong>
+              <p>{t('api.prepStep2Body')}</p>
+            </li>
+            <li>
+              <strong>{t('api.prepStep3Title')}</strong>
+              <p>{t('api.prepStep3Body')}</p>
+            </li>
+            <li>
+              <strong>{t('api.prepStep4Title')}</strong>
+              <p>{t('api.prepStep4Body')}</p>
+            </li>
+          </ol>
+        </div>
 
         <div className="security-notice">
           <div className="security-notice-title">

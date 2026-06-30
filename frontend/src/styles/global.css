@@ -2906,7 +2906,61 @@ html[lang="zh-CN"] .framer-logo-text strong {
   gap: 12px;
   font-size: 13px;
 }
-.api-page-panel { max-width: 560px; }
+.api-page-panel { max-width: 640px; }
+.api-prep-guide {
+  margin-bottom: 24px;
+  padding: 16px 18px;
+  border-radius: 12px;
+  border: 1px solid var(--glass-border);
+  background: var(--verify-panel-bg);
+}
+.api-prep-title { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
+.api-prep-intro { font-size: 13px; line-height: 1.55; margin: 0 0 12px; }
+.api-prep-steps {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.api-prep-steps li { margin-bottom: 12px; }
+.api-prep-steps li:last-child { margin-bottom: 0; }
+.api-prep-steps p { margin: 4px 0 0; color: var(--text-secondary); font-weight: 400; }
+.api-checklist {
+  margin: 12px 0 16px;
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  background: rgba(0, 0, 0, 0.02);
+}
+[data-theme="dark"] .api-checklist { background: rgba(255, 255, 255, 0.03); }
+.api-checklist-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 10px;
+}
+.api-checklist-score { margin-left: auto; font-size: 12px; font-weight: 600; }
+.api-checklist-score.ok { color: #16a34a; }
+.api-checklist-score.fail { color: #dc2626; }
+.api-checklist-items { list-style: none; margin: 0; padding: 0; }
+.api-checklist-items li {
+  display: flex;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--glass-border);
+}
+.api-checklist-items li:last-child { border-bottom: none; }
+.api-check-icon { flex-shrink: 0; margin-top: 2px; }
+.check-ok .api-check-icon { color: #16a34a; }
+.check-fail .api-check-icon { color: #dc2626; }
+.api-check-label { font-size: 13px; font-weight: 500; }
+.api-check-hint { margin: 4px 0 0; font-size: 12px; line-height: 1.45; color: var(--text-muted); }
+.api-activity-note { font-size: 12px; margin: 8px 0 0; }
+.api-checklist-footer { font-size: 13px; font-weight: 600; margin: 10px 0 0; }
+.api-checklist-footer.ok { color: #16a34a; }
+.api-checklist-footer.fail { color: #dc2626; }
 .api-bind-security { margin-top: 16px; max-width: 100%; }
 .api-actions { display: flex; gap: 12px; margin-bottom: 20px; }
 .api-intro { font-size: 14px; margin-bottom: 20px; line-height: 1.6; }

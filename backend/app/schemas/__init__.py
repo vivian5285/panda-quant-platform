@@ -183,6 +183,12 @@ class ApiBindRequest(BaseModel):
     phone_code: Optional[str] = Field(default=None, min_length=4, max_length=8)
 
 
+class ApiVerifyCheckItem(BaseModel):
+    id: str
+    ok: bool
+    hint_key: Optional[str] = None
+
+
 class ApiVerifyResponse(BaseModel):
     valid: bool
     message: str
@@ -200,6 +206,12 @@ class ApiVerifyResponse(BaseModel):
     leverage: int = 15
     initial_principal: float = 0.0
     detail: Optional[str] = None
+    checks: list[ApiVerifyCheckItem] = Field(default_factory=list)
+    checks_passed: int = 0
+    checks_total: int = 0
+    open_orders_count: int = 0
+    open_positions_count: int = 0
+    hedge_mode: Optional[bool] = None
 
 
 class PrincipalSnapshotOut(BaseModel):

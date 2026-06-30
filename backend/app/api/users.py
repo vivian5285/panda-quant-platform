@@ -5,7 +5,7 @@ from datetime import datetime
 from app.database import get_db
 from app.models import User, Trade, TradeLog, ApiStatus, PrincipalSnapshot
 from app.schemas import (
-    ApiBindRequest, ApiVerifyResponse, UserProfile, DashboardStats,
+    ApiBindRequest, ApiVerifyResponse, ApiVerifyCheckItem, UserProfile, DashboardStats,
     TradeOut, TradeLogOut, PrincipalSnapshotOut, UserAnalyticsOut, SignalStatsOut,
 )
 from app.api.deps import get_current_user
@@ -34,6 +34,15 @@ router = APIRouter(prefix="/users", tags=["users"])
 def _verify_response(result: dict) -> ApiVerifyResponse:
     localized = translate_api_message(result, get_locale())
     equity = float(localized.get("total_balance") or localized.get("total_margin_balance") or 0)
+    checks_raw = result.get("checks") or []
+    checks = [
+        ApiVerifyCheckItem(
+            id=str(c.get("id", "")),
+            ok=bool(c.get("ok")),
+            hint_key=c.get("hint_key"),
+        )
+        for c in checks_raw
+    ]
     return ApiVerifyResponse(
         valid=bool(localized.get("valid")),
         message=localized.get("message", ""),
@@ -51,6 +60,12 @@ def _verify_response(result: dict) -> ApiVerifyResponse:
         leverage=int(result.get("leverage", 15)),
         initial_principal=equity if result.get("valid") else 0,
         detail=localized.get("detail"),
+        checks=checks,
+        checks_passed=int(result.get("checks_passed") or sum(1 for c in checks if c.ok)),
+        checks_total=int(result.get("checks_total") or len(checks)),
+        open_orders_count=int(result.get("open_orders_count") or 0),
+        open_positions_count=int(result.get("open_positions_count") or 0),
+        hedge_mode=result.get("hedge_mode"),
     )
 
 

@@ -15,6 +15,31 @@ class BinanceClient:
         self._one_way_checked = False
         logger.info(f"[User {user_id}] Binance Client loaded")
 
+    def is_hedge_mode(self) -> bool | None:
+        """True=双向持仓, False=单向, None=查询失败。"""
+        try:
+            result = self.client.futures_get_position_mode()
+            return bool(result.get("dualSidePosition"))
+        except Exception as e:
+            logger.warning(f"[User {self.user_id}] get position mode failed: {e}")
+            return None
+
+    def futures_activity_summary(self) -> dict:
+        """统计阻碍切换单向持仓的挂单/持仓（全合约账户）。"""
+        out = {"open_orders": 0, "open_positions": 0}
+        try:
+            orders = self.client.futures_get_open_orders()
+            out["open_orders"] = len(orders or [])
+        except Exception as e:
+            logger.warning(f"[User {self.user_id}] list open orders failed: {e}")
+        try:
+            for pos in self.client.futures_position_information() or []:
+                if abs(float(pos.get("positionAmt", 0) or 0)) > 0:
+                    out["open_positions"] += 1
+        except Exception as e:
+            logger.warning(f"[User {self.user_id}] list positions failed: {e}")
+        return out
+
     def ensure_one_way_mode(self) -> bool:
         """强制单向持仓模式，禁止双向对冲（永远一手）。"""
         if self._one_way_checked:
