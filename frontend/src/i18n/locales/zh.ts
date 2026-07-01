@@ -1018,6 +1018,7 @@ export default {
     submitFail: "提交失败",
     cycleMonthly: "月度（30天）",
     cycleExtended: "月度+宽限（35天）",
+    status: {
       pending: "待支付",
       paid: "待确认",
       confirmed: "已确认",

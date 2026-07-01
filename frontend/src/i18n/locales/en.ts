@@ -1018,6 +1018,7 @@ export default {
     submitFail: "Submit failed",
     cycleMonthly: "Monthly (30d)",
     cycleExtended: "Monthly + grace (35d)",
+    status: {
       pending: "Pending",
       paid: "Awaiting Confirm",
       confirmed: "Confirmed",

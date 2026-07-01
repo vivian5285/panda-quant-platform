@@ -35,7 +35,8 @@ def test_breakeven_sl_active_short(supervisor):
     assert supervisor._breakeven_sl_active()
 
 
-def test_recover_restores_radar_and_rebuilds_defenses(supervisor):
+def test_recover_restores_radar_and_rebuilds_defenses(supervisor, monkeypatch):
+    monkeypatch.setattr("app.core.position_supervisor.threading.Thread.start", lambda self: None)
     supervisor._save_state()
     supervisor.best_price = 3650.0
     supervisor.current_sl = 3620.0

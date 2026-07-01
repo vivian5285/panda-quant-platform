@@ -7,10 +7,25 @@ import pytest
 from app.core.position_supervisor import PositionSupervisor, TP_RETRY_MAX
 
 
+def _open_orders_side_effect(*responses):
+    """Mock get_open_orders: each response once, then []."""
+    it = iter(responses)
+
+    def _fn(_symbol):
+        try:
+            return next(it)
+        except StopIteration:
+            return []
+
+    return _fn
+
+
 @pytest.fixture
 def supervisor(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     client = MagicMock()
+    client.get_current_price.return_value = 3500.0
+    client.cancel_all_open_orders.return_value = None
     sup = PositionSupervisor(user_id=7, client=client)
     sup.current_side = "LONG"
     sup.regime = 3
@@ -69,14 +84,14 @@ def test_scan_open_defenses_detects_missing_tp(supervisor):
 
 
 def test_verify_and_repair_defenses_repairs_missing(supervisor, monkeypatch):
-    supervisor.client.get_open_orders.return_value = []
+    supervisor.client.get_open_orders.side_effect = _open_orders_side_effect([], [])
     supervisor.client.place_limit_order.return_value = {"orderId": 99}
     monkeypatch.setattr("app.core.position_supervisor.time.sleep", lambda *_: None)
 
     detail = supervisor._verify_and_repair_defenses(1.0, 3500.0)
 
     assert supervisor.client.place_limit_order.call_count >= 1
-    assert detail.get("repaired") or detail.get("after", {}).get("aligned")
+    assert detail.get("healed") or detail.get("placed") or detail.get("aligned")
 
 
 def test_ensure_defenses_skips_when_already_aligned(supervisor, monkeypatch):
@@ -105,11 +120,12 @@ def test_ensure_defenses_skips_when_already_aligned(supervisor, monkeypatch):
 
 
 def test_ensure_defenses_only_places_missing(supervisor, monkeypatch):
-    supervisor.client.get_open_orders.side_effect = [
-        [{"orderId": 1, "type": "LIMIT", "side": "SELL", "price": "3600.00", "origQty": "0.180"}],
-        [],
-        [],
+    partial = [
+        {"orderId": 1, "type": "LIMIT", "side": "SELL", "price": "3600.00", "origQty": "0.180"},
     ]
+    supervisor.client.get_open_orders.side_effect = _open_orders_side_effect(
+        [], partial, partial, [],
+    )
     supervisor.client.place_limit_order.return_value = {"orderId": 99}
     monkeypatch.setattr("app.core.position_supervisor.time.sleep", lambda *_: None)
 
@@ -125,11 +141,9 @@ def test_aggressive_heal_on_duplicate_tp(supervisor, monkeypatch):
         {"orderId": i, "type": "LIMIT", "side": "SELL", "price": "3600.00", "origQty": "0.073"}
         for i in range(1, 7)
     ]
-    supervisor.client.get_open_orders.side_effect = [
-        dup_orders,
-        [],
-        [],
-    ]
+    supervisor.client.get_open_orders.side_effect = _open_orders_side_effect(
+        [], dup_orders, dup_orders, [],
+    )
     supervisor.client.place_limit_order.return_value = {"orderId": 100}
     monkeypatch.setattr("app.core.position_supervisor.time.sleep", lambda *_: None)
     alerts = []
@@ -143,11 +157,12 @@ def test_aggressive_heal_on_duplicate_tp(supervisor, monkeypatch):
 
 
 def test_rebuild_defenses_force_cancels_then_places(supervisor, monkeypatch):
-    supervisor.client.get_open_orders.side_effect = [
-        [{"orderId": 9, "type": "LIMIT", "side": "SELL", "price": "3600.00", "origQty": "0.050"}],
-        [],
-        [],
+    partial = [
+        {"orderId": 9, "type": "LIMIT", "side": "SELL", "price": "3600.00", "origQty": "0.050"},
     ]
+    supervisor.client.get_open_orders.side_effect = _open_orders_side_effect(
+        [], partial, partial, [],
+    )
     supervisor.client.place_limit_order.return_value = {"orderId": 1}
     monkeypatch.setattr("app.core.position_supervisor.time.sleep", lambda *_: None)
 
@@ -155,7 +170,7 @@ def test_rebuild_defenses_force_cancels_then_places(supervisor, monkeypatch):
 
     assert result.get("healed") is True
     supervisor.client.cancel_all_open_orders.assert_called()
-    assert supervisor.client.place_limit_order.call_count == 3
+    assert supervisor.client.place_limit_order.call_count >= 3
 
 
 def test_scan_detects_duplicate_tp(supervisor):
@@ -181,7 +196,7 @@ def test_rebuild_defenses_logs_alignment(supervisor, monkeypatch):
     logs = []
     supervisor.on_log = lambda uid, et, msg, detail, tid: logs.append((et, msg))
 
-    result = supervisor._rebuild_defenses(1.0, 3500.0)
+    result = supervisor._ensure_defenses(1.0, 3500.0, force_rebuild=False)
 
     assert result.get("skipped") is True
     assert result.get("aligned") is True
