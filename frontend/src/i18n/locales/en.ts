@@ -52,7 +52,7 @@ export default {
     pathMarketDesc: "Share the platform — earn service referral rewards when friends complete AI hosting (see Platform Guide)",
     flowSteps: "Close all → sync ETHUSDT perp fills → bill by closed trade PnL (not equity delta) → pay fee → principal reset & AI resumes",
     resetNote: "After confirmation, current equity becomes the new cycle initial principal; profit is measured from zero",
-    rewardPool: "Referral rewards are auto-paid from the performance fee pool (25% of cycle net profit)"
+    rewardPool: "Referral rewards are 10% / 5% of downline cycle net profit, paid from their performance fee"
   },
   common: {
     user: "User",
@@ -873,11 +873,11 @@ export default {
     closePreview: "Close preview",
     rulesTitle: "Two-Tier Commission Rules",
     l1Title: "Level 1 Commission",
-    l1Desc: "Earn 10% from the performance fee pool (25% of profit) when direct referrals settle",
+    l1Desc: "Earn 10% of your direct referral's cycle net profit (deducted from their performance fee)",
     l2Title: "Level 2 Rewards",
-    l2Desc: "Earn 5% when your referrals' referrals complete performance settlement",
-    baseTitle: "Performance Fee Pool",
-    baseDesc: "25% of cycle net profit is the AI performance service fee; L1 10% + L2 5% auto-paid from this pool",
+    l2Desc: "Earn 5% of your L2 downline's cycle net profit when they settle",
+    baseTitle: "User Performance Fee",
+    baseDesc: "Performance fee = 25% of net profit; L1 10% + L2 5% deducted from it; platform keeps 10%",
     autoCredit: "Rewards auto-credit after performance settlement confirmation · Withdraw on-chain or transfer by UID/email/phone",
     l1Count: "L1 Referrals",
     l2Count: "L2 Referrals",
@@ -975,7 +975,7 @@ export default {
       s4: { title: "Performance settlement", desc: "When flat and profitable, an AI performance service fee invoice is issued. After payment confirms, principal resets and AI resumes." }
     },
     partnerTitle: "Partner program (market outreach)",
-    partnerIntro: "Want to introduce friends? Share your invite link or poster. When they register and host AI, you may earn service referral rewards from the AI performance fee pool after settlement confirms — rates and rules are shown in Referrals.",
+    partnerIntro: "Want to introduce friends? Share your invite link or poster. When they register and host AI, you earn 10% / 5% of their cycle net profit (from their performance fee) after settlement confirms — see Referrals for details.",
     partnerNote: "Partner rewards are a service referral arrangement, not an investment return promise. No fake signups, wash trading or fraudulent promotion.",
     partnerSteps: {
       p1: { title: "Get your invite link", desc: "Copy URL, QR or download a marketing poster from Invite Link." },
@@ -1366,7 +1366,7 @@ export default {
         },
         referral: {
           title: "6. Referral Program",
-          body: "L1 10% / L2 5% rewards are paid from the performance fee pool (25% of profit) after performance settlement confirmation. Fraudulent referrals are prohibited."
+          body: "L1 10% / L2 5% rewards are based on downline cycle net profit, deducted from their performance fee (25% of profit), and credited after settlement confirmation. Fraudulent referrals are prohibited."
         },
         termination: {
           title: "7. Suspension",

@@ -95,7 +95,7 @@ def calculate_settlement(
     db.add(settlement)
     db.flush()
 
-    _create_referral_rewards(db, user, settlement, platform_fee)
+    _create_referral_rewards(db, user, settlement, net_profit)
     user.high_water_mark = new_hwm
     db.commit()
     db.refresh(settlement)
@@ -111,30 +111,34 @@ def calculate_settlement(
     return settlement
 
 
-def _create_referral_rewards(db: Session, user: User, settlement: Settlement, platform_fee: float):
+def _create_referral_rewards(db: Session, user: User, settlement: Settlement, net_profit: float):
+    """L1/L2 奖励基数 = 周期净盈利（非绩效费本身）。例：盈利 $1000 → 用户付 $250 绩效费，L1 $100 + L2 $50，平台留存 $100。"""
+    base = round(float(net_profit or 0), 2)
+    if base <= 0:
+        return
     if user.referrer_id:
         l1 = db.query(User).filter(User.id == user.referrer_id).first()
         if l1:
-            amount = round(platform_fee * settings.REFERRAL_L1_RATE, 2)
+            amount = round(base * settings.REFERRAL_L1_RATE, 2)
             db.add(ReferralReward(
                 referrer_id=l1.id,
                 source_user_id=user.id,
                 settlement_id=settlement.id,
                 level=1,
-                base_amount=platform_fee,
+                base_amount=base,
                 reward_rate=settings.REFERRAL_L1_RATE,
                 reward_amount=amount,
             ))
             if l1.referrer_id:
                 l2 = db.query(User).filter(User.id == l1.referrer_id).first()
                 if l2:
-                    amount2 = round(platform_fee * settings.REFERRAL_L2_RATE, 2)
+                    amount2 = round(base * settings.REFERRAL_L2_RATE, 2)
                     db.add(ReferralReward(
                         referrer_id=l2.id,
                         source_user_id=user.id,
                         settlement_id=settlement.id,
                         level=2,
-                        base_amount=platform_fee,
+                        base_amount=base,
                         reward_rate=settings.REFERRAL_L2_RATE,
                         reward_amount=amount2,
                     ))
