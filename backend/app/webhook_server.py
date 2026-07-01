@@ -1,11 +1,12 @@
-import json
 import logging
 import threading
+import time
 
 from flask import Flask, request, jsonify
 
 from app.config import get_settings
 from app.services.webhook_guard import check_webhook_access, validate_signal_payload, _client_ip
+from app.services.webhook_payload import parse_webhook_payload
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +43,30 @@ def _update_webhook_log(log_id: int | None, **kwargs) -> None:
         db.close()
 
 
+def _log_reject_async(**kwargs) -> None:
+    """Audit rejected webhooks without blocking TV HTTP response."""
+    threading.Thread(
+        target=_persist_webhook_log,
+        kwargs=kwargs,
+        daemon=True,
+        name="webhook-log-reject",
+    ).start()
+
+
 def _run_dispatch_async(data: dict, fingerprint: str, webhook_log_id: int | None) -> None:
     from app.database import SessionLocal
     from app.services.signal_admin import record_webhook_hit, run_signal_dispatch
     from app.services.webhook_idempotency import finalize
     from app.services.webhook_receive_log import WebhookLogTimer
+
+    if webhook_log_id is None:
+        webhook_log_id = _persist_webhook_log(
+            payload=data,
+            fingerprint=fingerprint,
+            event_status="accepted",
+            http_status=200,
+            response_status="success",
+        )
 
     timer = WebhookLogTimer()
     action = str(data.get("action", "UNKNOWN")).upper()
@@ -79,9 +99,10 @@ def _run_dispatch_async(data: dict, fingerprint: str, webhook_log_id: int | None
 
 @webhook_app.route("/webhook", methods=["POST"])
 def webhook():
+    t0 = time.perf_counter()
     ok, msg, status = check_webhook_access()
     if not ok:
-        _persist_webhook_log(
+        _log_reject_async(
             payload={},
             event_status="rejected",
             http_status=status,
@@ -91,20 +112,20 @@ def webhook():
         return jsonify({"status": "error", "message": msg}), status
 
     raw_text = request.get_data(as_text=True) or ""
-    try:
-        data = request.get_json(silent=True) or json.loads(raw_text or "{}")
-    except Exception:
-        _persist_webhook_log(
+    data, parse_err = parse_webhook_payload(raw_text)
+    if parse_err:
+        _log_reject_async(
             payload={"raw": raw_text[:2000]},
             event_status="rejected",
             http_status=400,
-            error_message="Invalid JSON",
+            error_message=parse_err,
             response_status="error",
         )
-        return jsonify({"status": "error", "message": "Invalid JSON"}), 400
+        logger.warning("[Webhook] JSON parse failed: %s | raw=%s", parse_err, raw_text[:300])
+        return jsonify({"status": "error", "message": parse_err}), 400
 
     if not data:
-        _persist_webhook_log(
+        _log_reject_async(
             payload={},
             event_status="rejected",
             http_status=400,
@@ -115,7 +136,7 @@ def webhook():
 
     secret = str(data.get("secret", "")).strip()
     if secret != get_settings().WEBHOOK_SECRET:
-        _persist_webhook_log(
+        _log_reject_async(
             payload=data,
             event_status="rejected",
             http_status=403,
@@ -126,7 +147,7 @@ def webhook():
 
     valid, err = validate_signal_payload(data)
     if not valid:
-        _persist_webhook_log(
+        _log_reject_async(
             payload=data,
             event_status="rejected",
             http_status=400,
@@ -137,7 +158,7 @@ def webhook():
 
     from app.services.trading_control import is_globally_paused
     if is_globally_paused():
-        _persist_webhook_log(
+        _log_reject_async(
             payload=data,
             event_status="rejected",
             http_status=503,
@@ -156,9 +177,12 @@ def webhook():
     finally:
         db.close()
 
+    action = str(data.get("action", "UNKNOWN")).upper()
+    is_close = action in ("CLOSE", "CLOSE_PROTECT", "CLOSE_TP3") or "CLOSE_PROTECT" in action
+
     if not acquired:
-        logger.info("[Webhook] Duplicate signal fingerprint=%s dispatch_id=%s", fingerprint[:16], existing_dispatch_id)
-        _persist_webhook_log(
+        logger.info("[Webhook] Duplicate fingerprint=%s dispatch_id=%s", fingerprint[:16], existing_dispatch_id)
+        _log_reject_async(
             payload=data,
             fingerprint=fingerprint,
             event_status="duplicate",
@@ -167,41 +191,36 @@ def webhook():
             response_status="duplicate",
             error_message="Signal already processed (idempotent)",
         )
-        return jsonify({
+        resp = jsonify({
             "status": "duplicate",
             "message": "Signal already processed (idempotent)",
             "dispatch_id": existing_dispatch_id,
-            "action": str(data.get("action", "")).upper(),
-        }), 200
+            "action": action,
+        })
+        resp.headers["X-Webhook-Latency-Ms"] = str(max(1, int((time.perf_counter() - t0) * 1000)))
+        return resp, 200
 
-    action = str(data.get("action", "UNKNOWN")).upper()
     reason = data.get("reason", "")
     if "CLOSE_PROTECT" in action:
-        logger.info("[Webhook] CLOSE_PROTECT | reason=%s regime=%s", reason, data.get("regime"))
+        logger.info("[Webhook] CLOSE_PROTECT | reason=%s regime=%s side=%s", reason, data.get("regime"), data.get("side"))
     else:
         logger.info("[Webhook] action=%s regime=%s atr=%s", action, data.get("regime"), data.get("atr"))
 
-    webhook_log_id = _persist_webhook_log(
-        payload=data,
-        fingerprint=fingerprint,
-        event_status="accepted",
-        http_status=200,
-        response_status="success",
-    )
-
+    thread_name = f"webhook-close-{action}" if is_close else f"webhook-dispatch-{action}"
     threading.Thread(
         target=_run_dispatch_async,
-        args=(data, fingerprint, webhook_log_id),
+        args=(data, fingerprint, None),
         daemon=True,
-        name=f"webhook-dispatch-{action}",
+        name=thread_name,
     ).start()
 
-    return jsonify({
+    resp = jsonify({
         "status": "success",
         "message": "Signal received, dispatching to all users",
         "action": action,
-        "webhook_log_id": webhook_log_id,
-    }), 200
+    })
+    resp.headers["X-Webhook-Latency-Ms"] = str(max(1, int((time.perf_counter() - t0) * 1000)))
+    return resp, 200
 
 
 @webhook_app.route("/health", methods=["GET"])

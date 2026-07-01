@@ -832,6 +832,14 @@ docker compose up -d --force-recreate backend
 }
 ```
 
+### 架构说明（与币安单账户系统独立）
+
+| 服务 | 端口 | Nginx 路径 | 说明 |
+|------|------|------------|------|
+| 币安单账户大脑 | **5003** | `/binance/webhook` | 独立 legacy 服务，与 Gemini **互不共用** |
+| Deepcoin | **5004** | `/deepcoin/webhook` | 独立 legacy 服务 |
+| **Gemini 多用户** | **6010** | `/gemini/webhook` | 本仓库 webhook 服务，下文优化均针对此路径 |
+
 ### 平仓 JSON 示例
 
 ```json
@@ -839,11 +847,44 @@ docker compose up -d --force-recreate backend
   "secret": "你的WEBHOOK_SECRET",
   "action": "CLOSE_PROTECT",
   "regime": 3,
-  "atr": 28.5,
-  "price": 3480.0,
-  "reason": "ADX衰减/波动率保护"
+  "side": "LONG",
+  "reason": "ADX衰减/波动率保护",
+  "pnl_pct": -1.25
 }
 ```
+
+> **Pine Script 注意（v6.9.30 常见 Bug）**  
+> `CLOSE_PROTECT` 的 JSON 字符串里 `side`、`reason` 字段**必须闭合引号**，否则 TradingView 会收到 **400 Invalid JSON**：
+>
+> ```pine
+> // ❌ 错误（缺引号，TV 显示 Webhook 400 Bad Request）
+> ',"side":"' + posSide + ',"reason":"' + exitReason[1] + ',"pnl_pct":'
+>
+> // ✅ 正确
+> ',"side":"' + posSide + '","reason":"' + str.replace(exitReason[1], '"', '') + '","pnl_pct":'
+> ```
+>
+> Gemini `:6010` 已对上述 Pine 缺引号格式做兼容修复；币安 `:5003` 由独立服务维护，互不影响。
+
+### Gemini Webhook 加固（仅 `/gemini/webhook`）
+
+| 能力 | 说明 |
+|------|------|
+| **极速 200** | 校验通过后立即响应 TV，写库 + 广播下单放后台线程 |
+| **字段归一化** | `pnl_pct` 字符串、中文 `reason`、`regime` 整型等自动兼容 |
+| **缺引号修复** | v6.9.30 类 malformed CLOSE_PROTECT JSON 自动修补 |
+| **可观测** | 响应头 `X-Webhook-Latency-Ms` 记录网关校验耗时 |
+| **Nginx** | `proxy_buffering off`、读超时 30s（仅 gemini location） |
+
+### Webhook 响应时序
+
+| 阶段 | 行为 |
+|------|------|
+| HTTP 同步 | 校验 secret / JSON / action → **立即返回 200**（通常 &lt;50ms） |
+| 后台线程 | `webhook-dispatch-*` 广播至全部活跃 Supervisor 并行执行 |
+| 平仓类 | `CLOSE_PROTECT` / `CLOSE_TP3` 与开仓同等优先级入队，日志线程名 `webhook-close-*` |
+
+TradingView 只关心 HTTP 200；实际下单在后台 `ThreadPoolExecutor`（默认 20 并发）完成。
 
 ### 幂等
 
