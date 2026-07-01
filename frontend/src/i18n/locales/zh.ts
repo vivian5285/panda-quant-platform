@@ -268,6 +268,11 @@ export default {
     showRaw: "查看完整 JSON",
     hideRaw: "收起 JSON",
     logDetail: "实盘核实明细",
+    tvSideMismatch: "TV方向与实盘不一致",
+    pnlCompareTitle: "TV 估算 vs 实盘盈亏率",
+    pnlCompareTvHint: "TradingView 策略估算",
+    pnlCompareLiveHint: "币安实盘成交价",
+    pnlCompareDeltaHint: "实盘 − TV",
     fields: {
       live_verified: "实盘核实",
       verified_at: "核实时间",
@@ -290,7 +295,13 @@ export default {
       slippage: "滑点",
       funding_fee: "资金费",
       reason: "原因",
-      scan: "扫描结果"
+      scan: "扫描结果",
+      tv_side: "TV方向",
+      tv_pnl_pct: "TV盈亏率",
+      live_pnl_pct: "实盘盈亏率",
+      pnl_pct_delta: "盈亏率偏差",
+      close_action: "平仓动作",
+      tv_side_mismatch: "方向不一致"
     }
   },
   risk: {

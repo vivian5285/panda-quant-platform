@@ -35,6 +35,8 @@ def compute_fingerprint(payload: dict) -> str:
         "tv_tp3": round_price(payload.get("tv_tp3") or 0),
         "reason": str(payload.get("reason") or "")[:200],
     }
+    if payload.get("side"):
+        core["side"] = str(payload.get("side")).upper().strip()
     raw = json.dumps(core, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 

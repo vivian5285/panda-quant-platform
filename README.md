@@ -883,6 +883,8 @@ docker compose up -d --force-recreate backend
 | HTTP 同步 | 校验 secret / JSON / action → **立即返回 200**（通常 &lt;50ms） |
 | 后台线程 | `webhook-dispatch-*` 广播至全部活跃 Supervisor 并行执行 |
 | 平仓类 | `CLOSE_PROTECT` / `CLOSE_TP3` 与开仓同等优先级入队，日志线程名 `webhook-close-*` |
+| **Per-user 信号队列** | 每用户 Supervisor 内 FIFO 队列，锁忙时最多等待 **120s** 重试（不再 10s 静默丢单） |
+| **空仓 CLOSE_PROTECT** | 实盘无持仓时撤单复位，写 `CLOSE_PROTECT_EMPTY` 日志 + 钉钉 |
 
 TradingView 只关心 HTTP 200；实际下单在后台 `ThreadPoolExecutor`（默认 20 并发）完成。
 

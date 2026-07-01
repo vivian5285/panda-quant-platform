@@ -268,6 +268,11 @@ export default {
     showRaw: "Show full JSON",
     hideRaw: "Hide JSON",
     logDetail: "Live audit detail",
+    tvSideMismatch: "TV side ≠ live",
+    pnlCompareTitle: "TV estimate vs live P&L %",
+    pnlCompareTvHint: "TradingView strategy estimate",
+    pnlCompareLiveHint: "Binance fill-based",
+    pnlCompareDeltaHint: "Live − TV",
     fields: {
       live_verified: "Live verified",
       verified_at: "Verified at",
@@ -290,7 +295,13 @@ export default {
       slippage: "Slippage",
       funding_fee: "Funding",
       reason: "Reason",
-      scan: "Scan"
+      scan: "Scan",
+      tv_side: "TV side",
+      tv_pnl_pct: "TV P&L %",
+      live_pnl_pct: "Live P&L %",
+      pnl_pct_delta: "P&L % delta",
+      close_action: "Close action",
+      tv_side_mismatch: "Side mismatch"
     }
   },
   risk: {

@@ -13,7 +13,7 @@ from app.services.dispatch_persistence import list_dispatch_user_results
 
 TV_SUMMARY_KEYS = (
     "action", "regime", "atr", "price", "tv_tp1", "tv_tp2", "tv_tp3",
-    "reason", "strategy_id", "symbol", "interval", "close", "open", "volume",
+    "reason", "side", "pnl_pct", "strategy_id", "symbol", "interval", "close", "open", "volume",
 )
 
 

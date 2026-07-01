@@ -1,8 +1,10 @@
 import json
 import logging
 import os
+import queue
 import threading
 import time
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from app.core.binance_client import BinanceClient
@@ -17,6 +19,16 @@ TP_RETRY_MAX = 3
 TP_RETRY_DELAY = 0.8  # seconds; multiplied by attempt index
 CANCEL_VERIFY_ROUNDS = 5
 HEAL_PLACE_ROUNDS = 2
+SIGNAL_QUEUE_TTL = 120.0
+SIGNAL_LOCK_SLICE = 5.0
+
+
+@dataclass
+class _QueuedSignal:
+    payload: dict
+    enqueued_at: float
+    event: threading.Event = field(default_factory=threading.Event)
+    result: dict = field(default_factory=dict)
 
 
 class PositionSupervisor:
@@ -47,6 +59,9 @@ class PositionSupervisor:
         self.leverage = settings.LEVERAGE
         self.monitoring = False
         self._lock = threading.Lock()
+        self._signal_queue: queue.Queue[_QueuedSignal] = queue.Queue()
+        self._queue_worker_lock = threading.Lock()
+        self._queue_worker_started = False
         self.trade_opened_at: float | None = None
 
         # activation: 到达 TP1 距离的比例后启动保本盾；trail_offset: 锁润止损距极值的 ATR 倍数
@@ -122,8 +137,78 @@ class PositionSupervisor:
         except Exception as e:
             logger.error(f"[User {self.user_id}] load state failed: {e}")
 
+    def _ensure_queue_worker(self) -> None:
+        with self._queue_worker_lock:
+            if self._queue_worker_started:
+                return
+            threading.Thread(
+                target=self._signal_queue_worker,
+                daemon=True,
+                name=f"signal-queue-u{self.user_id}",
+            ).start()
+            self._queue_worker_started = True
+
+    def _signal_queue_worker(self) -> None:
+        while True:
+            item = self._signal_queue.get()
+            try:
+                item.result = self._process_queued_signal(item)
+            finally:
+                item.event.set()
+                self._signal_queue.task_done()
+
+    def _process_queued_signal(self, item: _QueuedSignal) -> dict:
+        deadline = item.enqueued_at + SIGNAL_QUEUE_TTL
+        action = str(item.payload.get("action", "")).upper()
+
+        while time.time() < deadline:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            if self._lock.acquire(timeout=min(SIGNAL_LOCK_SLICE, remaining)):
+                try:
+                    return self._execute_signal(item.payload)
+                except Exception as e:
+                    return {"status": "error", "message": str(e)}
+                finally:
+                    self._lock.release()
+
+        queue_wait_ms = max(1, int((time.time() - item.enqueued_at) * 1000))
+        lock_detail = {
+            "action": action,
+            "reason": "lock_timeout",
+            "queue_wait_ms": queue_wait_ms,
+            "queue_ttl_sec": SIGNAL_QUEUE_TTL,
+        }
+        self._log(
+            "LOCK_TIMEOUT",
+            f"信号队列 {SIGNAL_QUEUE_TTL:.0f}s 内未获得锁 [{action}]",
+            lock_detail,
+        )
+        self._alert(
+            "warning",
+            "LOCK_TIMEOUT",
+            "信号队列超时",
+            f"用户 {self.user_id} {SIGNAL_QUEUE_TTL:.0f}s 内未能执行 [{action}]",
+            lock_detail,
+        )
+        return {"status": "skipped", "reason": "lock_timeout", "queue_wait_ms": queue_wait_ms}
+
     def handle_signal(self, payload: dict) -> dict:
-        raw_action = payload.get("action", "").upper()
+        raw_action = str(payload.get("action", "")).upper().strip()
+        if not raw_action:
+            return {"status": "skipped", "reason": "empty_action"}
+
+        self._ensure_queue_worker()
+        item = _QueuedSignal(payload=dict(payload), enqueued_at=time.time())
+        self._signal_queue.put(item)
+
+        if not item.event.wait(timeout=SIGNAL_QUEUE_TTL + 30):
+            return {"status": "skipped", "reason": "queue_wait_timeout"}
+        return item.result or {"status": "skipped", "reason": "empty_result"}
+
+    def _execute_signal(self, payload: dict) -> dict:
+        raw_action = str(payload.get("action", "")).upper()
         self.regime = int(payload.get("regime", 3))
         if self.regime not in self.regime_settings:
             self.regime = 3
@@ -137,35 +222,44 @@ class PositionSupervisor:
         ])
         self.risk_multiplier = float(payload.get("risk_multiplier", 1.0))
         close_reason = payload.get("reason", "策略指标反转/波动率安全退出")
+        tv_side = str(payload.get("side") or "").upper().strip() or None
+        tv_pnl_pct = payload.get("pnl_pct")
+        if tv_pnl_pct is not None:
+            try:
+                tv_pnl_pct = float(tv_pnl_pct)
+            except (TypeError, ValueError):
+                tv_pnl_pct = None
 
-        if not raw_action:
-            return {"status": "skipped", "reason": "empty_action"}
-        if not self._lock.acquire(timeout=10.0):
-            lock_detail = {"action": raw_action, "reason": "lock_timeout"}
-            self._log("LOCK_TIMEOUT", f"信号处理超时，丢弃 [{raw_action}]", lock_detail)
-            self._alert("warning", "LOCK_TIMEOUT", "信号处理超时", f"用户 {self.user_id} 锁等待超时，信号被丢弃", lock_detail)
-            return {"status": "skipped", "reason": "lock_timeout"}
-
-        try:
-            self.monitoring = False
-            if raw_action == "CLOSE_PROTECT" or raw_action.startswith("CLOSE_PROTECT"):
-                self._close_all(f"🛡️ 保护性全平：{close_reason}")
-                return {"status": "ok", "action": raw_action, "detail": {"type": "close_protect"}}
-            if raw_action == "CLOSE_TP3":
-                self._close_all("🎯 完美胜利：大趋势吃满，TP3 终极收网")
-                return {"status": "ok", "action": raw_action, "detail": {"type": "close_tp3"}}
-            if raw_action == "CLOSE":
-                self._close_all(f"🧹 换防清场：{close_reason}")
-                return {"status": "ok", "action": raw_action, "detail": {"type": "close"}}
-            if raw_action in ["LONG", "SHORT"]:
-                self.last_tv_side = raw_action
-                self._save_state()
-                return self._handle_smart_entry(raw_action)
-            return {"status": "skipped", "reason": "unknown_action", "detail": {"action": raw_action}}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-        finally:
-            self._lock.release()
+        self.monitoring = False
+        if raw_action == "CLOSE_PROTECT" or raw_action.startswith("CLOSE_PROTECT"):
+            self._close_all(
+                f"🛡️ 保护性全平：{close_reason}",
+                tv_side=tv_side,
+                tv_pnl_pct=tv_pnl_pct,
+                close_action=raw_action,
+            )
+            return {"status": "ok", "action": raw_action, "detail": {"type": "close_protect"}}
+        if raw_action == "CLOSE_TP3":
+            self._close_all(
+                "🎯 完美胜利：大趋势吃满，TP3 终极收网",
+                tv_side=tv_side,
+                tv_pnl_pct=tv_pnl_pct,
+                close_action=raw_action,
+            )
+            return {"status": "ok", "action": raw_action, "detail": {"type": "close_tp3"}}
+        if raw_action == "CLOSE":
+            self._close_all(
+                f"🧹 换防清场：{close_reason}",
+                tv_side=tv_side,
+                tv_pnl_pct=tv_pnl_pct,
+                close_action=raw_action,
+            )
+            return {"status": "ok", "action": raw_action, "detail": {"type": "close"}}
+        if raw_action in ["LONG", "SHORT"]:
+            self.last_tv_side = raw_action
+            self._save_state()
+            return self._handle_smart_entry(raw_action)
+        return {"status": "skipped", "reason": "unknown_action", "detail": {"action": raw_action}}
 
     def _handle_smart_entry(self, action: str) -> dict:
         self._log("SIGNAL", f"⚡ 收到建仓信号 [{action}]，启动绝对先平后开机制")
@@ -1037,7 +1131,18 @@ class PositionSupervisor:
         """Cancel-all then rebuild — for trail update / manual qty change only."""
         return self._ensure_defenses(qty, entry, dynamic_sl, force_rebuild=True)
 
-    def _close_all(self, reason: str = ""):
+    def _close_all(
+        self,
+        reason: str = "",
+        *,
+        tv_side: str | None = None,
+        tv_pnl_pct: float | None = None,
+        close_action: str | None = None,
+    ):
+        pos_before = self.position_manager.get_position(self.symbol)
+        had_position = bool(
+            pos_before and float(pos_before.get("positionAmt", 0) or 0) != 0
+        )
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.5)
         closed_successfully = False
@@ -1054,29 +1159,78 @@ class PositionSupervisor:
             )
             time.sleep(1.5)
 
-        if reason and closed_successfully and self.current_trade_id:
-            pnl = 0.0
-            if self.watched_entry and exit_price:
-                diff = exit_price - self.watched_entry
-                if self.current_side == "SHORT":
-                    diff = -diff
-                pnl = diff * self.watched_qty
-            start_ms = int(self.trade_opened_at * 1000) if self.trade_opened_at else None
-            funding_fee = self.client.get_funding_fees(self.symbol, start_ms)
-            close_detail = {
-                "exit_price": exit_price,
-                "pnl": round(pnl, 4),
-                "funding_fee": funding_fee,
-                "reason": reason,
-                "regime": self.regime,
-                "side": self.current_side,
-                "qty": self.watched_qty,
-                "entry": self.watched_entry,
-            }
-            self.on_trade_close(self.current_trade_id, exit_price, pnl, reason, funding_fee)
-            self._log("CLOSE", reason, close_detail)
-            sev = "critical" if "背离" in reason else "info"
-            self._alert(sev, "CLOSE", "全平完成", reason, close_detail)
+        is_close_protect = bool(
+            close_action and "CLOSE_PROTECT" in str(close_action).upper()
+        )
+
+        if reason and closed_successfully:
+            if not had_position and is_close_protect:
+                empty_detail: dict = {
+                    "close_action": close_action,
+                    "tv_side": tv_side,
+                    "reason": reason,
+                    "action": "cancel_orders_reset",
+                }
+                if tv_pnl_pct is not None:
+                    empty_detail["tv_pnl_pct"] = round(float(tv_pnl_pct), 2)
+                self._log(
+                    "CLOSE_PROTECT_EMPTY",
+                    f"🛡️ 空仓保护性全平：撤单复位（{reason.split('：', 1)[-1] if '：' in reason else reason}）",
+                    empty_detail,
+                )
+                self._alert(
+                    "info",
+                    "CLOSE_PROTECT_EMPTY",
+                    "空仓保护 · 撤单复位",
+                    f"用户 {self.user_id} 实盘无持仓，已撤单并复位",
+                    empty_detail,
+                )
+            elif self.current_trade_id:
+                pnl = 0.0
+                live_pnl_pct = None
+                if self.watched_entry and exit_price:
+                    diff = exit_price - self.watched_entry
+                    if self.current_side == "SHORT":
+                        diff = -diff
+                    pnl = diff * self.watched_qty
+                    if self.watched_entry > 0:
+                        live_pnl_pct = round(diff / self.watched_entry * 100, 2)
+
+                start_ms = int(self.trade_opened_at * 1000) if self.trade_opened_at else None
+                funding_fee = self.client.get_funding_fees(self.symbol, start_ms)
+                close_detail = {
+                    "exit_price": exit_price,
+                    "pnl": round(pnl, 4),
+                    "funding_fee": funding_fee,
+                    "reason": reason,
+                    "regime": self.regime,
+                    "side": self.current_side,
+                    "qty": self.watched_qty,
+                    "entry": self.watched_entry,
+                }
+                if close_action:
+                    close_detail["close_action"] = close_action
+                if tv_side:
+                    close_detail["tv_side"] = tv_side
+                if tv_pnl_pct is not None:
+                    close_detail["tv_pnl_pct"] = round(float(tv_pnl_pct), 2)
+                if live_pnl_pct is not None:
+                    close_detail["live_pnl_pct"] = live_pnl_pct
+                if tv_pnl_pct is not None and live_pnl_pct is not None:
+                    close_detail["pnl_pct_delta"] = round(live_pnl_pct - float(tv_pnl_pct), 2)
+                if tv_side and self.current_side and tv_side != self.current_side:
+                    close_detail["tv_side_mismatch"] = True
+                    self._log(
+                        "WARN",
+                        f"TV 方向 {tv_side} 与实盘 {self.current_side} 不一致（仍按实盘全平）",
+                        {"tv_side": tv_side, "live_side": self.current_side, "close_action": close_action},
+                        self.current_trade_id,
+                    )
+
+                self.on_trade_close(self.current_trade_id, exit_price, pnl, reason, funding_fee)
+                self._log("CLOSE", reason, close_detail)
+                sev = "critical" if "背离" in reason else "info"
+                self._alert(sev, "CLOSE", "全平完成", reason, close_detail)
 
         self.monitoring = False
         self.watched_qty = 0.0

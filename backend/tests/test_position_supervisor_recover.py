@@ -47,12 +47,12 @@ def test_recover_restores_radar_and_rebuilds_defenses(supervisor):
     supervisor._save_state()
 
     supervisor.client.get_current_price.return_value = 3660.0
-    supervisor.position_manager.get_position.return_value = {
-        "positionAmt": "1.5",
-        "entryPrice": "3500.0",
-    }
 
-    with patch.object(supervisor, "_ensure_defenses") as ensure:
+    with patch.object(
+        supervisor.position_manager,
+        "get_position",
+        return_value={"positionAmt": "1.5", "entryPrice": "3500.0"},
+    ), patch.object(supervisor, "_ensure_defenses") as ensure:
         ensure.return_value = {"skipped": True, "aligned": True}
         audit = supervisor.recover_on_startup(
             open_trade_id=99,
@@ -76,13 +76,13 @@ def test_recover_restores_radar_and_rebuilds_defenses(supervisor):
 
 
 def test_recover_falls_back_to_db_trade_context(supervisor):
-    supervisor.position_manager.get_position.return_value = {
-        "positionAmt": "-0.8",
-        "entryPrice": "3600.0",
-    }
     supervisor.client.get_current_price.return_value = 3580.0
 
-    with patch.object(supervisor, "_ensure_defenses") as ensure:
+    with patch.object(
+        supervisor.position_manager,
+        "get_position",
+        return_value={"positionAmt": "-0.8", "entryPrice": "3600.0"},
+    ), patch.object(supervisor, "_ensure_defenses") as ensure:
         ensure.return_value = {"skipped": True, "aligned": True}
         audit = supervisor.recover_on_startup(
             open_trade_id=7,
