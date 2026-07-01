@@ -44,7 +44,7 @@ export default {
     name: "AI 绩效服务费",
     shortName: "绩效服务费",
     settlement: "绩效结算",
-    cycleTitle: "7/10 天绩效结算",
+    cycleTitle: "月度绩效结算",
     dualPathTitle: "两种参与方式，自由选择",
     pathHostTitle: "托管 AI 量化",
     pathHostDesc: "绑定币安 API，AI 决策引擎自动执行合约交易",
@@ -772,7 +772,7 @@ export default {
     noAlerts: "暂无告警",
     txHashPh: "TxHash",
     completePayout: "打款完成",
-    settlementCreated: "已生成 {n} 条结算单（7/10天智能周期）",
+    settlementCreated: "已生成 {n} 条结算单（月度周期）",
     settlementConfirmed: "结算 #{id} 已确认，推荐奖励已入账",
     addrAdded: "收款地址已添加",
     withdrawCompleted: "提现 #{id} 已完成",
@@ -972,7 +972,7 @@ export default {
       s1: { title: "注册并绑定邀请关系", desc: "通过好友邀请链接或推荐码注册，系统自动关联 UID，便于后续结算与奖励追溯。" },
       s2: { title: "绑定交易所 API", desc: "在 API 管理页添加币安合约 API（仅交易权限，勿开启提币），系统验证连通性与权限范围。" },
       s3: { title: "配置风控并启动 AI", desc: "在风控与控制页确认参数后一键启动；AI 开始按策略执行，您可随时查看持仓与日志。" },
-      s4: { title: "周期绩效结算", desc: "持仓全平且周期盈利时，平台生成绩效服务费账单；充值确认后本金重置，AI 恢复运行。" }
+      s4: { title: "月度绩效结算", desc: "每月周期结束、持仓全平且盈利时，平台生成绩效服务费账单；充值确认后本金重置，AI 恢复运行。" }
     },
     partnerTitle: "合作伙伴计划（市场推广）",
     partnerIntro: "若您希望向朋友介绍平台，可成为合作伙伴：分享专属邀请链接或海报，好友注册并完成 AI 托管后，您有机会获得技术服务推荐奖励。奖励来源于好友周期净盈利对应的 AI 绩效服务费池，在结算确认后自动入账。",
@@ -1003,7 +1003,7 @@ export default {
   },
   settlements: {
     title: "绩效结算",
-    subtitle: "优先 7 天绩效结算；无盈利或仍有持仓则延至 10 天。须全仓平仓后，平台通过您的 API 查询实际盈利并生成 AI 绩效服务费账单。",
+    subtitle: "每月绩效结算（30 天周期）；无盈利或仍有持仓则宽限至 35 天。须全仓平仓后，平台通过您的 API 查询实际盈利并生成 AI 绩效服务费账单。",
     platformAddr: "平台 USDT 收款地址（公共备用）",
     myUniqueAddr: "我的专属绩效费充值地址",
     uniqueAddrHint: "每位用户独立地址，类似币安充值 — 转账后系统自动识别您的账户并关联结算单，无需填写备注",
@@ -1016,7 +1016,8 @@ export default {
     submitProof: "提交支付凭证",
     proofSubmitted: "支付凭证已提交，等待平台确认",
     submitFail: "提交失败",
-    status: {
+    cycleMonthly: "月度（30天）",
+    cycleExtended: "月度+宽限（35天）",
       pending: "待支付",
       paid: "待确认",
       confirmed: "已确认",
@@ -1320,7 +1321,7 @@ export default {
         },
         use: {
           title: "3. 信息用途",
-          body: "用于账户认证、合约跟单执行、盈亏统计、7/10 天绩效结算、推广奖励发放、风控告警及法律合规要求。我们不会出售您的个人数据。"
+          body: "用于账户认证、合约跟单执行、盈亏统计、月度绩效结算、推广奖励发放、风控告警及法律合规要求。我们不会出售您的个人数据。"
         },
         security: {
           title: "4. 安全与 API 权限",
@@ -1358,7 +1359,7 @@ export default {
         },
         fees: {
           title: "4. 费用与结算",
-          body: "盈利周期采用 7/10 天绩效结算；周期净盈利的 25% 为 AI 绩效服务费。用户须在全仓平仓后按账单转入 USDT 并提交链上凭证。未支付服务费将暂停 AI 执行。"
+          body: "盈利周期采用月度绩效结算（30 天周期，必要时宽限 5 天）；周期净盈利的 25% 为 AI 绩效服务费。用户须在全仓平仓后按账单转入 USDT 并提交链上凭证。未支付服务费将暂停 AI 执行。"
         },
         risk: {
           title: "5. 风险披露",
@@ -1420,7 +1421,7 @@ export default {
     transparencyTitle: "透明与可控",
     transparencyItems: {
       howTrade: { title: "平台如何为我交易？", desc: "绑定 API 后，GEMINI AI 在您的账户内按高置信度信号自动执行合约订单。资金始终在您的交易所账户，平台不托管。" },
-      fees: { title: "费用如何计算？", desc: "采用高水位绩效结算：周期净盈利的 25% 为 AI 绩效服务费，仅在盈利时收取。" },
+      fees: { title: "费用如何计算？", desc: "采用高水位月度绩效结算：每 30 天为一个周期，周期净盈利的 25% 为 AI 绩效服务费，仅在盈利时收取。" },
       pause: { title: "如何暂停交易？", desc: "在「风控与控制」页面一键暂停，或在 API 解绑后立即停止。暂停后平台不再下单。" },
       risk: { title: "风险提示", desc: "加密货币合约具有高风险，历史业绩不代表未来收益。请仅使用可承受损失的资金。" },
     },

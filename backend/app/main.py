@@ -124,7 +124,7 @@ def _seed_subscription_plans(db):
     if db.query(SubscriptionPlan).count() > 0:
         return
     plans = [
-        ("starter", "Starter", 0, ["7/10 day settlement", "Binance API", "Basic analytics"], 0),
+        ("starter", "Starter", 0, ["Monthly performance settlement", "Binance API", "Basic analytics"], 0),
         ("pro", "Pro", 99, ["Lower fee share", "Advanced analytics", "Priority signals"], 1),
         ("vip", "VIP", 299, ["Custom strategies", "1-on-1 support", "Dedicated webhook"], 2),
     ]

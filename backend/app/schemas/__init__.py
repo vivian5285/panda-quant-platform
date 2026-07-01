@@ -385,7 +385,7 @@ class SettlementOut(BaseModel):
     high_water_mark: float = 0.0
     platform_fee: float
     user_payable: float
-    cycle_days: int = 7
+    cycle_days: int = 30
     payment_status: str
     payment_chain: Optional[str] = None
     payment_tx_hash: Optional[str] = None

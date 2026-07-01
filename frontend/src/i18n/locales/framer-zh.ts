@@ -253,7 +253,7 @@ export default {
       websocket: { title: '实时数据流', desc: '实时行情 · 持仓 · 链上数据流' },
       riskEngine: { title: 'Risk Engine', desc: '动态止损 · 仓位 AI · 紧急退出' },
       analytics: { title: 'Analytics', desc: 'Sharpe / MDD / 胜率 · 全链路审计' },
-      settlement: { title: 'Settlement', desc: '7/10 天透明盈利分成 · API 合作模式' },
+      settlement: { title: 'Settlement', desc: 'Monthly transparent profit share · API partnership' },
     },
   },
   showcase: {

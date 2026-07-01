@@ -253,7 +253,7 @@ export default {
       websocket: { title: 'Real-time Streams', desc: 'Live market · positions · on-chain data flows' },
       riskEngine: { title: 'Risk Engine', desc: 'Dynamic SL · position AI · emergency exit' },
       analytics: { title: 'Analytics', desc: 'Sharpe / MDD / win rate · full audit trail' },
-      settlement: { title: 'Settlement', desc: 'Transparent 7/10-day profit share · API partnership' },
+      settlement: { title: 'Settlement', desc: 'Transparent monthly profit share · API partnership' },
     },
   },
   showcase: {

@@ -209,6 +209,11 @@ def run_scheduled_settlements(db: Session) -> list[Settlement]:
 
 
 def run_weekly_settlements(db: Session) -> list[Settlement]:
+    """Legacy alias — settlement cycle is monthly (see SETTLEMENT_PRIMARY_DAYS)."""
+    return run_scheduled_settlements(db)
+
+
+def run_monthly_settlements(db: Session) -> list[Settlement]:
     return run_scheduled_settlements(db)
 
 

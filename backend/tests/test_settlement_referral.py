@@ -214,7 +214,7 @@ def test_calculate_settlement_end_to_end_creates_rewards(mock_profit, mock_logge
         user,
         period_start=date(2026, 1, 1),
         period_end=date(2026, 1, 8),
-        cycle_days=7,
+        cycle_days=30,
     )
 
     assert settlement is not None

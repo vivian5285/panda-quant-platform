@@ -10,6 +10,7 @@ import { useI18n } from '../i18n'
 import { toast } from '../store/toast'
 import { Copy, Check } from 'lucide-react'
 import UserUniqueDepositPanel from '../components/UserUniqueDepositPanel'
+import { formatSettlementCycle } from '../utils/settlementCycle'
 
 export default function Settlements() {
   const { t } = useI18n()
@@ -251,7 +252,7 @@ export default function Settlements() {
             ) : items.map(s => (
               <tr key={s.id} className={s.payment_status === 'pending' || s.payment_status === 'paid' ? 'settlement-pending-row' : undefined}>
                 <td>{s.period_start} ~ {s.period_end}</td>
-                <td><span className="badge badge-gray">{s.cycle_days || 7}{t('common.days')}</span></td>
+                <td><span className="badge badge-gray">{formatSettlementCycle(s.cycle_days, t)}</span></td>
                 <td className="text-muted">${(s.high_water_mark ?? 0).toFixed(2)}</td>
                 <td className="text-green">${s.net_profit?.toFixed(2)}</td>
                 <td>${s.platform_fee?.toFixed(2)}</td>

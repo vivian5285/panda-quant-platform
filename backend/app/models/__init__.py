@@ -64,7 +64,7 @@ class User(Base):
     oauth_apple_id = Column(String(128), unique=True, index=True, nullable=True)
     oauth_avatar_url = Column(String(512), nullable=True)
     settlement_cycle_start = Column(Date, nullable=True)
-    settlement_target_days = Column(Integer, default=7)
+    settlement_target_days = Column(Integer, default=30)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     referrer = relationship("User", remote_side=[id], backref="referrals")
@@ -143,7 +143,7 @@ class Settlement(Base):
     high_water_mark = Column(Float, default=0.0)
     platform_fee = Column(Float, default=0.0)
     user_payable = Column(Float, default=0.0)
-    cycle_days = Column(Integer, default=7)
+    cycle_days = Column(Integer, default=30)
     payment_status = Column(String(20), default=PaymentStatus.PENDING.value)
     payment_chain = Column(String(20), nullable=True)
     payment_tx_hash = Column(String(128), nullable=True)

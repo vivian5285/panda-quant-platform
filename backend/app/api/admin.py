@@ -372,7 +372,7 @@ def all_settlements(admin=Depends(get_admin_user), db: Session = Depends(get_db)
             high_water_mark=s.high_water_mark or 0.0,
             platform_fee=s.platform_fee,
             user_payable=s.user_payable,
-            cycle_days=s.cycle_days or 7,
+            cycle_days=s.cycle_days or 30,
             payment_status=s.payment_status,
             payment_chain=s.payment_chain,
             payment_tx_hash=s.payment_tx_hash,
@@ -391,8 +391,10 @@ def trigger_settlement(admin=Depends(get_admin_user), db: Session = Depends(get_
     return {"created": len(created), "ids": [s.id for s in created]}
 
 
+@router.post("/settlements/run-scheduled")
+@router.post("/settlements/run-monthly")
 @router.post("/settlements/run-weekly")
-def trigger_weekly_settlement(admin=Depends(get_admin_user), db: Session = Depends(get_db)):
+def trigger_scheduled_settlement(admin=Depends(get_admin_user), db: Session = Depends(get_db)):
     created = run_scheduled_settlements(db)
     return {"created": len(created), "ids": [s.id for s in created]}
 

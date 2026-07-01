@@ -19,7 +19,7 @@ def list_plans(db: Session = Depends(get_db)):
     rows = db.query(SubscriptionPlan).filter(SubscriptionPlan.is_active == True).order_by(SubscriptionPlan.sort_order).all()
     if not rows:
         return [
-            {"code": "starter", "name": "Starter", "price_usd": 0, "features": ["7/10 day settlement", "Binance API", "Basic analytics"]},
+            {"code": "starter", "name": "Starter", "price_usd": 0, "features": ["Monthly performance settlement", "Binance API", "Basic analytics"]},
             {"code": "pro", "name": "Pro", "price_usd": 99, "features": ["Lower fee share", "Advanced analytics", "Priority signals"]},
             {"code": "vip", "name": "VIP", "price_usd": 299, "features": ["Custom strategies", "1-on-1 support", "Dedicated webhook"]},
         ]

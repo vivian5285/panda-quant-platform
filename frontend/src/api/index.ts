@@ -204,6 +204,9 @@ export const adminApi = {
     api.post(`/admin/users/${id}/sync-exchange-logs`, null, { params: { days } }).then(r => r.data),
   toggleUser: (id: number) => api.post(`/admin/users/${id}/toggle`).then(r => r.data),
   settlements: () => api.get('/admin/settlements').then(r => r.data),
+  runScheduled: () => api.post('/admin/settlements/run-scheduled').then(r => r.data),
+  runMonthly: () => api.post('/admin/settlements/run-monthly').then(r => r.data),
+  /** @deprecated use runScheduled */
   runWeekly: () => api.post('/admin/settlements/run-weekly').then(r => r.data),
   runSettlement: () => api.post('/admin/settlements/run').then(r => r.data),
   confirmSettlement: (id: number) => api.post(`/admin/settlements/${id}/confirm`).then(r => r.data),

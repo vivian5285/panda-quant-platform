@@ -44,7 +44,7 @@ export default {
     name: "AI Performance Service Fee",
     shortName: "Performance Fee",
     settlement: "Performance Settlement",
-    cycleTitle: "7/10-Day Performance Settlement",
+    cycleTitle: "Monthly Performance Settlement",
     dualPathTitle: "Two ways to participate",
     pathHostTitle: "Host AI Trading",
     pathHostDesc: "Bind Binance API — the AI decision engine executes USDT-M futures automatically",
@@ -772,7 +772,7 @@ export default {
     noAlerts: "No alerts",
     txHashPh: "TxHash",
     completePayout: "Complete Payout",
-    settlementCreated: "Created {n} settlement(s) (7/10-day cycle)",
+    settlementCreated: "Created {n} settlement(s) (monthly cycle)",
     settlementConfirmed: "Settlement #{id} confirmed, referral rewards credited",
     addrAdded: "Address added",
     withdrawCompleted: "Withdrawal #{id} completed",
@@ -972,7 +972,7 @@ export default {
       s1: { title: "Register & bind referral", desc: "Sign up via a friend's invite link or code — UID links automatically for settlement and reward tracking." },
       s2: { title: "Connect exchange API", desc: "Add Binance futures API (trade permission only, no withdrawals). We verify connectivity and scope." },
       s3: { title: "Configure risk & start AI", desc: "Confirm parameters on Risk & Control, then one-click start. Monitor positions and logs anytime." },
-      s4: { title: "Performance settlement", desc: "When flat and profitable, an AI performance service fee invoice is issued. After payment confirms, principal resets and AI resumes." }
+      s4: { title: "Monthly performance settlement", desc: "At each monthly cycle end, when flat and profitable, an AI performance service fee invoice is issued. After payment confirms, principal resets and AI resumes." }
     },
     partnerTitle: "Partner program (market outreach)",
     partnerIntro: "Want to introduce friends? Share your invite link or poster. When they register and host AI, you earn 10% / 5% of their cycle net profit (from their performance fee) after settlement confirms — see Referrals for details.",
@@ -1003,7 +1003,7 @@ export default {
   },
   settlements: {
     title: "Performance Settlement",
-    subtitle: "7-day cycle preferred; extends to 10 days if no profit or open positions. After full close, we query actual profit via your API and issue the AI performance service fee invoice.",
+    subtitle: "Monthly performance settlement (30-day cycle); extends to 35 days if no profit or open positions remain. After full close, we query actual profit via your API and issue the AI performance service fee invoice.",
     platformAddr: "Platform USDT Addresses (shared fallback)",
     myUniqueAddr: "My unique performance fee deposit address",
     uniqueAddrHint: "Each user gets a dedicated address (Binance-style). Transfers are auto-matched to your account — no memo required.",
@@ -1016,7 +1016,8 @@ export default {
     submitProof: "Submit Payment Proof",
     proofSubmitted: "Payment proof submitted, awaiting confirmation",
     submitFail: "Submit failed",
-    status: {
+    cycleMonthly: "Monthly (30d)",
+    cycleExtended: "Monthly + grace (35d)",
       pending: "Pending",
       paid: "Awaiting Confirm",
       confirmed: "Confirmed",
@@ -1320,7 +1321,7 @@ export default {
         },
         use: {
           title: "3. How We Use Data",
-          body: "Authentication, futures execution, P&L analytics, 7/10-day settlement, referral rewards, risk alerts, and legal compliance. We do not sell your personal data."
+          body: "Authentication, futures execution, P&L analytics, monthly performance settlement, referral rewards, risk alerts, and legal compliance. We do not sell your personal data."
         },
         security: {
           title: "4. Security & API Permissions",
@@ -1358,7 +1359,7 @@ export default {
         },
         fees: {
           title: "4. Fees & Settlement",
-          body: "Profitable cycles use a smart 7/10-day performance settlement. The AI performance service fee is 25% of cycle net profit. Users transfer USDT and submit on-chain proof. Unpaid fees pause AI execution."
+          body: "Profitable cycles use monthly performance settlement (30-day cycle, +5-day grace if needed). The AI performance service fee is 25% of cycle net profit. Users transfer USDT and submit on-chain proof. Unpaid fees pause AI execution."
         },
         risk: {
           title: "5. Risk Disclosure",
@@ -1420,7 +1421,7 @@ export default {
     transparencyTitle: "Transparency & Control",
     transparencyItems: {
       howTrade: { title: "How does the platform trade for me?", desc: "After API binding, GEMINI AI executes futures orders in your account on high-confidence signals. Funds stay on your exchange — non-custodial." },
-      fees: { title: "How are fees calculated?", desc: "High-water-mark performance fee: 25% of net cycle profit, charged only when profitable." },
+      fees: { title: "How are fees calculated?", desc: "High-water-mark monthly settlement: 25% of net cycle profit every 30 days, charged only when profitable." },
       pause: { title: "How do I pause trading?", desc: "One-click pause on Risk & Control, or unbind API to stop immediately. No new orders while paused." },
       risk: { title: "Risk disclosure", desc: "Crypto futures are high risk. Past performance does not guarantee future results. Only use capital you can afford to lose." },
     },

@@ -2,6 +2,7 @@ import GlassCard from '../../../components/GlassCard'
 import { adminApi } from '../../../api'
 import { toast } from '../../../store/toast'
 import { useAdmin } from '../AdminContext'
+import { formatSettlementCycle } from '../../../utils/settlementCycle'
 
 export default function AdminSettlementsTab() {
   const { t, settlements, payStatus, confirm, exportSettlementsCsv, load } = useAdmin()
@@ -37,7 +38,7 @@ export default function AdminSettlementsTab() {
             {settlements.map((s: any) => (
               <tr key={s.id}>
                 <td>{s.id}</td><td>#{s.user_id}</td>
-                <td>{s.cycle_days}{t('common.days')}</td>
+                <td>{formatSettlementCycle(s.cycle_days, t)}</td>
                 <td className="text-green">${s.net_profit?.toFixed(2)}</td>
                 <td>${s.user_payable?.toFixed(2)}</td>
                 <td className="text-xs">
