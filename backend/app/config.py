@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     LEVERAGE: int = 20
     DEEPCOIN_SYMBOL: str = "ETH-USDT-SWAP"
     DEEPCOIN_LEVERAGE: int = 20
+    OKX_SYMBOL: str = "ETH-USDT-SWAP"
+    OKX_LEVERAGE: int = 20
+    OKX_CONTRACT_VALUE: float = 0.1
+    OKX_LOT_SIZE: float = 0.01
+    GATE_SYMBOL: str = "ETH_USDT"
+    GATE_LEVERAGE: int = 20
+    GATE_QUANTO_MULTIPLIER: float = 0.01
 
     SETTLEMENT_PRIMARY_DAYS: int = 30
     SETTLEMENT_EXTENDED_DAYS: int = 35

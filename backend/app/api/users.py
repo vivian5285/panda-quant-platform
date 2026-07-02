@@ -4,6 +4,7 @@ from datetime import datetime
 
 from app.database import get_db
 from app.models import User, Trade, TradeLog, ApiStatus, PrincipalSnapshot, ExchangeType
+from app.core.exchange_factory import exchange_requires_passphrase, parse_exchange
 from app.schemas import (
     ApiBindRequest, ApiVerifyResponse, ApiVerifyCheckItem, UserProfile, DashboardStats,
     TradeOut, TradeLogOut, PrincipalSnapshotOut, UserAnalyticsOut, SignalStatsOut,
@@ -79,8 +80,11 @@ def profile(user: User = Depends(get_current_user)):
 @router.post("/bind-api/verify", response_model=ApiVerifyResponse)
 def verify_bind_api(req: ApiBindRequest, user: User = Depends(get_current_user)):
     """绑定前校验：连接、余额、交易权限、单向持仓、杠杆。"""
+    ex = parse_exchange(req.exchange)
+    if ex is None:
+        raise_i18n(400, "api.unsupported_exchange")
     result = validate_exchange_api(
-        req.exchange,
+        ex,
         req.api_key,
         req.api_secret,
         user.id,
@@ -116,8 +120,10 @@ def bind_api(req: ApiBindRequest, db: Session = Depends(get_db), user: User = De
             raise_i18n(400, "api.security_codes_required")
         verify_security_dual(db, user, req.email_code, req.phone_code)
 
-    ex = (req.exchange or ExchangeType.BINANCE.value).strip().lower()
-    if ex == ExchangeType.DEEPCOIN.value and not (req.passphrase or "").strip():
+    ex = parse_exchange(req.exchange)
+    if ex is None:
+        raise_i18n(400, "api.unsupported_exchange")
+    if exchange_requires_passphrase(ex) and not (req.passphrase or "").strip():
         raise_i18n(400, "api.passphrase_required")
 
     result = validate_exchange_api(
@@ -135,7 +141,7 @@ def bind_api(req: ApiBindRequest, db: Session = Depends(get_db), user: User = De
     user.exchange = ex
     user.api_key_enc = encrypt_text(req.api_key)
     user.api_secret_enc = encrypt_text(req.api_secret)
-    user.passphrase_enc = encrypt_text(req.passphrase) if ex == ExchangeType.DEEPCOIN.value else None
+    user.passphrase_enc = encrypt_text(req.passphrase) if exchange_requires_passphrase(ex) else None
     user.api_status = ApiStatus.ACTIVE.value
 
     start_new_profit_cycle(

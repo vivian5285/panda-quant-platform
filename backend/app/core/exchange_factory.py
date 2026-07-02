@@ -1,4 +1,4 @@
-"""Exchange client + supervisor factory (Gemini multi-exchange P0)."""
+"""Exchange client + supervisor factory (multi-exchange)."""
 from __future__ import annotations
 
 import logging
@@ -7,6 +7,8 @@ from typing import Callable, Optional, Union
 from app.config import get_settings
 from app.core.binance_client import BinanceClient
 from app.core.deepcoin_client import DeepcoinClient
+from app.core.gate_client import GateClient
+from app.core.okx_client import OkxClient
 from app.core.position_supervisor import PositionSupervisor
 from app.core.position_supervisor_deepcoin import DeepcoinPositionSupervisor
 from app.models import ExchangeType, User
@@ -16,11 +18,35 @@ settings = get_settings()
 
 SupervisorType = Union[PositionSupervisor, DeepcoinPositionSupervisor]
 
+SUPPORTED_EXCHANGES = frozenset({
+    ExchangeType.BINANCE.value,
+    ExchangeType.DEEPCOIN.value,
+    ExchangeType.OKX.value,
+    ExchangeType.GATE.value,
+})
+
+PASSPHRASE_EXCHANGES = frozenset({
+    ExchangeType.DEEPCOIN.value,
+    ExchangeType.OKX.value,
+})
+
 
 def normalize_exchange(exchange: str | None) -> str:
     val = (exchange or ExchangeType.BINANCE.value).strip().lower()
-    if val not in (ExchangeType.BINANCE.value, ExchangeType.DEEPCOIN.value):
+    if val == "gateio":
+        val = ExchangeType.GATE.value
+    if val not in SUPPORTED_EXCHANGES:
         return ExchangeType.BINANCE.value
+    return val
+
+
+def parse_exchange(exchange: str | None) -> str | None:
+    """Normalize exchange id; return None when unsupported."""
+    val = (exchange or ExchangeType.BINANCE.value).strip().lower()
+    if val == "gateio":
+        val = ExchangeType.GATE.value
+    if val not in SUPPORTED_EXCHANGES:
+        return None
     return val
 
 
@@ -28,21 +54,29 @@ def user_exchange(user: User) -> str:
     return normalize_exchange(getattr(user, "exchange", None))
 
 
+def exchange_requires_passphrase(exchange: str | None) -> bool:
+    return normalize_exchange(exchange) in PASSPHRASE_EXCHANGES
+
+
 def create_exchange_client(
     user: User,
     api_key: str,
     api_secret: str,
     passphrase: str = "",
-) -> BinanceClient | DeepcoinClient:
+) -> BinanceClient | DeepcoinClient | OkxClient | GateClient:
     ex = user_exchange(user)
     if ex == ExchangeType.DEEPCOIN.value:
         return DeepcoinClient(api_key, api_secret, passphrase, user.id)
+    if ex == ExchangeType.OKX.value:
+        return OkxClient(api_key, api_secret, passphrase, user.id)
+    if ex == ExchangeType.GATE.value:
+        return GateClient(api_key, api_secret, user.id)
     return BinanceClient(api_key, api_secret, user.id)
 
 
 def create_supervisor(
     user: User,
-    client: BinanceClient | DeepcoinClient,
+    client: BinanceClient | DeepcoinClient | OkxClient | GateClient,
     *,
     on_log: Optional[Callable] = None,
     on_trade_open: Optional[Callable] = None,
@@ -72,6 +106,6 @@ def create_supervisor(
 def user_has_api_credentials(user: User) -> bool:
     if not user.api_key_enc or not user.api_secret_enc:
         return False
-    if user_exchange(user) == ExchangeType.DEEPCOIN.value:
+    if exchange_requires_passphrase(user_exchange(user)):
         return bool(getattr(user, "passphrase_enc", None))
     return True

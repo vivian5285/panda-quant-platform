@@ -4,7 +4,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy.orm import Session
 from app.models import User, ApiStatus
-from app.core.binance_client import BinanceClient
 from app.core.exchange_factory import create_exchange_client, create_supervisor, user_has_api_credentials, user_exchange
 from app.services.trade_logger import TradeLogger
 from app.services.radar_context import build_radar_recovery_context

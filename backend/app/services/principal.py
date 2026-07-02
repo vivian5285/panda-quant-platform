@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import PrincipalSnapshot, User
 from app.utils.crypto import decrypt_text
-from app.core.binance_client import BinanceClient
+from app.core.exchange_factory import create_exchange_client
 from app.services.dispatcher import supervisor_pool
 
 logger = logging.getLogger(__name__)
@@ -21,12 +21,12 @@ def fetch_live_equity(user: User) -> float:
         return float(summary.get("total_margin_balance", 0))
 
     if user.api_key_enc and user.api_secret_enc:
-        from app.utils.crypto import decrypt_text
-
-        client = BinanceClient(
+        passphrase = decrypt_text(user.passphrase_enc) if user.passphrase_enc else ""
+        client = create_exchange_client(
+            user,
             decrypt_text(user.api_key_enc),
             decrypt_text(user.api_secret_enc),
-            user.id,
+            passphrase,
         )
         summary = client.get_futures_account_summary()
         return float(summary.get("total_margin_balance", 0))

@@ -22,6 +22,8 @@ class ApiStatus(str, enum.Enum):
 class ExchangeType(str, enum.Enum):
     BINANCE = "binance"
     DEEPCOIN = "deepcoin"
+    OKX = "okx"
+    GATE = "gate"
 
 
 class PaymentStatus(str, enum.Enum):

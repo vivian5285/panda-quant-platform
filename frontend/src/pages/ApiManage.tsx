@@ -51,12 +51,32 @@ const BINANCE_CHECK_IDS = [
   'leverage',
 ] as const
 
-const DEEPCOIN_CHECK_IDS = ['connect', 'balance', 'can_trade', 'leverage'] as const
+const ALT_EXCHANGE_CHECK_IDS = ['connect', 'balance', 'can_trade', 'leverage'] as const
+
+type ExchangeId = 'binance' | 'deepcoin' | 'okx' | 'gate'
+
+const PASSPHRASE_EXCHANGES: ExchangeId[] = ['deepcoin', 'okx']
+
+function isAltExchange(ex: string | undefined, selected?: ExchangeId): boolean {
+  const id = (ex || selected || 'binance') as ExchangeId
+  return id !== 'binance'
+}
+
+function needsPassphrase(ex: ExchangeId): boolean {
+  return PASSPHRASE_EXCHANGES.includes(ex)
+}
+
+function normalizeExchangeFromApi(ex: string | undefined): ExchangeId {
+  const val = (ex || 'binance').toLowerCase()
+  if (val === 'gateio') return 'gate'
+  if (val === 'deepcoin' || val === 'okx' || val === 'gate') return val
+  return 'binance'
+}
 
 export default function ApiManage() {
   const locale = useI18n(s => s.locale)
   const t = useI18n(s => s.t)
-  const [exchange, setExchange] = useState<'binance' | 'deepcoin'>('binance')
+  const [exchange, setExchange] = useState<ExchangeId>('binance')
   const [apiKey, setApiKey] = useState('')
   const [apiSecret, setApiSecret] = useState('')
   const [passphrase, setPassphrase] = useState('')
@@ -74,11 +94,25 @@ export default function ApiManage() {
 
   const needsDualVerify = profile?.has_email && profile?.has_phone
 
-  const isDeepcoin = exchange === 'deepcoin'
+  const requiresPassphrase = needsPassphrase(exchange)
+
+  const keyLabel = () => {
+    if (exchange === 'deepcoin') return t('api.deepcoinKey')
+    if (exchange === 'okx') return t('api.okxKey')
+    if (exchange === 'gate') return t('api.gateKey')
+    return t('api.binanceKey')
+  }
+
+  const secretLabel = () => {
+    if (exchange === 'deepcoin') return t('api.deepcoinSecret')
+    if (exchange === 'okx') return t('api.okxSecret')
+    if (exchange === 'gate') return t('api.gateSecret')
+    return t('api.binanceSecret')
+  }
 
   const isBindReady = (v: VerifyResult | null) => {
     if (!v?.valid) return false
-    if (isDeepcoin || v.exchange === 'deepcoin') {
+    if (isAltExchange(v.exchange, exchange)) {
       if (v.checks && v.checks.length > 0) {
         return v.checks.every(c => c.ok)
       }
@@ -97,16 +131,16 @@ export default function ApiManage() {
 
   const bindReady = isBindReady(verify)
   const dualCodesOk = !needsDualVerify || (secEmailCode.length > 0 && secPhoneCode.length > 0)
-  const canBind = bindReady && dualCodesOk && !!apiKey && !!apiSecret && (!isDeepcoin || !!passphrase)
+  const canBind = bindReady && dualCodesOk && !!apiKey && !!apiSecret && (!requiresPassphrase || !!passphrase)
 
   useEffect(() => {
     userApi.apiStatus().then(res => {
       setBoundStatus(res)
-      if (res.exchange === 'deepcoin') setExchange('deepcoin')
+      if (res.exchange) setExchange(normalizeExchangeFromApi(res.exchange))
     }).catch(() => {})
     authApi.me().then(p => {
       setProfile(p)
-      if (p.exchange === 'deepcoin') setExchange('deepcoin')
+      if (p.exchange) setExchange(normalizeExchangeFromApi(p.exchange))
     }).catch(() => {})
     settingsApi.get().then(p => setTotpEnabled(!!p.totp_enabled)).catch(() => {})
   }, [])
@@ -151,7 +185,7 @@ export default function ApiManage() {
   }
 
   const handleVerify = async () => {
-    if (!apiKey || !apiSecret || (isDeepcoin && !passphrase)) {
+    if (!apiKey || !apiSecret || (requiresPassphrase && !passphrase)) {
       setError(t('api.fillRequired'))
       return
     }
@@ -221,7 +255,7 @@ export default function ApiManage() {
   }
 
   const renderChecklist = (v: VerifyResult) => {
-    const checkIds = (v.exchange === 'deepcoin' || isDeepcoin) ? DEEPCOIN_CHECK_IDS : BINANCE_CHECK_IDS
+    const checkIds = isAltExchange(v.exchange, exchange) ? ALT_EXCHANGE_CHECK_IDS : BINANCE_CHECK_IDS
     const items = v.checks?.length
       ? v.checks
       : checkIds.map(id => ({
@@ -314,11 +348,23 @@ export default function ApiManage() {
 
       <GlassCard className="p-8 api-page-panel" key={locale}>
         <p className="text-secondary api-intro">
-          {isDeepcoin ? (
+          {exchange === 'deepcoin' ? (
             <>
               {t('api.introDeepcoin1')}
               <strong>{t('api.introDeepcoin')}</strong>
               {t('api.introDeepcoin2')}
+            </>
+          ) : exchange === 'okx' ? (
+            <>
+              {t('api.introDeepcoin1')}
+              <strong>{t('api.introOkx')}</strong>
+              {t('api.introOkx2')}
+            </>
+          ) : exchange === 'gate' ? (
+            <>
+              {t('api.intro1')}
+              <strong>{t('api.introGate')}</strong>
+              {t('api.introGate2')}
             </>
           ) : (
             <>
@@ -397,24 +443,27 @@ export default function ApiManage() {
               className="input"
               value={exchange}
               onChange={e => {
-                setExchange(e.target.value as 'binance' | 'deepcoin')
+                setExchange(normalizeExchangeFromApi(e.target.value))
                 setVerify(null)
                 setError('')
+                setPassphrase('')
               }}
             >
               <option value="binance">{t('api.exchangeBinance')}</option>
               <option value="deepcoin">{t('api.exchangeDeepcoin')}</option>
+              <option value="okx">{t('api.exchangeOkx')}</option>
+              <option value="gate">{t('api.exchangeGate')}</option>
             </select>
           </div>
           <div className="form-field">
-            <label className="form-label">{isDeepcoin ? t('api.deepcoinKey') : t('api.binanceKey')}</label>
+            <label className="form-label">{keyLabel()}</label>
             <input className="input" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={t('api.keyPh')} required />
           </div>
           <div className="form-field">
-            <label className="form-label">{isDeepcoin ? t('api.deepcoinSecret') : t('api.binanceSecret')}</label>
+            <label className="form-label">{secretLabel()}</label>
             <input className="input" type="password" value={apiSecret} onChange={e => setApiSecret(e.target.value)} placeholder={t('api.secretPh')} required />
           </div>
-          {isDeepcoin && (
+          {requiresPassphrase && (
             <div className="form-field">
               <label className="form-label">{t('api.passphraseLabel')}</label>
               <input className="input" type="password" value={passphrase} onChange={e => setPassphrase(e.target.value)} placeholder={t('api.passphrasePh')} required />
@@ -422,7 +471,7 @@ export default function ApiManage() {
           )}
 
           <div className="api-actions">
-            <button type="button" className="btn btn-secondary" disabled={checking || !apiKey || !apiSecret || (isDeepcoin && !passphrase)} onClick={handleVerify}>
+            <button type="button" className="btn btn-secondary" disabled={checking || !apiKey || !apiSecret || (requiresPassphrase && !passphrase)} onClick={handleVerify}>
               {checking ? t('api.verifying') : t('api.verify')}
             </button>
           </div>

@@ -61,8 +61,12 @@ MESSAGES: dict[str, dict[str, str]] = {
     },
     "api.not_bound": {"zh": "尚未绑定 API", "en": "API not bound yet"},
     "api.passphrase_required": {
-        "zh": "深币 API 需填写 Passphrase",
-        "en": "DeepCoin API requires Passphrase",
+        "zh": "深币 / OKX API 需填写 Passphrase",
+        "en": "DeepCoin / OKX API requires Passphrase",
+    },
+    "api.unsupported_exchange": {
+        "zh": "不支持的交易所，请选择 Binance、DeepCoin、OKX 或 Gate.io",
+        "en": "Unsupported exchange. Choose Binance, DeepCoin, OKX, or Gate.io",
     },
     "api.verify_fail": {"zh": "API 验证失败", "en": "API verification failed"},
     "api.bind_success": {"zh": "绑定成功 · 初始本金 ${amount}", "en": "Bound successfully · Initial principal ${amount}"},

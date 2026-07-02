@@ -62,8 +62,8 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
         self.on_alert = on_alert or (lambda *a, **k: None)
         self._sentinel_error_notified = False
 
-        self.symbol = settings.SYMBOL
-        self.leverage = settings.LEVERAGE
+        self.symbol = getattr(client, "trading_symbol", settings.SYMBOL)
+        self.leverage = int(getattr(client, "trading_leverage", settings.LEVERAGE))
         self.monitoring = False
         self._lock = threading.Lock()
         self._signal_queue: queue.Queue[_QueuedSignal] = queue.Queue()

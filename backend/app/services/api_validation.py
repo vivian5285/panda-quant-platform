@@ -259,6 +259,124 @@ def validate_deepcoin_api(
     }
 
 
+ALT_EXCHANGE_REQUIRED_CHECK_IDS = ("connect", "balance", "leverage", "can_trade")
+
+
+def _validate_alt_exchange_api(
+    *,
+    exchange: str,
+    client,
+    symbol: str,
+    leverage: int,
+    require_passphrase: bool,
+    passphrase: str = "",
+) -> dict:
+    checks: list[dict] = []
+    if require_passphrase and not passphrase.strip():
+        checks.append(_check_item("connect", False, hint_key="api.hint.passphrase"))
+        return _build_failure(checks, "api.passphrase_required")
+
+    try:
+        if not client.test_connection():
+            raise RuntimeError("connection failed")
+        summary = client.get_futures_account_summary()
+    except Exception as e:
+        logger.warning("%s API validation failed: %s", exchange, e)
+        checks.append(_check_item("connect", False, hint_key="api.hint.connect"))
+        return _build_failure(checks, "api.connect_failed", detail=str(e))
+
+    checks.append(_check_item("connect", True))
+    equity = float(summary.get("total_margin_balance") or 0)
+    checks.append(_check_item("balance", equity > 0, hint_key="api.hint.balance"))
+    checks.append(_check_item("can_trade", bool(summary.get("can_trade", True)), hint_key="api.hint.can_trade"))
+
+    one_way = client.ensure_one_way_mode()
+    hedge = client.is_hedge_mode()
+    checks.append(_check_item("one_way", one_way, hint_key="api.hint.one_way_failed"))
+
+    lev_res = client.set_leverage(symbol, leverage)
+    leverage_ok = lev_res is not None
+    checks.append(_check_item("leverage", leverage_ok, hint_key="api.hint.leverage"))
+
+    price = client.get_current_price(symbol)
+    activity = client.futures_activity_summary()
+    base_fields = {
+        "total_balance": equity,
+        "available_balance": float(summary.get("available_balance") or 0),
+        "wallet_balance": float(summary.get("total_wallet_balance") or equity),
+        "unrealized_pnl": float(summary.get("unrealized_pnl") or 0),
+        "can_trade": bool(summary.get("can_trade", True)),
+        "one_way_mode": one_way,
+        "leverage_ok": leverage_ok,
+        "withdraw_disabled": None,
+        "enable_futures": True,
+        "symbol": symbol,
+        "symbol_price": price,
+        "leverage": leverage,
+        "exchange": exchange,
+        "open_orders_count": activity.get("open_orders", 0),
+        "open_positions_count": activity.get("open_positions", 0),
+        "hedge_mode": hedge,
+    }
+
+    required_ok = all(c["ok"] for c in checks if c["id"] in ALT_EXCHANGE_REQUIRED_CHECK_IDS)
+    passed = sum(1 for c in checks if c.get("ok"))
+    if not required_ok:
+        message_key = "api.verify_incomplete"
+        if equity <= 0:
+            message_key = "api.zero_balance"
+        elif not leverage_ok:
+            message_key = "api.leverage_failed"
+        return _build_failure(
+            checks,
+            message_key,
+            checks_passed=passed,
+            checks_total=len(checks),
+            **base_fields,
+        )
+
+    return {
+        "valid": True,
+        "message_key": "api.verify_ok",
+        "checks": checks,
+        "checks_passed": passed,
+        "checks_total": len(checks),
+        **base_fields,
+    }
+
+
+def validate_okx_api(
+    api_key: str,
+    api_secret: str,
+    passphrase: str,
+    user_id: int = 0,
+) -> dict:
+    from app.core.okx_client import OkxClient
+
+    client = OkxClient(api_key, api_secret, passphrase, user_id or 0)
+    return _validate_alt_exchange_api(
+        exchange="okx",
+        client=client,
+        symbol=settings.OKX_SYMBOL,
+        leverage=settings.OKX_LEVERAGE,
+        require_passphrase=True,
+        passphrase=passphrase,
+    )
+
+
+def validate_gate_api(api_key: str, api_secret: str, user_id: int = 0) -> dict:
+    from app.core.gate_client import GateClient
+
+    client = GateClient(api_key, api_secret, user_id or 0)
+    return _validate_alt_exchange_api(
+        exchange="gate",
+        client=client,
+        symbol=settings.GATE_SYMBOL,
+        leverage=settings.GATE_LEVERAGE,
+        require_passphrase=False,
+    )
+
+
 def validate_exchange_api(
     exchange: str,
     api_key: str,
@@ -267,6 +385,12 @@ def validate_exchange_api(
     passphrase: str = "",
 ) -> dict:
     ex = (exchange or "binance").strip().lower()
+    if ex == "gateio":
+        ex = "gate"
     if ex == "deepcoin":
         return validate_deepcoin_api(api_key, api_secret, passphrase, user_id)
+    if ex == "okx":
+        return validate_okx_api(api_key, api_secret, passphrase, user_id)
+    if ex == "gate":
+        return validate_gate_api(api_key, api_secret, user_id)
     return validate_binance_api(api_key, api_secret, user_id)

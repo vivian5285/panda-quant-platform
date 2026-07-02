@@ -2,7 +2,15 @@ import { useState } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useI18n } from '../../../i18n'
 
-const PARTNERS = ['binance', 'okx', 'bybit', 'bitget', 'gate'] as const
+const PARTNERS = ['binance', 'okx', 'deepcoin', 'bybit', 'bitget', 'gate'] as const
+const LIVE_PARTNERS = new Set(['binance', 'okx', 'gate'])
+const BETA_PARTNERS = new Set(['deepcoin'])
+
+function partnerStatusClass(key: string): string {
+  if (LIVE_PARTNERS.has(key)) return 'live'
+  if (BETA_PARTNERS.has(key)) return 'beta'
+  return 'coming'
+}
 
 const GRADIENTS: Record<string, string> = {
   binance: 'linear-gradient(160deg, #1a1400 0%, #3d3200 35%, #000 100%)',
@@ -53,7 +61,7 @@ export default function FramerExchangePartners() {
             transition={{ duration: 0.45, delay: i * 0.06 }}
           >
             <span className="framer-partner-logo">{t(`framer.partners.items.${key}.name`)}</span>
-            <span className={`framer-partner-status status-${key === 'binance' ? 'live' : 'coming'}`}>
+            <span className={`framer-partner-status status-${partnerStatusClass(key)}`}>
               {t(`framer.partners.items.${key}.status`)}
             </span>
             <p className="framer-partner-desc">{t(`framer.partners.items.${key}.desc`)}</p>

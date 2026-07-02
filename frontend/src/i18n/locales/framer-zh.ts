@@ -425,14 +425,15 @@ export default {
   partners: {
     kicker: 'EXCHANGE PARTNERS',
     title: '合作交易所集成',
-    meta: '币安已上线 · 更多交易所二期适配',
+    meta: 'Binance · OKX · Gate.io 已上线 · DeepCoin 内测',
     readMore: '了解更多',
     items: {
       binance: { name: 'Binance 币安', status: '已上线 · U本位', desc: 'U 本位合约全量执行 · 仅交易 API · 零托管 · 默认 ETHUSDT。' },
-      okx: { name: 'OKX 欧易', status: '二期适配', desc: 'OKX 永续适配开发中 —— 统一 AI 决策层，交易所无关路由。' },
+      okx: { name: 'OKX 欧易', status: '已上线 · SWAP', desc: 'OKX USDT 永续 · 统一 PositionSupervisor 执行 · 仅交易 API · ETH-USDT-SWAP 20×。' },
+      deepcoin: { name: 'DeepCoin 深币', status: '内测 · SWAP', desc: '深币内测通道 · 独立 Supervisor · ETH-USDT-SWAP · 须 Passphrase。' },
       bybit: { name: 'Bybit', status: '二期适配', desc: 'Bybit 线性合约 —— 同一概率引擎，每用户独立 API 执行。' },
       bitget: { name: 'Bitget', status: '路线图', desc: 'Bitget 合约集成规划中 —— 一个 AI 控制台多交易所组合视图。' },
-      gate: { name: 'Gate.io', status: '路线图', desc: 'Gate.io 永续支持在路线图中 —— 量级达标后机构级路由。' },
+      gate: { name: 'Gate.io', status: '已上线 · USDT 永续', desc: 'Gate.io USDT 永续 · 共享执行引擎 · ETH_USDT 20× · 仅需 Key + Secret。' },
     },
   },
   faq: {
