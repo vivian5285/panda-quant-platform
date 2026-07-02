@@ -35,12 +35,13 @@ type VerifyResult = {
   checks?: ApiCheckItem[]
   checks_passed?: number
   checks_total?: number
+  exchange?: string
   open_orders_count?: number
   open_positions_count?: number
   hedge_mode?: boolean | null
 }
 
-const CHECK_IDS = [
+const BINANCE_CHECK_IDS = [
   'connect',
   'withdraw_off',
   'futures_on',
@@ -50,11 +51,15 @@ const CHECK_IDS = [
   'leverage',
 ] as const
 
+const DEEPCOIN_CHECK_IDS = ['connect', 'balance', 'can_trade', 'leverage'] as const
+
 export default function ApiManage() {
   const locale = useI18n(s => s.locale)
   const t = useI18n(s => s.t)
+  const [exchange, setExchange] = useState<'binance' | 'deepcoin'>('binance')
   const [apiKey, setApiKey] = useState('')
   const [apiSecret, setApiSecret] = useState('')
+  const [passphrase, setPassphrase] = useState('')
   const [verify, setVerify] = useState<VerifyResult | null>(null)
   const [boundStatus, setBoundStatus] = useState<VerifyResult | null>(null)
   const [profile, setProfile] = useState<any>(null)
@@ -69,8 +74,16 @@ export default function ApiManage() {
 
   const needsDualVerify = profile?.has_email && profile?.has_phone
 
+  const isDeepcoin = exchange === 'deepcoin'
+
   const isBindReady = (v: VerifyResult | null) => {
     if (!v?.valid) return false
+    if (isDeepcoin || v.exchange === 'deepcoin') {
+      if (v.checks && v.checks.length > 0) {
+        return v.checks.every(c => c.ok)
+      }
+      return v.can_trade && v.leverage_ok && v.total_balance > 0
+    }
     if (v.checks && v.checks.length > 0) {
       return v.checks.every(c => c.ok)
     }
@@ -84,11 +97,17 @@ export default function ApiManage() {
 
   const bindReady = isBindReady(verify)
   const dualCodesOk = !needsDualVerify || (secEmailCode.length > 0 && secPhoneCode.length > 0)
-  const canBind = bindReady && dualCodesOk && !!apiKey && !!apiSecret
+  const canBind = bindReady && dualCodesOk && !!apiKey && !!apiSecret && (!isDeepcoin || !!passphrase)
 
   useEffect(() => {
-    userApi.apiStatus().then(setBoundStatus).catch(() => {})
-    authApi.me().then(setProfile).catch(() => {})
+    userApi.apiStatus().then(res => {
+      setBoundStatus(res)
+      if (res.exchange === 'deepcoin') setExchange('deepcoin')
+    }).catch(() => {})
+    authApi.me().then(p => {
+      setProfile(p)
+      if (p.exchange === 'deepcoin') setExchange('deepcoin')
+    }).catch(() => {})
     settingsApi.get().then(p => setTotpEnabled(!!p.totp_enabled)).catch(() => {})
   }, [])
 
@@ -132,7 +151,7 @@ export default function ApiManage() {
   }
 
   const handleVerify = async () => {
-    if (!apiKey || !apiSecret) {
+    if (!apiKey || !apiSecret || (isDeepcoin && !passphrase)) {
       setError(t('api.fillRequired'))
       return
     }
@@ -140,7 +159,7 @@ export default function ApiManage() {
     setError('')
     setVerify(null)
     try {
-      const res = await userApi.verifyApi(apiKey, apiSecret)
+      const res = await userApi.verifyApi(apiKey, apiSecret, exchange, passphrase || undefined)
       setVerify(res)
       if (!res.valid) setError(res.message)
     } catch (err: any) {
@@ -170,7 +189,7 @@ export default function ApiManage() {
     setError('')
     try {
       if (!verify?.valid || !isBindReady(verify)) {
-        const res = await userApi.verifyApi(apiKey, apiSecret)
+        const res = await userApi.verifyApi(apiKey, apiSecret, exchange, passphrase || undefined)
         setVerify(res)
         if (!isBindReady(res)) {
           setError(res.message || t('api.bindBlockedHint'))
@@ -180,6 +199,8 @@ export default function ApiManage() {
       const res = await userApi.bindApi(
         apiKey,
         apiSecret,
+        exchange,
+        passphrase || undefined,
         needsDualVerify ? secEmailCode : undefined,
         needsDualVerify ? secPhoneCode : undefined,
       )
@@ -188,6 +209,7 @@ export default function ApiManage() {
       setBoundStatus(snapshot)
       setApiKey('')
       setApiSecret('')
+      setPassphrase('')
       setVerify(null)
       setSecEmailCode('')
       setSecPhoneCode('')
@@ -199,9 +221,10 @@ export default function ApiManage() {
   }
 
   const renderChecklist = (v: VerifyResult) => {
+    const checkIds = (v.exchange === 'deepcoin' || isDeepcoin) ? DEEPCOIN_CHECK_IDS : BINANCE_CHECK_IDS
     const items = v.checks?.length
       ? v.checks
-      : CHECK_IDS.map(id => ({
+      : checkIds.map(id => ({
           id,
           ok:
             (id === 'connect' && true) ||
@@ -291,11 +314,21 @@ export default function ApiManage() {
 
       <GlassCard className="p-8 api-page-panel" key={locale}>
         <p className="text-secondary api-intro">
-          {t('api.intro1')}
-          <strong>{t('api.introBinance')}</strong>
-          {t('api.intro2')}
-          <strong>{t('api.intro3')}</strong>
-          {t('api.intro4')}
+          {isDeepcoin ? (
+            <>
+              {t('api.introDeepcoin1')}
+              <strong>{t('api.introDeepcoin')}</strong>
+              {t('api.introDeepcoin2')}
+            </>
+          ) : (
+            <>
+              {t('api.intro1')}
+              <strong>{t('api.introBinance')}</strong>
+              {t('api.intro2')}
+              <strong>{t('api.intro3')}</strong>
+              {t('api.intro4')}
+            </>
+          )}
         </p>
 
         <div className="api-prep-guide">
@@ -359,16 +392,37 @@ export default function ApiManage() {
 
         <form onSubmit={handleBind}>
           <div className="form-field">
-            <label className="form-label">{t('api.binanceKey')}</label>
+            <label className="form-label">{t('api.exchangeLabel')}</label>
+            <select
+              className="input"
+              value={exchange}
+              onChange={e => {
+                setExchange(e.target.value as 'binance' | 'deepcoin')
+                setVerify(null)
+                setError('')
+              }}
+            >
+              <option value="binance">{t('api.exchangeBinance')}</option>
+              <option value="deepcoin">{t('api.exchangeDeepcoin')}</option>
+            </select>
+          </div>
+          <div className="form-field">
+            <label className="form-label">{isDeepcoin ? t('api.deepcoinKey') : t('api.binanceKey')}</label>
             <input className="input" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={t('api.keyPh')} required />
           </div>
           <div className="form-field">
-            <label className="form-label">{t('api.binanceSecret')}</label>
+            <label className="form-label">{isDeepcoin ? t('api.deepcoinSecret') : t('api.binanceSecret')}</label>
             <input className="input" type="password" value={apiSecret} onChange={e => setApiSecret(e.target.value)} placeholder={t('api.secretPh')} required />
           </div>
+          {isDeepcoin && (
+            <div className="form-field">
+              <label className="form-label">{t('api.passphraseLabel')}</label>
+              <input className="input" type="password" value={passphrase} onChange={e => setPassphrase(e.target.value)} placeholder={t('api.passphrasePh')} required />
+            </div>
+          )}
 
           <div className="api-actions">
-            <button type="button" className="btn btn-secondary" disabled={checking || !apiKey || !apiSecret} onClick={handleVerify}>
+            <button type="button" className="btn btn-secondary" disabled={checking || !apiKey || !apiSecret || (isDeepcoin && !passphrase)} onClick={handleVerify}>
               {checking ? t('api.verifying') : t('api.verify')}
             </button>
           </div>

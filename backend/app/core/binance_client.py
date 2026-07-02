@@ -1,9 +1,15 @@
+import json
 import logging
+import threading
+import time
+
 from binance.client import Client
 
 from app.core.symbol_precision import format_price, format_quantity
 
 logger = logging.getLogger(__name__)
+WS_MARKET_BASE = "wss://fstream.binance.com/market/ws"
+CLIENT_VERSION = "v13.4.6-flat-reconcile"
 
 
 class BinanceClient:
@@ -13,8 +19,14 @@ class BinanceClient:
         self.api_secret = api_secret
         self.client = Client(api_key, api_secret)
         self._one_way_checked = False
-        logger.info(f"[User {user_id}] Binance Client loaded")
-
+        self._price_cache: dict[str, float] = {}
+        self._price_cache_ts: dict[str, float] = {}
+        self._price_lock = threading.Lock()
+        self._pub_ws_running = False
+        self._pub_ws_symbol: str | None = None
+        self._rest_price_min_interval = 30.0
+        self._last_rest_price_fetch = 0.0
+        logger.info(f"[User {user_id}] Binance Client {CLIENT_VERSION} loaded")
     def is_hedge_mode(self) -> bool | None:
         """True=双向持仓, False=单向, None=查询失败。"""
         try:
@@ -57,20 +69,105 @@ class BinanceClient:
             logger.warning(f"[User {self.user_id}] one-way mode check: {e}")
             return False
 
-    def set_leverage(self, symbol="ETHUSDT", leverage=15):
+    def set_leverage(self, symbol="ETHUSDT", leverage=20):
         try:
             return self.client.futures_change_leverage(symbol=symbol, leverage=leverage)
         except Exception as e:
             logger.error(f"[User {self.user_id}] set_leverage failed: {e}")
             return None
 
-    def get_current_price(self, symbol="ETHUSDT"):
+    def _set_ws_price(self, symbol: str, price: float) -> None:
+        with self._price_lock:
+            self._price_cache[symbol] = price
+            self._price_cache_ts[symbol] = time.time()
+
+    def _get_ws_price(self, symbol: str, max_age: float = 30.0) -> float | None:
+        with self._price_lock:
+            px = self._price_cache.get(symbol)
+            ts = self._price_cache_ts.get(symbol, 0.0)
+        if px and (time.time() - ts) <= max_age:
+            return px
+        return None
+
+    def start_public_price_ws(self, symbol: str = "ETHUSDT") -> None:
+        """Subscribe markPrice@1s — radar uses WS push, REST only as fallback."""
+        if self._pub_ws_running and self._pub_ws_symbol == symbol:
+            return
+        self._pub_ws_symbol = symbol
+        if not self._pub_ws_running:
+            self._pub_ws_running = True
+            threading.Thread(
+                target=self._public_price_ws_loop,
+                args=(symbol,),
+                daemon=True,
+                name=f"binance-ws-u{self.user_id}",
+            ).start()
+            logger.info(f"[User {self.user_id}] public WS started: {symbol}@markPrice@1s")
+
+    def _public_price_ws_loop(self, symbol: str) -> None:
         try:
+            import websocket
+        except ImportError:
+            logger.warning("[User %s] websocket-client missing; radar falls back to REST", self.user_id)
+            self._pub_ws_running = False
+            return
+
+        stream = f"{symbol.lower()}@markPrice@1s"
+        url = f"{WS_MARKET_BASE}/{stream}"
+
+        def on_message(ws, message):
+            try:
+                data = json.loads(message)
+                if isinstance(data, dict) and "data" in data:
+                    data = data["data"]
+                px = float(data.get("p") or data.get("markPrice") or 0)
+                if px > 0:
+                    self._set_ws_price(symbol, px)
+            except Exception as exc:
+                logger.debug("[User %s] WS parse: %s", self.user_id, exc)
+
+        def on_error(ws, error):
+            logger.warning("[User %s] public WS error: %s", self.user_id, error)
+
+        def on_close(ws, code, msg):
+            logger.warning("[User %s] public WS closed: %s %s", self.user_id, code, msg)
+
+        while self._pub_ws_running:
+            try:
+                ws_app = websocket.WebSocketApp(
+                    url, on_message=on_message, on_error=on_error, on_close=on_close,
+                )
+                ws_app.run_forever(ping_interval=180, ping_timeout=30)
+            except Exception as exc:
+                logger.error("[User %s] public WS loop: %s", self.user_id, exc)
+            if self._pub_ws_running:
+                time.sleep(3)
+
+    def get_current_price(self, symbol="ETHUSDT", prefer_ws=True):
+        """Prefer WS cache; rate-limit REST when WS is active."""
+        if prefer_ws:
+            ws_px = self._get_ws_price(symbol)
+            if ws_px:
+                return ws_px
+        now = time.time()
+        min_gap = self._rest_price_min_interval if self._pub_ws_running else 2.0
+        cached = self._get_ws_price(symbol, max_age=min_gap)
+        if cached:
+            return cached
+        if now - self._last_rest_price_fetch < min_gap:
+            stale = self._get_ws_price(symbol, max_age=120.0)
+            return stale or 0.0
+        try:
+            self._last_rest_price_fetch = now
             ticker = self.client.futures_symbol_ticker(symbol=symbol)
-            return float(ticker["price"])
+            price = float(ticker["price"])
+            if price > 0:
+                self._set_ws_price(symbol, price)
+            return price
         except Exception as e:
             logger.error(f"[User {self.user_id}] get price failed: {e}")
-            return 0.0
+            stale = self._get_ws_price(symbol, max_age=120.0)
+            return stale or 0.0
 
     def get_available_balance(self, asset="USDT"):
         try:

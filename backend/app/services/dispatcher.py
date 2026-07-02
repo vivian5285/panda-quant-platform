@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy.orm import Session
 from app.models import User, ApiStatus
 from app.core.binance_client import BinanceClient
-from app.core.position_supervisor import PositionSupervisor
+from app.core.exchange_factory import create_exchange_client, create_supervisor, user_has_api_credentials, user_exchange
 from app.services.trade_logger import TradeLogger
 from app.services.radar_context import build_radar_recovery_context
 from app.services.startup_audit import log_takeover_audit, broadcast_startup_summary
@@ -44,6 +44,7 @@ class UserSupervisorPool:
                 User.api_status == ApiStatus.ACTIVE.value,
                 User.api_key_enc.isnot(None),
             ).all()
+            users = [u for u in users if user_has_api_credentials(u)]
             audits = []
             failed = []
             for user in users:
@@ -80,7 +81,8 @@ class UserSupervisorPool:
         try:
             api_key = decrypt_text(user.api_key_enc)
             api_secret = decrypt_text(user.api_secret_enc)
-            client = BinanceClient(api_key, api_secret, user.id)
+            passphrase = decrypt_text(user.passphrase_enc) if user.passphrase_enc else ""
+            client = create_exchange_client(user, api_key, api_secret, passphrase)
             if not client.test_connection():
                 logger.warning("User %s API connection failed", user.id)
                 TradeLogger(db).log_event(
@@ -96,9 +98,9 @@ class UserSupervisorPool:
 
             trade_logger = TradeLogger(db)
             user_events = _user_event_handler(db)
-            supervisor = PositionSupervisor(
-                user_id=user.id,
-                client=client,
+            supervisor = create_supervisor(
+                user,
+                client,
                 on_log=trade_logger.log_event,
                 on_trade_open=trade_logger.on_trade_open,
                 on_trade_close=trade_logger.on_trade_close,
@@ -112,6 +114,7 @@ class UserSupervisorPool:
                 recovery_context=recovery,
             )
             audit["uid"] = user.uid
+            audit["exchange"] = user_exchange(user)
             log_takeover_audit(user, audit)
 
             try:
@@ -157,11 +160,11 @@ class UserSupervisorPool:
             self._supervisors.clear()
         logger.info("Supervisor pool cleared")
 
-    def get_all(self) -> list[PositionSupervisor]:
+    def get_all(self) -> list:
         with self._lock:
             return list(self._supervisors.values())
 
-    def get(self, user_id: int) -> PositionSupervisor | None:
+    def get(self, user_id: int):
         with self._lock:
             return self._supervisors.get(user_id)
 

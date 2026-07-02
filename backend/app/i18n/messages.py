@@ -44,8 +44,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "One-way mode not ready — close all futures positions/orders or switch manually on Binance",
     },
     "api.leverage_failed": {
-        "zh": "无法将 ETHUSDT 杠杆设为 15x — 请检查 API 合约交易权限",
-        "en": "Could not set ETHUSDT leverage to 15x — check Futures trading permission",
+        "zh": "无法将 ETHUSDT 杠杆设为 20x — 请检查 API 合约交易权限",
+        "en": "Could not set ETHUSDT leverage to 20x — check Futures trading permission",
     },
     "api.withdraw_enabled": {
         "zh": "API 仍开启提现权限 — 请在币安关闭 Withdraw 后重新验证",
@@ -60,6 +60,10 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "API binding requires email + SMS security codes",
     },
     "api.not_bound": {"zh": "尚未绑定 API", "en": "API not bound yet"},
+    "api.passphrase_required": {
+        "zh": "深币 API 需填写 Passphrase",
+        "en": "DeepCoin API requires Passphrase",
+    },
     "api.verify_fail": {"zh": "API 验证失败", "en": "API verification failed"},
     "api.bind_success": {"zh": "绑定成功 · 初始本金 ${amount}", "en": "Bound successfully · Initial principal ${amount}"},
 

@@ -180,6 +180,8 @@ class WebhookReceiveLogDetailOut(WebhookReceiveLogOut):
 class ApiBindRequest(BaseModel):
     api_key: str
     api_secret: str
+    exchange: str = "binance"
+    passphrase: Optional[str] = None
     email_code: Optional[str] = Field(default=None, min_length=4, max_length=8)
     phone_code: Optional[str] = Field(default=None, min_length=4, max_length=8)
 
@@ -204,7 +206,7 @@ class ApiVerifyResponse(BaseModel):
     enable_futures: Optional[bool] = None
     symbol: str = "ETHUSDT"
     symbol_price: float = 0.0
-    leverage: int = 15
+    leverage: int = 20
     initial_principal: float = 0.0
     detail: Optional[str] = None
     checks: list[ApiVerifyCheckItem] = Field(default_factory=list)
@@ -213,6 +215,7 @@ class ApiVerifyResponse(BaseModel):
     open_orders_count: int = 0
     open_positions_count: int = 0
     hedge_mode: Optional[bool] = None
+    exchange: str = "binance"
 
 
 class PrincipalSnapshotOut(BaseModel):
@@ -242,6 +245,7 @@ class UserProfile(BaseModel):
     display_name: str
     referral_code: str
     api_status: str
+    exchange: str = "binance"
     role: str
     is_active: bool
     high_water_mark: float

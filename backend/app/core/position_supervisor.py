@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from app.core.binance_client import BinanceClient
+from app.core.binance_smart_defense import BinanceSmartDefenseMixin
 from app.core.position_manager import PositionManager
 from app.core.symbol_precision import normalize_tv_targets, round_price, round_quantity, PRICE_TICK
 from app.config import get_settings
@@ -21,6 +22,12 @@ CANCEL_VERIFY_ROUNDS = 5
 HEAL_PLACE_ROUNDS = 2
 SIGNAL_QUEUE_TTL = 120.0
 SIGNAL_LOCK_SLICE = 5.0
+SENTINEL_POLL_NORMAL = 6
+SENTINEL_POLL_ARMING = 3
+SENTINEL_POLL_RADAR = 2
+DUST_QTY_ETH = 0.004
+TP_COMPLETE_RESIDUAL_RATIO = 0.12
+RADAR_SL_MIN_MOVE = 1.0
 
 
 @dataclass
@@ -31,7 +38,7 @@ class _QueuedSignal:
     result: dict = field(default_factory=dict)
 
 
-class PositionSupervisor:
+class PositionSupervisor(BinanceSmartDefenseMixin):
     """
     多用户版 position_supervisor_binance.py
     TV 军师指挥价格/regime → VPS 自主执行仓位管理、止盈网格、雷达锁润、先平后开、单向持仓。
@@ -86,10 +93,12 @@ class PositionSupervisor:
         self.current_trade_id = None
         self.risk_multiplier = 1.0
         self.consumed_tp_levels: list[int] = []
+        self._scan_ticks = 0
 
         os.makedirs("state", exist_ok=True)
         self.state_file = f"state/user_{user_id}.json"
         self._load_state()
+        self._start_idle_flat_patrol()
 
     def _log(self, event_type: str, message: str, detail: dict | None = None):
         self.on_log(self.user_id, event_type, message, detail, self.current_trade_id)
@@ -111,6 +120,7 @@ class PositionSupervisor:
                     "current_atr": self.current_atr,
                     "monitoring": self.monitoring,
                     "tv_tps": self.tv_tps,
+                    "initial_qty": self.initial_qty,
                     "consumed_tp_levels": self.consumed_tp_levels,
                 }, f)
         except Exception as e:
@@ -130,6 +140,7 @@ class PositionSupervisor:
                     self.regime = int(s.get("regime", 3) or 3)
                     self.current_atr = float(s.get("current_atr", 30) or 30)
                     self.monitoring = bool(s.get("monitoring", False))
+                    self.initial_qty = float(s.get("initial_qty", 0) or 0)
                     self.tv_tps = normalize_tv_targets(s.get("tv_tps", [0.0, 0.0, 0.0]))
                     self.consumed_tp_levels = [
                         int(x) for x in (s.get("consumed_tp_levels") or []) if int(x) in (1, 2, 3)
@@ -922,7 +933,29 @@ class PositionSupervisor:
         self.watched_qty = qty
         self.watched_entry = entry_price
         self.monitoring = True
-        self._ensure_defenses(qty, entry_price, force_rebuild=True)
+        self._ensure_price_ws()
+        self._rebuild_tp_limit_orders(qty, entry_price, dynamic_sl=None)
+        pos = self._get_active_position()
+        if pos:
+            result = self._smart_realign_defenses(
+                pos["size"],
+                pos["entry_price"],
+                reason="开仓后二次核查",
+            )
+            summary = self._format_audit_summary(result["audit"])
+            self._log(
+                "DEFENSE",
+                f"🛡️ 开仓防线核查 {result['matched']}/{result['expected']} | {summary}",
+                result,
+            )
+            if result["expected"] > 0 and result["matched"] < result["expected"]:
+                self._alert(
+                    "warning",
+                    "DEFENSE",
+                    "开仓后限价止盈未全部挂上",
+                    f"{self.current_side} {pos['size']} ETH | 仅 {result['matched']}/{result['expected']} 档 | {summary}",
+                    result,
+                )
         self._save_state()
         threading.Thread(target=self._sentinel_loop, daemon=True).start()
 
@@ -936,7 +969,254 @@ class PositionSupervisor:
             return self.current_sl < self.watched_entry
         return False
 
+    def _ensure_price_ws(self) -> None:
+        if hasattr(self.client, "start_public_price_ws"):
+            self.client.start_public_price_ws(self.symbol)
+
+    def _get_active_position(self) -> dict | None:
+        pos = self.position_manager.get_position(self.symbol)
+        if not pos or float(pos.get("positionAmt", 0)) == 0:
+            return None
+        amt = float(pos["positionAmt"])
+        return {
+            "size": abs(amt),
+            "entry_price": float(pos.get("entryPrice", 0)),
+            "side": "LONG" if amt > 0 else "SHORT",
+        }
+
+    def _is_dust_qty(self, qty: float) -> bool:
+        try:
+            q = float(qty)
+        except (TypeError, ValueError):
+            return False
+        return 0 < q <= DUST_QTY_ETH
+
+    def _should_finalize_tp_victory(self, real_amt: float) -> bool:
+        if real_amt <= 0:
+            return False
+        if self._is_dust_qty(real_amt):
+            return True
+        if self._collect_limit_tp_prices():
+            return False
+        ref = self.initial_qty or self.watched_qty
+        if ref > 0 and real_amt <= ref * TP_COMPLETE_RESIDUAL_RATIO:
+            return True
+        return False
+
+    def _sweep_dust_and_finalize(self, reason: str) -> None:
+        logger.warning(f"[User {self.user_id}] dust sweep → {reason}")
+        self.monitoring = False
+        self.client.cancel_all_open_orders(self.symbol)
+        time.sleep(0.4)
+        for round_i in range(4):
+            pos = self._get_active_position()
+            if not pos or pos["size"] <= 0:
+                break
+            close_side = "SELL" if pos["side"] == "LONG" else "BUY"
+            logger.info(
+                f"[User {self.user_id}] dust round {round_i + 1}/4: {close_side} {pos['size']}"
+            )
+            self.client.place_market_order(close_side, pos["size"], reduce_only=True)
+            time.sleep(1.0)
+        self.watched_qty = 0.0
+        self.initial_qty = 0.0
+        self.current_side = None
+        self.consumed_tp_levels = []
+        self._save_state()
+        self.client.cancel_all_open_orders(self.symbol)
+        self._log("CLOSE", f"蚂蚁仓扫尾收网: {reason}", {"swept_dust": True})
+
+    def _scan_and_sweep_dust_on_startup(self) -> bool:
+        pos = self._get_active_position()
+        if not pos or pos["size"] <= 0:
+            return False
+        if not self.current_side:
+            self.current_side = pos["side"]
+        if not self._is_dust_qty(pos["size"]) and not self._should_finalize_tp_victory(pos["size"]):
+            return False
+        reason = (
+            "仓位归零 (止盈吃单 / 人工全平 / TV 强制平仓)"
+            if (self.initial_qty > 0 or self.watched_qty > 0)
+            else "重启扫描：盘口蚂蚁仓自动扫平"
+        )
+        self._sweep_dust_and_finalize(reason)
+        return True
+
+    def _recover_missed_flat_on_startup(self, was_monitoring: bool = False) -> bool:
+        pos = self._get_active_position()
+        if pos and pos["size"] > 0:
+            return False
+        prev_watched = float(self.watched_qty or 0)
+        prev_side = self.current_side
+        had_active = (
+            prev_watched > 0
+            or float(self.initial_qty or 0) > 0
+            or prev_side in ("LONG", "SHORT")
+            or was_monitoring
+        )
+        if not had_active:
+            return False
+        logger.warning(
+            f"[User {self.user_id}] flat reconcile: book had {prev_watched} {prev_side}, exchange flat"
+        )
+        self.client.cancel_all_open_orders(self.symbol)
+        self.monitoring = False
+        self.watched_qty = 0.0
+        self.initial_qty = 0.0
+        self.current_side = None
+        self.consumed_tp_levels = []
+        self._save_state()
+        self._log(
+            "CLOSE",
+            "重启对账：账本曾有仓但盘口已全平",
+            {"prev_watched": prev_watched, "prev_side": prev_side, "flat_reconcile": True},
+        )
+        return True
+
+    def _start_idle_flat_patrol(self) -> None:
+        def loop():
+            while True:
+                time.sleep(30)
+                if self.monitoring:
+                    continue
+                if not self._lock.acquire(timeout=2.0):
+                    continue
+                try:
+                    if self.monitoring:
+                        continue
+                    pos = self._get_active_position()
+                    if not pos or pos["size"] <= 0:
+                        continue
+                    if not self._is_dust_qty(pos["size"]) and not self._should_finalize_tp_victory(pos["size"]):
+                        continue
+                    if not self.current_side:
+                        self.current_side = pos["side"]
+                    self._sweep_dust_and_finalize("空闲巡检：盘口蚂蚁仓自动扫平")
+                except Exception as exc:
+                    logger.error(f"[User {self.user_id}] idle patrol: {exc}")
+                finally:
+                    self._lock.release()
+
+        threading.Thread(target=loop, daemon=True, name=f"idle-patrol-u{self.user_id}").start()
+
+    def _refresh_radar_state_on_recover(self, curr_px: float, entry: float) -> None:
+        """重启：按现价恢复 best_price / 雷达激活 / 追踪止损位"""
+        if curr_px <= 0 or not entry:
+            return
+        fee_buffer = entry * 0.0015
+        trail_offset = self.current_atr * self.regime_settings[self.regime]["trail_offset"]
+
+        if self.best_price == 0.0:
+            self.best_price = entry
+        if self.current_side == "LONG":
+            self.best_price = max(self.best_price, curr_px)
+        else:
+            self.best_price = min(self.best_price, curr_px)
+
+        progress = self._radar_activation_progress(curr_px)
+        if progress >= 1.0:
+            if self.current_side == "LONG":
+                breakeven_floor = round_price(entry + fee_buffer)
+                trail_sl = round_price(max(self.best_price - trail_offset, breakeven_floor))
+                if not self._is_radar_active() or trail_sl > self.current_sl:
+                    self.current_sl = max(self.current_sl or entry, trail_sl)
+            else:
+                breakeven_floor = round_price(entry - fee_buffer)
+                trail_sl = round_price(min(self.best_price + trail_offset, breakeven_floor))
+                if not self._is_radar_active() or trail_sl < self.current_sl:
+                    self.current_sl = min(self.current_sl or entry, trail_sl)
+            logger.info(
+                f"[User {self.user_id}] 📡 重启雷达恢复: 进度 {progress:.0%} | "
+                f"best={self.best_price:.2f} | SL={self.current_sl:.2f}"
+            )
+        elif self.current_sl == 0.0:
+            self.current_sl = entry
+
+    def _radar_activation_progress(self, curr_px: float) -> float:
+        if curr_px <= 0 or not self.watched_entry:
+            return 0.0
+        tp1_dist = (
+            abs(self.tv_tps[0] - self.watched_entry)
+            if self.tv_tps[0] > 0
+            else self.current_atr * 1.5
+        )
+        activation_ratio = self.regime_settings[self.regime]["activation"]
+        if self.current_side == "LONG":
+            required = self.watched_entry + tp1_dist * activation_ratio
+            span = required - self.watched_entry
+            if span <= 0:
+                return 0.0
+            return max(0.0, min(1.0, (curr_px - self.watched_entry) / span))
+        required = self.watched_entry - tp1_dist * activation_ratio
+        span = self.watched_entry - required
+        if span <= 0:
+            return 0.0
+        return max(0.0, min(1.0, (self.watched_entry - curr_px) / span))
+
+    def _sentinel_poll_sec(self, curr_px: float = 0.0) -> float:
+        if self._breakeven_sl_active():
+            return SENTINEL_POLL_RADAR
+        if curr_px > 0 and self._radar_activation_progress(curr_px) >= 0.5:
+            return SENTINEL_POLL_ARMING
+        return SENTINEL_POLL_NORMAL
+
+    def _process_radar_trailing(self, real_amt: float, curr_px: float) -> bool:
+        tp1_dist = (
+            abs(self.tv_tps[0] - self.watched_entry)
+            if self.tv_tps[0] > 0
+            else self.current_atr * 1.5
+        )
+        cfg = self.regime_settings[self.regime]
+        activation_ratio = cfg["activation"]
+        trail_atr_multiplier = cfg["trail_offset"]
+        if self.current_side == "LONG":
+            required = self.watched_entry + tp1_dist * activation_ratio
+            if curr_px < required:
+                return False
+        else:
+            required = self.watched_entry - tp1_dist * activation_ratio
+            if curr_px > required:
+                return False
+
+        trail_offset = self.current_atr * trail_atr_multiplier
+        fee_buffer = self.watched_entry * 0.0015
+        moved = False
+        if self.current_side == "LONG":
+            breakeven_floor = round_price(self.watched_entry + fee_buffer)
+            new_sl = round_price(max(self.best_price - trail_offset, breakeven_floor))
+            if new_sl > self.current_sl + RADAR_SL_MIN_MOVE:
+                self.current_sl = new_sl
+                self._save_state()
+                sl_placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
+                trail_detail = {
+                    "regime": self.regime,
+                    "new_sl": new_sl,
+                    "best_price": self.best_price,
+                    "sl_placed": sl_placed,
+                }
+                self._log("TRAIL", f"雷达推升 SL → {new_sl}", trail_detail)
+                self._alert("info", "TRAIL", "追踪雷达锁润", f"SL {new_sl}", trail_detail)
+                moved = True
+        else:
+            breakeven_floor = round_price(self.watched_entry - fee_buffer)
+            new_sl = round_price(min(self.best_price + trail_offset, breakeven_floor))
+            if self.current_sl >= self.watched_entry or new_sl < self.current_sl - RADAR_SL_MIN_MOVE:
+                self.current_sl = new_sl
+                self._save_state()
+                sl_placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
+                trail_detail = {
+                    "regime": self.regime,
+                    "new_sl": new_sl,
+                    "best_price": self.best_price,
+                    "sl_placed": sl_placed,
+                }
+                self._log("TRAIL", f"雷达下压 SL → {new_sl}", trail_detail)
+                self._alert("info", "TRAIL", "追踪雷达锁润", f"SL {new_sl}", trail_detail)
+                moved = True
+        return moved
+
     def _sentinel_loop(self):
+        last_px = 0.0
         while self.monitoring:
             try:
                 if not self._lock.acquire(timeout=2.0):
@@ -952,6 +1232,12 @@ class PositionSupervisor:
                             self._close_all("仓位归零 (达到目标止盈或 TV 强制平仓)")
                         break
 
+                    if self.watched_qty > 0 and self._should_finalize_tp_victory(actual_qty):
+                        self._sweep_dust_and_finalize(
+                            "仓位归零 (止盈吃单 / 人工全平 / TV 强制平仓)"
+                        )
+                        break
+
                     if actual_side != self.last_tv_side:
                         self._alert(
                             "critical", "FORCE_ALIGN",
@@ -963,35 +1249,18 @@ class PositionSupervisor:
                         break
 
                     curr_px = self.client.get_current_price(self.symbol)
+                    if curr_px <= 0:
+                        curr_px = last_px
+                    else:
+                        last_px = curr_px
 
-                    if abs(actual_qty - self.watched_qty) > 0.001:
+                    qty_changed = abs(actual_qty - self.watched_qty) > 0.001
+                    if qty_changed:
                         old_qty = self.watched_qty
                         change_type = self._classify_qty_change(old_qty, actual_qty)
                         self.watched_qty = actual_qty
                         self.watched_entry = float(pos["entryPrice"])
-                        sl_to_pass = self.current_sl if self._breakeven_sl_active() else None
-
-                        if change_type == "manual_add":
-                            self.consumed_tp_levels = []
-                            self.client.cancel_all_open_orders(self.symbol)
-                            time.sleep(0.5)
-                            self._rebuild_defenses(
-                                actual_qty, self.watched_entry, dynamic_sl=sl_to_pass
-                            )
-                        elif change_type.startswith("tp"):
-                            self._ensure_defenses(
-                                actual_qty,
-                                self.watched_entry,
-                                dynamic_sl=sl_to_pass,
-                                force_rebuild=True,
-                                curr_px=curr_px,
-                            )
-                        else:
-                            self.client.cancel_all_open_orders(self.symbol)
-                            time.sleep(0.5)
-                            self._rebuild_defenses(
-                                actual_qty, self.watched_entry, dynamic_sl=sl_to_pass
-                            )
+                        sl_to_pass = self._radar_sl_to_pass()
 
                         action_labels = {
                             "manual_add": "手动加仓",
@@ -1002,6 +1271,16 @@ class PositionSupervisor:
                             change_type,
                             f"部分止盈吃单 · {change_type}",
                         )
+                        if change_type == "manual_add":
+                            self.consumed_tp_levels = []
+
+                        result = self._smart_realign_defenses(
+                            actual_qty,
+                            self.watched_entry,
+                            dynamic_sl=sl_to_pass,
+                            reason=f"人工异动: {action_msg}",
+                        )
+
                         detail = {
                             "old_qty": old_qty,
                             "new_qty": actual_qty,
@@ -1009,108 +1288,59 @@ class PositionSupervisor:
                             "change_type": change_type,
                             "consumed_tp_levels": list(self.consumed_tp_levels),
                             "action_msg": action_msg,
+                            "defense": result,
                         }
                         self._log(
                             "ADJUST",
-                            f"🔄 智能感知仓位变化 [{change_type}]: {old_qty} ➔ {actual_qty}",
+                            f"🔄 智能感知仓位变化 [{change_type}]: {old_qty} ➔ {actual_qty} | "
+                            f"TP {result['matched']}/{result['expected']}",
                             detail,
                         )
                         self._alert(
                             "warning", "MANUAL_ADJUST",
                             f"阵地异动 · {action_msg}",
-                            f"数量 {old_qty} → {actual_qty} @ {self.watched_entry}",
+                            f"数量 {old_qty} → {actual_qty} @ {self.watched_entry} | "
+                            f"{self._format_audit_summary(result['audit'])}",
                             detail,
                         )
+                        if result["expected"] > 0 and result["matched"] < result["expected"]:
+                            self._alert(
+                                "warning", "DEFENSE",
+                                "人工异动后止盈未对齐",
+                                self._format_audit_summary(result["audit"]),
+                                result,
+                            )
                         self._save_state()
 
-                    self.best_price = (
-                        max(self.best_price, curr_px)
-                        if self.current_side == "LONG"
-                        else min(self.best_price, curr_px)
-                    )
+                    self._scan_ticks += 1
+                    if not qty_changed and self._scan_ticks % 10 == 0:
+                        audit = self._audit_tp_levels(actual_qty)
+                        if audit["issues"]:
+                            logger.info(
+                                f"[User {self.user_id}] 🔍 定期扫描发现异常: {audit['issues']}，触发智能补挂"
+                            )
+                            sl_to_pass = self._radar_sl_to_pass()
+                            self._smart_realign_defenses(
+                                actual_qty,
+                                self.watched_entry,
+                                dynamic_sl=sl_to_pass,
+                                reason="定期防线扫描",
+                            )
 
-                    tp1_dist = (
-                        abs(self.tv_tps[0] - self.watched_entry)
-                        if self.tv_tps[0] > 0
-                        else self.current_atr * 1.5
-                    )
-                    cfg = self.regime_settings[self.regime]
-                    activation_ratio = cfg["activation"]
-                    trail_atr_multiplier = cfg["trail_offset"]
-                    required = (
-                        self.watched_entry + (tp1_dist * activation_ratio)
-                        if self.current_side == "LONG"
-                        else self.watched_entry - (tp1_dist * activation_ratio)
-                    )
-                    has_moved_favorably = (
-                        curr_px >= required if self.current_side == "LONG" else curr_px <= required
-                    )
-
-                    if has_moved_favorably:
-                        trail_offset = self.current_atr * trail_atr_multiplier
-                        fee_buffer = self.watched_entry * 0.0015
-
-                        if self.current_side == "LONG":
-                            breakeven_floor = round_price(self.watched_entry + fee_buffer)
-                            new_sl = round_price(max(self.best_price - trail_offset, breakeven_floor))
-                            if new_sl > self.current_sl + MIN_SL_MOVE:
-                                self.client.cancel_all_open_orders(self.symbol)
-                                time.sleep(0.5)
-                                self.current_sl = new_sl
-                                self._save_state()
-                                self._rebuild_defenses(actual_qty, self.watched_entry, dynamic_sl=new_sl)
-                                trail_msg = f"🚀 档位{self.regime} 雷达激活：保本盾升起，锁润底线物理推升！"
-                                trail_detail = {
-                                    "regime": self.regime,
-                                    "new_sl": new_sl,
-                                    "best_price": self.best_price,
-                                    "entry": self.watched_entry,
-                                    "qty": actual_qty,
-                                    "activation_ratio": activation_ratio,
-                                    "trail_offset_atr": trail_atr_multiplier,
-                                    "fee_buffer": round(fee_buffer, 4),
-                                }
-                                self._log("TRAIL", trail_msg, trail_detail)
-                                self._alert(
-                                    "info", "TRAIL",
-                                    "📈 捷报：追踪雷达锁死趋势利润",
-                                    f"SL {new_sl} | 仓位 {actual_qty} @ {self.watched_entry}",
-                                    trail_detail,
-                                )
-                        else:
-                            breakeven_floor = round_price(self.watched_entry - fee_buffer)
-                            new_sl = round_price(min(self.best_price + trail_offset, breakeven_floor))
-                            if self.current_sl >= self.watched_entry or new_sl < self.current_sl - MIN_SL_MOVE:
-                                self.client.cancel_all_open_orders(self.symbol)
-                                time.sleep(0.5)
-                                self.current_sl = new_sl
-                                self._save_state()
-                                self._rebuild_defenses(actual_qty, self.watched_entry, dynamic_sl=new_sl)
-                                trail_msg = f"🚀 档位{self.regime} 雷达激活：保本盾降下，锁润顶线物理下压！"
-                                trail_detail = {
-                                    "regime": self.regime,
-                                    "new_sl": new_sl,
-                                    "best_price": self.best_price,
-                                    "entry": self.watched_entry,
-                                    "qty": actual_qty,
-                                    "activation_ratio": activation_ratio,
-                                    "trail_offset_atr": trail_atr_multiplier,
-                                    "fee_buffer": round(fee_buffer, 4),
-                                }
-                                self._log("TRAIL", trail_msg, trail_detail)
-                                self._alert(
-                                    "info", "TRAIL",
-                                    "📈 捷报：追踪雷达锁死趋势利润",
-                                    f"SL {new_sl} | 仓位 {actual_qty} @ {self.watched_entry}",
-                                    trail_detail,
-                                )
-
-                    sl_active = self._breakeven_sl_active()
-                    dynamic_sl = self.current_sl if sl_active else None
-                    self._ensure_defenses(
-                        actual_qty, self.watched_entry, dynamic_sl,
-                        force_rebuild=False, curr_px=curr_px,
-                    )
+                    if curr_px > 0:
+                        self.best_price = (
+                            max(self.best_price, curr_px)
+                            if self.current_side == "LONG"
+                            else min(self.best_price, curr_px)
+                        )
+                        progress = self._radar_activation_progress(curr_px)
+                        if self._is_radar_active() or progress >= 1.0:
+                            self._process_radar_trailing(actual_qty, curr_px)
+                        elif progress >= 0.5 and self._scan_ticks % 5 == 0:
+                            logger.info(
+                                f"[User {self.user_id}] 📡 雷达预热: 进度 {progress:.0%} | "
+                                f"现价 {curr_px:.2f}"
+                            )
 
                     self._sentinel_error_notified = False
                 finally:
@@ -1125,7 +1355,8 @@ class PositionSupervisor:
                         {"user_id": self.user_id},
                     )
                     self._sentinel_error_notified = True
-            time.sleep(6)
+            if self.monitoring:
+                time.sleep(self._sentinel_poll_sec(last_px))
 
     def _rebuild_defenses(self, qty: float, entry: float, dynamic_sl=None) -> dict:
         """Cancel-all then rebuild — for trail update / manual qty change only."""
@@ -1234,6 +1465,7 @@ class PositionSupervisor:
 
         self.monitoring = False
         self.watched_qty = 0.0
+        self.initial_qty = 0.0
         self.consumed_tp_levels = []
         self.current_trade_id = None
         self.trade_opened_at = None
@@ -1266,6 +1498,7 @@ class PositionSupervisor:
         }
         try:
             self._load_state()
+            saved_monitoring = self.monitoring
 
             if recovery_context is None and trade_context:
                 recovery_context = {"trade": trade_context}
@@ -1279,6 +1512,15 @@ class PositionSupervisor:
             reconcile = self._reconcile_radar_context(recovery_context)
             audit.update(reconcile)
 
+            if self._scan_and_sweep_dust_on_startup():
+                audit["flat_reconcile"] = "dust_sweep"
+                self.monitoring = False
+                return audit
+            if self._recover_missed_flat_on_startup(was_monitoring=saved_monitoring):
+                audit["flat_reconcile"] = "missed_flat"
+                self.monitoring = False
+                return audit
+
             pos = self.position_manager.get_position(self.symbol)
             if not pos or float(pos.get("positionAmt", 0)) == 0:
                 self.monitoring = False
@@ -1291,7 +1533,8 @@ class PositionSupervisor:
                 self.last_tv_side = self.current_side
 
             self.watched_qty = abs(real_amt)
-            self.initial_qty = abs(real_amt)
+            saved_initial = float(self.initial_qty or 0)
+            self.initial_qty = saved_initial if saved_initial > 0 else self.watched_qty
             self.watched_entry = float(pos["entryPrice"])
             self.current_trade_id = open_trade_id
 
@@ -1301,11 +1544,7 @@ class PositionSupervisor:
                 self.current_sl = self.watched_entry
 
             curr_px = self.client.get_current_price(self.symbol)
-            if curr_px > 0:
-                if self.current_side == "LONG":
-                    self.best_price = max(self.best_price, curr_px)
-                else:
-                    self.best_price = min(self.best_price, curr_px)
+            self._refresh_radar_state_on_recover(curr_px, self.watched_entry)
 
             audit["direction_aligned"] = (
                 self.current_side == self.last_tv_side if self.last_tv_side else True
@@ -1314,14 +1553,14 @@ class PositionSupervisor:
                 audit["radar_warnings"] = reconcile["warnings"]
 
             self.monitoring = True
+            self._ensure_price_ws()
 
-            dynamic_sl = self.current_sl if self._breakeven_sl_active() else None
-            defense = self._ensure_defenses(
+            sl_to_pass = self._radar_sl_to_pass()
+            defense = self._smart_realign_defenses(
                 self.watched_qty,
                 self.watched_entry,
-                dynamic_sl,
-                force_rebuild=False,
-                curr_px=curr_px,
+                dynamic_sl=sl_to_pass,
+                reason="重启闪电接管",
             )
 
             audit.update({
@@ -1333,14 +1572,16 @@ class PositionSupervisor:
                 "tv_tps": list(self.tv_tps),
                 "current_sl": self.current_sl,
                 "best_price": self.best_price,
-                "breakeven_active": self._breakeven_sl_active(),
+                "breakeven_active": self._is_radar_active(),
                 "consumed_tp_levels": list(self.consumed_tp_levels),
                 "monitoring": True,
-                "defenses_rebuilt": defense.get("healed", False) or not defense.get("skipped", False),
+                "defenses_rebuilt": defense.get("rebuilt", False) or defense.get("healed", False),
                 "defenses_skipped": defense.get("skipped", False),
                 "defenses_aligned": defense.get("aligned", False),
-                "defenses_healed": defense.get("healed", False),
+                "defenses_healed": defense.get("healed", False) or defense.get("nuclear", False),
                 "defense_summary": defense.get("after_summary") or defense.get("summary"),
+                "tp_matched": defense.get("matched"),
+                "tp_expected": defense.get("expected"),
             })
             self._save_state()
             threading.Thread(target=self._sentinel_loop, daemon=True).start()

@@ -1,4 +1,4 @@
-"""DingTalk trading alerts — Gemini multi-user Binance (15× ETHUSDT)."""
+"""DingTalk trading alerts — Gemini multi-user Binance (20× ETHUSDT)."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from app.services.dingtalk_notify import push_dingtalk
 BINANCE_THEME = {
     "label": "币安",
     "symbol": "ETHUSDT",
-    "leverage": 15,
+    "leverage": 20,
     "brand": "Quant AI · 币安黄金趋势大波段引擎",
-    "tag": "#币安15x",
+    "tag": "#币安20x",
 }
 
 ALERT_TYPE_TAGS = {

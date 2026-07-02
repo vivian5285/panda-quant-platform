@@ -174,3 +174,99 @@ def validate_binance_api(api_key: str, api_secret: str, user_id: int = 0) -> dic
         "checks_total": len(checks),
         **base_fields,
     }
+
+
+DEEPCOIN_REQUIRED_CHECK_IDS = ("connect", "balance", "leverage", "can_trade")
+
+
+def validate_deepcoin_api(
+    api_key: str,
+    api_secret: str,
+    passphrase: str,
+    user_id: int = 0,
+) -> dict:
+    from app.core.deepcoin_client import DeepcoinClient
+
+    client = DeepcoinClient(api_key, api_secret, passphrase, user_id or 0)
+    checks: list[dict] = []
+
+    if not passphrase.strip():
+        checks.append(_check_item("connect", False, hint_key="api.hint.passphrase"))
+        return _build_failure(checks, "api.passphrase_required")
+
+    try:
+        if not client.test_connection():
+            raise RuntimeError("connection failed")
+        summary = client.get_futures_account_summary()
+        connected = True
+    except Exception as e:
+        logger.warning("Deepcoin API validation failed user=%s: %s", user_id, e)
+        checks.append(_check_item("connect", False, hint_key="api.hint.connect"))
+        return _build_failure(checks, "api.connect_failed", detail=str(e))
+
+    checks.append(_check_item("connect", True))
+    equity = float(summary.get("total_margin_balance") or 0)
+    checks.append(_check_item("balance", equity > 0, hint_key="api.hint.balance"))
+    checks.append(_check_item("can_trade", True))
+
+    lev_res = client.set_leverage(settings.DEEPCOIN_SYMBOL, settings.DEEPCOIN_LEVERAGE)
+    leverage_ok = bool(lev_res and client._is_success(lev_res))
+    checks.append(_check_item("leverage", leverage_ok, hint_key="api.hint.leverage"))
+
+    price = client.get_current_price(settings.DEEPCOIN_SYMBOL)
+    base_fields = {
+        "total_balance": equity,
+        "available_balance": equity,
+        "wallet_balance": equity,
+        "unrealized_pnl": 0.0,
+        "can_trade": True,
+        "one_way_mode": True,
+        "leverage_ok": leverage_ok,
+        "withdraw_disabled": None,
+        "enable_futures": True,
+        "symbol": settings.DEEPCOIN_SYMBOL,
+        "symbol_price": price,
+        "leverage": settings.DEEPCOIN_LEVERAGE,
+        "exchange": "deepcoin",
+        "open_orders_count": 0,
+        "open_positions_count": 0,
+        "hedge_mode": False,
+    }
+
+    required_ok = all(c["ok"] for c in checks if c["id"] in DEEPCOIN_REQUIRED_CHECK_IDS)
+    passed = sum(1 for c in checks if c.get("ok"))
+    if not required_ok:
+        message_key = "api.verify_incomplete"
+        if equity <= 0:
+            message_key = "api.zero_balance"
+        elif not leverage_ok:
+            message_key = "api.leverage_failed"
+        return _build_failure(
+            checks,
+            message_key,
+            checks_passed=passed,
+            checks_total=len(checks),
+            **base_fields,
+        )
+
+    return {
+        "valid": True,
+        "message_key": "api.verify_ok",
+        "checks": checks,
+        "checks_passed": passed,
+        "checks_total": len(checks),
+        **base_fields,
+    }
+
+
+def validate_exchange_api(
+    exchange: str,
+    api_key: str,
+    api_secret: str,
+    user_id: int = 0,
+    passphrase: str = "",
+) -> dict:
+    ex = (exchange or "binance").strip().lower()
+    if ex == "deepcoin":
+        return validate_deepcoin_api(api_key, api_secret, passphrase, user_id)
+    return validate_binance_api(api_key, api_secret, user_id)

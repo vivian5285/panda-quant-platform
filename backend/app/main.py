@@ -67,6 +67,10 @@ def _ensure_sqlite_columns():
                 conn.execute(text("ALTER TABLE users ADD COLUMN oauth_apple_id VARCHAR(128)"))
             if "oauth_avatar_url" not in cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN oauth_avatar_url VARCHAR(512)"))
+            if "exchange" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN exchange VARCHAR(20) DEFAULT 'binance'"))
+            if "passphrase_enc" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN passphrase_enc TEXT"))
     if "trades" in insp.get_table_names():
         cols = {c["name"] for c in insp.get_columns("trades")}
         with engine.begin() as conn:
@@ -116,6 +120,17 @@ def _ensure_schema_migrations():
             for name, typ in dep_patches:
                 if name not in cols:
                     conn.execute(text(f"ALTER TABLE settlement_deposits ADD COLUMN {name} {typ}"))
+
+    if "users" in insp.get_table_names():
+        cols = {c["name"] for c in insp.get_columns("users")}
+        user_patches = [
+            ("exchange", "VARCHAR(20) DEFAULT 'binance'"),
+            ("passphrase_enc", "TEXT"),
+        ]
+        with engine.begin() as conn:
+            for name, typ in user_patches:
+                if name not in cols:
+                    conn.execute(text(f"ALTER TABLE users ADD COLUMN {name} {typ}"))
 
 
 def _seed_subscription_plans(db):

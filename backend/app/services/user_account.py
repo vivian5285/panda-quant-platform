@@ -22,6 +22,7 @@ def build_user_profile(user: User) -> UserProfile:
         display_name=display_name(user),
         referral_code=user.referral_code,
         api_status=user.api_status,
+        exchange=user.exchange or "binance",
         role=user.role,
         is_active=user.is_active,
         high_water_mark=user.high_water_mark,
@@ -43,10 +44,11 @@ def build_dashboard_stats(db: Session, user: User) -> DashboardStats:
         summary = supervisor.client.get_futures_account_summary()
         equity = float(summary.get("total_margin_balance", 0))
         balance = float(summary.get("available_balance", equity))
-        status = supervisor.position_manager.get_position_status()
-        if status.get("has_position"):
-            unrealized = status.get("unrealized_pnl", 0)
-            position = status
+        if hasattr(supervisor, "position_manager"):
+            status = supervisor.position_manager.get_position_status()
+            if status.get("has_position"):
+                unrealized = status.get("unrealized_pnl", 0)
+                position = status
     elif user.api_key_enc and user.api_status == ApiStatus.ACTIVE.value:
         try:
             equity = fetch_live_equity(user)

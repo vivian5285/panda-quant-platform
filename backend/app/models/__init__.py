@@ -19,6 +19,11 @@ class ApiStatus(str, enum.Enum):
     INVALID = "invalid"
 
 
+class ExchangeType(str, enum.Enum):
+    BINANCE = "binance"
+    DEEPCOIN = "deepcoin"
+
+
 class PaymentStatus(str, enum.Enum):
     PENDING = "pending"
     PAID = "paid"
@@ -52,6 +57,8 @@ class User(Base):
     role = Column(String(20), default=UserRole.USER.value)
     api_key_enc = Column(Text, nullable=True)
     api_secret_enc = Column(Text, nullable=True)
+    passphrase_enc = Column(Text, nullable=True)
+    exchange = Column(String(20), default=ExchangeType.BINANCE.value)
     api_status = Column(String(20), default=ApiStatus.NONE.value)
     is_active = Column(Boolean, default=True)
     high_water_mark = Column(Float, default=0.0)

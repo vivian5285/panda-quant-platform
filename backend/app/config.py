@@ -27,7 +27,9 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
     SYMBOL: str = "ETHUSDT"
-    LEVERAGE: int = 15
+    LEVERAGE: int = 20
+    DEEPCOIN_SYMBOL: str = "ETH-USDT-SWAP"
+    DEEPCOIN_LEVERAGE: int = 20
 
     SETTLEMENT_PRIMARY_DAYS: int = 30
     SETTLEMENT_EXTENDED_DAYS: int = 35

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 
 from app.database import get_db
-from app.models import User, Trade, TradeLog, ApiStatus, PrincipalSnapshot
+from app.models import User, Trade, TradeLog, ApiStatus, PrincipalSnapshot, ExchangeType
 from app.schemas import (
     ApiBindRequest, ApiVerifyResponse, ApiVerifyCheckItem, UserProfile, DashboardStats,
     TradeOut, TradeLogOut, PrincipalSnapshotOut, UserAnalyticsOut, SignalStatsOut,
@@ -11,7 +11,7 @@ from app.schemas import (
 from app.api.deps import get_current_user
 from app.utils.crypto import encrypt_text, decrypt_text
 from app.services.dispatcher import supervisor_pool
-from app.services.api_validation import validate_binance_api
+from app.services.api_validation import validate_exchange_api
 from app.services.principal import start_new_profit_cycle
 from app.services.analytics import build_user_analytics, build_signal_stats
 from app.services.platform_analytics import enrich_trades
@@ -57,7 +57,7 @@ def _verify_response(result: dict) -> ApiVerifyResponse:
         enable_futures=result.get("enable_futures"),
         symbol=result.get("symbol", "ETHUSDT"),
         symbol_price=float(result.get("symbol_price", 0)),
-        leverage=int(result.get("leverage", 15)),
+        leverage=int(result.get("leverage", 20)),
         initial_principal=equity if result.get("valid") else 0,
         detail=localized.get("detail"),
         checks=checks,
@@ -66,6 +66,7 @@ def _verify_response(result: dict) -> ApiVerifyResponse:
         open_orders_count=int(result.get("open_orders_count") or 0),
         open_positions_count=int(result.get("open_positions_count") or 0),
         hedge_mode=result.get("hedge_mode"),
+        exchange=result.get("exchange", "binance"),
     )
 
 
@@ -78,7 +79,13 @@ def profile(user: User = Depends(get_current_user)):
 @router.post("/bind-api/verify", response_model=ApiVerifyResponse)
 def verify_bind_api(req: ApiBindRequest, user: User = Depends(get_current_user)):
     """绑定前校验：连接、余额、交易权限、单向持仓、杠杆。"""
-    result = validate_binance_api(req.api_key, req.api_secret, user.id)
+    result = validate_exchange_api(
+        req.exchange,
+        req.api_key,
+        req.api_secret,
+        user.id,
+        req.passphrase or "",
+    )
     return _verify_response(result)
 
 
@@ -87,10 +94,14 @@ def api_status(user: User = Depends(get_current_user)):
     """已绑定用户复查 API 是否仍可用。"""
     if not user.api_key_enc or not user.api_secret_enc:
         raise_i18n(400, "api.not_bound")
-    result = validate_binance_api(
+    ex = user.exchange or ExchangeType.BINANCE.value
+    passphrase = decrypt_text(user.passphrase_enc) if user.passphrase_enc else ""
+    result = validate_exchange_api(
+        ex,
         decrypt_text(user.api_key_enc),
         decrypt_text(user.api_secret_enc),
         user.id,
+        passphrase,
     )
     resp = _verify_response(result)
     if user.initial_principal:
@@ -105,14 +116,26 @@ def bind_api(req: ApiBindRequest, db: Session = Depends(get_db), user: User = De
             raise_i18n(400, "api.security_codes_required")
         verify_security_dual(db, user, req.email_code, req.phone_code)
 
-    result = validate_binance_api(req.api_key, req.api_secret, user.id)
+    ex = (req.exchange or ExchangeType.BINANCE.value).strip().lower()
+    if ex == ExchangeType.DEEPCOIN.value and not (req.passphrase or "").strip():
+        raise_i18n(400, "api.passphrase_required")
+
+    result = validate_exchange_api(
+        ex,
+        req.api_key,
+        req.api_secret,
+        user.id,
+        req.passphrase or "",
+    )
     if not result.get("valid"):
         localized = translate_api_message(result, get_locale())
         raise HTTPException(400, localized.get("message") or t("api.verify_fail", get_locale()))
 
     equity = float(result.get("total_balance", 0))
+    user.exchange = ex
     user.api_key_enc = encrypt_text(req.api_key)
     user.api_secret_enc = encrypt_text(req.api_secret)
+    user.passphrase_enc = encrypt_text(req.passphrase) if ex == ExchangeType.DEEPCOIN.value else None
     user.api_status = ApiStatus.ACTIVE.value
 
     start_new_profit_cycle(
@@ -151,6 +174,8 @@ def unbind_api(
     supervisor_pool.remove_user(user.id)
     user.api_key_enc = None
     user.api_secret_enc = None
+    user.passphrase_enc = None
+    user.exchange = ExchangeType.BINANCE.value
     user.api_status = ApiStatus.NONE.value
     db.commit()
     return {"status": "ok", "api_status": user.api_status}
