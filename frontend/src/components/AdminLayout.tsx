@@ -11,12 +11,13 @@ import { useState } from 'react'
 import ToastHost from './ui/ToastHost'
 
 export type AdminTabKey =
-  | 'home' | 'users' | 'signals' | 'execution' | 'risk' | 'analytics' | 'audit'
+  | 'home' | 'users' | 'accounts' | 'signals' | 'execution' | 'risk' | 'analytics' | 'audit'
   | 'finance' | 'settlements' | 'deposits' | 'withdrawals' | 'referrals' | 'addresses' | 'system'
 
 const ADMIN_TABS: { key: AdminTabKey; icon: typeof LayoutDashboard; labelKey: string }[] = [
   { key: 'home', icon: LayoutDashboard, labelKey: 'admin.tabOverview' },
   { key: 'users', icon: Users, labelKey: 'admin.tabUsers' },
+  { key: 'accounts', icon: Wallet, labelKey: 'admin.tabAccounts' },
   { key: 'signals', icon: Bot, labelKey: 'admin.tabSignals' },
   { key: 'execution', icon: Radio, labelKey: 'admin.tabExecution' },
   { key: 'risk', icon: Bell, labelKey: 'admin.tabRisk' },

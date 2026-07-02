@@ -8,7 +8,7 @@ from app.services.wallet import get_or_create_reward_account
 from app.services.user_lookup import display_name
 from app.services.referral import build_invite_url, commission_info
 from app.services.referral_code import canonical_referral_code
-from app.services.referral_stats import build_downline_stats
+from app.services.referral_stats import build_downline_stats, expected_referrer_reward
 from app.schemas import (
     ReferralSummary, ReferralUserOut, ReferralInviteOut, ReferralCommissionOut,
     SettlementOut, TradeLogOut, ReferralDownlineDetailOut, TradeOut,
@@ -68,6 +68,14 @@ def _referral_user_out(db: Session, referrer_id: int, u: User, level: int) -> Re
         position_qty=stats["position_qty"],
         settlement_status=stats["settlement_status"],
         api_status=stats["api_status"],
+        exchange=stats.get("exchange", "binance"),
+        pending_perf_fee=stats.get("pending_perf_fee", 0),
+        pending_net_profit=stats.get("pending_net_profit", 0),
+        settlement_period=stats.get("settlement_period"),
+        settlement_id=stats.get("settlement_id"),
+        expected_reward=expected_referrer_reward(stats.get("pending_net_profit", 0), level)
+        if stats.get("pending_perf_fee", 0) > 0
+        else 0.0,
     )
 
 
@@ -131,6 +139,9 @@ def referral_summary(user: User = Depends(get_current_user), db: Session = Depen
     account = get_or_create_reward_account(db, user.id)
     db.commit()
 
+    all_downline = l1_out + l2_out
+    unpaid = [u for u in all_downline if (u.pending_perf_fee or 0) > 0]
+
     return ReferralSummary(
         referral_code=canonical_referral_code(user.referral_code),
         invite_url=build_invite_url(user.referral_code, user.uid),
@@ -141,6 +152,9 @@ def referral_summary(user: User = Depends(get_current_user), db: Session = Depen
         l1_total_rewards=float(l1_total), l2_total_rewards=float(l2_total),
         reward_balance=account.balance,
         commission=_commission_out(),
+        unpaid_fee_count=len(unpaid),
+        total_unpaid_perf_fee=round(sum(u.pending_perf_fee for u in unpaid), 2),
+        total_expected_reward=round(sum(u.expected_reward for u in unpaid), 2),
         l1_users=l1_out, l2_users=l2_out,
     )
 

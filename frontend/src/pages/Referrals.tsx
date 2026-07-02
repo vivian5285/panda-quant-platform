@@ -14,6 +14,62 @@ import DownlineLogsModal from '../components/DownlineLogsModal'
 
 type TabKey = 'overview' | 'l1' | 'l2' | 'commissions'
 
+function settlementCell(u: any, t: (k: string) => string) {
+  const fee = u.pending_perf_fee ?? 0
+  if (fee > 0) {
+    const label = u.settlement_status === 'paid'
+      ? t('referrals.settlementPendingConfirm')
+      : t('referrals.settlementPendingPay')
+    return (
+      <div>
+        <span className="badge badge-red badge-spaced">{label}</span>
+        <div className="text-red text-xs mt-xs">${fee.toFixed(2)}</div>
+        {u.settlement_period && (
+          <div className="text-muted text-xs">{u.settlement_period}</div>
+        )}
+      </div>
+    )
+  }
+  if (!u.settlement_status || u.settlement_status === 'none') {
+    return <span className="text-muted">{t('referrals.settlementClear')}</span>
+  }
+  return <span className="badge badge-gray">{u.settlement_status}</span>
+}
+
+function UnpaidFeeBanner({
+  count,
+  totalFee,
+  totalReward,
+  t,
+}: {
+  count: number
+  totalFee: number
+  totalReward: number
+  t: (k: string, p?: Record<string, string | number>) => string
+}) {
+  if (!count) return null
+  return (
+    <GlassCard className="p-4 section-mb-sm referral-unpaid-banner">
+      <p className="text-sm-strong text-red section-mb-xs">{t('referrals.unpaidBannerTitle')}</p>
+      <p className="text-sm text-muted">{t('referrals.unpaidBannerBody')}</p>
+      <div className="stat-grid stat-grid-flush section-mt-sm">
+        <div className="stat-tile">
+          <p className="text-muted text-xs">{t('referrals.unpaidCount')}</p>
+          <p className="text-md-strong text-red">{count}</p>
+        </div>
+        <div className="stat-tile">
+          <p className="text-muted text-xs">{t('referrals.totalUnpaidFee')}</p>
+          <p className="text-md-strong text-red">${totalFee.toFixed(2)}</p>
+        </div>
+        <div className="stat-tile">
+          <p className="text-muted text-xs">{t('referrals.totalExpectedReward')}</p>
+          <p className="text-md-strong text-green">${totalReward.toFixed(2)}</p>
+        </div>
+      </div>
+    </GlassCard>
+  )
+}
+
 function DownlineTable({
   users,
   emptyText,
@@ -43,6 +99,7 @@ function DownlineTable({
       <table className="data-table data-table-sm">
         <thead><tr>
           <th>{t('referrals.user')}</th>
+          <th>{t('api.exchangeLabel')}</th>
           <th>{t('referrals.principal')}</th>
           <th>{t('referrals.balance')}</th>
           <th>{t('referrals.available')}</th>
@@ -51,28 +108,37 @@ function DownlineTable({
           <th>{t('referrals.unrealized')}</th>
           <th>{t('referrals.position')}</th>
           <th>{t('referrals.apiStatus')}</th>
+          <th>{t('referrals.pendingPerfFee')}</th>
           <th>{t('referrals.settlementStatus')}</th>
+          <th>{t('referrals.expectedReward')}</th>
           <th>{t('referrals.myReward')}</th>
           <th />
         </tr></thead>
         <tbody>
           {users.length === 0 ? (
-            <tr><td colSpan={12} className="empty-cell">{emptyText}</td></tr>
+            <tr><td colSpan={15} className="empty-cell">{emptyText}</td></tr>
           ) : users.map(u => (
-            <tr key={u.id}>
+            <tr key={u.id} className={(u.pending_perf_fee ?? 0) > 0 ? 'row-highlight' : undefined}>
               <td className="cell-ellipsis" title={u.display_name || u.email}>
                 <div>{u.display_name || u.email}</div>
                 <div className="text-muted text-xs">{u.uid}</div>
               </td>
+              <td>{u.exchange || '—'}</td>
               <td>${(u.initial_principal ?? 0).toFixed(2)}</td>
               <td>${(u.live_equity ?? 0).toFixed(2)}</td>
               <td>${(u.available_balance ?? 0).toFixed(2)}</td>
               <td className={(u.cycle_pnl ?? 0) >= 0 ? 'text-green' : 'text-red'}>${(u.cycle_pnl ?? 0).toFixed(2)}</td>
               <td className={(u.total_pnl ?? u.week_pnl ?? 0) >= 0 ? 'text-green' : 'text-red'}>${(u.total_pnl ?? u.week_pnl ?? 0).toFixed(2)}</td>
               <td className={(u.unrealized_pnl ?? 0) >= 0 ? 'text-green' : 'text-red'}>${(u.unrealized_pnl ?? 0).toFixed(2)}</td>
-              <td>{u.has_open_position ? (u.position_side ? `${u.position_side} ${u.position_qty}` : t('referrals.hasPosition')) : '—'}</td>
+              <td>{u.has_open_position ? (u.position_side ? `${u.position_side} ${Number(u.position_qty || 0).toFixed(4)}` : t('referrals.hasPosition')) : '—'}</td>
               <td><span className="badge badge-gray">{u.api_status || '—'}</span></td>
-              <td><span className="badge badge-gray">{u.settlement_status || 'none'}</span></td>
+              <td className={(u.pending_perf_fee ?? 0) > 0 ? 'text-red text-md-strong' : 'text-muted'}>
+                {(u.pending_perf_fee ?? 0) > 0 ? `$${u.pending_perf_fee.toFixed(2)}` : '—'}
+              </td>
+              <td>{settlementCell(u, t)}</td>
+              <td className={(u.expected_reward ?? 0) > 0 ? 'text-green' : 'text-muted'}>
+                {(u.expected_reward ?? 0) > 0 ? `$${u.expected_reward.toFixed(2)}` : '—'}
+              </td>
               <td className="text-green">${u.total_reward?.toFixed(2)}</td>
               <td>
                 <button type="button" className="btn btn-ghost btn-xs" onClick={() => onViewLogs(u.id, u.display_name || u.email)}>
@@ -146,7 +212,17 @@ export default function Referrals() {
             <StatCard label={t('referrals.l2Rewards')} value={`$${(data?.l2_total_rewards || 0).toFixed(2)}`} />
             <StatCard label={t('referrals.rewardBalance')} value={`$${(data?.reward_balance || 0).toFixed(2)}`} />
             <StatCard label={t('referrals.pendingRewards')} value={`$${(data?.pending_rewards || 0).toFixed(2)}`} />
+            <StatCard label={t('referrals.unpaidCount')} value={String(data?.unpaid_fee_count || 0)} />
+            <StatCard label={t('referrals.totalUnpaidFee')} value={`$${(data?.total_unpaid_perf_fee || 0).toFixed(2)}`} />
+            <StatCard label={t('referrals.totalExpectedReward')} value={`$${(data?.total_expected_reward || 0).toFixed(2)}`} />
           </div>
+
+          <UnpaidFeeBanner
+            count={data?.unpaid_fee_count || 0}
+            totalFee={data?.total_unpaid_perf_fee || 0}
+            totalReward={data?.total_expected_reward || 0}
+            t={t}
+          />
 
           <WithdrawCta>
             <p className="earnings-total">
@@ -179,6 +255,12 @@ export default function Referrals() {
 
       {tab === 'l1' && (
         <div className="section-mt-sm">
+          <UnpaidFeeBanner
+            count={(data?.l1_users || []).filter((u: any) => (u.pending_perf_fee ?? 0) > 0).length}
+            totalFee={(data?.l1_users || []).reduce((s: number, u: any) => s + (u.pending_perf_fee || 0), 0)}
+            totalReward={(data?.l1_users || []).reduce((s: number, u: any) => s + (u.expected_reward || 0), 0)}
+            t={t}
+          />
           <DownlineTable
             users={data?.l1_users || []}
             emptyText={t('referrals.inviteEmpty')}
@@ -193,6 +275,12 @@ export default function Referrals() {
 
       {tab === 'l2' && (
         <div className="section-mt-sm">
+          <UnpaidFeeBanner
+            count={(data?.l2_users || []).filter((u: any) => (u.pending_perf_fee ?? 0) > 0).length}
+            totalFee={(data?.l2_users || []).reduce((s: number, u: any) => s + (u.pending_perf_fee || 0), 0)}
+            totalReward={(data?.l2_users || []).reduce((s: number, u: any) => s + (u.expected_reward || 0), 0)}
+            t={t}
+          />
           <DownlineTable
             users={data?.l2_users || []}
             emptyText={t('referrals.l2Empty')}

@@ -22,6 +22,7 @@ from app.schemas import (
     WithdrawalOut, WithdrawalComplete, WithdrawalReject,
     AdminAlertOut, AdminUserDetailOut, TradeOut, TradeLogOut, PrincipalSnapshotOut,
     AdminBatchNotify, AdminBatchTradingControl,
+    AdminManagedAccountsOut, AdminUserTradeStatsOut, AdminForceCloseAllOut,
 )
 from app.services.admin_user_stats import (
     mask_api_key, user_cumulative_pnl, user_execution_success_rate, user_risk_flag,
@@ -173,6 +174,100 @@ def list_users(
     return out
 
 
+def _initiate_force_close(db: Session, user: User, *, reason: str) -> dict:
+    if user.api_status != ApiStatus.ACTIVE.value or not user.api_key_enc:
+        return {"user_id": user.id, "uid": user.uid, "status": "skipped", "message": "api_inactive"}
+
+    sup = supervisor_pool.get(user.id)
+    if not sup:
+        sup = supervisor_pool.add_user(user, db=db)
+    if not sup:
+        return {"user_id": user.id, "uid": user.uid, "status": "error", "message": "supervisor_unavailable"}
+
+    uid = user.id
+
+    def _run():
+        from app.database import SessionLocal
+        try:
+            active = supervisor_pool.get(uid)
+            if active:
+                active._close_all(reason)
+        except Exception as e:
+            err_db = SessionLocal()
+            try:
+                TradeLogger(err_db).log_event(uid, "ERROR", f"Admin force close failed: {e}")
+            finally:
+                err_db.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"user_id": user.id, "uid": user.uid, "status": "closing"}
+
+
+@router.get("/users/managed-accounts", response_model=AdminManagedAccountsOut)
+def list_managed_accounts(
+    api_status: str | None = None,
+    has_position: bool | None = None,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.admin_portfolio import list_managed_accounts as build_list, portfolio_summary
+
+    rows = build_list(db, api_status=api_status, has_position=has_position)
+    return AdminManagedAccountsOut(
+        summary=portfolio_summary(rows),
+        accounts=rows,
+    )
+
+
+@router.get("/users/{user_id}/trade-stats", response_model=AdminUserTradeStatsOut)
+def admin_user_trade_stats(
+    user_id: int,
+    start: str | None = None,
+    end: str | None = None,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    from app.services.admin_portfolio import user_trade_stats
+
+    return user_trade_stats(db, user_id, start, end)
+
+
+@router.post("/users/force-close-all", response_model=AdminForceCloseAllOut)
+def admin_force_close_all(
+    request: Request,
+    only_with_position: bool = False,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.admin_portfolio import list_managed_accounts as build_list
+
+    rows = build_list(db, api_status=ApiStatus.ACTIVE.value)
+    if only_with_position:
+        rows = [r for r in rows if r.get("has_position")]
+
+    results = []
+    for row in rows:
+        user = db.query(User).filter(User.id == row["user_id"]).first()
+        if not user:
+            continue
+        results.append(_initiate_force_close(db, user, reason="Admin batch force close all"))
+
+    initiated = sum(1 for r in results if r.get("status") == "closing")
+    failed = sum(1 for r in results if r.get("status") == "error")
+    log_audit(
+        db,
+        "admin.force_close_all",
+        actor_id=admin.id,
+        resource_type="users",
+        detail={"initiated": initiated, "failed": failed, "only_with_position": only_with_position},
+        request=request,
+    )
+    return AdminForceCloseAllOut(initiated=initiated, failed=failed, results=results)
+
+
 @router.post("/users/{user_id}/toggle")
 def toggle_user(user_id: int, admin=Depends(get_admin_user), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == user_id).first()
@@ -283,7 +378,10 @@ def get_user_trades(
         raise HTTPException(404, "User not found")
     q = db.query(Trade).filter(Trade.user_id == user.id)
     q = apply_trade_date_filter(q, parse_date_param(start), parse_date_param(end), Trade)
-    return q.order_by(Trade.created_at.desc()).offset(offset).limit(min(limit, 500)).all()
+    rows = q.order_by(Trade.created_at.desc()).offset(offset).limit(min(limit, 500)).all()
+    from app.services.platform_analytics import enrich_trades
+
+    return enrich_trades(db, rows)
 
 
 @router.get("/users/{user_id}/logs", response_model=list[TradeLogOut])
@@ -1327,24 +1425,12 @@ def admin_force_close(
     if user.api_status != ApiStatus.ACTIVE.value or not user.api_key_enc:
         raise HTTPException(400, "User API not active")
 
-    sup = supervisor_pool.get(user_id)
-    if not sup:
-        sup = supervisor_pool.add_user(user, db=db)
-    if not sup:
-        raise HTTPException(500, "Could not load supervisor for force close")
+    result = _initiate_force_close(db, user, reason="Admin emergency force close")
+    if result.get("status") == "error":
+        raise HTTPException(500, result.get("message") or "Force close failed")
+    if result.get("status") == "skipped":
+        raise HTTPException(400, result.get("message") or "User API not active")
 
-    def _run():
-        from app.database import SessionLocal
-        try:
-            supervisor_pool.get(user_id)._close_all("Admin emergency force close")
-        except Exception as e:
-            err_db = SessionLocal()
-            try:
-                TradeLogger(err_db).log_event(user_id, "ERROR", f"Admin force close failed: {e}")
-            finally:
-                err_db.close()
-
-    threading.Thread(target=_run, daemon=True).start()
     log_audit(
         db,
         "admin.force_close",

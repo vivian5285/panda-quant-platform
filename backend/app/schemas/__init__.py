@@ -338,6 +338,12 @@ class ReferralUserOut(BaseModel):
     position_qty: float = 0.0
     settlement_status: str = "none"
     api_status: str = "none"
+    exchange: str = "binance"
+    pending_perf_fee: float = 0.0
+    pending_net_profit: float = 0.0
+    settlement_period: Optional[str] = None
+    settlement_id: Optional[int] = None
+    expected_reward: float = 0.0
 
 
 class ReferralCommissionOut(BaseModel):
@@ -369,6 +375,9 @@ class ReferralSummary(BaseModel):
     l2_total_rewards: float = 0.0
     reward_balance: float = 0.0
     commission: Optional[ReferralCommissionOut] = None
+    unpaid_fee_count: int = 0
+    total_unpaid_perf_fee: float = 0.0
+    total_expected_reward: float = 0.0
     l1_users: list[ReferralUserOut]
     l2_users: list[ReferralUserOut]
 
@@ -762,6 +771,71 @@ class AdminBatchTradingControl(BaseModel):
     user_ids: list[int] = Field(min_length=1)
     trading_paused: Optional[bool] = None
     risk_level: Optional[str] = None
+
+
+class AdminManagedAccountOut(BaseModel):
+    user_id: int
+    uid: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    nickname: Optional[str] = None
+    exchange: str = "binance"
+    api_status: str
+    is_active: bool = True
+    supervisor_active: bool = False
+    trading_paused: bool = False
+    balance: float = 0.0
+    unrealized_pnl: float = 0.0
+    cycle_pnl: float = 0.0
+    initial_principal: float = 0.0
+    today_pnl: float = 0.0
+    week_pnl: float = 0.0
+    total_pnl: float = 0.0
+    cumulative_trade_pnl: float = 0.0
+    has_position: bool = False
+    position_side: Optional[str] = None
+    position_qty: float = 0.0
+    position_entry: float = 0.0
+    position_mark: float = 0.0
+    position_unrealized: float = 0.0
+    trade_count: int = 0
+    closed_trade_count: int = 0
+
+
+class AdminPortfolioSummaryOut(BaseModel):
+    account_count: int = 0
+    with_position: int = 0
+    total_balance: float = 0.0
+    total_unrealized: float = 0.0
+    total_cumulative_pnl: float = 0.0
+
+
+class AdminManagedAccountsOut(BaseModel):
+    summary: AdminPortfolioSummaryOut
+    accounts: list[AdminManagedAccountOut]
+
+
+class AdminUserTradeStatsOut(BaseModel):
+    trade_count: int = 0
+    win_count: int = 0
+    loss_count: int = 0
+    win_rate: float = 0.0
+    realized_pnl: float = 0.0
+    funding_fee: float = 0.0
+    avg_pnl: float = 0.0
+
+
+class AdminForceCloseResultOut(BaseModel):
+    user_id: int
+    uid: Optional[str] = None
+    status: str
+    message: Optional[str] = None
+
+
+class AdminForceCloseAllOut(BaseModel):
+    initiated: int = 0
+    failed: int = 0
+    results: list[AdminForceCloseResultOut] = Field(default_factory=list)
 
 
 class AdminWebhookTest(BaseModel):

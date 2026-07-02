@@ -303,6 +303,12 @@ export const adminApi = {
       : api.get(`/admin/users/${userId}/trading-control`).then(r => r.data),
   forceCloseUser: (userId: number) =>
     api.post(`/admin/users/${userId}/force-close`).then(r => r.data),
+  managedAccounts: (params?: { api_status?: string; has_position?: boolean }) =>
+    api.get('/admin/users/managed-accounts', { params }).then(r => r.data),
+  userTradeStats: (userId: number, params?: { start?: string; end?: string }) =>
+    api.get(`/admin/users/${userId}/trade-stats`, { params }).then(r => r.data),
+  forceCloseAll: (params?: { only_with_position?: boolean }) =>
+    api.post('/admin/users/force-close-all', null, { params }).then(r => r.data),
   signalTemplates: () => api.get('/admin/signal-templates').then(r => r.data),
   createSignalTemplate: (data: { name: string; description?: string; payload?: object; enabled?: boolean }) =>
     api.post('/admin/signal-templates', data).then(r => r.data),

@@ -96,6 +96,11 @@ export default function ApiManage() {
 
   const requiresPassphrase = needsPassphrase(exchange)
 
+  const passphrasePlaceholder = () => {
+    if (exchange === 'okx') return t('api.passphrasePhOkx')
+    return t('api.passphrasePhDeepcoin')
+  }
+
   const keyLabel = () => {
     if (exchange === 'deepcoin') return t('api.deepcoinKey')
     if (exchange === 'okx') return t('api.okxKey')
@@ -466,7 +471,7 @@ export default function ApiManage() {
           {requiresPassphrase && (
             <div className="form-field">
               <label className="form-label">{t('api.passphraseLabel')}</label>
-              <input className="input" type="password" value={passphrase} onChange={e => setPassphrase(e.target.value)} placeholder={t('api.passphrasePh')} required />
+              <input className="input" type="password" value={passphrase} onChange={e => setPassphrase(e.target.value)} placeholder={passphrasePlaceholder()} required />
             </div>
           )}
 

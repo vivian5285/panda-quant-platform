@@ -4604,3 +4604,18 @@ html[lang="zh-CN"] .framer-logo-text strong {
 @media (max-width: 560px) {
   .invite-guide-cta { margin-left: 0; width: 100%; justify-content: center; }
 }
+
+.referral-unpaid-banner {
+  border: 1px solid color-mix(in srgb, #ef4444 35%, transparent);
+  background: color-mix(in srgb, #ef4444 8%, transparent);
+}
+
+.admin-account-detail-cell {
+  background: color-mix(in srgb, var(--surface-2, #111) 92%, transparent);
+  padding: 0 12px 16px !important;
+  vertical-align: top;
+}
+
+.data-table tr.row-highlight td {
+  background: color-mix(in srgb, var(--accent, #3b82f6) 8%, transparent);
+}

@@ -59,12 +59,18 @@ export default function DownlineLogsModal({ userId, displayName, onClose }: Prop
             <>
               {acc && (
                 <div className="trades-detail-grid section-mb-sm">
+                  <span>{t('api.exchangeLabel')}: {acc.exchange || '—'}</span>
                   <span>{t('referrals.principal')}: ${(acc.initial_principal ?? 0).toFixed(2)}</span>
                   <span>{t('referrals.balance')}: ${(acc.live_equity ?? 0).toFixed(2)}</span>
+                  <span>{t('referrals.available')}: ${(acc.available_balance ?? 0).toFixed(2)}</span>
                   <span>{t('referrals.cyclePnl')}: ${(acc.cycle_pnl ?? 0).toFixed(2)}</span>
                   <span>{t('referrals.totalPnl')}: ${(acc.total_pnl ?? 0).toFixed(2)}</span>
-                  <span>{t('referrals.position')}: {acc.has_open_position ? `${acc.position_side || ''} ${acc.position_qty ?? ''}` : '—'}</span>
-                  <span>{t('referrals.settlementStatus')}: {acc.settlement_status || 'none'}</span>
+                  <span>{t('referrals.unrealized')}: ${(acc.unrealized_pnl ?? 0).toFixed(2)}</span>
+                  <span>{t('referrals.position')}: {acc.has_open_position ? `${acc.position_side || ''} ${Number(acc.position_qty || 0).toFixed(4)}` : '—'}</span>
+                  <span>{t('referrals.apiStatus')}: {acc.api_status || '—'}</span>
+                  <span>{t('referrals.pendingPerfFee')}: {(acc.pending_perf_fee ?? 0) > 0 ? `$${acc.pending_perf_fee.toFixed(2)}` : '—'}</span>
+                  <span>{t('referrals.expectedReward')}: {(acc.expected_reward ?? 0) > 0 ? `$${acc.expected_reward.toFixed(2)}` : '—'}</span>
+                  <span>{t('referrals.settlementStatus')}: {acc.settlement_status || 'none'}{acc.settlement_period ? ` (${acc.settlement_period})` : ''}</span>
                   <span>{t('referrals.openTrades')}: {account.open_trades ?? 0}</span>
                   <span>{t('referrals.closedTrades')}: {account.closed_trades ?? 0}</span>
                 </div>

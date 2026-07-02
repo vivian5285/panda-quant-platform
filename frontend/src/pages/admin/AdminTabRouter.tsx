@@ -6,6 +6,7 @@ import { useI18n } from '../../i18n'
 const TAB_LOADERS: Record<AdminTabKey, ReturnType<typeof lazy>> = {
   home: lazy(() => import('./tabs/AdminHomeTab')),
   users: lazy(() => import('./tabs/AdminUsersTab')),
+  accounts: lazy(() => import('./tabs/AdminAccountsTab')),
   signals: lazy(() => import('./tabs/AdminSignalsTab')),
   execution: lazy(() => import('./tabs/AdminExecutionTab')),
   risk: lazy(() => import('./tabs/AdminRiskTab')),

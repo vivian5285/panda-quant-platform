@@ -2,11 +2,14 @@
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models import User, Trade, Settlement, PaymentStatus, ApiStatus
+from app.config import get_settings
+from app.models import User, Trade, PaymentStatus, ApiStatus
 from app.services.dispatcher import supervisor_pool
 from app.services.principal import fetch_live_equity
 from app.services.settlement import get_pending_settlement, user_has_open_position
 from app.services.user_lookup import display_name
+
+settings = get_settings()
 
 
 def _mask_identity(user: User) -> str:
@@ -38,7 +41,7 @@ def build_downline_stats(db: Session, user: User) -> dict:
             if has_position:
                 unrealized = float(status.get("unrealized_pnl", 0))
                 position_side = status.get("side")
-                position_qty = float(status.get("quantity", 0))
+                position_qty = float(status.get("qty", 0))
         except Exception:
             pass
     elif user.api_key_enc and user.api_status == ApiStatus.ACTIVE.value:
@@ -58,6 +61,18 @@ def build_downline_stats(db: Session, user: User) -> dict:
 
     pending = get_pending_settlement(db, user.id)
     settlement_status = pending.payment_status if pending else "none"
+    pending_perf_fee = 0.0
+    pending_net_profit = 0.0
+    settlement_period = None
+    settlement_id = None
+    if pending and pending.payment_status in (
+        PaymentStatus.PENDING.value,
+        PaymentStatus.PAID.value,
+    ):
+        pending_perf_fee = round(float(pending.user_payable or 0), 2)
+        pending_net_profit = round(float(pending.net_profit or 0), 2)
+        settlement_id = pending.id
+        settlement_period = f"{pending.period_start} ~ {pending.period_end}"
 
     return {
         "id": user.id,
@@ -65,6 +80,7 @@ def build_downline_stats(db: Session, user: User) -> dict:
         "email": _mask_identity(user),
         "display_name": display_name(user),
         "created_at": user.created_at,
+        "exchange": user.exchange or "binance",
         "api_status": user.api_status,
         "is_active": user.is_active,
         "initial_principal": round(initial, 2),
@@ -77,4 +93,15 @@ def build_downline_stats(db: Session, user: User) -> dict:
         "position_side": position_side,
         "position_qty": position_qty,
         "settlement_status": settlement_status,
+        "pending_perf_fee": pending_perf_fee,
+        "pending_net_profit": pending_net_profit,
+        "settlement_period": settlement_period,
+        "settlement_id": settlement_id,
     }
+
+
+def expected_referrer_reward(net_profit: float, level: int) -> float:
+    if net_profit <= 0:
+        return 0.0
+    rate = settings.REFERRAL_L1_RATE if level == 1 else settings.REFERRAL_L2_RATE
+    return round(net_profit * rate, 2)
