@@ -34,8 +34,8 @@ export default function Admin() {
   const [alerts, setAlerts] = useState<any[]>([])
   const [searchParams, setSearchParams] = useSearchParams()
   const VALID_TABS: AdminTabKey[] = [
-    'home', 'users', 'signals', 'execution', 'risk', 'analytics', 'audit',
-    'finance', 'settlements', 'withdrawals', 'referrals', 'addresses', 'system',
+    'home', 'users', 'accounts', 'signals', 'execution', 'risk', 'analytics', 'audit',
+    'finance', 'settlements', 'deposits', 'withdrawals', 'referrals', 'addresses', 'system',
   ]
   const rawTab = searchParams.get('tab') || 'home'
   const tab = (VALID_TABS.includes(rawTab as AdminTabKey) ? rawTab : 'home') as AdminTabKey
@@ -987,7 +987,8 @@ export default function Admin() {
 
   const tabLabel = (k: AdminTabKey) => {
     const map: Record<AdminTabKey, string> = {
-      home: t('admin.tabOverview'), users: t('admin.tabUsers'), signals: t('admin.tabSignals'),
+      home: t('admin.tabOverview'), users: t('admin.tabUsers'), accounts: t('admin.tabAccounts'),
+      signals: t('admin.tabSignals'),
       execution: t('admin.tabExecution'), risk: t('admin.tabRisk'), analytics: t('admin.tabAnalytics'),
       audit: t('admin.tabAudit'), finance: t('admin.tabFinance'), settlements: t('admin.tabSettlements'),
       deposits: t('admin.tabDeposits'),
