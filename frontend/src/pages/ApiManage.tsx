@@ -55,6 +55,16 @@ const ALT_EXCHANGE_CHECK_IDS = ['connect', 'balance', 'can_trade', 'leverage'] a
 
 type ExchangeId = 'binance' | 'deepcoin' | 'okx' | 'gate'
 
+/** Display order: Binance → OKX → Gate → DeepCoin */
+const EXCHANGE_OPTIONS: ExchangeId[] = ['binance', 'okx', 'gate', 'deepcoin']
+
+const EXCHANGE_LABEL_KEYS: Record<ExchangeId, string> = {
+  binance: 'api.exchangeBinance',
+  okx: 'api.exchangeOkx',
+  gate: 'api.exchangeGate',
+  deepcoin: 'api.exchangeDeepcoin',
+}
+
 const PASSPHRASE_EXCHANGES: ExchangeId[] = ['deepcoin', 'okx']
 
 function isAltExchange(ex: string | undefined, selected?: ExchangeId): boolean {
@@ -454,10 +464,9 @@ export default function ApiManage() {
                 setPassphrase('')
               }}
             >
-              <option value="binance">{t('api.exchangeBinance')}</option>
-              <option value="deepcoin">{t('api.exchangeDeepcoin')}</option>
-              <option value="okx">{t('api.exchangeOkx')}</option>
-              <option value="gate">{t('api.exchangeGate')}</option>
+              {EXCHANGE_OPTIONS.map(id => (
+                <option key={id} value={id}>{t(EXCHANGE_LABEL_KEYS[id])}</option>
+              ))}
             </select>
           </div>
           <div className="form-field">
