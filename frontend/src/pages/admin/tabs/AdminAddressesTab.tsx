@@ -8,6 +8,7 @@ import { adminApi } from '../../../api'
 import { useAdmin } from '../AdminContext'
 
 import WalletBalanceTable, { WalletTotalsBar, WalletUpdatedAt } from '../wallet/WalletBalanceTable'
+import WalletSetupGuide from '../wallet/WalletSetupGuide'
 
 
 
@@ -134,6 +135,10 @@ export default function AdminAddressesTab() {
         <p className="text-muted text-sm section-mt-xs">{t('admin.walletHub.subtitle')}</p>
 
       </GlassCard>
+
+
+
+      <WalletSetupGuide guide="cheatsheet" />
 
 
 
@@ -361,6 +366,8 @@ export default function AdminAddressesTab() {
 
           />
 
+          <WalletSetupGuide guide="hd" />
+
           <GlassCard className="p-6 section-mb-lg page-panel-narrow">
 
             <h3 className="panel-title-sm mb-md">{t('admin.depositWalletTitle')}</h3>
@@ -469,6 +476,8 @@ export default function AdminAddressesTab() {
 
           />
 
+          <WalletSetupGuide guide="cold" />
+
           <GlassCard className="p-0 section-mb-lg">
 
             <div className="card-section-head"><h3 className="panel-title-sm">{t('admin.walletHub.coldBalances')}</h3></div>
@@ -536,6 +545,8 @@ export default function AdminAddressesTab() {
               ))}
 
               <p className="text-muted text-xs">{t('admin.sweepGasHint')}</p>
+
+              <WalletSetupGuide guide="gas" />
 
               {PAYOUT_CHAINS.map(chain => (
 
@@ -647,6 +658,8 @@ export default function AdminAddressesTab() {
 
           />
 
+          <WalletSetupGuide guide="hot" />
+
           <GlassCard className="p-0 section-mb-lg">
 
             <div className="card-section-head"><h3 className="panel-title-sm">{t('admin.walletHub.hotBalances')}</h3></div>
@@ -734,6 +747,8 @@ export default function AdminAddressesTab() {
             bullets={[t('admin.walletHub.roles.platform.b1'), t('admin.walletHub.roles.platform.b2')]}
 
           />
+
+          <WalletSetupGuide guide="platform" />
 
           <GlassCard className="p-0 section-mb-lg">
 

@@ -4364,6 +4364,83 @@ html[lang="zh-CN"] .framer-logo-text strong {
   gap: 4px;
 }
 
+.wallet-setup-guide {
+  background: var(--glass-bg, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+}
+
+.wallet-setup-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0 0 0.75rem;
+}
+
+.wallet-setup-block + .wallet-setup-block {
+  margin-top: 0.75rem;
+}
+
+.wallet-setup-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted, #9ca3af);
+  margin: 0 0 0.35rem;
+}
+
+.wallet-setup-list,
+.wallet-setup-steps,
+.wallet-setup-cheatsheet-list {
+  margin: 0;
+  padding-left: 1.15rem;
+  font-size: 0.8rem;
+  color: var(--text-muted, #9ca3af);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  line-height: 1.45;
+}
+
+.wallet-setup-steps {
+  list-style: decimal;
+}
+
+.wallet-setup-provide {
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  background: rgba(34, 197, 94, 0.06);
+  border: 1px solid rgba(34, 197, 94, 0.15);
+}
+
+.wallet-setup-provide .wallet-setup-list {
+  color: var(--text-primary, inherit);
+}
+
+.wallet-setup-warn {
+  margin: 0.75rem 0 0;
+  color: #f87171;
+}
+
+.wallet-setup-cheatsheet {
+  border-color: rgba(59, 130, 246, 0.25);
+  background: rgba(59, 130, 246, 0.06);
+}
+
+.wallet-setup-cheatsheet-list {
+  color: var(--text-primary, inherit);
+  list-style: none;
+  padding-left: 0;
+}
+
+.wallet-setup-cheatsheet-list li {
+  padding: 0.35rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.wallet-setup-cheatsheet-list li:last-child {
+  border-bottom: none;
+}
+
 /* Password input toggle */
 .input-password-wrap {
   position: relative;
