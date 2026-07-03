@@ -7,7 +7,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.models import PlatformDepositAddress, UserDepositAddress
-from app.services.deposit_chains import MONITORED_DEPOSIT_CHAINS, get_rpc_url
+from app.services.deposit_chains import MONITORED_DEPOSIT_CHAINS, get_rpc_url, get_tron_api_url
 from app.services.deposit_secrets import get_deposit_wallet_settings, is_deposit_mnemonic_configured
 from app.services.deposit_sweep_config import (
     get_cold_wallet,
@@ -131,7 +131,7 @@ def get_wallet_overview(db: Session) -> dict:
         })
 
     rpc_status = {
-        "TRC20": bool(settings.TRON_API_URL.strip()),
+        "TRC20": bool(get_tron_api_url().strip()),
         **{c: bool(get_rpc_url(c).strip()) for c in WALLET_CHAINS if c != "TRC20"},
     }
 

@@ -15,6 +15,7 @@ from app.models import (
 )
 from app.services.settlement import submit_settlement_payment, get_pending_settlement
 from app.services.deposit_chains import EVM_USDT_CONFIG, get_rpc_url, MONITORED_DEPOSIT_CHAINS
+from app.services.chain_rpc_config import get_tron_api_url, get_tron_api_key
 from app.services.deposit_secrets import is_deposit_mnemonic_configured
 
 logger = logging.getLogger(__name__)
@@ -27,8 +28,9 @@ TRANSFER_TOPIC = Web3.keccak(text="Transfer(address,address,uint256)").hex()
 
 def _headers_tron() -> dict:
     h = {"Accept": "application/json"}
-    if settings.TRON_API_KEY.strip():
-        h["TRON-PRO-API-KEY"] = settings.TRON_API_KEY.strip()
+    key = get_tron_api_key()
+    if key:
+        h["TRON-PRO-API-KEY"] = key
     return h
 
 
@@ -108,7 +110,7 @@ def scan_trc20_deposits(db: Session) -> int:
 
     matched = 0
     for row in rows:
-        url = f"{settings.TRON_API_URL.rstrip('/')}/v1/accounts/{row.address}/transactions/trc20"
+        url = f"{get_tron_api_url().rstrip('/')}/v1/accounts/{row.address}/transactions/trc20"
         try:
             resp = requests.get(
                 url,

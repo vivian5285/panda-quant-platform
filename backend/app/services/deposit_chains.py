@@ -1,6 +1,9 @@
 """Deposit chain configuration: monitored vs display-only."""
-from app.config import get_settings
+from app.services.chain_rpc_config import get_rpc_url, get_tron_api_url
 from app.services.deposit_secrets import is_deposit_mnemonic_configured
+
+# Re-export for existing imports
+__all__ = ["MONITORED_DEPOSIT_CHAINS", "EVM_USDT_CONFIG", "get_rpc_url", "get_tron_api_url", "is_chain_monitored", "monitored_chains_status"]
 
 # Chains with on-chain deposit monitoring (auto-match settlement)
 MONITORED_DEPOSIT_CHAINS = ("TRC20", "ERC20", "BEP20", "ARBITRUM", "POLYGON")
@@ -14,23 +17,15 @@ EVM_USDT_CONFIG: dict[str, tuple[str, int, str]] = {
 }
 
 
-def get_rpc_url(chain: str) -> str:
-    cfg = EVM_USDT_CONFIG.get(chain.upper())
-    if not cfg:
-        return ""
-    return getattr(get_settings(), cfg[2], "") or ""
-
-
 def is_chain_monitored(chain: str) -> bool:
     return chain.upper() in MONITORED_DEPOSIT_CHAINS
 
 
 def monitored_chains_status() -> list[dict]:
     """Return monitored chains with RPC/config readiness for admin health."""
-    s = get_settings()
     out = []
     if is_deposit_mnemonic_configured():
-        out.append({"chain": "TRC20", "monitored": True, "ready": bool(s.TRON_API_URL.strip())})
+        out.append({"chain": "TRC20", "monitored": True, "ready": bool(get_tron_api_url().strip())})
     else:
         return []
     for chain in ("ERC20", "BEP20", "ARBITRUM", "POLYGON"):

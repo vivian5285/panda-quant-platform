@@ -11,7 +11,6 @@ export default function AdminSystemTab() {
     t, locale, webhookPayload, setWebhookPayload, runWebhookTest,
     online, monitor, signalLogs, riskAlerts, loginRecords, auditLogs,
     tradeLogs, exportTradeLogsCsv, orders, formatOrderUser, startupAudit, setTab,
-    dingtalkSettings, dingtalkDraft, setDingtalkDraft, saveDingtalkSettings,
     adminPwdDraft, setAdminPwdDraft, changeAdminPassword,
   } = useAdmin()
   const [expandedLog, setExpandedLog] = useState<number | null>(null)
@@ -27,18 +26,13 @@ export default function AdminSystemTab() {
     <>
       <div className="grid-2-col-gap section-mb-lg">
         <GlassCard className="p-6">
-          <h3 className="panel-title-sm mb-md">{t('admin.dingtalkSettingsTitle')}</h3>
-          <p className="text-muted text-sm section-mb-sm">{t('admin.dingtalkSettingsHint')}</p>
-          <p className={`text-xs section-mb-sm ${dingtalkSettings?.configured ? 'text-green' : 'text-muted'}`}>
-            {dingtalkSettings?.configured ? t('admin.dingtalkConfigured') : t('admin.dingtalkMissing')}
-          </p>
-          <form onSubmit={saveDingtalkSettings} className="form-stack">
-            <input className="input" placeholder={t('admin.dingtalkWebhookPh')} value={dingtalkDraft.webhook}
-              onChange={e => setDingtalkDraft((d: { webhook: string; secret: string }) => ({ ...d, webhook: e.target.value }))} />
-            <input className="input" type="password" autoComplete="new-password" placeholder={t('admin.dingtalkSecretPh')}
-              value={dingtalkDraft.secret} onChange={e => setDingtalkDraft((d: { webhook: string; secret: string }) => ({ ...d, secret: e.target.value }))} />
-            <button className="btn btn-primary btn-sm" type="submit" disabled={!dingtalkDraft.webhook.trim()}>{t('common.save')}</button>
-          </form>
+          <h3 className="panel-title-sm mb-md">{t('admin.platformSettingsLinkTitle')}</h3>
+          <p className="text-muted text-sm section-mb-sm">{t('admin.platformSettingsLinkHint')}</p>
+          <div className="flex-gap-sm flex-wrap">
+            <button className="btn btn-primary btn-sm" type="button" onClick={() => setTab('addresses')}>{t('admin.tabAddresses')}</button>
+            <button className="btn btn-ghost btn-sm" type="button" onClick={() => setTab('addresses', 'rpc')}>{t('admin.walletHub.sections.rpc')}</button>
+            <button className="btn btn-ghost btn-sm" type="button" onClick={() => setTab('addresses', 'dingtalk')}>{t('admin.walletHub.sections.dingtalk')}</button>
+          </div>
         </GlassCard>
         <GlassCard className="p-6">
           <h3 className="panel-title-sm mb-md">{t('admin.adminPasswordTitle')}</h3>

@@ -16,7 +16,7 @@ from app.schemas import (
     DepositSweepSettingsOut, DepositSweepSettingsUpdate, DepositSweepLogOut,
     WalletOverviewOut,
     WebhookReceiveLogOut, WebhookReceiveLogDetailOut,
-    DingTalkSettingsOut, DingTalkSettingsUpdate, AdminPasswordChange,
+    DingTalkSettingsOut, DingTalkSettingsUpdate, ChainRpcSettingsOut, ChainRpcSettingsUpdate, AdminPasswordChange,
     AdminSettlementDepositOut, AdminSettlementAppealOut, SettlementAppealReview,
     WithdrawThresholdsUpdate,
     WithdrawalOut, WithdrawalComplete, WithdrawalReject,
@@ -46,6 +46,7 @@ from app.services.deposit_secrets import (
 )
 from app.services.user_deposit_wallet import backfill_all_user_deposit_addresses
 from app.services.dingtalk_secrets import get_dingtalk_settings, update_dingtalk_settings
+from app.services.chain_rpc_config import get_chain_rpc_settings, update_chain_rpc_settings
 from app.services.settlement_deposit_log import build_admin_deposit_row, build_admin_appeal_row
 from app.services.settlement_appeal import approve_payment_appeal, reject_payment_appeal
 from app.services.deposit_sweep_config import get_sweep_settings, update_sweep_settings
@@ -1052,6 +1053,39 @@ def admin_update_dingtalk_settings(
         resource_type="platform_settings",
         resource_id="dingtalk",
         detail={"configured": updated.get("configured"), "cleared": req.clear},
+        request=request,
+    )
+    return updated
+
+
+@router.get("/chain-rpc/settings", response_model=ChainRpcSettingsOut)
+def admin_chain_rpc_settings(admin=Depends(get_admin_user)):
+    return get_chain_rpc_settings()
+
+
+@router.patch("/chain-rpc/settings", response_model=ChainRpcSettingsOut)
+def admin_update_chain_rpc_settings(
+    req: ChainRpcSettingsUpdate,
+    request: Request,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        updated = update_chain_rpc_settings(
+            rpc_urls=req.rpc_urls,
+            tron_api_url=req.tron_api_url,
+            tron_api_key=req.tron_api_key,
+            clear=req.clear,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    log_audit(
+        db,
+        "chain_rpc_settings.update",
+        actor_id=admin.id,
+        resource_type="platform_settings",
+        resource_id="chain_rpc",
+        detail={"has_runtime": updated.get("has_runtime"), "cleared": req.clear},
         request=request,
     )
     return updated

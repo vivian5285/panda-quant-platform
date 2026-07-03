@@ -39,9 +39,14 @@ export default function Admin() {
   ]
   const rawTab = searchParams.get('tab') || 'home'
   const tab = (VALID_TABS.includes(rawTab as AdminTabKey) ? rawTab : 'home') as AdminTabKey
-  const setTab = (k: AdminTabKey) => {
+  const setTab = (k: AdminTabKey, wallet?: string) => {
     closeUserDetail()
-    setSearchParams({ tab: k })
+    const next: Record<string, string> = { tab: k }
+    if (wallet && k === 'addresses') next.wallet = wallet
+    setSearchParams(next)
+  }
+  const setWalletSection = (section: string) => {
+    setSearchParams({ tab: 'addresses', wallet: section })
   }
   const [monitor, setMonitor] = useState<any>(null)
   const [globalControl, setGlobalControl] = useState<{ global_trading_paused: boolean; global_risk_multiplier?: number } | null>(null)
@@ -103,6 +108,10 @@ export default function Admin() {
   const [walletOverviewLoading, setWalletOverviewLoading] = useState(false)
   const [dingtalkSettings, setDingtalkSettings] = useState<{ configured: boolean; has_secret: boolean; source?: string } | null>(null)
   const [dingtalkDraft, setDingtalkDraft] = useState({ webhook: '', secret: '' })
+  const [chainRpcSettings, setChainRpcSettings] = useState<any>(null)
+  const [chainRpcDraft, setChainRpcDraft] = useState<Record<string, string>>({
+    ERC20: '', BEP20: '', ARBITRUM: '', POLYGON: '', tron_api_url: '', tron_api_key: '',
+  })
   const [adminPwdDraft, setAdminPwdDraft] = useState({ current: '', next: '', confirm: '' })
   const [settlementDeposits, setSettlementDeposits] = useState<any[]>([])
   const [settlementAppeals, setSettlementAppeals] = useState<any[]>([])
@@ -183,6 +192,8 @@ export default function Admin() {
     setSweepGasDraft,
     setDingtalkSettings,
     setDingtalkDraft,
+    setChainRpcSettings,
+    setChainRpcDraft,
     setSettlementDeposits,
     setSettlementAppeals,
     setDepositFilter,
@@ -424,6 +435,42 @@ export default function Admin() {
       load()
     } catch (err: any) {
       toast.error(err.response?.data?.detail || t('admin.dingtalkFail'))
+    }
+  }
+
+  const saveChainRpcSettings = async (e: React.FormEvent) => {
+    e.preventDefault()
+    try {
+      const rpc_urls: Record<string, string> = {}
+      for (const chain of ['ERC20', 'BEP20', 'ARBITRUM', 'POLYGON']) {
+        const val = (chainRpcDraft[chain] || '').trim()
+        if (val) rpc_urls[chain] = val
+      }
+      const res = await adminApi.updateChainRpcSettings({
+        rpc_urls: Object.keys(rpc_urls).length ? rpc_urls : undefined,
+        tron_api_url: chainRpcDraft.tron_api_url?.trim() || undefined,
+        tron_api_key: chainRpcDraft.tron_api_key?.trim() || undefined,
+      })
+      setChainRpcSettings(res)
+      setChainRpcDraft({ ERC20: '', BEP20: '', ARBITRUM: '', POLYGON: '', tron_api_url: '', tron_api_key: '' })
+      toast.success(t('admin.chainRpcSaved'))
+      load()
+      refreshWalletOverview()
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('admin.chainRpcFail'))
+    }
+  }
+
+  const clearChainRpcSettings = async () => {
+    try {
+      const res = await adminApi.updateChainRpcSettings({ clear: true })
+      setChainRpcSettings(res)
+      setChainRpcDraft({ ERC20: '', BEP20: '', ARBITRUM: '', POLYGON: '', tron_api_url: '', tron_api_key: '' })
+      toast.success(t('admin.chainRpcCleared'))
+      load()
+      refreshWalletOverview()
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('admin.chainRpcFail'))
     }
   }
 
@@ -999,7 +1046,7 @@ export default function Admin() {
   }
 
   const adminValue = {
-    t, locale, tab, setTab,
+    t, locale, tab, setTab, setWalletSection,
     overview, users, settlements, depositAddrs, withdrawals, alerts,
     monitor, globalControl, setGlobalControl,
     userSearch, setUserSearch, userApiFilter, setUserApiFilter,
@@ -1025,9 +1072,10 @@ export default function Admin() {
     saveSweepSettings, runSweepNow,
     walletOverview, walletOverviewLoading, refreshWalletOverview,
     dingtalkSettings, dingtalkDraft, setDingtalkDraft,
+    chainRpcSettings, chainRpcDraft, setChainRpcDraft,
     adminPwdDraft, setAdminPwdDraft,
     settlementDeposits, settlementAppeals, depositFilter, setDepositFilter, appealFilter, setAppealFilter,
-    saveDingtalkSettings, changeAdminPassword, approveAppeal, rejectAppeal,
+    saveDingtalkSettings, saveChainRpcSettings, clearChainRpcSettings, changeAdminPassword, approveAppeal, rejectAppeal,
     completeTx, setCompleteTx,
     selectedUserId, userDetail, userTrades, userLogs, setUserLogs,
     userDetailTab, setUserDetailTab,

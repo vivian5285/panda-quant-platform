@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from app.config import get_settings
 from app.services.payout_secrets import get_chain_private_key, is_payout_auto_enabled
+from app.services.chain_rpc_config import get_rpc_url, get_tron_api_url, get_tron_api_key
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -98,7 +99,7 @@ def _chain_ready(chain: str, cfg: dict | None = None) -> bool:
     if kind == "tron":
         return bool(_resolve_private_key(chain).strip())
     if kind == "evm":
-        rpc = cfg["rpc"](settings)
+        rpc = get_rpc_url(chain)
         return bool(_resolve_private_key(chain).strip() and rpc.strip())
     return False
 
@@ -143,8 +144,8 @@ def _payout_trc20(to_address: str, amount_raw: int) -> str:
     if key_hex.startswith("0x"):
         key_hex = key_hex[2:]
 
-    provider_url = settings.TRON_API_URL.strip() or "https://api.trongrid.io"
-    api_key = settings.TRON_API_KEY.strip()
+    provider_url = get_tron_api_url()
+    api_key = get_tron_api_key()
     if api_key:
         client = Tron(HTTPProvider(provider_url, api_key=api_key))
     else:
@@ -171,7 +172,7 @@ def _payout_trc20(to_address: str, amount_raw: int) -> str:
 def _payout_evm(chain: str, cfg: dict, to_address: str, amount_raw: int) -> str:
     from web3 import Web3
 
-    rpc_url = cfg["rpc"](settings).strip()
+    rpc_url = get_rpc_url(chain).strip()
     if not rpc_url:
         raise ValueError(f"RPC URL not configured for {chain}")
 

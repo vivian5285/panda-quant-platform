@@ -537,6 +537,28 @@ class DingTalkSettingsUpdate(BaseModel):
     clear: bool = False
 
 
+class ChainRpcChainOut(BaseModel):
+    configured: bool = False
+    source: Optional[str] = None
+    preview: str = ""
+
+
+class ChainRpcSettingsOut(BaseModel):
+    chains: dict[str, ChainRpcChainOut] = {}
+    tron_api_url_configured: bool = False
+    tron_api_key_configured: bool = False
+    tron_api_url_preview: str = ""
+    tron_source: Optional[str] = None
+    has_runtime: bool = False
+
+
+class ChainRpcSettingsUpdate(BaseModel):
+    rpc_urls: Optional[dict[str, str]] = None
+    tron_api_url: Optional[str] = None
+    tron_api_key: Optional[str] = None
+    clear: bool = False
+
+
 class AdminPasswordChange(BaseModel):
     current_password: str = Field(min_length=6)
     new_password: str = Field(min_length=8)

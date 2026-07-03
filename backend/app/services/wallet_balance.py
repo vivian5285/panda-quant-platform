@@ -10,7 +10,8 @@ from web3 import Web3
 
 from app.config import get_settings
 from app.services.chain_payout import CHAIN_PAYOUT_CONFIG, _normalize_evm_key
-from app.services.deposit_chains import EVM_USDT_CONFIG, MONITORED_DEPOSIT_CHAINS
+from app.services.deposit_chains import EVM_USDT_CONFIG, MONITORED_DEPOSIT_CHAINS, get_rpc_url
+from app.services.chain_rpc_config import get_tron_api_url, get_tron_api_key
 from app.services.deposit_sweep import (
     BALANCE_OF_ABI,
     TRC20_USDT,
@@ -90,7 +91,7 @@ def _evm_w3(chain: str) -> Web3 | None:
     cfg = CHAIN_PAYOUT_CONFIG.get(chain.upper())
     if not cfg or cfg.get("kind") != "evm":
         return None
-    rpc = cfg["rpc"](settings).strip()
+    rpc = get_rpc_url(chain).strip()
     if not rpc:
         return None
     w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 20}))
@@ -107,12 +108,17 @@ def _read_evm_usdt(w3: Web3, chain: str, holder: str) -> float:
     return _raw_to_amount(raw, cfg["decimals"])
 
 
-def _read_tron_usdt(address: str) -> float:
-    url = f"{settings.TRON_API_URL.rstrip('/')}/v1/accounts/{address}"
+def _tron_headers() -> dict:
     headers = {"Accept": "application/json"}
-    if settings.TRON_API_KEY.strip():
-        headers["TRON-PRO-API-KEY"] = settings.TRON_API_KEY.strip()
-    resp = requests.get(url, headers=headers, timeout=20)
+    key = get_tron_api_key()
+    if key:
+        headers["TRON-PRO-API-KEY"] = key
+    return headers
+
+
+def _read_tron_usdt(address: str) -> float:
+    url = f"{get_tron_api_url().rstrip('/')}/v1/accounts/{address}"
+    resp = requests.get(url, headers=_tron_headers(), timeout=20)
     resp.raise_for_status()
     data = resp.json().get("data") or []
     if not data:
@@ -124,11 +130,8 @@ def _read_tron_usdt(address: str) -> float:
 
 
 def _read_tron_native(address: str) -> float:
-    url = f"{settings.TRON_API_URL.rstrip('/')}/v1/accounts/{address}"
-    headers = {"Accept": "application/json"}
-    if settings.TRON_API_KEY.strip():
-        headers["TRON-PRO-API-KEY"] = settings.TRON_API_KEY.strip()
-    resp = requests.get(url, headers=headers, timeout=20)
+    url = f"{get_tron_api_url().rstrip('/')}/v1/accounts/{address}"
+    resp = requests.get(url, headers=_tron_headers(), timeout=20)
     resp.raise_for_status()
     data = resp.json().get("data") or []
     if not data:
@@ -161,7 +164,7 @@ def fetch_address_balance(chain: str, address: str) -> AddressBalance:
 
     try:
         if chain == "TRC20":
-            if not settings.TRON_API_URL.strip():
+            if not get_tron_api_url().strip():
                 return AddressBalance(
                     chain=chain, address=address, native_symbol=sym,
                     gas_topup_hint=hint, rpc_ready=False, error="TRON_API_URL 未配置",

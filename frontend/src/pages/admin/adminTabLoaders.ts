@@ -42,6 +42,8 @@ export type AdminTabSetters = {
   setSweepGasDraft: (v: Record<string, string>) => void
   setDingtalkSettings: (v: any) => void
   setDingtalkDraft: (v: { webhook: string; secret: string }) => void
+  setChainRpcSettings?: (v: any) => void
+  setChainRpcDraft?: (v: Record<string, string>) => void
   setSettlementDeposits: (v: any[]) => void
   setSettlementAppeals: (v: any[]) => void
   setDepositFilter: (v: string) => void
@@ -187,13 +189,15 @@ export async function loadAdminTab(
         })
       }
       if (tab === 'addresses') {
-        const [addrs, payout, depositWallet, sweep, sweepLogs, walletOverview] = await Promise.all([
+        const [addrs, payout, depositWallet, sweep, sweepLogs, walletOverview, dingtalk, chainRpc] = await Promise.all([
           adminApi.depositAddresses(),
           adminApi.payoutSettings().catch(() => null),
           adminApi.depositWalletSettings().catch(() => null),
           adminApi.sweepSettings().catch(() => null),
           adminApi.sweepLogs(30).catch(() => []),
           adminApi.walletOverview().catch(() => null),
+          adminApi.dingtalkSettings().catch(() => null),
+          adminApi.chainRpcSettings().catch(() => null),
         ])
         setters.setDepositAddrs(addrs)
         if (payout) {
@@ -211,6 +215,16 @@ export async function loadAdminTab(
         }
         setters.setSweepLogs(sweepLogs)
         setters.setWalletOverview?.(walletOverview)
+        if (dingtalk) {
+          setters.setDingtalkSettings(dingtalk)
+          setters.setDingtalkDraft({ webhook: '', secret: '' })
+        }
+        if (chainRpc) {
+          setters.setChainRpcSettings?.(chainRpc)
+          setters.setChainRpcDraft?.({
+            ERC20: '', BEP20: '', ARBITRUM: '', POLYGON: '', tron_api_url: '', tron_api_key: '',
+          })
+        }
       }
       break
     }

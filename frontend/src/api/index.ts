@@ -256,6 +256,13 @@ export const adminApi = {
   dingtalkSettings: () => api.get('/admin/dingtalk/settings').then(r => r.data),
   updateDingtalkSettings: (data: { webhook?: string; secret?: string; clear?: boolean }) =>
     api.patch('/admin/dingtalk/settings', data).then(r => r.data),
+  chainRpcSettings: () => api.get('/admin/chain-rpc/settings').then(r => r.data),
+  updateChainRpcSettings: (data: {
+    rpc_urls?: Record<string, string>
+    tron_api_url?: string
+    tron_api_key?: string
+    clear?: boolean
+  }) => api.patch('/admin/chain-rpc/settings', data).then(r => r.data),
   changeAdminPassword: (current_password: string, new_password: string) =>
     api.post('/admin/settings/change-password', { current_password, new_password }).then(r => r.data),
   settlementDepositsAdmin: (params?: { status?: string; user_id?: number; limit?: number }) =>

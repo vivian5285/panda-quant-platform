@@ -39,9 +39,11 @@ export default function AdminHomeTab() {
         <GlassCard className="p-6">
           <h3 className="card-heading">{t('admin.quickActions')}</h3>
           <div className="admin-quick-actions">
+            <button type="button" className="btn btn-ghost" onClick={() => setTab('addresses')}>{t('admin.tabAddresses')}</button>
+            <button type="button" className="btn btn-ghost" onClick={() => setTab('addresses', 'cold')}>{t('admin.walletHub.sections.cold')}</button>
+            <button type="button" className="btn btn-ghost" onClick={() => setTab('addresses', 'hot')}>{t('admin.walletHub.sections.hot')}</button>
+            <button type="button" className="btn btn-ghost" onClick={() => setTab('addresses', 'dingtalk')}>{t('admin.walletHub.sections.dingtalk')}</button>
             <button type="button" className="btn btn-ghost" onClick={() => setTab('users')}>{t('admin.tabUsers')}</button>
-            <button type="button" className="btn btn-ghost" onClick={() => setTab('finance')}>{t('admin.tabFinance')}</button>
-            <button type="button" className="btn btn-ghost" onClick={() => setTab('risk')}>{t('admin.tabRisk')}</button>
             <button type="button" className="btn btn-ghost" onClick={() => setTab('system')}>{t('admin.tabSystem')}</button>
           </div>
         </GlassCard>

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from app.config import get_settings
-from app.services.deposit_chains import MONITORED_DEPOSIT_CHAINS, get_rpc_url
+from app.services.deposit_chains import MONITORED_DEPOSIT_CHAINS, get_rpc_url, get_tron_api_url
 from app.services.deposit_secrets import is_deposit_mnemonic_configured
 from app.services.platform_runtime import read_runtime_file, write_runtime_file
 from app.services.payout_secrets import get_chain_private_key
@@ -68,7 +68,7 @@ def get_sweep_settings() -> dict:
     cold = {c: bool(get_cold_wallet(c)) for c in SWEEP_CHAINS}
     gas = {c: bool(get_gas_funder_private_key(c)) for c in SWEEP_CHAINS}
     rpc_ready = {
-        c: bool(get_rpc_url(c).strip()) if c != "TRC20" else bool(settings.TRON_API_URL.strip())
+        c: bool(get_rpc_url(c).strip()) if c != "TRC20" else bool(get_tron_api_url().strip())
         for c in SWEEP_CHAINS
     }
     return {

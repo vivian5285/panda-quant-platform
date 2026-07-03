@@ -13,6 +13,7 @@ from app.database import SessionLocal
 from app.models import User, UserDepositAddress, SettlementDeposit, DepositSweepLog
 from app.services.chain_payout import CHAIN_PAYOUT_CONFIG, ERC20_TRANSFER_ABI, _normalize_evm_key
 from app.services.deposit_chains import MONITORED_DEPOSIT_CHAINS, get_rpc_url
+from app.services.chain_rpc_config import get_tron_api_url, get_tron_api_key
 from app.services.deposit_secrets import is_deposit_mnemonic_configured
 from app.services.deposit_sweep_config import (
     get_cold_wallet,
@@ -159,7 +160,7 @@ def _sweep_evm_chain(
     if not keys:
         return None
 
-    rpc = cfg["rpc"](settings).strip()
+    rpc = get_rpc_url(chain).strip()
     if not rpc:
         raise ValueError(f"{chain} RPC 未配置")
 
@@ -240,10 +241,11 @@ def _sweep_evm_chain(
 def _read_trc20_balance(address: str) -> tuple[int, float]:
     import requests
 
-    url = f"{settings.TRON_API_URL.rstrip('/')}/v1/accounts/{address}"
+    url = f"{get_tron_api_url().rstrip('/')}/v1/accounts/{address}"
     headers = {"Accept": "application/json"}
-    if settings.TRON_API_KEY.strip():
-        headers["TRON-PRO-API-KEY"] = settings.TRON_API_KEY.strip()
+    key = get_tron_api_key()
+    if key:
+        headers["TRON-PRO-API-KEY"] = key
     resp = requests.get(url, headers=headers, timeout=20)
     resp.raise_for_status()
     data = resp.json().get("data") or []
@@ -297,8 +299,8 @@ def _sweep_trc20(db: Session, row: UserDepositAddress, cold_address: str) -> Dep
     if not keys:
         return None
 
-    provider_url = settings.TRON_API_URL.strip() or "https://api.trongrid.io"
-    api_key = settings.TRON_API_KEY.strip()
+    provider_url = get_tron_api_url()
+    api_key = get_tron_api_key()
     if api_key:
         client = Tron(HTTPProvider(provider_url, api_key=api_key))
     else:

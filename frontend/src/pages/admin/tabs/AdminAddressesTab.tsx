@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import GlassCard from '../../../components/GlassCard'
 
@@ -12,11 +13,13 @@ import WalletBalanceTable, { WalletTotalsBar, WalletUpdatedAt } from '../wallet/
 
 const PAYOUT_CHAINS = ['TRC20', 'ERC20', 'BEP20', 'ARBITRUM', 'POLYGON'] as const
 
-type WalletSection = 'overview' | 'hd' | 'cold' | 'hot' | 'platform' | 'withdraw'
+const EVM_RPC_CHAINS = ['ERC20', 'BEP20', 'ARBITRUM', 'POLYGON'] as const
+
+type WalletSection = 'overview' | 'hd' | 'cold' | 'hot' | 'platform' | 'withdraw' | 'rpc' | 'dingtalk'
 
 
 
-const SECTIONS: WalletSection[] = ['overview', 'hd', 'cold', 'hot', 'platform', 'withdraw']
+const SECTIONS: WalletSection[] = ['overview', 'hd', 'cold', 'hot', 'platform', 'withdraw', 'rpc', 'dingtalk']
 
 
 
@@ -72,9 +75,25 @@ export default function AdminAddressesTab() {
 
     walletOverview, walletOverviewLoading, refreshWalletOverview,
 
+    dingtalkSettings, dingtalkDraft, setDingtalkDraft, saveDingtalkSettings,
+
+    chainRpcSettings, chainRpcDraft, setChainRpcDraft, saveChainRpcSettings, clearChainRpcSettings,
+
+    setWalletSection,
+
   } = useAdmin()
 
-  const [section, setSection] = useState<WalletSection>('overview')
+  const [searchParams] = useSearchParams()
+
+  const rawSection = searchParams.get('wallet') || 'overview'
+
+  const section: WalletSection = SECTIONS.includes(rawSection as WalletSection)
+
+    ? (rawSection as WalletSection)
+
+    : 'overview'
+
+  const setSection = (id: WalletSection) => setWalletSection(id)
 
   const editQrRef = useRef<HTMLInputElement>(null)
 
@@ -155,6 +174,60 @@ export default function AdminAddressesTab() {
 
 
           <div className="grid-2-col-gap section-mb-lg">
+
+            <GlassCard className="p-4">
+
+              <h4 className="text-sm font-semibold section-mb-xs">{t('admin.walletHub.configStatus')}</h4>
+
+              <ul className="text-sm wallet-config-status-list">
+
+                <li className={depositWalletSettings?.configured ? 'text-green' : 'text-muted'}>
+
+                  HD {depositWalletSettings?.configured ? t('admin.walletHub.statusOk') : t('admin.walletHub.statusMissing')}
+
+                </li>
+
+                <li className={(sweepSettings?.ready_chains || []).length ? 'text-green' : 'text-muted'}>
+
+                  {t('admin.walletHub.roles.cold.short')} {(sweepSettings?.ready_chains || []).length ? t('admin.walletHub.statusOk') : t('admin.walletHub.statusMissing')}
+
+                </li>
+
+                <li className={payoutSettings?.auto_enabled ? 'text-green' : 'text-muted'}>
+
+                  {t('admin.walletHub.roles.hot.short')} {payoutSettings?.auto_enabled ? t('admin.walletHub.statusOk') : t('admin.walletHub.statusPartial')}
+
+                </li>
+
+                <li className={dingtalkSettings?.configured ? 'text-green' : 'text-muted'}>
+
+                  {t('admin.dingtalkSettingsTitle')} {dingtalkSettings?.configured ? t('admin.walletHub.statusOk') : t('admin.walletHub.statusMissing')}
+
+                </li>
+
+                <li className={chainRpcSettings?.tron_api_url_configured ? 'text-green' : 'text-muted'}>
+
+                  RPC {chainRpcSettings?.tron_api_url_configured ? t('admin.walletHub.statusOk') : t('admin.walletHub.statusMissing')}
+
+                </li>
+
+              </ul>
+
+              <div className="flex-gap-sm section-mt-sm flex-wrap">
+
+                <button type="button" className="btn btn-ghost btn-xs" onClick={() => setSection('hd')}>HD</button>
+
+                <button type="button" className="btn btn-ghost btn-xs" onClick={() => setSection('cold')}>{t('admin.walletHub.roles.cold.short')}</button>
+
+                <button type="button" className="btn btn-ghost btn-xs" onClick={() => setSection('hot')}>{t('admin.walletHub.roles.hot.short')}</button>
+
+                <button type="button" className="btn btn-ghost btn-xs" onClick={() => setSection('rpc')}>RPC</button>
+
+                <button type="button" className="btn btn-ghost btn-xs" onClick={() => setSection('dingtalk')}>{t('admin.walletHub.sections.dingtalk')}</button>
+
+              </div>
+
+            </GlassCard>
 
             <RoleGuide
 
@@ -929,6 +1002,170 @@ export default function AdminAddressesTab() {
               )}
 
               <button className="btn btn-primary btn-sm" type="submit">{t('common.save')}</button>
+
+            </form>
+
+          </GlassCard>
+
+        </>
+
+      )}
+
+
+
+      {section === 'rpc' && (
+
+        <>
+
+          <RoleGuide
+
+            title={t('admin.chainRpcTitle')}
+
+            desc={t('admin.chainRpcHint')}
+
+            bullets={[t('admin.chainRpcB1'), t('admin.chainRpcB2'), t('admin.chainRpcB3')]}
+
+          />
+
+          <GlassCard className="p-6 section-mb-lg page-panel-narrow">
+
+            <h3 className="panel-title-sm mb-md">{t('admin.chainRpcTitle')}</h3>
+
+            <p className="text-muted text-sm section-mb-sm">{t('admin.chainRpcFormHint')}</p>
+
+            <form onSubmit={saveChainRpcSettings} className="form-stack">
+
+              {EVM_RPC_CHAINS.map(chain => (
+
+                <label key={chain} className="form-field">
+
+                  <span className="text-muted text-sm flex-between-wrap">
+
+                    <span>{chain} RPC</span>
+
+                    <span className={`text-xs ${chainRpcSettings?.chains?.[chain]?.configured ? 'text-green' : 'text-muted'}`}>
+
+                      {chainRpcSettings?.chains?.[chain]?.configured
+
+                        ? `${t('admin.chainRpcSource', { source: chainRpcSettings.chains[chain].source === 'runtime' ? t('admin.depositSourceRuntime') : t('admin.depositSourceEnv') })} · ${chainRpcSettings.chains[chain].preview}`
+
+                        : t('admin.chainRpcMissing')}
+
+                    </span>
+
+                  </span>
+
+                  <input className="input input-mono" placeholder={t('admin.chainRpcPh', { chain })}
+
+                    value={chainRpcDraft[chain] || ''}
+
+                    onChange={e => setChainRpcDraft((d: Record<string, string>) => ({ ...d, [chain]: e.target.value }))} />
+
+                </label>
+
+              ))}
+
+              <label className="form-field">
+
+                <span className="text-muted text-sm flex-between-wrap">
+
+                  <span>TRC20 {t('admin.chainRpcTronUrl')}</span>
+
+                  <span className={`text-xs ${chainRpcSettings?.tron_api_url_configured ? 'text-green' : 'text-muted'}`}>
+
+                    {chainRpcSettings?.tron_api_url_configured
+
+                      ? `${t('admin.chainRpcSource', { source: chainRpcSettings?.tron_source === 'runtime' ? t('admin.depositSourceRuntime') : t('admin.depositSourceEnv') })} · ${chainRpcSettings?.tron_api_url_preview || ''}`
+
+                      : t('admin.chainRpcMissing')}
+
+                  </span>
+
+                </span>
+
+                <input className="input input-mono" placeholder="https://api.trongrid.io"
+
+                  value={chainRpcDraft.tron_api_url || ''}
+
+                  onChange={e => setChainRpcDraft((d: Record<string, string>) => ({ ...d, tron_api_url: e.target.value }))} />
+
+              </label>
+
+              <label className="form-field">
+
+                <span className="text-muted text-sm">TRC20 {t('admin.chainRpcTronKey')}</span>
+
+                <input className="input input-mono" type="password" autoComplete="new-password"
+
+                  placeholder={chainRpcSettings?.tron_api_key_configured ? t('admin.payoutKeyConfigured') : t('admin.payoutKeyMissing')}
+
+                  value={chainRpcDraft.tron_api_key || ''}
+
+                  onChange={e => setChainRpcDraft((d: Record<string, string>) => ({ ...d, tron_api_key: e.target.value }))} />
+
+              </label>
+
+              <div className="flex-gap-sm">
+
+                <button className="btn btn-primary btn-sm" type="submit">{t('common.save')}</button>
+
+                {chainRpcSettings?.has_runtime && (
+
+                  <button className="btn btn-ghost btn-sm" type="button" onClick={clearChainRpcSettings}>{t('admin.chainRpcClear')}</button>
+
+                )}
+
+              </div>
+
+            </form>
+
+          </GlassCard>
+
+        </>
+
+      )}
+
+
+
+      {section === 'dingtalk' && (
+
+        <>
+
+          <RoleGuide
+
+            title={t('admin.dingtalkSettingsTitle')}
+
+            desc={t('admin.dingtalkSettingsHint')}
+
+            bullets={[t('admin.dingtalkBullet1'), t('admin.dingtalkBullet2')]}
+
+          />
+
+          <GlassCard className="p-6 section-mb-lg page-panel-narrow">
+
+            <h3 className="panel-title-sm mb-md">{t('admin.dingtalkSettingsTitle')}</h3>
+
+            <p className={`text-xs section-mb-sm ${dingtalkSettings?.configured ? 'text-green' : 'text-muted'}`}>
+
+              {dingtalkSettings?.configured
+
+                ? `${t('admin.dingtalkConfigured')}${dingtalkSettings.source ? ` (${dingtalkSettings.source === 'runtime' ? t('admin.depositSourceRuntime') : t('admin.depositSourceEnv')})` : ''}`
+
+                : t('admin.dingtalkMissing')}
+
+            </p>
+
+            <form onSubmit={saveDingtalkSettings} className="form-stack">
+
+              <input className="input" placeholder={t('admin.dingtalkWebhookPh')} value={dingtalkDraft.webhook}
+
+                onChange={e => setDingtalkDraft((d: { webhook: string; secret: string }) => ({ ...d, webhook: e.target.value }))} />
+
+              <input className="input" type="password" autoComplete="new-password" placeholder={t('admin.dingtalkSecretPh')}
+
+                value={dingtalkDraft.secret} onChange={e => setDingtalkDraft((d: { webhook: string; secret: string }) => ({ ...d, secret: e.target.value }))} />
+
+              <button className="btn btn-primary btn-sm" type="submit" disabled={!dingtalkDraft.webhook.trim()}>{t('common.save')}</button>
 
             </form>
 
