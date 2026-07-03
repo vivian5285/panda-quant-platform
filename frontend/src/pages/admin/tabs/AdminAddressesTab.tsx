@@ -476,6 +476,18 @@ export default function AdminAddressesTab() {
 
           />
 
+          <p className="text-muted text-sm section-mb-sm wallet-rpc-dep-note">
+
+            {t('admin.chainRpcDepNote')}{' '}
+
+            <button type="button" className="btn btn-ghost btn-xs" onClick={() => setSection('rpc')}>
+
+              {t('admin.chainRpcGoConfigure')}
+
+            </button>
+
+          </p>
+
           <WalletSetupGuide guide="cold" />
 
           <GlassCard className="p-0 section-mb-lg">
@@ -657,6 +669,18 @@ export default function AdminAddressesTab() {
             bullets={[t('admin.walletHub.roles.hot.b1'), t('admin.walletHub.roles.hot.b2'), t('admin.walletHub.roles.hot.b3')]}
 
           />
+
+          <p className="text-muted text-sm section-mb-sm wallet-rpc-dep-note">
+
+            {t('admin.chainRpcDepNote')}{' '}
+
+            <button type="button" className="btn btn-ghost btn-xs" onClick={() => setSection('rpc')}>
+
+              {t('admin.chainRpcGoConfigure')}
+
+            </button>
+
+          </p>
 
           <WalletSetupGuide guide="hot" />
 
@@ -1041,6 +1065,118 @@ export default function AdminAddressesTab() {
             bullets={[t('admin.chainRpcB1'), t('admin.chainRpcB2'), t('admin.chainRpcB3')]}
 
           />
+
+          <WalletSetupGuide guide="rpc" />
+
+          <GlassCard className="p-4 section-mb-md">
+
+            <h4 className="wallet-setup-title">{t('admin.chainRpcMonitorTitle')}</h4>
+
+            <ul className="wallet-setup-list section-mt-xs">
+
+              {[1, 2, 3, 4].map(n => (
+
+                <li key={n}>{t(`admin.chainRpcMonitor${n}`)}</li>
+
+              ))}
+
+            </ul>
+
+          </GlassCard>
+
+          <GlassCard className="p-4 section-mb-md">
+
+            <div className="flex-between-wrap section-mb-sm">
+
+              <div>
+
+                <h4 className="wallet-setup-title">{t('admin.chainRpcStatusTitle')}</h4>
+
+                <p className="text-muted text-xs section-mt-xs">{t('admin.chainRpcStatusHint')}</p>
+
+              </div>
+
+              <WalletUpdatedAt overview={walletOverview} loading={walletOverviewLoading} onRefresh={refreshWalletOverview} />
+
+            </div>
+
+            <div className="table-wrap">
+
+              <table className="data-table data-table-sm">
+
+                <thead>
+
+                  <tr>
+
+                    <th>{t('common.chain')}</th>
+
+                    <th>{t('admin.walletHub.cols.rpc')}</th>
+
+                    <th>{t('admin.chainRpcColSource')}</th>
+
+                  </tr>
+
+                </thead>
+
+                <tbody>
+
+                  {PAYOUT_CHAINS.map(chain => {
+
+                    const rpcReady = chain === 'TRC20'
+
+                      ? chainRpcSettings?.tron_api_url_configured
+
+                      : chainRpcSettings?.chains?.[chain]?.configured
+
+                    const src = chain === 'TRC20'
+
+                      ? chainRpcSettings?.tron_source
+
+                      : chainRpcSettings?.chains?.[chain]?.source
+
+                    const srcLabel = src === 'runtime'
+
+                      ? t('admin.depositSourceRuntime')
+
+                      : src === 'env'
+
+                        ? t('admin.depositSourceEnv')
+
+                        : '—'
+
+                    const liveRpc = walletOverview?.rpc_status?.[chain]
+
+                    return (
+
+                      <tr key={chain}>
+
+                        <td><span className="badge badge-green">{chain}</span></td>
+
+                        <td>
+
+                          <span className={`badge ${(liveRpc ?? rpcReady) ? 'badge-green' : 'badge-gray'}`}>
+
+                            {(liveRpc ?? rpcReady) ? t('admin.walletHub.rpcOk') : t('admin.walletHub.rpcFail')}
+
+                          </span>
+
+                        </td>
+
+                        <td className="text-xs text-muted">{srcLabel}</td>
+
+                      </tr>
+
+                    )
+
+                  })}
+
+                </tbody>
+
+              </table>
+
+            </div>
+
+          </GlassCard>
 
           <GlassCard className="p-6 section-mb-lg page-panel-narrow">
 

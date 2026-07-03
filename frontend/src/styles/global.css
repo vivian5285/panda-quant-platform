@@ -4437,8 +4437,11 @@ html[lang="zh-CN"] .framer-logo-text strong {
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-.wallet-setup-cheatsheet-list li:last-child {
-  border-bottom: none;
+.wallet-rpc-dep-note {
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(59, 130, 246, 0.15);
 }
 
 /* Password input toggle */

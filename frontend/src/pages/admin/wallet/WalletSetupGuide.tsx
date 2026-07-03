@@ -1,6 +1,6 @@
 import { useI18n } from '../../../i18n'
 
-export type WalletGuideKey = 'cheatsheet' | 'hd' | 'cold' | 'hot' | 'gas' | 'platform'
+export type WalletGuideKey = 'cheatsheet' | 'hd' | 'cold' | 'hot' | 'gas' | 'platform' | 'rpc'
 
 function pickSteps(t: (k: string) => string, prefix: string, max = 8): string[] {
   const out: string[] = []
