@@ -92,9 +92,13 @@ def build_dashboard_stats(db: Session, user: User) -> DashboardStats:
         pending_out = {
             "id": pending.id,
             "user_payable": pending.user_payable,
+            "net_profit": pending.net_profit,
+            "platform_fee": pending.platform_fee,
             "payment_status": pending.payment_status,
             "period_start": pending.period_start.isoformat(),
             "period_end": pending.period_end.isoformat(),
+            "cycle_days": pending.cycle_days or 30,
+            "created_at": pending.created_at.isoformat() if pending.created_at else None,
         }
 
     return DashboardStats(

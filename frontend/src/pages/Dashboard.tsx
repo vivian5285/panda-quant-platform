@@ -14,6 +14,7 @@ import { useTheme } from '../store/theme'
 import { CHART } from '../theme/chartColors'
 import { buildCalendarHeatmap } from '../utils/heatmapCalendar'
 import SettlementGateBanner from '../components/SettlementGateBanner'
+import PendingPerfFeeCard from '../components/PendingPerfFeeCard'
 
 function fmt(n: number) {
   const prefix = n >= 0 ? '+$' : '-$'
@@ -163,11 +164,20 @@ export default function Dashboard() {
         }
       />
 
-      <SettlementGateBanner
-        blocked={data?.settlement_blocked}
-        deferred={data?.settlement_fee_deferred}
-        settlement={data?.pending_settlement}
-      />
+      {data?.pending_settlement ? (
+        <div className="section-mb-md">
+          <PendingPerfFeeCard
+            settlement={data.pending_settlement}
+            deferred={data?.settlement_fee_deferred}
+          />
+        </div>
+      ) : (
+        <SettlementGateBanner
+          blocked={data?.settlement_blocked}
+          deferred={data?.settlement_fee_deferred}
+          settlement={data?.pending_settlement}
+        />
+      )}
 
       {loading ? (
         <div className="stat-grid">{[1, 2, 3, 4].map(n => <Skeleton key={n} height={96} />)}</div>

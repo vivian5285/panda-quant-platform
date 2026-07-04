@@ -19,7 +19,7 @@ from app.schemas import (
     DingTalkSettingsOut, DingTalkSettingsUpdate, ChainRpcSettingsOut, ChainRpcSettingsUpdate, AdminPasswordChange,
     PlatformPublicSettingsOut, PlatformPublicSettingsUpdate,
     AdminSettlementDepositOut, AdminSettlementAppealOut, SettlementAppealReview,
-    DepositMonitorStatusOut,
+    DepositMonitorStatusOut, AdminSettlementSummaryOut,
     WithdrawThresholdsUpdate,
     WithdrawalOut, WithdrawalComplete, WithdrawalReject,
     AdminAlertOut, AdminUserDetailOut, TradeOut, TradeLogOut, PrincipalSnapshotOut,
@@ -58,6 +58,9 @@ from app.services.deposit_monitor import run_deposit_monitor_once
 from app.services.deposit_monitor_state import get_deposit_monitor_status
 from app.services.settlement_payment_tracking import (
     list_admin_payment_tracking, count_tracking_anomalies,
+)
+from app.services.settlement_admin_stats import (
+    build_settlement_admin_summary, build_admin_settlement_row,
 )
 from app.services.webhook_receive_log import webhook_log_to_dict, get_webhook_log_detail
 from app.models.platform import WebhookReceiveLog
@@ -528,36 +531,23 @@ def admin_sync_user_exchange_logs(
     return sync_user_binance_fills(db, user, days=min(max(days, 1), 180))
 
 
+@router.get("/settlements/summary", response_model=AdminSettlementSummaryOut)
+def admin_settlements_summary(admin=Depends(get_admin_user), db: Session = Depends(get_db)):
+    return build_settlement_admin_summary(db)
+
+
 @router.get("/settlements", response_model=list[AdminSettlementOut])
-def all_settlements(admin=Depends(get_admin_user), db: Session = Depends(get_db)):
-    rows = db.query(Settlement).order_by(Settlement.created_at.desc()).limit(100).all()
-    out: list[AdminSettlementOut] = []
-    for s in rows:
-        pending = get_pending_settlement(db, s.user_id)
-        deferred = False
-        if pending and pending.id == s.id:
-            deferred = bool(get_user_control(db, s.user_id).get("settlement_fee_deferred"))
-        out.append(AdminSettlementOut(
-            id=s.id,
-            user_id=s.user_id,
-            period_start=s.period_start,
-            period_end=s.period_end,
-            gross_profit=s.gross_profit or 0.0,
-            net_profit=s.net_profit,
-            high_water_mark=s.high_water_mark or 0.0,
-            platform_fee=s.platform_fee,
-            user_payable=s.user_payable,
-            cycle_days=s.cycle_days or 30,
-            payment_status=s.payment_status,
-            payment_chain=s.payment_chain,
-            payment_tx_hash=s.payment_tx_hash,
-            payment_amount=s.payment_amount,
-            paid_at=s.paid_at,
-            confirmed_at=s.confirmed_at,
-            created_at=s.created_at,
-            settlement_fee_deferred=deferred,
-        ))
-    return out
+def all_settlements(
+    status: str | None = None,
+    limit: int = 200,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    q = db.query(Settlement).order_by(Settlement.created_at.desc())
+    if status:
+        q = q.filter(Settlement.payment_status == status)
+    rows = q.limit(min(limit, 500)).all()
+    return [build_admin_settlement_row(db, s) for s in rows]
 
 
 @router.post("/settlements/run")

@@ -1005,7 +1005,25 @@ class AdminOverview(BaseModel):
 
 class AdminSettlementOut(SettlementOut):
     user_id: int
+    user_uid: str = ""
+    user_display: str = ""
     settlement_fee_deferred: bool = False
+
+
+class AdminSettlementSummaryOut(BaseModel):
+    total_bills: int = 0
+    pending_payment: int = 0
+    paid_awaiting_confirm: int = 0
+    confirmed: int = 0
+    rejected: int = 0
+    unpaid_users: int = 0
+    pending_amount_total: float = 0
+    paid_amount_total: float = 0
+    confirmed_amount_total: float = 0
+    today_new_bills: int = 0
+    today_confirmed: int = 0
+    approaching_cycle_count: int = 0
+    approaching_cycle_users: list[dict] = []
 
 
 class AdminAlertOut(BaseModel):

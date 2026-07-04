@@ -41,8 +41,8 @@ export default function SettlementGateBanner({ blocked, deferred, settlement }: 
             </>
           )}
         </p>
-        <Link to="/settlements" className="settlement-gate-link">
-          {t('settlementGate.cta')}
+        <Link to="/settlements?pay=1" className="settlement-gate-link btn btn-primary btn-sm">
+          {t('settlementGate.ctaPay')}
         </Link>
       </div>
     </GlassCard>

@@ -3735,6 +3735,93 @@ html[lang="zh-CN"] .framer-logo-text strong {
   font-weight: 600;
   color: var(--primary, #6366f1);
   margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pending-perf-fee-card {
+  padding: 20px 22px;
+  margin-bottom: 0;
+  border-color: rgba(245, 158, 11, 0.5);
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, transparent 55%);
+}
+.pending-perf-fee-card--deferred {
+  border-color: rgba(59, 130, 246, 0.45);
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, transparent 55%);
+}
+.pending-perf-fee-card--compact { padding: 16px 18px; }
+.pending-perf-fee-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.pending-perf-fee-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--warning, #f59e0b);
+}
+.pending-perf-fee-titles { flex: 1; min-width: 160px; }
+.pending-perf-fee-amount { text-align: right; min-width: 120px; }
+.pending-perf-fee-amount-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.pending-perf-fee-amount-value {
+  display: block;
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--warning, #f59e0b);
+}
+.pending-perf-fee-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 24px;
+  margin-bottom: 12px;
+}
+.pending-perf-fee-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pending-perf-fee-tips {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--surface-muted, rgba(0,0,0,0.03));
+  margin-bottom: 14px;
+}
+.pending-perf-fee-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+.pending-perf-fee-actions .btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.settlement-pay-hint-card { border-style: dashed; }
+.admin-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.admin-filter-chips .chip-count {
+  margin-left: 6px;
+  opacity: 0.85;
+  font-size: 0.85em;
 }
 .settlement-pending-row {
   background: rgba(245, 158, 11, 0.08);

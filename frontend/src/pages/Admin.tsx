@@ -29,6 +29,8 @@ export default function Admin() {
   const [overview, setOverview] = useState<any>(null)
   const [users, setUsers] = useState<any[]>([])
   const [settlements, setSettlements] = useState<any[]>([])
+  const [settlementSummary, setSettlementSummary] = useState<any>(null)
+  const [settlementStatusFilter, setSettlementStatusFilter] = useState('')
   const [depositAddrs, setDepositAddrs] = useState<any[]>([])
   const [withdrawals, setWithdrawals] = useState<any[]>([])
   const [alerts, setAlerts] = useState<any[]>([])
@@ -179,6 +181,8 @@ export default function Admin() {
     setOverview,
     setUsers,
     setSettlements,
+    setSettlementSummary,
+    setSettlementStatusFilter,
     setDepositAddrs,
     setWithdrawals,
     setAlerts,
@@ -585,6 +589,13 @@ export default function Admin() {
     adminApi.settlementPaymentTrackingAdmin({ probe: true, limit: 100 })
       .then(setPaymentTracking).catch(() => setPaymentTracking([]))
   }
+
+  useEffect(() => {
+    if (tab !== 'settlements') return
+    adminApi.settlements({ status: settlementStatusFilter || undefined, limit: 300 })
+      .then(setSettlements).catch(() => setSettlements([]))
+    adminApi.settlementSummary().then(setSettlementSummary).catch(() => setSettlementSummary(null))
+  }, [tab, settlementStatusFilter])
 
   useEffect(() => {
     if (tab !== 'deposits') return
@@ -1176,6 +1187,7 @@ export default function Admin() {
     chainRpcSettings, chainRpcDraft, setChainRpcDraft,
     adminPwdDraft, setAdminPwdDraft,
     settlementDeposits, settlementAppeals, depositFilter, setDepositFilter, appealFilter, setAppealFilter,
+    settlementSummary, settlementStatusFilter, setSettlementStatusFilter,
     depositMonitorStatus, paymentTracking, depositScanLoading, triggerDepositScan,
     saveDingtalkSettings, saveChainRpcSettings, clearChainRpcSettings, changeAdminPassword, approveAppeal, rejectAppeal,
     completeTx, setCompleteTx,

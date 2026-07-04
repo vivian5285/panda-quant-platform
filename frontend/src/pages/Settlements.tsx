@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import Layout from '../components/Layout'
 import WithdrawCta from '../components/WithdrawCta'
 import PageHeader from '../components/PageHeader'
 import GlassCard from '../components/GlassCard'
 import StatCard from '../components/StatCard'
-import SettlementGateBanner from '../components/SettlementGateBanner'
+import PendingPerfFeeCard from '../components/PendingPerfFeeCard'
 import { referralApi, walletApi } from '../api'
 import { useI18n } from '../i18n'
 import { toast } from '../store/toast'
@@ -14,6 +15,8 @@ import { formatSettlementCycle } from '../utils/settlementCycle'
 
 export default function Settlements() {
   const { t } = useI18n()
+  const [searchParams] = useSearchParams()
+  const paySectionRef = useRef<HTMLDivElement>(null)
   const [items, setItems] = useState<any[]>([])
   const [addresses, setAddresses] = useState<any[]>([])
   const [myAddresses, setMyAddresses] = useState<any[]>([])
@@ -50,6 +53,14 @@ export default function Settlements() {
   }, [])
 
   const pendingItem = items.find(s => s.payment_status === 'pending' || s.payment_status === 'paid')
+
+  useEffect(() => {
+    if (searchParams.get('pay') !== '1' || !pendingItem) return
+    const timer = window.setTimeout(() => {
+      paySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [searchParams, pendingItem?.id])
 
   const copyAddr = (addr: string, key: string) => {
     navigator.clipboard.writeText(addr)
@@ -117,24 +128,16 @@ export default function Settlements() {
     <Layout>
       <PageHeader title={t('settlements.title')} subtitle={t('settlements.subtitle')} />
 
-      <SettlementGateBanner
-        blocked={!!pendingItem}
-        settlement={pendingItem ? {
-          id: pendingItem.id,
-          user_payable: pendingItem.user_payable,
-          payment_status: pendingItem.payment_status,
-          period_start: pendingItem.period_start,
-          period_end: pendingItem.period_end,
-        } : null}
-      />
-
-      <GlassCard className="p-4 section-mb-lg">
-        <p className="text-sm"><strong>{t('perfFee.cycleTitle')}</strong></p>
-        <p className="text-muted text-sm section-mt-xs">{t('perfFee.flowSteps')}</p>
-        <p className="text-muted text-xs section-mt-sm">{t('perfFee.resetNote')}</p>
-        <p className="text-sm section-mt-md"><strong>{t('perfFee.splitTitle')}</strong></p>
-        <p className="text-muted text-sm section-mt-xs">{t('perfFee.splitExample')}</p>
-      </GlassCard>
+      {pendingItem && (
+        <div className="section-mb-md" ref={paySectionRef} id="perf-fee-pay-section">
+          <PendingPerfFeeCard settlement={pendingItem} showPayButton={false} variant="compact" />
+          <GlassCard className="p-4 section-mt-sm settlement-pay-hint-card">
+            <p className="text-sm-strong section-mb-xs">{t('settlements.payHeroTitle')}</p>
+            <p className="text-muted text-sm">{t('settlements.payHeroHint')}</p>
+          </GlassCard>
+          <UserUniqueDepositPanel addresses={myAddresses} />
+        </div>
+      )}
 
       {tracking?.active && (
         <GlassCard className="p-4 section-mb-lg settlement-tracking-card">
@@ -190,6 +193,14 @@ export default function Settlements() {
         </GlassCard>
       )}
 
+      <GlassCard className="p-4 section-mb-lg">
+        <p className="text-sm"><strong>{t('perfFee.cycleTitle')}</strong></p>
+        <p className="text-muted text-sm section-mt-xs">{t('perfFee.flowSteps')}</p>
+        <p className="text-muted text-xs section-mt-sm">{t('perfFee.resetNote')}</p>
+        <p className="text-sm section-mt-md"><strong>{t('perfFee.splitTitle')}</strong></p>
+        <p className="text-muted text-sm section-mt-xs">{t('perfFee.splitExample')}</p>
+      </GlassCard>
+
       <div className="stat-grid section-mb-lg">
         <StatCard label={t('settlements.totalCycles')} countUp={{ end: summary.cycles, decimals: 0 }} />
         <StatCard label={t('settlements.totalProfit')} countUp={{ end: summary.netProfit, pnl: true, decimals: 2 }} positive={summary.netProfit >= 0} />
@@ -198,7 +209,7 @@ export default function Settlements() {
 
       <WithdrawCta />
 
-      <UserUniqueDepositPanel addresses={myAddresses} />
+      {!pendingItem && <UserUniqueDepositPanel addresses={myAddresses} />}
 
       {myAddresses.length === 0 && (
       <GlassCard className="p-6 section-mb-lg">

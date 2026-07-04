@@ -46,6 +46,8 @@ export type AdminTabSetters = {
   setChainRpcDraft?: (v: Record<string, string>) => void
   setSettlementDeposits: (v: any[]) => void
   setSettlementAppeals: (v: any[]) => void
+  setSettlementSummary?: (v: any) => void
+  setSettlementStatusFilter?: (v: string) => void
   setDepositMonitorStatus?: (v: any) => void
   setPaymentTracking?: (v: any[]) => void
   setDepositFilter: (v: string) => void
@@ -120,7 +122,12 @@ export async function loadAdminTab(
       break
     }
     case 'settlements': {
-      setters.setSettlements(await adminApi.settlements())
+      const [rows, summary] = await Promise.all([
+        adminApi.settlements({ limit: 300 }),
+        adminApi.settlementSummary().catch(() => null),
+      ])
+      setters.setSettlements(rows)
+      setters.setSettlementSummary?.(summary)
       break
     }
     case 'referrals': {
