@@ -474,7 +474,14 @@ export default function Admin() {
         enabled_exchanges: res.enabled_exchanges || ['binance'],
         support_telegram: res.support_telegram || '',
       })
-      toast.success(t('admin.platformPublicSaved'))
+      toast.success(
+        res.removed_supervisors || res.added_supervisors
+          ? t('admin.platformPublicSavedSync', {
+              removed: res.removed_supervisors || 0,
+              added: res.added_supervisors || 0,
+            })
+          : t('admin.platformPublicSaved'),
+      )
     } catch (err: any) {
       toast.error(err.response?.data?.detail || t('admin.platformPublicSaveFail'))
     }

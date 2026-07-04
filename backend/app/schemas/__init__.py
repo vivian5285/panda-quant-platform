@@ -595,6 +595,8 @@ class PlatformPublicSettingsOut(BaseModel):
     enabled_exchanges: list[str]
     all_exchanges: list[str]
     support_telegram: str = ""
+    removed_supervisors: int = 0
+    added_supervisors: int = 0
 
 
 class PlatformPublicSettingsUpdate(BaseModel):

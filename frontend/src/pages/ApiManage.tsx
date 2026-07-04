@@ -120,11 +120,16 @@ export default function ApiManage() {
 
   const needsDualVerify = profile?.has_email && profile?.has_phone
 
-  const isExchangeSelectable = (id: ExchangeId) => {
-    if (enabledExchanges.includes(id)) return true
-    const boundEx = normalizeExchangeFromApi(profile?.exchange || boundStatus?.exchange)
-    return profile?.api_status === 'active' && boundEx === id
-  }
+  const isExchangeSelectable = (id: ExchangeId) => enabledExchanges.includes(id)
+
+  const openExchangeLabels = enabledExchanges
+    .map(id => t(EXCHANGE_LABEL_KEYS[id as ExchangeId] || id))
+    .join(locale === 'zh' ? '、' : ', ')
+
+  const boundExchange = normalizeExchangeFromApi(profile?.exchange || boundStatus?.exchange)
+  const boundExchangeDisabled = profile?.api_status === 'active'
+    && boundExchange
+    && !enabledExchanges.includes(boundExchange)
 
   const telegramHref = (raw: string) => {
     const v = raw.trim()
@@ -253,11 +258,18 @@ export default function ApiManage() {
   }
 
   useEffect(() => {
-    publicApi.platformConfig().then(cfg => {
-      const enabled = (cfg?.enabled_exchanges || ['binance']).map((e: string) => normalizeExchangeFromApi(e))
-      setEnabledExchanges(enabled)
-      setSupportTelegram(cfg?.support_telegram || '')
-    }).catch(() => {})
+    const loadPlatform = () => {
+      publicApi.platformConfig().then(cfg => {
+        const enabled = (cfg?.enabled_exchanges || ['binance']).map((e: string) => normalizeExchangeFromApi(e))
+        setEnabledExchanges(enabled)
+        setSupportTelegram(cfg?.support_telegram || '')
+        setExchange(prev => (enabled.includes(prev) ? prev : (enabled[0] || 'binance')))
+      }).catch(() => {})
+    }
+    loadPlatform()
+    const timer = setInterval(loadPlatform, 30000)
+    const onVisible = () => { if (document.visibilityState === 'visible') loadPlatform() }
+    document.addEventListener('visibilitychange', onVisible)
     userApi.apiStatus().then(res => {
       setBoundStatus(res)
       if (res.exchange) setExchange(normalizeExchangeFromApi(res.exchange))
@@ -268,6 +280,10 @@ export default function ApiManage() {
       if (p.api_account_mode === 'sub') setAccountMode('sub')
     }).catch(() => {})
     settingsApi.get().then(p => setTotpEnabled(!!p.totp_enabled)).catch(() => {})
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [])
 
   const checkLabel = (id: string) => {
@@ -590,6 +606,13 @@ export default function ApiManage() {
           </>
         )}
 
+        {boundExchangeDisabled && (
+          <GlassCard className="p-4 section-mb-md referral-unpaid-banner">
+            <p className="text-sm-strong text-red section-mb-xs">{t('api.exchangeTradingPausedTitle')}</p>
+            <p className="text-sm text-muted">{t('api.exchangeTradingPausedBody')}</p>
+          </GlassCard>
+        )}
+
         <form onSubmit={handleBind}>
           {supportTelegram && (
             <GlassCard className="p-4 section-mb-sm api-support-banner">
@@ -641,7 +664,11 @@ export default function ApiManage() {
                 )
               })}
             </div>
-            <p className="text-muted form-hint-sm section-mt-sm">{t('api.exchangeOpenNote')}</p>
+            <p className="text-muted form-hint-sm section-mt-sm">
+              {openExchangeLabels
+                ? t('api.exchangeOpenNoteDynamic', { list: openExchangeLabels })
+                : t('api.exchangeOpenNote')}
+            </p>
           </div>
 
           <div className="form-field">

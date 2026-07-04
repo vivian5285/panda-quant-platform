@@ -31,6 +31,14 @@ PASSPHRASE_EXCHANGES = frozenset({
 })
 
 
+class ExchangeNotEnabledError(Exception):
+    """Raised when admin has not enabled API/trading for this exchange."""
+
+    def __init__(self, exchange: str):
+        self.exchange = exchange
+        super().__init__(f"Exchange not enabled: {exchange}")
+
+
 def normalize_exchange(exchange: str | None) -> str:
     val = (exchange or ExchangeType.BINANCE.value).strip().lower()
     if val == "gateio":
@@ -64,7 +72,11 @@ def create_exchange_client(
     api_secret: str,
     passphrase: str = "",
 ) -> BinanceClient | DeepcoinClient | OkxClient | GateClient:
+    from app.services.platform_public_settings import is_exchange_enabled
+
     ex = user_exchange(user)
+    if not is_exchange_enabled(ex):
+        raise ExchangeNotEnabledError(ex)
     if ex == ExchangeType.DEEPCOIN.value:
         return DeepcoinClient(api_key, api_secret, passphrase, user.id)
     if ex == ExchangeType.OKX.value:

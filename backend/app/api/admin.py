@@ -1110,7 +1110,7 @@ def admin_update_platform_public_settings(
     admin=Depends(get_admin_user),
     db: Session = Depends(get_db),
 ):
-    from app.services.platform_public_settings import update_platform_public_settings
+    from app.services.platform_public_settings import update_platform_public_settings, sync_supervisors_for_enabled_exchanges
 
     try:
         updated = update_platform_public_settings(
@@ -1119,6 +1119,9 @@ def admin_update_platform_public_settings(
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    sync_result = {}
+    if req.enabled_exchanges is not None:
+        sync_result = sync_supervisors_for_enabled_exchanges()
     log_audit(
         db,
         "platform_public_settings.update",
@@ -1128,10 +1131,11 @@ def admin_update_platform_public_settings(
         detail={
             "enabled_exchanges": updated.get("enabled_exchanges"),
             "has_support_telegram": bool(updated.get("support_telegram")),
+            **sync_result,
         },
         request=request,
     )
-    return updated
+    return {**updated, **sync_result}
 
 
 @router.get("/dingtalk/settings", response_model=DingTalkSettingsOut)

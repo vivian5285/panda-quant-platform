@@ -39,6 +39,62 @@ def is_exchange_enabled(exchange: str) -> bool:
     return ex in get_platform_public_settings()["enabled_exchanges"]
 
 
+def user_exchange_trading_allowed(user) -> bool:
+    """True when user's bound exchange is admin-enabled for托管交易."""
+    from app.core.exchange_factory import user_exchange
+
+    return is_exchange_enabled(user_exchange(user))
+
+
+def sync_supervisors_for_enabled_exchanges() -> dict:
+    """Apply admin exchange policy: stop disabled-exchange托管, start newly enabled."""
+    from app.database import SessionLocal
+    from app.models import ApiStatus, User
+    from app.core.exchange_factory import user_exchange, user_has_api_credentials
+    from app.services.dispatcher import supervisor_pool
+    from app.services.trade_logger import TradeLogger
+
+    enabled = set(get_platform_public_settings()["enabled_exchanges"])
+    db = SessionLocal()
+    removed = 0
+    added = 0
+    try:
+        for sup in list(supervisor_pool.get_all()):
+            user = db.query(User).filter(User.id == sup.user_id).first()
+            if user and user_exchange(user) not in enabled:
+                supervisor_pool.remove_user(user.id)
+                TradeLogger(db).log_event(
+                    user.id,
+                    "WARNING",
+                    "交易所托管已暂停（平台未开放该交易所）",
+                    {"exchange": user_exchange(user), "enabled_exchanges": list(enabled)},
+                )
+                removed += 1
+        db.commit()
+
+        users = (
+            db.query(User)
+            .filter(
+                User.is_active.is_(True),
+                User.api_status == ApiStatus.ACTIVE.value,
+                User.api_key_enc.isnot(None),
+            )
+            .all()
+        )
+        for user in users:
+            if not user_has_api_credentials(user):
+                continue
+            if user_exchange(user) not in enabled:
+                continue
+            if supervisor_pool.get(user.id) is None:
+                audit = supervisor_pool.add_user(user, db=db)
+                if audit and not audit.get("error"):
+                    added += 1
+    finally:
+        db.close()
+    return {"removed_supervisors": removed, "added_supervisors": added}
+
+
 def update_platform_public_settings(
     *,
     enabled_exchanges: list[str] | None = None,

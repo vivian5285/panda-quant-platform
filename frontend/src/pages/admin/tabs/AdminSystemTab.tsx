@@ -49,6 +49,7 @@ export default function AdminSystemTab() {
           <div>
             <p className="text-sm-strong section-mb-xs">{t('admin.enabledExchangesTitle')}</p>
             <p className="text-muted text-xs section-mb-sm">{t('admin.enabledExchangesHint')}</p>
+            <p className="text-muted text-xs section-mb-sm">{t('admin.enabledExchangesTradingHint')}</p>
             <div className="platform-exchange-toggles">
               {allExchanges.map((id: string) => (
                 <label key={id} className="platform-exchange-toggle">

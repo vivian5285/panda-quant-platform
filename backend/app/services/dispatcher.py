@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy.orm import Session
 from app.models import User, ApiStatus
 from app.core.exchange_factory import create_exchange_client, create_supervisor, user_has_api_credentials, user_exchange
+from app.services.platform_public_settings import is_exchange_enabled
 from app.services.trade_logger import TradeLogger
 from app.services.radar_context import build_radar_recovery_context
 from app.services.startup_audit import log_takeover_audit, broadcast_startup_summary
@@ -43,7 +44,7 @@ class UserSupervisorPool:
                 User.api_status == ApiStatus.ACTIVE.value,
                 User.api_key_enc.isnot(None),
             ).all()
-            users = [u for u in users if user_has_api_credentials(u)]
+            users = [u for u in users if user_has_api_credentials(u) and is_exchange_enabled(user_exchange(u))]
             audits = []
             failed = []
             for user in users:
@@ -78,6 +79,15 @@ class UserSupervisorPool:
         if own_db:
             db = SessionLocal()
         try:
+            if not is_exchange_enabled(user_exchange(user)):
+                logger.warning("User %s exchange not enabled for托管", user.id)
+                TradeLogger(db).log_event(
+                    user.id,
+                    "WARNING",
+                    "交易所未开放，无法加载 Supervisor",
+                    {"exchange": user_exchange(user)},
+                )
+                return None
             api_key = decrypt_text(user.api_key_enc)
             api_secret = decrypt_text(user.api_secret_enc)
             passphrase = decrypt_text(user.passphrase_enc) if user.passphrase_enc else ""
@@ -127,6 +137,16 @@ class UserSupervisorPool:
             logger.info("Supervisor added for user %s", user.id)
             return audit
         except Exception as e:
+            from app.core.exchange_factory import ExchangeNotEnabledError
+            if isinstance(e, ExchangeNotEnabledError):
+                logger.warning("User %s exchange client blocked: %s", user.id, e.exchange)
+                TradeLogger(db).log_event(
+                    user.id,
+                    "WARNING",
+                    "交易所未开放，无法连接 API 网关",
+                    {"exchange": e.exchange},
+                )
+                return None
             logger.error("Failed to add supervisor user=%s: %s", user.id, e)
             TradeLogger(db).log_event(user.id, "ERROR", f"Supervisor 加载失败: {e}", {"uid": user.uid})
             notify_admin(
@@ -220,6 +240,13 @@ class SignalDispatcher:
                         "user_id": s.user_id,
                         "status": "risk_blocked",
                         "reason": "api_inactive",
+                    })
+                    continue
+                if not is_exchange_enabled(user_exchange(user)):
+                    results.append({
+                        "user_id": s.user_id,
+                        "status": "risk_blocked",
+                        "reason": "exchange_not_open",
                     })
                     continue
                 if is_user_paused(db, s.user_id):
