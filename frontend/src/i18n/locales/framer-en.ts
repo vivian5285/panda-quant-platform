@@ -509,6 +509,7 @@ export default {
     legal: 'Legal',
     docs: 'Documentation',
     guide: 'Platform Guide',
+    apiBindingGuide: 'API Binding Guide',
     privacy: 'Privacy',
     terms: 'Terms',
     rights: '© 2026 GEMINI AI. All rights reserved.',

@@ -9,6 +9,7 @@ import Login from './pages/Login'
 import Register from './pages/Register'
 import Help from './pages/Help'
 import PlatformGuide from './pages/PlatformGuide'
+import ApiBindingGuide from './pages/ApiBindingGuide'
 import Privacy from './pages/Privacy'
 import Terms from './pages/Terms'
 
@@ -64,6 +65,7 @@ export default function App() {
           <Route path="/register" element={<Register />} />
           <Route path="/help" element={<Help />} />
           <Route path="/guide" element={<PlatformGuide />} />
+          <Route path="/api-guide" element={<ApiBindingGuide />} />
           <Route path="/privacy" element={<Privacy />} />
           <Route path="/terms" element={<Terms />} />
           <Route path="/dashboard" element={<UserRoute><Dashboard /></UserRoute>} />

@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { ShieldAlert, CheckCircle2, XCircle, RefreshCw, ListChecks, MessageCircle } from 'lucide-react'
+import { ShieldAlert, CheckCircle2, XCircle, RefreshCw, ListChecks, MessageCircle, BookOpen } from 'lucide-react'
 import Layout from '../components/Layout'
 import PageHeader from '../components/PageHeader'
 import GlassCard from '../components/GlassCard'
 import DualVerifyFields from '../components/DualVerifyFields'
+import { ApiBindingGuideBanner } from './ApiBindingGuide'
 import { authApi, settingsApi, userApi, publicApi } from '../api'
 import { useI18n } from '../i18n'
 import { toast } from '../store/toast'
@@ -483,6 +484,8 @@ export default function ApiManage() {
   return (
     <Layout>
       <PageHeader title={t('api.title')} />
+      <ApiBindingGuideBanner />
+
       <div className="api-danger-banner">
         <ShieldAlert size={20} />
         <div>
@@ -533,7 +536,13 @@ export default function ApiManage() {
         </p>
 
         <div className="api-prep-guide">
-          <h3 className="api-prep-title">{t('api.prepTitle')}</h3>
+          <div className="api-prep-head">
+            <h3 className="api-prep-title">{t('api.prepTitle')}</h3>
+            <Link to="/api-guide" className="api-prep-guide-link">
+              <BookOpen size={14} />
+              {t('api.guideLink')}
+            </Link>
+          </div>
           <p className="text-muted api-prep-intro">{t('api.prepIntro')}</p>
           <ol className="api-prep-steps">
             <li>

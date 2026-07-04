@@ -14,6 +14,7 @@ function HelpContent() {
   const t = useI18n(s => s.t)
 
   const cards = [
+    { icon: BookOpen, title: t('apiBindingGuide.title'), desc: t('apiBindingGuide.bannerDesc'), to: '/api-guide' as const },
     { icon: BookOpen, title: t('help.docs'), desc: t('help.docsDesc'), to: '/api' as const },
     { icon: MessageSquare, title: t('help.support'), desc: t('help.supportDesc'), href: `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(t('help.support'))}` },
     { icon: Mail, title: t('help.contact'), desc: t('help.contactDesc'), href: `mailto:${SUPPORT_EMAIL}` },

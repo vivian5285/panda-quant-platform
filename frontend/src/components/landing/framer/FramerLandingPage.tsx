@@ -138,6 +138,7 @@ export default function FramerLandingPage() {
             <div>
               <h5>{t('framer.footer.legal')}</h5>
               <Link to="/guide">{t('framer.footer.guide')}</Link>
+              <Link to="/api-guide">{t('framer.footer.apiBindingGuide')}</Link>
               <Link to="/help">{t('framer.footer.docs')}</Link>
               <Link to="/privacy">{t('framer.footer.privacy')}</Link>
               <Link to="/terms">{t('framer.footer.terms')}</Link>
@@ -148,6 +149,7 @@ export default function FramerLandingPage() {
               <a href="#platform" onClick={e => { e.preventDefault(); scrollTo('platform') }}>{t('framer.nav.platform')}</a>
               <a href="#workflow" onClick={e => { e.preventDefault(); scrollTo('workflow') }}>{t('framer.nav.workflow')}</a>
               <Link to="/guide">{t('framer.footer.guide')}</Link>
+              <Link to="/api-guide">{t('framer.footer.apiBindingGuide')}</Link>
               <Link to="/login">{t('auth.login')}</Link>
               <Link to="/register">{t('framer.nav.signup')}</Link>
             </div>

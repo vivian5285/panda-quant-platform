@@ -4938,3 +4938,318 @@ html[lang="zh-CN"] .framer-logo-text strong {
 .data-table tr.row-highlight td {
   background: color-mix(in srgb, var(--accent, #3b82f6) 8%, transparent);
 }
+
+/* ── API Binding Guide (GEMINI indigo theme) ── */
+.api-binding-guide {
+  --abg-accent: #6366f1;
+  --abg-accent-soft: color-mix(in srgb, #6366f1 12%, transparent);
+  --abg-binance: #6366f1;
+  --abg-gemini: #8b5cf6;
+  max-width: 920px;
+}
+
+.abg-hero {
+  border: 1px solid color-mix(in srgb, var(--abg-accent) 28%, transparent);
+  background: linear-gradient(135deg, var(--abg-accent-soft) 0%, transparent 55%);
+}
+
+.abg-hero-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 8px 0 10px;
+  letter-spacing: -0.02em;
+}
+
+.abg-hero-lead {
+  line-height: 1.65;
+  max-width: 640px;
+}
+
+.abg-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.abg-checklist-card {
+  border: 1px solid color-mix(in srgb, #10b981 25%, transparent);
+  background: color-mix(in srgb, #10b981 5%, transparent);
+}
+
+.abg-checklist-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.abg-checklist-head h3 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.abg-checklist {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.abg-checklist li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.abg-check-icon {
+  color: #10b981;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.abg-phase-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.abg-phase-head h2 {
+  font-size: 1.2rem;
+  font-weight: 700;
+  margin: 0 0 4px;
+}
+
+.abg-phase-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  font-weight: 800;
+  font-size: 1rem;
+  flex-shrink: 0;
+  color: #fff;
+}
+
+.abg-phase-badge-binance {
+  background: linear-gradient(135deg, #6366f1, #4f46e5);
+}
+
+.abg-phase-badge-gemini {
+  background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+}
+
+.abg-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.abg-step-card {
+  padding: 18px 20px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--glass-border, #333) 80%, transparent);
+  background: color-mix(in srgb, var(--pq-surface, #111) 94%, transparent);
+}
+
+.abg-step-head {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.abg-step-num {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--abg-accent);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.875rem;
+  flex-shrink: 0;
+}
+
+.abg-step-head h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+
+.abg-step-lead {
+  font-size: 0.9rem;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.abg-step-figure {
+  margin: 16px 0 0;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--glass-border, #333) 70%, transparent);
+  background: #0f172a;
+}
+
+.abg-step-figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.abg-step-figure figcaption {
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--pq-surface-hover, #1a1a2e) 90%, transparent);
+}
+
+.abg-step-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--abg-accent) 8%, transparent);
+  border-left: 3px solid var(--abg-accent);
+}
+
+.abg-finish {
+  text-align: center;
+  border: 1px solid color-mix(in srgb, var(--abg-gemini) 30%, transparent);
+  background: color-mix(in srgb, var(--abg-gemini) 6%, transparent);
+}
+
+.abg-finish-icons {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  margin-bottom: 12px;
+  color: var(--abg-gemini);
+}
+
+.abg-finish h3 {
+  font-size: 1.1rem;
+  margin-bottom: 8px;
+}
+
+.abg-disclaimer {
+  margin-top: 20px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.abg-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  border-radius: 14px;
+  text-decoration: none;
+  color: inherit;
+  border: 1px solid color-mix(in srgb, #6366f1 35%, transparent);
+  background: linear-gradient(135deg, color-mix(in srgb, #6366f1 14%, transparent), color-mix(in srgb, #8b5cf6 8%, transparent));
+  transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
+}
+
+.abg-banner:hover {
+  border-color: color-mix(in srgb, #6366f1 55%, transparent);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px color-mix(in srgb, #6366f1 18%, transparent);
+}
+
+.abg-banner-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: color-mix(in srgb, #6366f1 20%, transparent);
+  color: #6366f1;
+  flex-shrink: 0;
+}
+
+.abg-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.abg-banner-text strong {
+  display: block;
+  font-size: 0.95rem;
+  margin-bottom: 4px;
+}
+
+.abg-banner-text p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.abg-banner-cta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #6366f1;
+  white-space: nowrap;
+}
+
+.api-prep-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.api-prep-guide-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #6366f1;
+  text-decoration: none;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, #6366f1 35%, transparent);
+  background: color-mix(in srgb, #6366f1 8%, transparent);
+  transition: background 0.15s;
+}
+
+.api-prep-guide-link:hover {
+  background: color-mix(in srgb, #6366f1 16%, transparent);
+}
+
+[data-theme="light"] .abg-step-card {
+  background: #fff;
+}
+
+[data-theme="light"] .abg-step-figure {
+  background: #f8fafc;
+}
+
+@media (max-width: 640px) {
+  .abg-banner {
+    flex-wrap: wrap;
+  }
+  .abg-banner-cta {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}

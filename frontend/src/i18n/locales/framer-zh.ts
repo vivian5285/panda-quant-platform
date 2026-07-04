@@ -509,6 +509,7 @@ export default {
     legal: '法律',
     docs: '文档',
     guide: '平台指南',
+    apiBindingGuide: 'API 绑定指引',
     privacy: '隐私政策',
     terms: '服务条款',
     rights: '© 2026 双子星AI量化 · GEMINI AI. 保留所有权利。',
