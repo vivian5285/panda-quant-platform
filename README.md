@@ -203,7 +203,7 @@ TV 信号 → 用户交易所实盘 → 周期结束且全平仓
   TradeLog      全域日志       DownlineLogsModal
                    │
                    ▼
-         钉钉（按交易所主题 #币安15x / #深币20x 等，仅关键动作）
+         钉钉（按交易所 GEMINI 主题 #币安20x / #深币20x / #OKX20x / #Gate20x，仅关键动作）
 ```
 
 ### Docker 拓扑
@@ -331,7 +331,7 @@ panda-quant-platform/
 
 | 规则 | 实现 |
 |------|------|
-| 永远一手 | 单向持仓 One-Way；不加仓叠单 |
+| 永远一手 | 单向持仓 One-Way；不加仓叠单；开仓量按四档保证金公式计算 |
 | 先平后开 | LONG/SHORT 前 `cancel_all` + 市价全平旧仓，同向/反向均如此 |
 | 四档 Regime | TV 传 `regime` 1~4 → 保证金比例 + TP 分批 + 雷达激活距离 |
 | TV 限价止盈 | 按 `tv_tp1/2/3` 挂 reduceOnly 限价单（tick 0.01） |
@@ -343,6 +343,12 @@ panda-quant-platform/
 
 ### Regime 参数（代码内置 `regime_settings`）
 
+**开仓数量公式（全交易所统一）：**
+
+```
+qty = (可用余额 × margin_pct × 20×杠杆) / 当前价格
+```
+
 | Regime | 保证金占可用余额 | TP 分批 | 雷达激活（至 TP1 路径比例） | Trail ATR 倍数 |
 |--------|------------------|---------|---------------------------|----------------|
 | 1 | 15% | 25% / 35% / 40% | 40% | 0.40 |
@@ -350,7 +356,11 @@ panda-quant-platform/
 | 3 | 35% | 18% / 32% / 50% | 60% | 0.90 |
 | 4 | 50% | 5% / 20% / 75% | 70% | 1.30 |
 
-杠杆：币安默认 `LEVERAGE=20`（`.env`）；钉钉展示主题币安为 **15×标签**（`trading_alerts.py` 展示用，与实盘 `set_leverage` 以代码为准）。
+杠杆：**全交易所统一 20×**（`LEVERAGE` / `OKX_LEVERAGE` / `GATE_LEVERAGE` / `DEEPCOIN_LEVERAGE` 默认均为 20）。实盘 `set_leverage` 与钉钉标签一致。
+
+实现位置：
+- 币安 / OKX / Gate → `position_supervisor.py` `_open_position()`
+- 深币 → `position_supervisor_deepcoin.py`（合约面值换算后取整，仍按同四档 margin）
 
 ### 三重平仓把关
 
@@ -517,14 +527,16 @@ https://twinstar.pro/gemini/webhook
 
 ### 用户实盘钉钉（`trading_alerts.py`）
 
-按用户绑定交易所选主题：
+按用户绑定交易所选 **GEMINI量化** 独立主题（与原版黑金币安单机系统 UI 区分）：
 
-| 交易所 | 标签 |
-|--------|------|
-| Binance | `#币安15x` |
-| DeepCoin | `#深币20x` |
-| OKX | `#OKX20x` |
-| Gate | `#Gate20x` |
+| 交易所 | 标签 | 主题色 | 品牌 |
+|--------|------|--------|------|
+| Binance | `#币安20x` | 靛蓝 🔷 | GEMINI量化 · 币安合约实盘引擎 |
+| DeepCoin | `#深币20x` | 翡翠绿 🟢 | GEMINI量化 · 深币 SWAP 实盘引擎 |
+| OKX | `#OKX20x` | 紫罗兰 🟣 | GEMINI量化 · OKX 合约实盘引擎 |
+| Gate | `#Gate20x` | 琥珀橙 🟠 | GEMINI量化 · Gate 合约实盘引擎 |
+
+前端 API 绑定页交易所卡片使用同色主题（`exchange-picker-{exchange}`），便于与原版系统视觉区分。
 
 **会推送：** `OPEN`、`CLOSE`、`CLOSE_TP3`、`CLOSE_PROTECT`、`STARTUP`、`STARTUP_FAIL`、`FORCE_ALIGN`、`ADJUST`、`MANUAL_ADJUST`、`DEFENSE_HEAL_FAIL`、`INSUFFICIENT_BALANCE`、`LOCK_TIMEOUT`、`TP_RETRY_FAIL`、`API_OFFLINE`、`SENTINEL_ERROR`、`severity=critical`
 

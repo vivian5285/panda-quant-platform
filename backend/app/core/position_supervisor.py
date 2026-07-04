@@ -12,6 +12,7 @@ from app.core.binance_smart_defense import BinanceSmartDefenseMixin
 from app.core.position_manager import PositionManager
 from app.core.symbol_precision import normalize_tv_targets, round_price, round_quantity, PRICE_TICK
 from app.config import get_settings
+from app.services.trading_alerts import resolve_exchange_theme
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -63,6 +64,7 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
         self._sentinel_error_notified = False
 
         self.symbol = getattr(client, "trading_symbol", settings.SYMBOL)
+        self.exchange_id = getattr(client, "exchange_id", "binance")
         self.leverage = int(getattr(client, "trading_leverage", settings.LEVERAGE))
         self.monitoring = False
         self._lock = threading.Lock()
@@ -318,7 +320,9 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
             )
             self.trade_opened_at = time.time()
             slip = (entry_price - self.tv_price) if action == "LONG" else (self.tv_price - entry_price)
+            theme = resolve_exchange_theme(self.exchange_id)
             detail = {
+                "exchange": self.exchange_id,
                 "regime": self.regime,
                 "side": action,
                 "qty": real_qty,
@@ -331,11 +335,12 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
                 "leverage": self.leverage,
                 "atr": self.current_atr,
             }
+            open_title = f"{theme['accent']} GEMINI开仓 · {theme['label']} 档位{self.regime}"
             self._log("OPEN", f"🔶 战神出击：{action} {real_qty} ETH @ {entry_price} | 滑点 {slip:+.2f}", detail)
             self._alert(
                 "info", "OPEN",
-                "🔶 战神出击：币安大级别阵地建立",
-                f"{action} {real_qty} ETH @ {entry_price} | 滑点 {slip:+.2f} | TP {self.tv_tps} | ATR {self.current_atr}",
+                open_title,
+                f"{action} {real_qty} ETH @ {entry_price} | 滑点 {slip:+.2f} | TP {self.tv_tps} | ATR {self.current_atr} | {theme['leverage']}×",
                 detail,
             )
             self._protect_and_monitor(real_qty, entry_price)

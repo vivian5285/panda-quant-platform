@@ -1,4 +1,4 @@
-"""DingTalk trading alerts — per-exchange themes for Gemini multi-user live trading."""
+"""DingTalk trading alerts — per-exchange GEMINI themes (distinct from legacy black+gold Binance UI)."""
 
 from __future__ import annotations
 
@@ -6,34 +6,47 @@ import json
 
 from app.services.dingtalk_notify import push_dingtalk
 
+# GEMINI 量化：各交易所独立 UI 主题（靛蓝/紫罗兰/琥珀/翡翠），与原版黑金币安系统区分
 EXCHANGE_THEMES: dict[str, dict] = {
     "binance": {
         "label": "币安",
         "symbol": "ETHUSDT",
-        "leverage": 15,
-        "brand": "Quant AI · 币安黄金趋势大波段引擎",
-        "tag": "#币安15x",
+        "leverage": 20,
+        "brand": "GEMINI量化 · 币安合约实盘引擎",
+        "tag": "#币安20x",
+        "accent": "🔷",
+        "palette": "靛蓝",
+        "header": "━━ 🔷 GEMINI量化 · 币安 ━━",
     },
     "deepcoin": {
         "label": "深币",
         "symbol": "ETHUSDT",
         "leverage": 20,
-        "brand": "Quant AI · 深币黄金趋势大波段引擎",
+        "brand": "GEMINI量化 · 深币 SWAP 实盘引擎",
         "tag": "#深币20x",
+        "accent": "🟢",
+        "palette": "翡翠绿",
+        "header": "━━ 🟢 GEMINI量化 · 深币 ━━",
     },
     "okx": {
         "label": "OKX",
         "symbol": "ETHUSDT",
         "leverage": 20,
-        "brand": "Quant AI · OKX 趋势引擎",
+        "brand": "GEMINI量化 · OKX 合约实盘引擎",
         "tag": "#OKX20x",
+        "accent": "🟣",
+        "palette": "紫罗兰",
+        "header": "━━ 🟣 GEMINI量化 · OKX ━━",
     },
     "gate": {
         "label": "Gate",
         "symbol": "ETHUSDT",
         "leverage": 20,
-        "brand": "Quant AI · Gate 趋势引擎",
+        "brand": "GEMINI量化 · Gate 合约实盘引擎",
         "tag": "#Gate20x",
+        "accent": "🟠",
+        "palette": "琥珀橙",
+        "header": "━━ 🟠 GEMINI量化 · Gate ━━",
     },
 }
 
@@ -96,7 +109,36 @@ DINGTALK_VERBOSE_EXCLUDED = frozenset({
 
 def resolve_exchange_theme(exchange: str | None = None) -> dict:
     key = (exchange or "binance").strip().lower()
+    if key == "gateio":
+        key = "gate"
     return EXCHANGE_THEMES.get(key, DEFAULT_THEME)
+
+
+def format_trading_alert_body(
+    *,
+    theme: dict,
+    severity: str,
+    alert_type: str,
+    title: str,
+    message: str,
+    user_id: int,
+    uid: str,
+    display: str,
+    detail: dict | None = None,
+) -> str:
+    sev = {"critical": "🚨", "warning": "⚠️", "info": "ℹ️"}.get(severity, "📢")
+    type_label = ALERT_TYPE_TAGS.get(alert_type, alert_type)
+    header = (
+        f"{theme['header']}\n"
+        f"{sev} **{theme['tag']} [{type_label}]** "
+        f"{theme['accent']} {theme['label']} {theme['symbol']} · **{theme['leverage']}×** · {theme['palette']}\n\n"
+        f"**用户**: {display} (UID {uid} / id {user_id})\n\n"
+        f"**{title}**\n\n{message}\n\n"
+    )
+    if detail:
+        header += f"```\n{json.dumps(detail, ensure_ascii=False, indent=2)}\n```\n\n"
+    header += f"*{theme['brand']} · GEMINI VPS 实盘*"
+    return header
 
 
 def push_trading_alert(
@@ -112,18 +154,19 @@ def push_trading_alert(
 ) -> None:
     ex = exchange or (detail or {}).get("exchange")
     theme = resolve_exchange_theme(ex)
-    sev = {"critical": "🚨", "warning": "⚠️", "info": "ℹ️"}.get(severity, "📢")
-    type_label = ALERT_TYPE_TAGS.get(alert_type, alert_type)
-    header = (
-        f"{sev} **{theme['tag']} [{type_label}]** "
-        f"{theme['label']} {theme['symbol']} · **{theme['leverage']}×**\n\n"
-        f"**用户**: {display} (UID {uid} / id {user_id})\n\n"
-        f"**{title}**\n\n{message}\n\n"
+    body = format_trading_alert_body(
+        theme=theme,
+        severity=severity,
+        alert_type=alert_type,
+        title=title,
+        message=message,
+        user_id=user_id,
+        uid=uid,
+        display=display,
+        detail=detail,
     )
-    if detail:
-        header += f"```\n{json.dumps(detail, ensure_ascii=False, indent=2)}\n```\n\n"
-    header += f"*{theme['brand']} · GEMINI VPS 实盘*"
-    push_dingtalk(f"{theme['tag']} [{type_label}] {title}", header)
+    type_label = ALERT_TYPE_TAGS.get(alert_type, alert_type)
+    push_dingtalk(f"{theme['tag']} [{type_label}] {title}", body)
 
 
 def should_push_trading_dingtalk(alert_type: str, severity: str) -> bool:

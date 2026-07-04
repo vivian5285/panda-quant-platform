@@ -644,7 +644,7 @@ export default function ApiManage() {
                   <button
                     key={id}
                     type="button"
-                    className={`exchange-picker-card ${selected ? 'exchange-picker-card-active' : ''} ${!selectable ? 'exchange-picker-card-disabled' : ''}`}
+                    className={`exchange-picker-card exchange-picker-${id} ${selected ? 'exchange-picker-card-active' : ''} ${!selectable ? 'exchange-picker-card-disabled' : ''}`}
                     disabled={!selectable}
                     onClick={() => {
                       if (!selectable) return

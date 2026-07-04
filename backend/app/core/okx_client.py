@@ -25,6 +25,8 @@ BASE_URL = "https://www.okx.com"
 
 
 class OkxClient:
+    exchange_id = "okx"
+
     def __init__(self, api_key: str, api_secret: str, passphrase: str = "", user_id: int = 0):
         self.api_key = api_key or ""
         self.api_secret = api_secret or ""

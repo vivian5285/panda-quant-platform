@@ -13,6 +13,8 @@ CLIENT_VERSION = "v13.4.6-flat-reconcile"
 
 
 class BinanceClient:
+    exchange_id = "binance"
+
     def __init__(self, api_key: str, api_secret: str, user_id: int):
         self.user_id = user_id
         self.api_key = api_key

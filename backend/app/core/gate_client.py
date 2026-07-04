@@ -22,6 +22,8 @@ BASE_URL = "https://fx-api.gateio.ws/api/v4"
 
 
 class GateClient:
+    exchange_id = "gate"
+
     def __init__(self, api_key: str, api_secret: str, user_id: int = 0):
         self.api_key = api_key or ""
         self.api_secret = api_secret or ""
