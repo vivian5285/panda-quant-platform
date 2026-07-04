@@ -673,6 +673,24 @@ export default function Admin() {
     }
   }
 
+  const toggleReferralOverride = async (allow: boolean, note?: string) => {
+    if (!selectedUserId) return
+    if (allow && !(note || '').trim()) {
+      toast.error(t('admin.referralOverrideNotePh'))
+      return
+    }
+    try {
+      setUserTradingCtrl(await adminApi.userTradingControl(selectedUserId, {
+        referral_invite_override: allow,
+        referral_override_note: allow ? note : '',
+      }))
+      toast.success(t('admin.referralOverrideAllow'))
+      load()
+    } catch {
+      toast.error(t('risk.updateFail'))
+    }
+  }
+
   const saveTemplateEdit = async () => {
     if (!editTemplate) return
     try {
@@ -1091,7 +1109,7 @@ export default function Admin() {
     runSettlement, confirm, addAddr, saveEditingAddr, uploadAddrQr, removeAddrQr, saveWithdrawThresholds,
     saveDepositWalletSettings, clearDepositWalletSettings,
     savePayoutSettings, completeWd,
-    setAdminConfirm, forceUserPause, forceCloseUser, setUserRisk, toggleSettlementDefer,
+    setAdminConfirm, forceUserPause, forceCloseUser, setUserRisk, toggleSettlementDefer, toggleReferralOverride,
     saveTemplateEdit, exportAuditCsv, saveSignalTemplate, testTemplate, reviewStrategy,
     exportUsersCsv, toggleUserSelect, toggleSelectAllUsers, runBatchNotify, runBatchPause,
     runWebhookTest, loadDispatchResults, renderDispatchUserResults,

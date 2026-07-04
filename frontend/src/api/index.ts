@@ -329,7 +329,14 @@ export const adminApi = {
   strategies: (status?: string) => api.get('/admin/strategies', { params: status ? { status } : {} }).then(r => r.data),
   reviewStrategy: (id: number, action: 'approve' | 'reject' | 'pause', note?: string) =>
     api.post(`/admin/strategies/${id}/review`, { action, note }).then(r => r.data),
-  userTradingControl: (userId: number, data?: { trading_paused?: boolean; risk_level?: string; settlement_fee_deferred?: boolean; settlement_defer_note?: string }) =>
+  userTradingControl: (userId: number, data?: {
+    trading_paused?: boolean
+    risk_level?: string
+    settlement_fee_deferred?: boolean
+    settlement_defer_note?: string
+    referral_invite_override?: boolean
+    referral_override_note?: string
+  }) =>
     data
       ? api.patch(`/admin/users/${userId}/trading-control`, data).then(r => r.data)
       : api.get(`/admin/users/${userId}/trading-control`).then(r => r.data),

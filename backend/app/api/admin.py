@@ -1436,6 +1436,8 @@ def admin_user_trading_control(
             raise HTTPException(400, "No pending settlement to defer")
         if want_defer and user.role == UserRole.ADMIN.value:
             raise HTTPException(400, "Cannot defer settlement for admin account")
+    if body.get("referral_invite_override") and not (body.get("referral_override_note") or "").strip():
+        raise HTTPException(400, "referral_override_note required when enabling invite override")
     try:
         ctrl = set_user_control(
             db,
@@ -1444,6 +1446,8 @@ def admin_user_trading_control(
             risk_level=body.get("risk_level") if "risk_level" in body else None,
             settlement_fee_deferred=body.get("settlement_fee_deferred") if "settlement_fee_deferred" in body else None,
             settlement_defer_note=body.get("settlement_defer_note") if "settlement_defer_note" in body else None,
+            referral_invite_override=body.get("referral_invite_override") if "referral_invite_override" in body else None,
+            referral_override_note=body.get("referral_override_note") if "referral_override_note" in body else None,
         )
     except ValueError:
         raise HTTPException(400, "Invalid risk_level")
@@ -1453,6 +1457,8 @@ def admin_user_trading_control(
     }
     if "settlement_fee_deferred" in body:
         audit_detail["settlement_fee_deferred"] = ctrl.get("settlement_fee_deferred")
+    if "referral_invite_override" in body:
+        audit_detail["referral_invite_override"] = ctrl.get("referral_invite_override")
     log_audit(
         db,
         "admin.trading_control",

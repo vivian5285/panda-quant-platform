@@ -222,7 +222,10 @@ def register(req: RegisterRequest, request: Request, db: Session = Depends(get_d
         referrer = resolve_referral_user(db, req.referral_code)
         if referrer:
             if user_credit_default_blocks_referral(db, referrer.id):
-                raise_i18n(400, "referral.referrer_credit_default")
+                from app.services.credit_control import referral_block_reason
+                rreason = referral_block_reason(db, referrer.id)
+                key = "referral.referrer_downline_credit_default" if rreason == "downline_credit_default" else "referral.referrer_credit_default"
+                raise_i18n(400, key)
             referrer_id = referrer.id
 
 

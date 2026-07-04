@@ -19,6 +19,8 @@ def _default_state() -> dict:
         "risk_level": "balanced",
         "settlement_fee_deferred": False,
         "settlement_defer_note": "",
+        "referral_invite_override": False,
+        "referral_override_note": "",
     }
 
 
@@ -38,6 +40,8 @@ def _parse(row: UserTradingState | None) -> dict:
         "risk_multiplier": RISK_MULTIPLIERS[level],
         "settlement_fee_deferred": bool(data.get("settlement_fee_deferred", False)),
         "settlement_defer_note": str(data.get("settlement_defer_note") or ""),
+        "referral_invite_override": bool(data.get("referral_invite_override", False)),
+        "referral_override_note": str(data.get("referral_override_note") or ""),
     }
 
 
@@ -54,6 +58,8 @@ def set_user_control(
     risk_level: str | None = None,
     settlement_fee_deferred: bool | None = None,
     settlement_defer_note: str | None = None,
+    referral_invite_override: bool | None = None,
+    referral_override_note: str | None = None,
 ) -> dict:
     row = db.query(UserTradingState).filter(UserTradingState.user_id == user_id).first()
     state = _parse(row)
@@ -70,11 +76,19 @@ def set_user_control(
             state["settlement_defer_note"] = ""
     if settlement_defer_note is not None:
         state["settlement_defer_note"] = settlement_defer_note[:500]
+    if referral_invite_override is not None:
+        state["referral_invite_override"] = referral_invite_override
+        if not referral_invite_override:
+            state["referral_override_note"] = ""
+    if referral_override_note is not None:
+        state["referral_override_note"] = referral_override_note[:500]
     payload = {
         "trading_paused": state["trading_paused"],
         "risk_level": state["risk_level"],
         "settlement_fee_deferred": state.get("settlement_fee_deferred", False),
         "settlement_defer_note": state.get("settlement_defer_note", ""),
+        "referral_invite_override": state.get("referral_invite_override", False),
+        "referral_override_note": state.get("referral_override_note", ""),
     }
     if row:
         row.state_json = json.dumps(payload)
@@ -119,7 +133,7 @@ def is_user_paused(db: Session, user_id: int) -> bool:
 
 def build_trading_control_response(db: Session, user) -> dict:
     from app.services.settlement import get_pending_settlement
-    from app.services.credit_control import user_trading_blocked_by_credit, user_is_credit_default
+    from app.services.credit_control import user_trading_blocked_by_credit, user_is_credit_default, referral_block_reason
 
     ctrl = get_user_control(db, user.id)
     pending = get_pending_settlement(db, user.id)
@@ -144,6 +158,9 @@ def build_trading_control_response(db: Session, user) -> dict:
         "settlement_fee_deferred": settlement_fee_deferred,
         "credit_default": user_is_credit_default(db, user.id),
         "family_credit_blocked": credit_reason == "family_credit_default",
+        "referral_blocked": bool(referral_block_reason(db, user.id)),
+        "referral_block_reason": referral_block_reason(db, user.id),
+        "referral_invite_override": bool(ctrl.get("referral_invite_override")),
         "effective_paused": ctrl["trading_paused"] or settlement_pause or global_paused,
         "pending_settlement": pending_out,
         "api_status": user.api_status,

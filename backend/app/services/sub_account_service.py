@@ -9,9 +9,9 @@ from sqlalchemy.orm import Session
 from app.core.binance_client import BinanceClient
 from app.core.exchange_factory import exchange_requires_passphrase, parse_exchange
 from app.core.okx_client import OkxClient
-from app.models import ExchangeAccountRegistry, User
+from app.models import ExchangeAccountRegistry, ExchangeSubAccountFiling, User
 from app.services.api_validation import validate_exchange_api
-from app.services.credit_control import is_master_uid_blocked
+from app.services.credit_control import is_filed_sub_uid_taken, is_master_uid_blocked
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,117 @@ def probe_trading_api_role(
     if client and hasattr(client, "get_exchange_uid"):
         return {"role": "unknown", "resolved_uid": client.get_exchange_uid()}
     return {"role": "unknown", "resolved_uid": None}
+
+
+def scan_master_sub_accounts(
+    exchange: str,
+    master_api_key: str,
+    master_api_secret: str,
+    master_passphrase: str = "",
+    user_id: int = 0,
+    *,
+    require_sub_list: bool = False,
+) -> dict:
+    """
+    Scan master API for UID + all sub-accounts (备案).
+    On Binance/OKX, require_sub_list=True enforces sub-account query permission.
+    """
+    ex = parse_exchange(exchange)
+    if ex is None:
+        return {"ok": False, "message_key": "api.unsupported_exchange"}
+
+    client = _master_client(ex, master_api_key, master_api_secret, master_passphrase, user_id)
+    if not client:
+        if ex in RELAXED_SUB_EXCHANGES:
+            conn = validate_exchange_api(
+                ex, master_api_key, master_api_secret, user_id, master_passphrase,
+                skip_trading_checks=True,
+            )
+            return {
+                "ok": bool(conn.get("valid")),
+                "uid": None,
+                "sub_accounts": [],
+                "strict": False,
+                "relaxed": True,
+            }
+        return {"ok": False, "message_key": "api.unsupported_exchange"}
+
+    resolved_uid = client.get_exchange_uid() if hasattr(client, "get_exchange_uid") else None
+    role_info = {}
+    if hasattr(client, "probe_trading_api_role"):
+        role_info = client.probe_trading_api_role()
+        if not resolved_uid:
+            resolved_uid = role_info.get("resolved_uid")
+
+    subs = client.list_sub_accounts() if hasattr(client, "list_sub_accounts") else []
+    can_list = bool(role_info.get("can_list_subs")) or (ex in STRICT_SUB_EXCHANGES and role_info.get("role") == "master")
+
+    if ex in STRICT_SUB_EXCHANGES and require_sub_list:
+        if role_info.get("role") == "sub":
+            return {
+                "ok": False,
+                "message_key": "api.sub_api_in_master_mode",
+                "uid": resolved_uid,
+                "sub_accounts": [],
+            }
+        if not can_list and not subs:
+            return {
+                "ok": False,
+                "message_key": "api.master_sub_perm_required",
+                "uid": resolved_uid,
+                "sub_accounts": [],
+            }
+
+    return {
+        "ok": True,
+        "uid": resolved_uid,
+        "sub_accounts": subs,
+        "strict": ex in STRICT_SUB_EXCHANGES,
+        "can_list_subs": can_list or bool(subs),
+    }
+
+
+def file_exchange_sub_accounts(
+    db: Session,
+    user_id: int,
+    exchange: str,
+    master_uid: str,
+    sub_accounts: list[dict],
+) -> int:
+    """备案主账户下扫描到的全部子 UID；返回备案条数。"""
+    master = _normalize_uid(master_uid)
+    if not master:
+        return 0
+    db.query(ExchangeSubAccountFiling).filter(
+        ExchangeSubAccountFiling.user_id == user_id,
+        ExchangeSubAccountFiling.exchange == exchange,
+        ExchangeSubAccountFiling.is_active.is_(True),
+    ).update({"is_active": False})
+
+    count = 0
+    for row in sub_accounts or []:
+        sub_uid = _normalize_uid(str(row.get("uid") or ""))
+        if not sub_uid:
+            continue
+        db.add(
+            ExchangeSubAccountFiling(
+                user_id=user_id,
+                exchange=exchange,
+                master_exchange_uid=master,
+                sub_exchange_uid=sub_uid,
+                sub_label=str(row.get("label") or sub_uid)[:128],
+                is_active=True,
+            )
+        )
+        count += 1
+    return count
+
+
+def deactivate_sub_account_filings(db: Session, user_id: int) -> None:
+    db.query(ExchangeSubAccountFiling).filter(
+        ExchangeSubAccountFiling.user_id == user_id,
+        ExchangeSubAccountFiling.is_active.is_(True),
+    ).update({"is_active": False})
 
 
 def _master_client(exchange: str, api_key: str, api_secret: str, passphrase: str, user_id: int):
@@ -252,6 +363,16 @@ def validate_sub_account_binding(
     if is_exchange_uid_taken(db, ex, sub_uid, exclude_user_id=user_id):
         return {"valid": False, "message_key": "api.exchange_uid_taken"}
 
+    if is_filed_sub_uid_taken(db, ex, sub_uid, exclude_user_id=user_id):
+        return {"valid": False, "message_key": "api.exchange_uid_taken"}
+
+    scan = scan_master_sub_accounts(
+        ex, master_api_key, master_api_secret, master_passphrase, user_id,
+        require_sub_list=True,
+    )
+    if not scan.get("ok"):
+        return {"valid": False, "message_key": scan.get("message_key") or "api.master_connect_failed"}
+
     ok, hint = _sub_belongs_to_master(
         ex, master_uid, sub_uid,
         master_api_key, master_api_secret, master_passphrase, user_id,
@@ -271,6 +392,8 @@ def validate_sub_account_binding(
     sub_result["exchange_uid"] = sub_uid
     sub_result["master_exchange_uid"] = master_uid
     sub_result["exchange"] = ex
+    sub_result["discovered_sub_accounts"] = scan.get("sub_accounts") or []
+    sub_result["filed_sub_count"] = len(sub_result["discovered_sub_accounts"])
     return sub_result
 
 
@@ -283,7 +406,7 @@ def validate_master_account_binding(
     passphrase: str = "",
     master_exchange_uid: str | None = None,
 ) -> dict:
-    """Master-only bind: validate trading API and record exchange UID."""
+    """Master bind: trading API + mandatory master UID scan/filing of all sub-accounts."""
     ex = parse_exchange(exchange)
     if ex is None:
         return {"valid": False, "message_key": "api.unsupported_exchange"}
@@ -292,25 +415,19 @@ def validate_master_account_binding(
     if not result.get("valid"):
         return result
 
-    role_info = probe_trading_api_role(ex, api_key, api_secret, passphrase, user_id)
-    resolved_uid = role_info.get("resolved_uid")
-    role = role_info.get("role")
-
-    if role == "sub":
+    scan = scan_master_sub_accounts(
+        ex, api_key, api_secret, passphrase, user_id, require_sub_list=True,
+    )
+    if not scan.get("ok"):
         return {
             "valid": False,
-            "message_key": "api.sub_api_in_master_mode",
-            "exchange_uid": resolved_uid,
+            "message_key": scan.get("message_key") or "api.master_sub_perm_required",
+            "exchange_uid": scan.get("uid"),
             "checks": result.get("checks") or [],
-            "checks_passed": result.get("checks_passed", 0),
-            "checks_total": result.get("checks_total", 0),
-            **{k: v for k, v in result.items() if k not in ("valid", "message_key")},
+            **{k: v for k, v in result.items() if k not in ("valid",)},
         }
 
-    client = _master_client(ex, api_key, api_secret, passphrase, user_id)
-    if not resolved_uid and client and hasattr(client, "get_exchange_uid"):
-        resolved_uid = client.get_exchange_uid()
-
+    resolved_uid = scan.get("uid")
     uid = _normalize_uid(master_exchange_uid) or _normalize_uid(resolved_uid)
     if not uid:
         return {"valid": False, "message_key": "api.master_uid_required"}
@@ -324,10 +441,11 @@ def validate_master_account_binding(
     if is_exchange_uid_taken(db, ex, uid, exclude_user_id=user_id):
         return {"valid": False, "message_key": "api.exchange_uid_taken"}
 
+    discovered = scan.get("sub_accounts") or []
     result["account_mode"] = "master"
     result["exchange_uid"] = uid
     result["master_exchange_uid"] = uid
     result["exchange"] = ex
-    if role == "unknown" and ex in STRICT_SUB_EXCHANGES and not role_info.get("can_list_subs"):
-        result["warning_key"] = "api.master_sub_perm_recommended"
+    result["discovered_sub_accounts"] = discovered
+    result["filed_sub_count"] = len(discovered)
     return result

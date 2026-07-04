@@ -15,7 +15,7 @@ export default function AdminUsersTab() {
     userFlagFilter, setUserFlagFilter, selectedUserId, userDetail, userTrades, userLogs,
     userDetailTab, setUserDetailTab, userReferralStats, userPrincipalHistory, userTradingCtrl, linkedExchangeAccounts,
     load, loadUserDetail, closeUserDetail, exportUsersCsv, toggleUserSelect, toggleSelectAllUsers,
-    runBatchNotify, runBatchPause, forceUserPause, forceCloseUser, setUserRisk, toggleSettlementDefer,
+    runBatchNotify, runBatchPause, forceUserPause, forceCloseUser, setUserRisk, toggleSettlementDefer, toggleReferralOverride,
     exportUserLogsCsv, setUserLogs,
   } = useAdmin()
 
@@ -71,6 +71,43 @@ export default function AdminUsersTab() {
             )}
             {linkedExchangeAccounts && !linkedExchangeAccounts.accounts?.length && userDetail.profile?.exchange_uid && (
               <div className="text-muted text-sm">{t('admin.linkedAccountsEmpty')}</div>
+            )}
+            {userTradingCtrl?.referral_blocked && !userTradingCtrl?.referral_invite_override && (
+              <div className="section-mt-md p-4 settlement-defer-panel">
+                <p className="text-sm-strong section-mb-xs">{t('admin.referralOverrideTitle')}</p>
+                <p className="text-sm text-muted section-mb-sm">{t('admin.referralOverrideHint')}</p>
+                <p className="text-sm text-red section-mb-sm">
+                  {userTradingCtrl?.referral_block_reason === 'downline_credit_default'
+                    ? t('referrals.downlineCreditDefaultBannerBody')
+                    : t('referrals.creditDefaultBannerBody')}
+                </p>
+                <input
+                  className="input section-mb-sm"
+                  placeholder={t('admin.referralOverrideNotePh')}
+                  id="referral-override-note"
+                />
+                <button
+                  className="btn btn-primary btn-sm"
+                  type="button"
+                  onClick={() => {
+                    const el = document.getElementById('referral-override-note') as HTMLInputElement | null
+                    toggleReferralOverride(true, el?.value || '')
+                  }}
+                >
+                  {t('admin.referralOverrideAllow')}
+                </button>
+              </div>
+            )}
+            {userTradingCtrl?.referral_invite_override && (
+              <div className="section-mt-sm">
+                <span className="badge badge-green">{t('admin.referralOverrideAllow')}</span>
+                {userTradingCtrl?.referral_override_note && (
+                  <p className="text-sm text-muted section-mt-xs">{userTradingCtrl.referral_override_note}</p>
+                )}
+                <button className="btn btn-ghost btn-sm section-mt-sm" type="button" onClick={() => toggleReferralOverride(false)}>
+                  {t('admin.referralOverrideRevoke')}
+                </button>
+              </div>
             )}
             {userTradingCtrl?.settlement_blocked && (
               <div className="section-mt-md p-4 settlement-defer-panel">

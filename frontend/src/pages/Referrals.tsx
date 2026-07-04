@@ -14,6 +14,13 @@ import DownlineLogsModal from '../components/DownlineLogsModal'
 
 type TabKey = 'overview' | 'l1' | 'l2' | 'commissions'
 
+function referralBlockCopy(t: (k: string) => string, reason?: string | null) {
+  if (reason === 'downline_credit_default') {
+    return { title: t('referrals.downlineCreditDefaultBannerTitle'), body: t('referrals.downlineCreditDefaultBannerBody') }
+  }
+  return { title: t('referrals.creditDefaultBannerTitle'), body: t('referrals.creditDefaultBannerBody') }
+}
+
 function settlementCell(u: any, t: (k: string) => string) {
   const fee = u.pending_perf_fee ?? 0
   if (fee > 0) {
@@ -186,12 +193,15 @@ export default function Referrals() {
     <Layout>
       <PageHeader title={t('referrals.title')} subtitle={t('referrals.subtitlePromo')} />
 
-      {data?.referral_blocked && (
-        <GlassCard className="p-4 section-mb-md referral-unpaid-banner">
-          <p className="text-sm-strong text-red section-mb-xs">{t('referrals.creditDefaultBannerTitle')}</p>
-          <p className="text-sm text-muted">{t('referrals.creditDefaultBannerBody')}</p>
-        </GlassCard>
-      )}
+      {data?.referral_blocked && !data?.referral_invite_override && (() => {
+        const copy = referralBlockCopy(t, data.referral_block_reason)
+        return (
+          <GlassCard className="p-4 section-mb-md referral-unpaid-banner">
+            <p className="text-sm-strong text-red section-mb-xs">{copy.title}</p>
+            <p className="text-sm text-muted">{copy.body}</p>
+          </GlassCard>
+        )
+      })()}
 
       <GlassCard className="p-4 section-mb-md invite-promo-banner">
         <div className="invite-promo-banner-inner">

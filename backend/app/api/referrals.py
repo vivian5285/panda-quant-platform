@@ -104,18 +104,20 @@ def _assert_downline_access(db: Session, referrer: User, target_id: int) -> tupl
 
 @router.get("/referrals/invite", response_model=ReferralInviteOut)
 def referral_invite(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    from app.services.credit_control import user_credit_default_blocks_referral
+    from app.services.credit_control import referral_block_reason
 
     code = canonical_referral_code(user.referral_code)
-    blocked = user_credit_default_blocks_referral(db, user.id)
+    reason = referral_block_reason(db, user.id)
+    ctrl = get_user_control(db, user.id)
     return ReferralInviteOut(
         referral_code=code,
         invite_url=build_invite_url(user.referral_code, user.uid),
         uid=user.uid,
         display_name=display_name(user),
         commission=_commission_out(),
-        referral_blocked=blocked,
-        referral_block_reason="referral.credit_default_blocked" if blocked else None,
+        referral_blocked=reason is not None,
+        referral_block_reason=reason,
+        referral_invite_override=bool(ctrl.get("referral_invite_override")),
     )
 
 
@@ -147,8 +149,11 @@ def referral_summary(user: User = Depends(get_current_user), db: Session = Depen
     all_downline = l1_out + l2_out
     unpaid = [u for u in all_downline if (u.pending_perf_fee or 0) > 0]
 
-    from app.services.credit_control import user_credit_default_blocks_referral
-    blocked = user_credit_default_blocks_referral(db, user.id)
+    from app.services.credit_control import referral_block_reason
+    from app.services.trading_control import get_user_control
+
+    blocked = referral_block_reason(db, user.id)
+    ctrl = get_user_control(db, user.id)
 
     return ReferralSummary(
         referral_code=canonical_referral_code(user.referral_code),
@@ -163,8 +168,9 @@ def referral_summary(user: User = Depends(get_current_user), db: Session = Depen
         unpaid_fee_count=len(unpaid),
         total_unpaid_perf_fee=round(sum(u.pending_perf_fee for u in unpaid), 2),
         total_expected_reward=round(sum(u.expected_reward for u in unpaid), 2),
-        referral_blocked=blocked,
-        referral_block_reason="referral.credit_default_blocked" if blocked else None,
+        referral_blocked=blocked is not None,
+        referral_block_reason=blocked,
+        referral_invite_override=bool(ctrl.get("referral_invite_override")),
         l1_users=l1_out, l2_users=l2_out,
     )
 

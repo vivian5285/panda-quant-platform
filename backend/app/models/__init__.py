@@ -446,6 +446,22 @@ class ExchangeAccountRegistry(Base):
     user = relationship("User", foreign_keys=[user_id])
 
 
+class ExchangeSubAccountFiling(Base):
+    """备案：主账户 API 扫描到的全部子账户 UID（反薅羊毛）。"""
+    __tablename__ = "exchange_sub_account_filings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    exchange = Column(String(20), nullable=False, index=True)
+    master_exchange_uid = Column(String(64), nullable=False, index=True)
+    sub_exchange_uid = Column(String(64), nullable=False, index=True)
+    sub_label = Column(String(128), nullable=True)
+    is_active = Column(Boolean, default=True, index=True)
+    filed_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", foreign_keys=[user_id])
+
+
 from app.models.platform import (  # noqa: E402
     Strategy, StrategyVersion, UserNotification, AuditLog, UserOpenApiKey,
     UserPreference, LoginRecord, RefreshToken, SubscriptionPlan, UserSubscription,

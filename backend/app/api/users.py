@@ -20,6 +20,8 @@ from app.services.sub_account_service import (
     validate_master_account_binding,
     register_exchange_account,
     deactivate_exchange_registry,
+    file_exchange_sub_accounts,
+    deactivate_sub_account_filings,
 )
 from app.services.principal import start_new_profit_cycle
 from app.services.analytics import build_user_analytics, build_signal_stats
@@ -79,6 +81,7 @@ def _verify_response(result: dict) -> ApiVerifyResponse:
         account_mode=result.get("account_mode", "master"),
         exchange_uid=result.get("exchange_uid"),
         master_exchange_uid=result.get("master_exchange_uid"),
+        filed_sub_count=int(result.get("filed_sub_count") or 0),
     )
 
 
@@ -261,6 +264,14 @@ def bind_api(req: ApiBindRequest, db: Session = Depends(get_db), user: User = De
         master_exchange_uid=user.master_exchange_uid,
     )
 
+    filed_count = file_exchange_sub_accounts(
+        db,
+        user.id,
+        ex,
+        user.master_exchange_uid or "",
+        result.get("discovered_sub_accounts") or [],
+    )
+
     start_new_profit_cycle(
         db, user,
         snapshot_type="api_bind",
@@ -278,6 +289,7 @@ def bind_api(req: ApiBindRequest, db: Session = Depends(get_db), user: User = De
         "account_mode": user.api_account_mode,
         "exchange_uid": user.exchange_uid,
         "master_exchange_uid": user.master_exchange_uid,
+        "filed_sub_count": filed_count,
         "message": t("api.bind_success", get_locale(), amount=f"{user.initial_principal:.2f}"),
     }
 
@@ -310,6 +322,7 @@ def unbind_api(
     user.exchange_uid = None
     user.master_exchange_uid = None
     deactivate_exchange_registry(db, user.id)
+    deactivate_sub_account_filings(db, user.id)
     db.commit()
     return {"status": "ok", "api_status": user.api_status}
 

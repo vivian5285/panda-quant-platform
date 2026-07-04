@@ -118,15 +118,27 @@ MESSAGES: dict[str, dict[str, str]] = {
         "zh": "建议主账户 API 开启子账户查询权限，以便平台核验关联关系",
         "en": "Enable sub-account query on master API so the platform can verify linkage",
     },
+    "api.master_sub_perm_required": {
+        "zh": "主账户 API 须开启子账户查询权限，绑定时需扫描备案全部子账户 UID",
+        "en": "Master API must allow sub-account queries — all sub UIDs are scanned and filed at bind time",
+    },
 
     # Referral credit default
     "referral.referrer_credit_default": {
         "zh": "邀请人存在未缴纳绩效费，邀请码暂不可用",
         "en": "Referrer has unpaid performance fee — invite code unavailable",
     },
+    "referral.referrer_downline_credit_default": {
+        "zh": "邀请人推广线下级存在未缴绩效费，邀请码暂不可用",
+        "en": "Referrer's downline has unpaid performance fees — invite code unavailable",
+    },
     "referral.credit_default_blocked": {
         "zh": "您有未缴纳的绩效服务费，推广分享已暂停，缴清后自动恢复",
         "en": "Unpaid performance fee — referral sharing paused until payment is cleared",
+    },
+    "referral.downline_credit_default_blocked": {
+        "zh": "您推广线下级有未缴绩效费，整条推广线暂停拉新，下级缴清或管理员特批后可恢复",
+        "en": "A downline user has unpaid performance fees — referrals paused until they pay or admin approves",
     },
 
     # Wallet

@@ -39,6 +39,7 @@ type VerifyResult = {
   open_orders_count?: number
   open_positions_count?: number
   hedge_mode?: boolean | null
+  filed_sub_count?: number
 }
 
 const BINANCE_CHECK_IDS = [
@@ -417,6 +418,11 @@ export default function ApiManage() {
         <p className={`api-checklist-footer ${v.valid ? 'ok' : 'fail'}`}>
           {v.valid ? t('api.allChecksPass') : t('api.checksPending')}
         </p>
+        {(v as VerifyResult).filed_sub_count != null && (v as VerifyResult).filed_sub_count! > 0 && (
+          <p className="text-muted text-sm section-mt-sm">
+            {t('api.filedSubCount', { count: String((v as VerifyResult).filed_sub_count) })}
+          </p>
+        )}
       </div>
     )
   }

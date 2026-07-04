@@ -27,6 +27,7 @@ type Props = {
   onDownloadPoster?: () => void
   onClosePoster?: () => void
   referralBlocked?: boolean
+  referralBlockReason?: string | null
 }
 
 export default function InviteSharePanel({
@@ -43,6 +44,7 @@ export default function InviteSharePanel({
   onDownloadPoster,
   onClosePoster,
   referralBlocked = false,
+  referralBlockReason = null,
 }: Props) {
   const { t } = useTranslation()
   const [qrUrl, setQrUrl] = useState('')
@@ -71,8 +73,16 @@ export default function InviteSharePanel({
         <div className="invite-share-body">
           {referralBlocked && (
             <div className="p-4 section-mb-sm referral-unpaid-banner">
-              <p className="text-sm-strong text-red section-mb-xs">{t('referrals.creditDefaultBannerTitle')}</p>
-              <p className="text-sm text-muted">{t('referrals.creditDefaultBannerBody')}</p>
+              <p className="text-sm-strong text-red section-mb-xs">
+                {referralBlockReason === 'downline_credit_default'
+                  ? t('referrals.downlineCreditDefaultBannerTitle')
+                  : t('referrals.creditDefaultBannerTitle')}
+              </p>
+              <p className="text-sm text-muted">
+                {referralBlockReason === 'downline_credit_default'
+                  ? t('referrals.downlineCreditDefaultBannerBody')
+                  : t('referrals.creditDefaultBannerBody')}
+              </p>
             </div>
           )}
           <div className="invite-share-main">

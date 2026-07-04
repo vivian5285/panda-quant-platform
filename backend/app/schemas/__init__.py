@@ -247,6 +247,7 @@ class ApiVerifyResponse(BaseModel):
     account_mode: str = "master"
     exchange_uid: Optional[str] = None
     master_exchange_uid: Optional[str] = None
+    filed_sub_count: int = 0
 
 
 class PrincipalSnapshotOut(BaseModel):
@@ -396,6 +397,7 @@ class ReferralInviteOut(BaseModel):
     commission: ReferralCommissionOut
     referral_blocked: bool = False
     referral_block_reason: Optional[str] = None
+    referral_invite_override: bool = False
 
 
 class ReferralSummary(BaseModel):
@@ -416,6 +418,7 @@ class ReferralSummary(BaseModel):
     total_expected_reward: float = 0.0
     referral_blocked: bool = False
     referral_block_reason: Optional[str] = None
+    referral_invite_override: bool = False
     l1_users: list[ReferralUserOut]
     l2_users: list[ReferralUserOut]
 
