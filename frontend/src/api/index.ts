@@ -297,6 +297,9 @@ export const adminApi = {
   dingtalkSettings: () => api.get('/admin/dingtalk/settings').then(r => r.data),
   updateDingtalkSettings: (data: { webhook?: string; secret?: string; clear?: boolean }) =>
     api.patch('/admin/dingtalk/settings', data).then(r => r.data),
+  webhookSettings: () => api.get('/admin/webhook/settings').then(r => r.data),
+  updateWebhookSettings: (data: { secret?: string; clear?: boolean }) =>
+    api.patch('/admin/webhook/settings', data).then(r => r.data),
   chainRpcSettings: () => api.get('/admin/chain-rpc/settings').then(r => r.data),
   updateChainRpcSettings: (data: {
     rpc_urls?: Record<string, string>

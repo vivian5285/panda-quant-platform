@@ -13,6 +13,7 @@ export default function AdminSystemTab() {
     tradeLogs, exportTradeLogsCsv, orders, formatOrderUser, startupAudit, setTab,
     adminPwdDraft, setAdminPwdDraft, changeAdminPassword,
     platformPublicSettings, platformPublicDraft, setPlatformPublicDraft, savePlatformPublicSettings,
+    webhookSettings, webhookSecretDraft, setWebhookSecretDraft, saveWebhookSettings, clearWebhookSettings,
   } = useAdmin()
   const [expandedLog, setExpandedLog] = useState<number | null>(null)
 
@@ -164,6 +165,63 @@ export default function AdminSystemTab() {
               ))}
             </tbody>
           </table>
+        </div>
+      </GlassCard>
+      <GlassCard className="p-6 section-mb-lg webhook-settings-card">
+        <h3 className="panel-title-sm mb-md">{t('admin.webhookSettingsTitle')}</h3>
+        <p className="text-muted text-sm section-mb-sm">{t('admin.webhookSettingsHint')}</p>
+        <p className={`text-xs section-mb-sm ${webhookSettings?.configured && !webhookSettings?.insecure ? 'text-green' : 'text-red'}`}>
+          {webhookSettings?.configured
+            ? webhookSettings.insecure
+              ? t('admin.webhookSecretInsecure')
+              : `${t('admin.webhookSecretConfigured')}${webhookSettings.secret_preview ? ` · ${webhookSettings.secret_preview}` : ''}${webhookSettings.source ? ` (${webhookSettings.source === 'runtime' ? t('admin.depositSourceRuntime') : t('admin.depositSourceEnv')})` : ''}`
+            : t('admin.webhookSecretMissing')}
+        </p>
+        {webhookSettings?.webhook_url && (
+          <div className="section-mb-sm">
+            <p className="text-sm-strong section-mb-xs">{t('admin.webhookUrlTitle')}</p>
+            <code className="webhook-url-display">{webhookSettings.webhook_url}</code>
+            <p className="text-muted form-hint-sm">{t('admin.webhookUrlHint')}</p>
+          </div>
+        )}
+        <form onSubmit={saveWebhookSettings} className="form-stack section-mb-md">
+          <div className="form-field">
+            <label className="form-label">{t('admin.webhookSecretLabel')}</label>
+            <input
+              className="input"
+              type="password"
+              autoComplete="new-password"
+              placeholder={t('admin.webhookSecretPh')}
+              value={webhookSecretDraft}
+              onChange={e => setWebhookSecretDraft(e.target.value)}
+            />
+            <p className="text-muted form-hint-sm">{t('admin.webhookSecretFieldHint', { min: webhookSettings?.min_length || 12 })}</p>
+          </div>
+          <div className="flex-gap-sm flex-wrap">
+            <button className="btn btn-primary btn-sm" type="submit" disabled={!webhookSecretDraft.trim()}>{t('common.save')}</button>
+            {webhookSettings?.configured && (
+              <button className="btn btn-ghost btn-sm" type="button" onClick={clearWebhookSettings}>{t('admin.webhookSecretClear')}</button>
+            )}
+          </div>
+        </form>
+        <div className="webhook-tv-guide">
+          <p className="text-sm-strong section-mb-xs">{t('admin.webhookTvGuideTitle')}</p>
+          <p className="text-muted text-xs section-mb-sm">{t('admin.webhookTvGuideHint')}</p>
+          <ul className="webhook-tv-field-list text-xs">
+            <li><strong>LONG / SHORT</strong> — {t('admin.webhookTvFieldEntry')}</li>
+            <li><strong>CLOSE_TP3</strong> — {t('admin.webhookTvFieldTp3')}</li>
+            <li><strong>CLOSE_PROTECT</strong> — {t('admin.webhookTvFieldProtect')}</li>
+          </ul>
+          <pre className="webhook-tv-sample input-mono text-xs section-mt-sm">{`{
+  "action": "LONG",
+  "secret": "<${t('admin.webhookTvSampleSecret')}>",
+  "price": 3500,
+  "regime": 1,
+  "atr": 12.5,
+  "tv_tp1": 3600,
+  "tv_tp2": 3700,
+  "tv_tp3": 3800
+}`}</pre>
         </div>
       </GlassCard>
       <GlassCard className="p-6 section-mb-lg">

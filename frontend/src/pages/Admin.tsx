@@ -60,7 +60,7 @@ export default function Admin() {
   const [selectedUserIds, setSelectedUserIds] = useState<number[]>([])
   const [batchNotifyTitle, setBatchNotifyTitle] = useState('')
   const [batchNotifyMessage, setBatchNotifyMessage] = useState('')
-  const [webhookPayload, setWebhookPayload] = useState('{\n  "strategy_id": "gemini_eth_v3",\n  "action": "LONG",\n  "regime": 1,\n  "price": 3500\n}')
+  const [webhookPayload, setWebhookPayload] = useState('{\n  "action": "LONG",\n  "secret": "",\n  "price": 3500,\n  "regime": 1,\n  "atr": 12.5,\n  "tv_tp1": 3600,\n  "tv_tp2": 3700,\n  "tv_tp3": 3800\n}')
   const [selectedDispatchId, setSelectedDispatchId] = useState<number | null>(null)
   const [dispatchUserResults, setDispatchUserResults] = useState<any[]>([])
   const [dispatchResultsLoading, setDispatchResultsLoading] = useState(false)
@@ -116,6 +116,16 @@ export default function Admin() {
   const [walletOverviewLoading, setWalletOverviewLoading] = useState(false)
   const [dingtalkSettings, setDingtalkSettings] = useState<{ configured: boolean; has_secret: boolean; source?: string } | null>(null)
   const [dingtalkDraft, setDingtalkDraft] = useState({ webhook: '', secret: '' })
+  const [webhookSettings, setWebhookSettings] = useState<{
+    configured: boolean
+    secret_length: number
+    secret_preview: string
+    source?: string
+    webhook_url: string
+    insecure: boolean
+    min_length: number
+  } | null>(null)
+  const [webhookSecretDraft, setWebhookSecretDraft] = useState('')
   const [platformPublicSettings, setPlatformPublicSettings] = useState<any>(null)
   const [platformPublicDraft, setPlatformPublicDraft] = useState({ enabled_exchanges: ['binance'] as string[], support_telegram: '' })
   const [chainRpcSettings, setChainRpcSettings] = useState<any>(null)
@@ -212,6 +222,7 @@ export default function Admin() {
     setSweepGasDraft,
     setDingtalkSettings,
     setDingtalkDraft,
+    setWebhookSettings,
     setChainRpcSettings,
     setChainRpcDraft,
     setSettlementDeposits,
@@ -468,6 +479,33 @@ export default function Admin() {
       load()
     } catch (err: any) {
       toast.error(err.response?.data?.detail || t('admin.dingtalkFail'))
+    }
+  }
+
+  const saveWebhookSettings = async (e: React.FormEvent) => {
+    e.preventDefault()
+    try {
+      const res = await adminApi.updateWebhookSettings({
+        secret: webhookSecretDraft.trim() || undefined,
+      })
+      setWebhookSettings(res)
+      setWebhookSecretDraft('')
+      toast.success(t('admin.webhookSecretSaved'))
+      load()
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('admin.webhookSecretFail'))
+    }
+  }
+
+  const clearWebhookSettings = async () => {
+    try {
+      const res = await adminApi.updateWebhookSettings({ clear: true })
+      setWebhookSettings(res)
+      setWebhookSecretDraft('')
+      toast.success(t('admin.webhookSecretCleared'))
+      load()
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('admin.webhookSecretFail'))
     }
   }
 
@@ -1183,6 +1221,8 @@ export default function Admin() {
     saveSweepSettings, runSweepNow,
     walletOverview, walletOverviewLoading, refreshWalletOverview,
     dingtalkSettings, dingtalkDraft, setDingtalkDraft,
+    webhookSettings, webhookSecretDraft, setWebhookSecretDraft,
+    saveWebhookSettings, clearWebhookSettings,
     platformPublicSettings, platformPublicDraft, setPlatformPublicDraft, savePlatformPublicSettings,
     chainRpcSettings, chainRpcDraft, setChainRpcDraft,
     adminPwdDraft, setAdminPwdDraft,

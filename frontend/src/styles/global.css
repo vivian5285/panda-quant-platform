@@ -4081,6 +4081,24 @@ html[lang="zh-CN"] .framer-logo-text strong {
 .mono-address { font-size: 11px; font-family: ui-monospace, monospace; word-break: break-all; }
 .mono-address-sm { font-size: 10px; font-family: ui-monospace, monospace; }
 .input-mono { font-family: ui-monospace, monospace; font-size: 12px; }
+.webhook-url-display {
+  display: block;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--surface-2, rgba(0,0,0,.04));
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+.webhook-tv-field-list { margin: 0; padding-left: 1.25rem; }
+.webhook-tv-field-list li { margin-bottom: 4px; }
+.webhook-tv-sample {
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--surface-2, rgba(0,0,0,.04));
+  overflow-x: auto;
+  margin: 0;
+}
 .input-compact { font-size: 11px; padding: 4px 8px; }
 
 .chart-h-sm { height: 260px; }

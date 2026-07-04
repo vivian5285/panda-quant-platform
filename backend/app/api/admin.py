@@ -16,7 +16,8 @@ from app.schemas import (
     DepositSweepSettingsOut, DepositSweepSettingsUpdate, DepositSweepLogOut,
     WalletOverviewOut,
     WebhookReceiveLogOut, WebhookReceiveLogDetailOut,
-    DingTalkSettingsOut, DingTalkSettingsUpdate, ChainRpcSettingsOut, ChainRpcSettingsUpdate, AdminPasswordChange,
+    DingTalkSettingsOut, DingTalkSettingsUpdate, WebhookSettingsOut, WebhookSettingsUpdate,
+    ChainRpcSettingsOut, ChainRpcSettingsUpdate, AdminPasswordChange,
     PlatformPublicSettingsOut, PlatformPublicSettingsUpdate,
     AdminSettlementDepositOut, AdminSettlementAppealOut, SettlementAppealReview,
     DepositMonitorStatusOut, AdminSettlementSummaryOut,
@@ -48,6 +49,7 @@ from app.services.deposit_secrets import (
 )
 from app.services.user_deposit_wallet import backfill_all_user_deposit_addresses
 from app.services.dingtalk_secrets import get_dingtalk_settings, update_dingtalk_settings
+from app.services.webhook_secrets import get_webhook_settings, update_webhook_settings
 from app.services.chain_rpc_config import get_chain_rpc_settings, update_chain_rpc_settings
 from app.services.settlement_deposit_log import build_admin_deposit_row, build_admin_appeal_row
 from app.services.settlement_appeal import approve_payment_appeal, reject_payment_appeal
@@ -1160,6 +1162,34 @@ def admin_update_dingtalk_settings(
         actor_id=admin.id,
         resource_type="platform_settings",
         resource_id="dingtalk",
+        detail={"configured": updated.get("configured"), "cleared": req.clear},
+        request=request,
+    )
+    return updated
+
+
+@router.get("/webhook/settings", response_model=WebhookSettingsOut)
+def admin_webhook_settings(admin=Depends(get_admin_user)):
+    return get_webhook_settings()
+
+
+@router.patch("/webhook/settings", response_model=WebhookSettingsOut)
+def admin_update_webhook_settings(
+    req: WebhookSettingsUpdate,
+    request: Request,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        updated = update_webhook_settings(secret=req.secret, clear=req.clear)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    log_audit(
+        db,
+        "webhook_settings.update",
+        actor_id=admin.id,
+        resource_type="platform_settings",
+        resource_id="webhook",
         detail={"configured": updated.get("configured"), "cleared": req.clear},
         request=request,
     )

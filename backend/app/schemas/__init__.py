@@ -605,6 +605,21 @@ class DingTalkSettingsUpdate(BaseModel):
     clear: bool = False
 
 
+class WebhookSettingsOut(BaseModel):
+    configured: bool = False
+    secret_length: int = 0
+    secret_preview: str = ""
+    source: Optional[str] = None
+    webhook_url: str = ""
+    insecure: bool = True
+    min_length: int = 12
+
+
+class WebhookSettingsUpdate(BaseModel):
+    secret: Optional[str] = None
+    clear: bool = False
+
+
 class PlatformPublicSettingsOut(BaseModel):
     enabled_exchanges: list[str]
     all_exchanges: list[str]

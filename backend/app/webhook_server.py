@@ -5,6 +5,7 @@ import time
 from flask import Flask, request, jsonify
 
 from app.config import get_settings
+from app.services.webhook_secrets import get_webhook_secret
 from app.services.webhook_guard import check_webhook_access, validate_signal_payload, _client_ip
 from app.services.webhook_payload import parse_webhook_payload
 
@@ -135,7 +136,7 @@ def webhook():
         return jsonify({"status": "error", "message": "Empty payload"}), 400
 
     secret = str(data.get("secret", "")).strip()
-    if secret != get_settings().WEBHOOK_SECRET:
+    if secret != get_webhook_secret():
         _log_reject_async(
             payload=data,
             event_status="rejected",

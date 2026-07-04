@@ -8,30 +8,22 @@ from app.config import get_settings
 from app.models import Trade, User, PlatformDepositAddress, SUPPORTED_CHAINS
 from app.services.dingtalk_secrets import is_dingtalk_configured, get_dingtalk_secret
 from app.services.deposit_secrets import is_deposit_mnemonic_configured
+from app.services.security_constants import INSECURE_SECRET_MARKERS
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-INSECURE_SECRET_MARKERS = (
-    "change-this",
-    "change-in-production",
-    "panda-quant-dev",
-    "admin123456",
-    "528586",
-    "your_vps_ip",
-    "0000:6080",
-    "0000:8000",
-)
-
 
 def validate_production_secrets() -> list[str]:
     """Return list of security warnings; empty means OK for production."""
+    from app.services.webhook_secrets import get_webhook_secret
+
     warnings: list[str] = []
 
     for name, value in (
         ("SECRET_KEY", settings.SECRET_KEY),
         ("ENCRYPTION_KEY", settings.ENCRYPTION_KEY),
-        ("WEBHOOK_SECRET", settings.WEBHOOK_SECRET),
+        ("WEBHOOK_SECRET", get_webhook_secret()),
         ("ADMIN_PASSWORD", settings.ADMIN_PASSWORD),
     ):
         low = (value or "").lower()

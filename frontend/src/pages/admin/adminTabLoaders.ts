@@ -42,6 +42,7 @@ export type AdminTabSetters = {
   setSweepGasDraft: (v: Record<string, string>) => void
   setDingtalkSettings: (v: any) => void
   setDingtalkDraft: (v: { webhook: string; secret: string }) => void
+  setWebhookSettings?: (v: any) => void
   setChainRpcSettings?: (v: any) => void
   setChainRpcDraft?: (v: Record<string, string>) => void
   setSettlementDeposits: (v: any[]) => void
@@ -286,6 +287,7 @@ export async function loadAdminTab(
         orders,
         startupAudit,
         dingtalk,
+        webhookSettings,
         platformPublic,
       ] = await Promise.all([
         adminApi.systemMonitor().catch(() => null),
@@ -297,6 +299,7 @@ export async function loadAdminTab(
         adminApi.allOrders().catch(() => []),
         adminApi.startupAudit().catch(() => null),
         adminApi.dingtalkSettings().catch(() => null),
+        adminApi.webhookSettings().catch(() => null),
         adminApi.platformPublicSettings().catch(() => null),
       ])
       setters.setMonitor(monitor)
@@ -310,6 +313,9 @@ export async function loadAdminTab(
       if (dingtalk) {
         setters.setDingtalkSettings(dingtalk)
         setters.setDingtalkDraft?.({ webhook: '', secret: '' })
+      }
+      if (webhookSettings) {
+        setters.setWebhookSettings?.(webhookSettings)
       }
       if (platformPublic) {
         setters.setPlatformPublicSettings?.(platformPublic)

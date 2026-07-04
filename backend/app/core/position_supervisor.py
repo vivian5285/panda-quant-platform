@@ -1461,7 +1461,14 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
                 self.on_trade_close(self.current_trade_id, exit_price, pnl, reason, funding_fee)
                 self._log("CLOSE", reason, close_detail)
                 sev = "critical" if "背离" in reason else "info"
-                self._alert(sev, "CLOSE", "全平完成", reason, close_detail)
+                alert_type = "CLOSE"
+                if close_action:
+                    ca = str(close_action).upper()
+                    if "CLOSE_TP3" in ca:
+                        alert_type = "CLOSE_TP3"
+                    elif "CLOSE_PROTECT" in ca:
+                        alert_type = "CLOSE_PROTECT"
+                self._alert(sev, alert_type, "全平完成", reason, close_detail)
 
         self.monitoring = False
         self.watched_qty = 0.0

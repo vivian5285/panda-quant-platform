@@ -58,6 +58,7 @@ def notify_admin(
             user = db.query(User).filter(User.id == user_id).first()
             uid = (user.uid if user else None) or str(user_id)
             display = (user.nickname or user.email or f"User {user_id}") if user else f"User {user_id}"
+            exchange = (user.exchange if user else None) or (detail or {}).get("exchange")
         finally:
             db.close()
         push_trading_alert(
@@ -69,6 +70,7 @@ def notify_admin(
             title,
             message,
             detail,
+            exchange=exchange,
         )
     except Exception as e:
         logger.warning("Trading DingTalk push skipped: %s", e)

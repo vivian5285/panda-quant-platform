@@ -10,6 +10,7 @@ from app.config import get_settings
 from app.models.platform import SignalDispatchLog, TvSignalTemplate
 from app.core.symbol_precision import normalize_entry_payload
 from app.services.dispatch_persistence import finalize_dispatch_log, save_dispatch_user_results
+from app.services.webhook_secrets import get_webhook_secret
 
 
 DEFAULT_TEMPLATE = {
@@ -125,7 +126,7 @@ def dispatch_payload(payload: dict) -> dict:
 
 def build_test_payload(template_payload: dict | None = None) -> dict:
     payload = dict(template_payload or DEFAULT_TEMPLATE)
-    payload["secret"] = get_settings().WEBHOOK_SECRET
+    payload["secret"] = get_webhook_secret()
     return payload
 
 
