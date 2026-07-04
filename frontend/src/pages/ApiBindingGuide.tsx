@@ -20,11 +20,11 @@ type GuideStep = {
 /** 币安 ①–⑬ + GEMINI ⑭–⑰，与截图标注序号一致 */
 const BINANCE_STEPS: GuideStep[] = [
   { id: 'bn1', image: '/guides/api-binding/step-bn-01-futures.png', substeps: ['s1', 's2', 's3', 's4'] },
-  { id: 'bn2', substeps: ['s5'] },
-  { id: 'bn3', substeps: ['s6'] },
-  { id: 'bn4', substeps: ['s7', 's8'] },
-  { id: 'bn5', substeps: ['s9'] },
-  { id: 'bn6', substeps: ['s10'] },
+  { id: 'bn2', image: '/guides/api-binding/step-bn-02-profile-api.png', substeps: ['s5'] },
+  { id: 'bn3', image: '/guides/api-binding/step-bn-03-create-api.png', substeps: ['s6'] },
+  { id: 'bn4', image: '/guides/api-binding/step-bn-04-hmac-type.png', substeps: ['s7', 's8'] },
+  { id: 'bn5', image: '/guides/api-binding/step-bn-05-api-label.png', substeps: ['s9'] },
+  { id: 'bn6', image: '/guides/api-binding/step-bn-06-security.png', substeps: ['s10'] },
   { id: 'bn7', image: '/guides/api-binding/step-bn-07-permissions.png', substeps: ['s11', 's12', 's13'] },
 ]
 
