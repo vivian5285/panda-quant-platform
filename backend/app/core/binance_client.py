@@ -311,13 +311,22 @@ class BinanceClient:
         except Exception:
             return False
 
-    def get_api_key_restrictions(self) -> dict:
-        """Binance API key permission flags (withdraw, futures, etc.)."""
+    def get_api_key_restrictions(self) -> dict | None:
+        """Binance SAPI GET /sapi/v1/account/apiRestrictions. None on failure."""
         try:
-            return self.client.get_account_api_restrictions() or {}
+            if not hasattr(self.client, "_request_margin_api"):
+                logger.warning(
+                    "[User %s] python-binance missing _request_margin_api for restrictions",
+                    self.user_id,
+                )
+                return None
+            raw = self.client._request_margin_api("get", "account/apiRestrictions", True)
+            if isinstance(raw, dict):
+                return raw
+            return None
         except Exception as e:
             logger.warning(f"[User {self.user_id}] api restrictions fetch failed: {e}")
-            return {}
+            return None
 
     def get_exchange_uid(self) -> str | None:
         """Master account UID via SAPI (read-only)."""

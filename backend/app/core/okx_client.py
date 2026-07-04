@@ -426,8 +426,8 @@ class OkxClient:
         except Exception:
             return False
 
-    def get_api_key_restrictions(self) -> dict:
-        return {}
+    def get_api_key_restrictions(self) -> dict | None:
+        return None
 
     def get_exchange_uid(self) -> str | None:
         try:

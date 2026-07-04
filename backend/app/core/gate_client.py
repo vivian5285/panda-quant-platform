@@ -385,8 +385,8 @@ class GateClient:
         except Exception:
             return False
 
-    def get_api_key_restrictions(self) -> dict:
-        return {}
+    def get_api_key_restrictions(self) -> dict | None:
+        return None
 
     def get_funding_fees(self, symbol: str | None = None, start_time_ms: int | None = None) -> float:
         return 0.0

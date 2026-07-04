@@ -18,6 +18,54 @@ REQUIRED_CHECK_IDS = (
 )
 
 
+def _coerce_bool(val) -> bool | None:
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in ("true", "1", "yes"):
+            return True
+        if s in ("false", "0", "no"):
+            return False
+    return None
+
+
+def interpret_withdraw_disabled(
+    restrictions: dict | None,
+    *,
+    api_role: dict | None = None,
+) -> bool | None:
+    """
+    True  = 提现已关闭（可绑定）
+    False = 提现仍开启（拒绝）
+    None  = 无法判定（不据此拒绝）
+    """
+    if restrictions:
+        for key in ("enableWithdrawals", "enableWithdraw", "withdrawEnabled"):
+            if key in restrictions:
+                enabled = _coerce_bool(restrictions[key])
+                if enabled is not None:
+                    return not enabled
+        if _coerce_bool(restrictions.get("enableReading")) is True:
+            # Binance 返回完整权限对象且未含 enableWithdrawals → 视为未开启提现
+            return True
+
+    role = (api_role or {}).get("role")
+    if role == "sub":
+        # 子账户交易 API 常无法查询 SAPI 权限；由主账户备案约束，此处不误拦
+        return True
+    return None
+
+
+def withdraw_check_passes(withdraw_disabled: bool | None) -> bool:
+    """仅在明确开启提现时失败；未知或已关闭均通过。"""
+    return withdraw_disabled is not False
+
+
 def _check_item(check_id: str, ok: bool, *, hint_key: str | None = None) -> dict:
     item = {"id": check_id, "ok": bool(ok)}
     if hint_key and not ok:
@@ -62,19 +110,18 @@ def validate_binance_api(api_key: str, api_secret: str, user_id: int = 0) -> dic
     can_trade = bool(summary.get("can_trade", True))
     equity = float(summary.get("total_margin_balance") or 0)
     restrictions = client.get_api_key_restrictions()
-    withdraw_disabled = (
-        not bool(restrictions.get("enableWithdrawals"))
-        if restrictions
-        else None
-    )
+    api_role = client.probe_trading_api_role() if hasattr(client, "probe_trading_api_role") else {}
+    withdraw_disabled = interpret_withdraw_disabled(restrictions, api_role=api_role)
     enable_futures = restrictions.get("enableFutures") if restrictions else None
+    if enable_futures is None and restrictions:
+        enable_futures = _coerce_bool(restrictions.get("enableFutures"))
     futures_on = enable_futures is not False and can_trade
 
     checks.append(
         _check_item(
             "withdraw_off",
-            withdraw_disabled is True,
-            hint_key="api.hint.withdraw_off",
+            withdraw_check_passes(withdraw_disabled),
+            hint_key="api.hint.withdraw_off" if withdraw_disabled is False else None,
         )
     )
     checks.append(
@@ -138,6 +185,8 @@ def validate_binance_api(api_key: str, api_secret: str, user_id: int = 0) -> dic
         "open_orders_count": activity["open_orders"],
         "open_positions_count": activity["open_positions"],
         "hedge_mode": hedge,
+        "api_role": api_role.get("role") if api_role else None,
+        "restrictions_fetched": restrictions is not None,
     }
 
     required_ok = all(c["ok"] for c in checks if c["id"] in REQUIRED_CHECK_IDS)
@@ -150,7 +199,7 @@ def validate_binance_api(api_key: str, api_secret: str, user_id: int = 0) -> dic
             message_key = "api.connect_failed"
         elif not can_trade or enable_futures is False:
             message_key = "api.no_futures_api_flag" if enable_futures is False else "api.no_futures_permission"
-        elif withdraw_disabled is not True:
+        elif withdraw_disabled is False:
             message_key = "api.withdraw_enabled"
         elif equity <= 0:
             message_key = "api.zero_balance"
@@ -290,6 +339,17 @@ def _validate_alt_exchange_api(
     checks.append(_check_item("balance", equity > 0, hint_key="api.hint.balance"))
     checks.append(_check_item("can_trade", bool(summary.get("can_trade", True)), hint_key="api.hint.can_trade"))
 
+    restrictions = client.get_api_key_restrictions() if hasattr(client, "get_api_key_restrictions") else None
+    api_role = client.probe_trading_api_role() if hasattr(client, "probe_trading_api_role") else {}
+    withdraw_disabled = interpret_withdraw_disabled(restrictions, api_role=api_role)
+    checks.append(
+        _check_item(
+            "withdraw_off",
+            withdraw_check_passes(withdraw_disabled),
+            hint_key="api.hint.withdraw_off" if withdraw_disabled is False else None,
+        )
+    )
+
     one_way = client.ensure_one_way_mode()
     hedge = client.is_hedge_mode()
     checks.append(_check_item("one_way", one_way, hint_key="api.hint.one_way_failed"))
@@ -308,7 +368,7 @@ def _validate_alt_exchange_api(
         "can_trade": bool(summary.get("can_trade", True)),
         "one_way_mode": one_way,
         "leverage_ok": leverage_ok,
-        "withdraw_disabled": None,
+        "withdraw_disabled": withdraw_disabled,
         "enable_futures": True,
         "symbol": symbol,
         "symbol_price": price,
@@ -317,14 +377,19 @@ def _validate_alt_exchange_api(
         "open_orders_count": activity.get("open_orders", 0),
         "open_positions_count": activity.get("open_positions", 0),
         "hedge_mode": hedge,
+        "api_role": api_role.get("role") if api_role else None,
+        "restrictions_fetched": restrictions is not None and bool(restrictions),
     }
 
-    required_ok = all(c["ok"] for c in checks if c["id"] in ALT_EXCHANGE_REQUIRED_CHECK_IDS)
+    required_ids = (*ALT_EXCHANGE_REQUIRED_CHECK_IDS, "withdraw_off", "one_way")
+    required_ok = all(c["ok"] for c in checks if c["id"] in required_ids)
     passed = sum(1 for c in checks if c.get("ok"))
     if not required_ok:
         message_key = "api.verify_incomplete"
         if equity <= 0:
             message_key = "api.zero_balance"
+        elif withdraw_disabled is False:
+            message_key = "api.withdraw_enabled"
         elif not leverage_ok:
             message_key = "api.leverage_failed"
         return _build_failure(
