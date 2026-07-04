@@ -19,6 +19,7 @@ from app.schemas import (
     DingTalkSettingsOut, DingTalkSettingsUpdate, ChainRpcSettingsOut, ChainRpcSettingsUpdate, AdminPasswordChange,
     PlatformPublicSettingsOut, PlatformPublicSettingsUpdate,
     AdminSettlementDepositOut, AdminSettlementAppealOut, SettlementAppealReview,
+    DepositMonitorStatusOut,
     WithdrawThresholdsUpdate,
     WithdrawalOut, WithdrawalComplete, WithdrawalReject,
     AdminAlertOut, AdminUserDetailOut, TradeOut, TradeLogOut, PrincipalSnapshotOut,
@@ -53,6 +54,11 @@ from app.services.settlement_appeal import approve_payment_appeal, reject_paymen
 from app.services.deposit_sweep_config import get_sweep_settings, update_sweep_settings
 from app.services.deposit_sweep import run_deposit_sweep
 from app.services.wallet_overview import get_wallet_overview
+from app.services.deposit_monitor import run_deposit_monitor_once
+from app.services.deposit_monitor_state import get_deposit_monitor_status
+from app.services.settlement_payment_tracking import (
+    list_admin_payment_tracking, count_tracking_anomalies,
+)
 from app.services.webhook_receive_log import webhook_log_to_dict, get_webhook_log_detail
 from app.models.platform import WebhookReceiveLog
 from app.utils.auth import verify_password, hash_password
@@ -1242,6 +1248,47 @@ def admin_list_settlement_deposits(
         q = q.filter(SettlementDeposit.user_id == user_id)
     rows = q.limit(min(limit, 500)).all()
     return [build_admin_deposit_row(db, r) for r in rows]
+
+
+@router.get("/deposit-monitor/status", response_model=DepositMonitorStatusOut)
+def admin_deposit_monitor_status(
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    status = get_deposit_monitor_status()
+    status["tracking_anomalies"] = count_tracking_anomalies(db)
+    return status
+
+
+@router.post("/deposit/scan")
+def admin_trigger_deposit_scan(
+    request: Request,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    stats = run_deposit_monitor_once()
+    status = get_deposit_monitor_status()
+    status["tracking_anomalies"] = count_tracking_anomalies(db)
+    log_audit(
+        db,
+        "deposit.scan_manual",
+        actor_id=admin.id,
+        resource_type="deposit_monitor",
+        detail={"stats": stats, "health": status.get("health")},
+        request=request,
+    )
+    db.commit()
+    return {"stats": stats, "monitor": status}
+
+
+@router.get("/settlement-payment-tracking")
+def admin_settlement_payment_tracking(
+    probe: bool = False,
+    limit: int = 100,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    return list_admin_payment_tracking(db, probe=probe, limit=limit)
 
 
 @router.get("/settlement-appeals", response_model=list[AdminSettlementAppealOut])

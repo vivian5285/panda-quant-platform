@@ -1,17 +1,131 @@
 import GlassCard from '../../../components/GlassCard'
-import { adminApi } from '../../../api'
 import { useAdmin } from '../AdminContext'
 import { localeDate } from '../../../i18n'
+
+function healthBadgeClass(health?: string) {
+  if (health === 'healthy') return 'badge-green'
+  if (health === 'stale' || health === 'pending') return 'badge-gray'
+  return 'badge-red'
+}
 
 export default function AdminDepositsTab() {
   const {
     t, locale, settlementDeposits, settlementAppeals, appealFilter, setAppealFilter,
     depositFilter, setDepositFilter, sweepLogs, approveAppeal, rejectAppeal,
+    depositMonitorStatus, paymentTracking, depositScanLoading, triggerDepositScan,
   } = useAdmin()
+
+  const monitor = depositMonitorStatus
+  const health = monitor?.health || 'pending'
+  const intervalSec = monitor?.scan_interval_sec || 180
 
   return (
     <div>
       <p className="text-muted text-sm section-mb-sm">{t('admin.depositsTabHint')}</p>
+
+      <GlassCard className="p-4 section-mb-lg deposit-monitor-card">
+        <div className="flex-between-wrap gap-md">
+          <div>
+            <h3 className="panel-title-sm section-mb-xs">{t('admin.depositMonitorTitle')}</h3>
+            <p className="text-muted text-sm">{t('admin.depositMonitorHint', { sec: intervalSec })}</p>
+          </div>
+          <button
+            className="btn btn-primary btn-sm"
+            type="button"
+            disabled={depositScanLoading}
+            onClick={() => triggerDepositScan()}
+          >
+            {depositScanLoading ? t('common.loading') : t('admin.scanDepositNow')}
+          </button>
+        </div>
+        <div className="stat-grid stat-grid-flush section-mt-md">
+          <div className="stat-tile">
+            <p className="text-muted text-xs">{t('common.status')}</p>
+            <span className={`badge ${healthBadgeClass(health)}`}>
+              {t(`admin.depositMonitorHealth.${health}`) || health}
+            </span>
+          </div>
+          <div className="stat-tile">
+            <p className="text-muted text-xs">{t('settlements.lastScan')}</p>
+            <p className="text-sm">{monitor?.last_scan_at ? localeDate(monitor.last_scan_at, locale) : '—'}</p>
+          </div>
+          <div className="stat-tile">
+            <p className="text-muted text-xs">{t('admin.trackingAnomalies')}</p>
+            <p className={`text-md-strong ${(monitor?.tracking_anomalies || 0) > 0 ? 'text-red' : ''}`}>
+              {monitor?.tracking_anomalies ?? 0}
+            </p>
+          </div>
+          <div className="stat-tile">
+            <p className="text-muted text-xs">{monitor?.auto_confirm_enabled ? t('admin.autoConfirmOn') : t('admin.autoConfirmOff')}</p>
+            <p className="text-sm">{monitor?.mnemonic_configured ? t('common.statusOk') : t('common.statusDown')}</p>
+          </div>
+        </div>
+        {monitor?.last_error && (
+          <p className="text-red text-xs section-mt-sm">{monitor.last_error}</p>
+        )}
+      </GlassCard>
+
+      <GlassCard className="p-0 table-wrap section-mb-lg">
+        <div className="card-section-head flex-between-wrap">
+          <h3 className="panel-title-sm">{t('admin.paymentTrackingTitle')}</h3>
+        </div>
+        <table className="data-table data-table-sm">
+          <thead>
+            <tr>
+              <th>{t('admin.cols.uid')}</th>
+              <th>{t('admin.cols.settlement')}</th>
+              <th>{t('common.status')}</th>
+              <th>{t('admin.cols.amount')}</th>
+              <th>{t('admin.onChainBalance')}</th>
+              <th>{t('admin.cols.depositAddr')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {paymentTracking.length === 0 ? (
+              <tr><td colSpan={6} className="empty-cell">{t('admin.paymentTrackingEmpty')}</td></tr>
+            ) : paymentTracking.map((row: any) => {
+              const balances = row.on_chain_balances || []
+              const maxBal = balances.reduce((m: number, b: any) => Math.max(m, b.usdt_balance || 0), 0)
+              const addr = row.deposit_addresses?.[0]
+              return (
+                <tr key={row.settlement_id} className={row.tracking_phase === 'appeal_pending' ? 'settlement-pending-row' : undefined}>
+                  <td>
+                    <div>{row.user_uid}</div>
+                    <div className="text-muted text-xs">{row.user_display}</div>
+                  </td>
+                  <td>
+                    #{row.settlement_id}
+                    <div className="text-muted text-xs">${row.user_payable?.toFixed(2)} · {row.net_profit != null ? `+${row.net_profit}` : ''}</div>
+                  </td>
+                  <td>
+                    <span className="badge badge-gray">
+                      {t(`admin.trackingPhase.${row.tracking_phase}`) || row.tracking_phase}
+                    </span>
+                  </td>
+                  <td>
+                    <div>${row.detected_total?.toFixed(2) ?? '0.00'}</div>
+                    {row.split && (
+                      <div className="text-muted text-xs">
+                        L1 ${row.split.l1_reward} · L2 ${row.split.l2_reward}
+                      </div>
+                    )}
+                  </td>
+                  <td>
+                    {balances.length === 0 ? '—' : (
+                      <span className={maxBal >= (row.user_payable || 0) * 0.98 ? 'text-green' : 'text-muted'}>
+                        ${maxBal.toFixed(2)}
+                      </span>
+                    )}
+                  </td>
+                  <td className="mono-cell cell-ellipsis" title={addr?.address}>
+                    {addr ? `${addr.chain} · ${addr.address?.slice(0, 10)}…` : '—'}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </GlassCard>
 
       <GlassCard className="p-0 table-wrap section-mb-lg">
         <div className="card-section-head flex-between-wrap">
@@ -148,7 +262,7 @@ export default function AdminDepositsTab() {
                 <td className="mono-cell cell-ellipsis" title={d.tx_hash}>{d.tx_hash?.slice(0, 14)}…</td>
                 <td>${d.amount?.toFixed(2)}</td>
                 <td>{t(`admin.depositSource.${d.source}`) || d.source}</td>
-                <td>{d.fee_fully_paid == null ? '—' : d.fee_fully_paid ? t('common.yes') : t('common.no')}</td>
+                <td>{d.fee_fully_paid ? t('common.yes') : t('common.no')}</td>
                 <td><span className="badge badge-gray">{t(`admin.depositStatus.${d.status}`) || d.status}</span></td>
               </tr>
             ))}

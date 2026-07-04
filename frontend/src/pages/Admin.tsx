@@ -123,6 +123,9 @@ export default function Admin() {
   const [adminPwdDraft, setAdminPwdDraft] = useState({ current: '', next: '', confirm: '' })
   const [settlementDeposits, setSettlementDeposits] = useState<any[]>([])
   const [settlementAppeals, setSettlementAppeals] = useState<any[]>([])
+  const [depositMonitorStatus, setDepositMonitorStatus] = useState<any>(null)
+  const [paymentTracking, setPaymentTracking] = useState<any[]>([])
+  const [depositScanLoading, setDepositScanLoading] = useState(false)
   const [depositFilter, setDepositFilter] = useState('')
   const [appealFilter, setAppealFilter] = useState('submitted')
   const [completeTx, setCompleteTx] = useState<Record<number, string>>({})
@@ -209,6 +212,8 @@ export default function Admin() {
     setChainRpcDraft,
     setSettlementDeposits,
     setSettlementAppeals,
+    setDepositMonitorStatus,
+    setPaymentTracking,
     setDepositFilter,
     setAppealFilter,
     setPlatformAnalytics,
@@ -559,10 +564,35 @@ export default function Admin() {
     }
   }
 
+  const triggerDepositScan = async () => {
+    setDepositScanLoading(true)
+    try {
+      const res = await adminApi.triggerDepositScan()
+      setDepositMonitorStatus(res.monitor)
+      setPaymentTracking(await adminApi.settlementPaymentTrackingAdmin({ probe: true, limit: 100 }).catch(() => []))
+      adminApi.settlementDepositsAdmin({ status: depositFilter || undefined, limit: 200 })
+        .then(setSettlementDeposits).catch(() => {})
+      toast.success(t('admin.scanDepositDone'))
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('admin.scanDepositFail'))
+    } finally {
+      setDepositScanLoading(false)
+    }
+  }
+
+  const refreshDepositMonitor = () => {
+    adminApi.depositMonitorStatus().then(setDepositMonitorStatus).catch(() => setDepositMonitorStatus(null))
+    adminApi.settlementPaymentTrackingAdmin({ probe: true, limit: 100 })
+      .then(setPaymentTracking).catch(() => setPaymentTracking([]))
+  }
+
   useEffect(() => {
     if (tab !== 'deposits') return
     adminApi.settlementDepositsAdmin({ status: depositFilter || undefined, limit: 200 })
       .then(setSettlementDeposits).catch(() => setSettlementDeposits([]))
+    refreshDepositMonitor()
+    const timer = setInterval(refreshDepositMonitor, 30000)
+    return () => clearInterval(timer)
   }, [tab, depositFilter])
 
   useEffect(() => {
@@ -1146,6 +1176,7 @@ export default function Admin() {
     chainRpcSettings, chainRpcDraft, setChainRpcDraft,
     adminPwdDraft, setAdminPwdDraft,
     settlementDeposits, settlementAppeals, depositFilter, setDepositFilter, appealFilter, setAppealFilter,
+    depositMonitorStatus, paymentTracking, depositScanLoading, triggerDepositScan,
     saveDingtalkSettings, saveChainRpcSettings, clearChainRpcSettings, changeAdminPassword, approveAppeal, rejectAppeal,
     completeTx, setCompleteTx,
     selectedUserId, userDetail, userTrades, userLogs, setUserLogs,

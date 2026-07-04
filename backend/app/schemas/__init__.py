@@ -579,6 +579,20 @@ class AdminSettlementAppealOut(BaseModel):
     created_at: datetime
 
 
+class DepositMonitorStatusOut(BaseModel):
+    health: str
+    last_scan_at: Optional[str] = None
+    last_ok: bool = False
+    last_error: Optional[str] = None
+    last_stats: dict = {}
+    matched_total: int = 0
+    consecutive_errors: int = 0
+    scan_interval_sec: int = 180
+    mnemonic_configured: bool = False
+    auto_confirm_enabled: bool = True
+    tracking_anomalies: int = 0
+
+
 class DingTalkSettingsOut(BaseModel):
     configured: bool = False
     has_secret: bool = False

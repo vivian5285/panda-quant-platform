@@ -20,6 +20,7 @@ from app.schemas import (
 from app.api.deps import get_current_user
 from app.services.settlement import submit_settlement_payment
 from app.services.settlement_appeal import create_payment_appeal
+from app.services.settlement_payment_tracking import get_user_payment_tracking
 from app.services.settlement_deposit_log import user_deposit_address
 from app.services.audit import log_audit
 from app.services.user_lookup import find_user_by_identifier, mask_user_public, display_name
@@ -83,6 +84,19 @@ def my_settlement_deposits(user=Depends(get_current_user), db: Session = Depends
     return db.query(SettlementDeposit).filter(
         SettlementDeposit.user_id == user.id
     ).order_by(SettlementDeposit.detected_at.desc()).limit(50).all()
+
+
+@router.get("/settlements/payment-tracking")
+def settlement_payment_tracking(
+    probe: bool = True,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Active performance-fee payment tracking for the current user."""
+    row = get_user_payment_tracking(db, user.id, probe=probe)
+    if not row:
+        return {"active": False}
+    return {"active": True, **row}
 
 
 @router.get("/deposit-addresses/{addr_id}/qr")

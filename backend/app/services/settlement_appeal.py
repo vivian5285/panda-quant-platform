@@ -8,10 +8,13 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.models import SettlementPaymentAppeal, SettlementDeposit, Settlement, PaymentStatus, User
-from app.services.settlement import submit_settlement_payment, get_pending_settlement
+from app.services.settlement import submit_settlement_payment, get_pending_settlement, confirm_settlement_payment
 from app.services.settlement_deposit_log import user_deposit_address
 
+from app.config import get_settings
+
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 
 def _normalize_tx(tx_hash: str) -> str:
@@ -134,15 +137,27 @@ def approve_payment_appeal(
     appeal.reviewed_at = datetime.utcnow()
     appeal.settlement_deposit_id = dep.id
 
+    auto_confirmed = False
+    if settings.SETTLEMENT_AUTO_CONFIRM:
+        db.refresh(settlement)
+        confirm_settlement_payment(db, settlement, admin_note=admin_note or "appeal-approved")
+        auto_confirmed = True
+
     from app.services.trade_logger import TradeLogger
+    log_msg = (
+        f"绩效费缴纳申诉已通过并确认到账，结算单 #{settlement.id}，AI 已恢复"
+        if auto_confirmed
+        else f"绩效费缴纳申诉已通过，结算单 #{settlement.id} 待管理员确认到账"
+    )
     TradeLogger(db).log_event(
         user.id,
         "SETTLEMENT",
-        f"绩效费缴纳申诉已通过，结算单 #{settlement.id} 待管理员确认到账",
-        {"settlement_id": settlement.id, "tx_hash": appeal.tx_hash, "appeal_id": appeal.id},
+        log_msg,
+        {"settlement_id": settlement.id, "tx_hash": appeal.tx_hash, "appeal_id": appeal.id, "auto_confirmed": auto_confirmed},
     )
 
-    db.commit()
+    if not auto_confirmed:
+        db.commit()
     db.refresh(appeal)
     return appeal
 

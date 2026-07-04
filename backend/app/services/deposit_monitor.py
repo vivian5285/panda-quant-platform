@@ -13,7 +13,8 @@ from app.database import SessionLocal
 from app.models import (
     UserDepositAddress, SettlementDeposit, Settlement, PaymentStatus, User,
 )
-from app.services.settlement import submit_settlement_payment, get_pending_settlement
+from app.services.settlement import submit_settlement_payment, get_pending_settlement, confirm_settlement_payment
+from app.services.deposit_monitor_state import record_scan_result, get_deposit_monitor_status
 from app.services.deposit_chains import EVM_USDT_CONFIG, get_rpc_url, MONITORED_DEPOSIT_CHAINS
 from app.services.chain_rpc_config import get_tron_api_url, get_tron_api_key
 from app.services.deposit_secrets import is_deposit_mnemonic_configured
@@ -88,16 +89,31 @@ def _try_match_settlement(db: Session, user: User, dep: SettlementDeposit) -> bo
     dep.settlement_id = pending.id
     dep.status = "matched"
     dep.matched_at = datetime.utcnow()
-    db.commit()
+
+    auto_confirmed = False
+    if settings.SETTLEMENT_AUTO_CONFIRM:
+        db.refresh(pending)
+        confirm_settlement_payment(db, pending, admin_note="auto-deposit-detect")
+        auto_confirmed = True
+    else:
+        db.commit()
 
     from app.services.trade_logger import TradeLogger
+    msg = (
+        f"检测到专属充值地址到账 ${dep.amount:.2f} USDT，结算单 #{pending.id} 已确认，本金已重置"
+        if auto_confirmed
+        else f"检测到专属充值地址到账 ${dep.amount:.2f} USDT，已自动关联结算单 #{pending.id}"
+    )
     TradeLogger(db).log_event(
         user.id,
         "SETTLEMENT",
-        f"检测到专属充值地址到账 ${dep.amount:.2f} USDT，已自动关联结算单 #{pending.id}",
-        {"settlement_id": pending.id, "tx_hash": dep.tx_hash, "chain": dep.chain},
+        msg,
+        {"settlement_id": pending.id, "tx_hash": dep.tx_hash, "chain": dep.chain, "auto_confirmed": auto_confirmed},
     )
-    logger.info("[DepositMonitor] matched settlement #%s user=%s tx=%s", pending.id, user.id, dep.tx_hash)
+    logger.info(
+        "[DepositMonitor] matched settlement #%s user=%s tx=%s auto_confirm=%s",
+        pending.id, user.id, dep.tx_hash, auto_confirmed,
+    )
     return True
 
 
@@ -213,22 +229,46 @@ def _scan_evm_chain(db: Session, chain: str) -> int:
 
 
 def scan_all_deposits(db: Session) -> dict:
-    stats: dict[str, int] = {}
+    stats: dict[str, int] = {"matched_total": 0}
     if not is_deposit_mnemonic_configured():
         return stats
     stats["trc20"] = scan_trc20_deposits(db)
+    stats["matched_total"] += stats["trc20"]
     for chain in ("ERC20", "BEP20", "ARBITRUM", "POLYGON"):
         key = chain.lower()
-        stats[key] = _scan_evm_chain(db, chain)
+        matched = _scan_evm_chain(db, chain)
+        stats[key] = matched
+        stats["matched_total"] += matched
     return stats
 
 
 def run_deposit_monitor_once() -> dict:
     db = SessionLocal()
     try:
-        return scan_all_deposits(db)
+        stats = scan_all_deposits(db)
+        record_scan_result(stats)
+        if stats.get("matched_total", 0) > 0:
+            from app.services.alert_service import notify_system
+            notify_system(
+                "info",
+                "DEPOSIT_MATCH",
+                f"链上扫描匹配 {stats['matched_total']} 笔绩效费到账",
+                str(stats),
+                stats,
+            )
+        return stats
     except Exception as e:
         logger.exception("[DepositMonitor] scan failed: %s", e)
+        record_scan_result({"error": str(e)}, error=str(e))
+        if get_deposit_monitor_status().get("consecutive_errors", 0) >= 2:
+            from app.services.alert_service import notify_system
+            notify_system(
+                "error",
+                "DEPOSIT_SCAN_FAIL",
+                "绩效费链上扫描连续失败",
+                str(e)[:300],
+                {"error": str(e)},
+            )
         return {"error": str(e)}
     finally:
         db.close()

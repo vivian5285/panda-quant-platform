@@ -183,6 +183,8 @@ export const walletApi = {
   myDepositAddresses: () => api.get('/my-deposit-addresses').then(r => r.data),
   depositChains: () => api.get('/deposit-chains').then(r => r.data),
   settlementDeposits: () => api.get('/settlement-deposits').then(r => r.data),
+  settlementPaymentTracking: (probe = true) =>
+    api.get('/settlements/payment-tracking', { params: { probe } }).then(r => r.data),
   settlementAppeals: () => api.get('/settlement-appeals').then(r => r.data),
   appealSettlement: (id: number, chain: string, tx_hash: string, amount: number, note?: string) =>
     api.post(`/settlements/${id}/appeal`, { chain, tx_hash, amount, note }).then(r => r.data),
@@ -310,6 +312,10 @@ export const adminApi = {
     api.post(`/admin/settlement-appeals/${id}/approve`, { admin_note }).then(r => r.data),
   rejectSettlementAppeal: (id: number, admin_note?: string) =>
     api.post(`/admin/settlement-appeals/${id}/reject`, { admin_note }).then(r => r.data),
+  depositMonitorStatus: () => api.get('/admin/deposit-monitor/status').then(r => r.data),
+  triggerDepositScan: () => api.post('/admin/deposit/scan').then(r => r.data),
+  settlementPaymentTrackingAdmin: (params?: { probe?: boolean; limit?: number }) =>
+    api.get('/admin/settlement-payment-tracking', { params }).then(r => r.data),
   withdrawals: () => api.get('/admin/withdrawals').then(r => r.data),
   approveWithdrawal: (id: number) => api.post(`/admin/withdrawals/${id}/approve`).then(r => r.data),
   completeWithdrawal: (id: number, tx_hash: string, admin_note?: string) =>

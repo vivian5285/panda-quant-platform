@@ -239,7 +239,11 @@ def submit_settlement_payment(
         SettlementDeposit.tx_hash.in_(list(dup_variants))
     ).first()
     if existing_dep:
-        raise ValueError("该 TxHash 已被使用")
+        same_user = existing_dep.user_id == settlement.user_id
+        unlinked = existing_dep.settlement_id is None
+        same_settlement = existing_dep.settlement_id == settlement.id
+        if not (same_user and (unlinked or same_settlement)):
+            raise ValueError("该 TxHash 已被使用")
 
     existing_settlement = db.query(Settlement).filter(
         Settlement.id != settlement.id,

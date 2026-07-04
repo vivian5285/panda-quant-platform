@@ -19,6 +19,7 @@ export default function Settlements() {
   const [myAddresses, setMyAddresses] = useState<any[]>([])
   const [deposits, setDeposits] = useState<any[]>([])
   const [appeals, setAppeals] = useState<any[]>([])
+  const [tracking, setTracking] = useState<any>(null)
   const [payingId, setPayingId] = useState<number | null>(null)
   const [appealingId, setAppealingId] = useState<number | null>(null)
   const [appealNote, setAppealNote] = useState('')
@@ -34,6 +35,7 @@ export default function Settlements() {
     walletApi.myDepositAddresses().then(setMyAddresses).catch(() => setMyAddresses([]))
     walletApi.settlementDeposits().then(setDeposits).catch(() => setDeposits([]))
     walletApi.settlementAppeals().then(setAppeals).catch(() => setAppeals([]))
+    walletApi.settlementPaymentTracking(true).then(setTracking).catch(() => setTracking(null))
     walletApi.depositChains().then((info: { monitored?: string[] }) => {
       const chains = info?.monitored?.length ? info.monitored : ['TRC20', 'ERC20', 'BEP20', 'ARBITRUM', 'POLYGON']
       setMonitoredChains(chains)
@@ -130,7 +132,63 @@ export default function Settlements() {
         <p className="text-sm"><strong>{t('perfFee.cycleTitle')}</strong></p>
         <p className="text-muted text-sm section-mt-xs">{t('perfFee.flowSteps')}</p>
         <p className="text-muted text-xs section-mt-sm">{t('perfFee.resetNote')}</p>
+        <p className="text-sm section-mt-md"><strong>{t('perfFee.splitTitle')}</strong></p>
+        <p className="text-muted text-sm section-mt-xs">{t('perfFee.splitExample')}</p>
       </GlassCard>
+
+      {tracking?.active && (
+        <GlassCard className="p-4 section-mb-lg settlement-tracking-card">
+          <h3 className="panel-title-sm section-mb-xs">{t('settlements.trackingTitle')}</h3>
+          <p className="text-muted text-sm section-mb-md">{t('settlements.trackingHint')}</p>
+          <div className="flex-between-wrap gap-sm section-mb-md">
+            <span className={`badge ${tracking.payment_status === 'confirmed' ? 'badge-green' : 'badge-gray'}`}>
+              {t(`settlements.trackingPhase.${tracking.tracking_phase}`) || tracking.tracking_phase}
+            </span>
+            <span className="text-muted text-xs">
+              {t('settlements.monitorHealth')}: {t(`admin.depositMonitorHealth.${tracking.monitor_health}`) || tracking.monitor_health}
+              {tracking.last_scan_at && ` · ${t('settlements.lastScan')} ${new Date(tracking.last_scan_at).toLocaleString()}`}
+            </span>
+          </div>
+          <div className="stat-grid stat-grid-flush section-mb-md">
+            <div className="stat-tile">
+              <p className="text-muted text-xs">{t('settlements.cols.payable')}</p>
+              <p className="text-md-strong">${tracking.user_payable?.toFixed(2)}</p>
+            </div>
+            <div className="stat-tile">
+              <p className="text-muted text-xs">{t('settlements.cols.netProfit')}</p>
+              <p className="text-green text-md-strong">${tracking.net_profit?.toFixed(2)}</p>
+            </div>
+            <div className="stat-tile">
+              <p className="text-muted text-xs">{t('settlements.depositLog')}</p>
+              <p className="text-md-strong">${tracking.detected_total?.toFixed(2) ?? '0.00'}</p>
+            </div>
+          </div>
+          {tracking.split && (
+            <div className="section-mb-md">
+              <p className="text-sm-strong section-mb-xs">{t('settlements.splitBreakdown')}</p>
+              <div className="commission-grid">
+                <div className="stat-tile"><p className="text-muted text-xs">{t('perfFee.splitUser')}</p><p>${tracking.split.user_payable}</p></div>
+                <div className="stat-tile"><p className="text-muted text-xs">{t('perfFee.splitL1')}</p><p className="text-green">${tracking.split.l1_reward}</p></div>
+                <div className="stat-tile"><p className="text-muted text-xs">{t('perfFee.splitL2')}</p><p className="text-green">${tracking.split.l2_reward}</p></div>
+                <div className="stat-tile"><p className="text-muted text-xs">{t('perfFee.splitPlatform')}</p><p>${tracking.split.platform_net}</p></div>
+              </div>
+            </div>
+          )}
+          {tracking.tracking_phase === 'awaiting_transfer' || tracking.tracking_phase === 'underpaid' || tracking.tracking_phase === 'amount_ok_detecting' ? (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => {
+                setAppealingId(tracking.settlement_id)
+                setPayingId(null)
+                setAmount(String(tracking.user_payable))
+              }}
+            >
+              {t('settlements.appealCta')}
+            </button>
+          ) : null}
+        </GlassCard>
+      )}
 
       <div className="stat-grid section-mb-lg">
         <StatCard label={t('settlements.totalCycles')} countUp={{ end: summary.cycles, decimals: 0 }} />

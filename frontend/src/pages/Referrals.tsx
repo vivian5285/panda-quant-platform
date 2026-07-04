@@ -317,7 +317,32 @@ export default function Referrals() {
       )}
 
       {tab === 'commissions' && (
-        <GlassCard className="p-0 table-wrap section-mt-sm">
+        <>
+          <GlassCard className="p-6 section-mb-lg section-mt-sm">
+            <h3 className="panel-title-sm section-mb-sm">{t('referrals.commissionGuideTitle')}</h3>
+            <p className="text-muted text-sm section-mb-md">{t('referrals.commissionGuideIntro')}</p>
+            <ol className="text-sm text-muted commission-guide-list">
+              <li>{t('referrals.commissionGuideStep1')}</li>
+              <li>{t('referrals.commissionGuideStep2')}</li>
+              <li>{t('referrals.commissionGuideStep3')}</li>
+              <li>{t('referrals.commissionGuideStep4')}</li>
+            </ol>
+            <div className="commission-grid section-mt-md">
+              <div className="stat-tile stat-tile-highlight">
+                <p className="stat-value-lg text-green">{l1Rate}%</p>
+                <p className="stat-label-md">{t('referrals.l1Title')}</p>
+              </div>
+              <div className="stat-tile">
+                <p className="stat-value-lg">{l2Rate}%</p>
+                <p className="stat-label-md">{t('referrals.l2Title')}</p>
+              </div>
+              <div className="stat-tile">
+                <p className="stat-value-lg">{platformFeeRate}%</p>
+                <p className="stat-label-md">{t('referrals.baseTitle')}</p>
+              </div>
+            </div>
+          </GlassCard>
+          <GlassCard className="p-0 table-wrap">
           <div className="panel-header">
             <h3 className="panel-title-sm">{t('referrals.commissionLedger')}</h3>
           </div>
@@ -346,6 +371,7 @@ export default function Referrals() {
             </tbody>
           </table>
         </GlassCard>
+        </>
       )}
 
       {logsUser && (
