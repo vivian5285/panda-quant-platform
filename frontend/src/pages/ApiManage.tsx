@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { ShieldAlert, CheckCircle2, XCircle, RefreshCw, ListChecks } from 'lucide-react'
+import { ShieldAlert, CheckCircle2, XCircle, RefreshCw, ListChecks, MessageCircle } from 'lucide-react'
 import Layout from '../components/Layout'
 import PageHeader from '../components/PageHeader'
 import GlassCard from '../components/GlassCard'
 import DualVerifyFields from '../components/DualVerifyFields'
-import { authApi, settingsApi, userApi } from '../api'
+import { authApi, settingsApi, userApi, publicApi } from '../api'
 import { useI18n } from '../i18n'
 import { toast } from '../store/toast'
 
@@ -115,8 +115,24 @@ export default function ApiManage() {
   const [secPhoneCode, setSecPhoneCode] = useState('')
   const [devEmail, setDevEmail] = useState('')
   const [devPhone, setDevPhone] = useState('')
+  const [enabledExchanges, setEnabledExchanges] = useState<ExchangeId[]>(['binance'])
+  const [supportTelegram, setSupportTelegram] = useState('')
 
   const needsDualVerify = profile?.has_email && profile?.has_phone
+
+  const isExchangeSelectable = (id: ExchangeId) => {
+    if (enabledExchanges.includes(id)) return true
+    const boundEx = normalizeExchangeFromApi(profile?.exchange || boundStatus?.exchange)
+    return profile?.api_status === 'active' && boundEx === id
+  }
+
+  const telegramHref = (raw: string) => {
+    const v = raw.trim()
+    if (!v) return ''
+    if (v.startsWith('http://') || v.startsWith('https://')) return v
+    if (v.startsWith('@')) return `https://t.me/${v.slice(1)}`
+    return `https://t.me/${v}`
+  }
 
   const requiresPassphrase = needsPassphrase(exchange)
   const masterRequiresPassphrase = needsPassphrase(exchange)
@@ -237,6 +253,11 @@ export default function ApiManage() {
   }
 
   useEffect(() => {
+    publicApi.platformConfig().then(cfg => {
+      const enabled = (cfg?.enabled_exchanges || ['binance']).map((e: string) => normalizeExchangeFromApi(e))
+      setEnabledExchanges(enabled)
+      setSupportTelegram(cfg?.support_telegram || '')
+    }).catch(() => {})
     userApi.apiStatus().then(res => {
       setBoundStatus(res)
       if (res.exchange) setExchange(normalizeExchangeFromApi(res.exchange))
@@ -570,24 +591,57 @@ export default function ApiManage() {
         )}
 
         <form onSubmit={handleBind}>
+          {supportTelegram && (
+            <GlassCard className="p-4 section-mb-sm api-support-banner">
+              <div className="flex-gap-sm">
+                <MessageCircle size={18} className="text-muted" />
+                <div>
+                  <p className="text-sm font-medium">{t('api.supportTelegramTitle')}</p>
+                  <p className="text-muted text-xs section-mb-xs">{t('api.supportTelegramHint')}</p>
+                  <a
+                    href={telegramHref(supportTelegram)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-accent"
+                  >
+                    {supportTelegram}
+                  </a>
+                </div>
+              </div>
+            </GlassCard>
+          )}
+
           <div className="form-field">
             <label className="form-label">{t('api.exchangeLabel')}</label>
-            <select
-              className="input"
-              value={exchange}
-              onChange={e => {
-                setExchange(normalizeExchangeFromApi(e.target.value))
-                setVerify(null)
-                setError('')
-                setPassphrase('')
-                setSubAccounts([])
-                setDiscoverRelaxed(false)
-              }}
-            >
-              {EXCHANGE_OPTIONS.map(id => (
-                <option key={id} value={id}>{t(EXCHANGE_LABEL_KEYS[id])}</option>
-              ))}
-            </select>
+            <div className="exchange-picker-grid">
+              {EXCHANGE_OPTIONS.map(id => {
+                const selectable = isExchangeSelectable(id)
+                const selected = exchange === id
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    className={`exchange-picker-card ${selected ? 'exchange-picker-card-active' : ''} ${!selectable ? 'exchange-picker-card-disabled' : ''}`}
+                    disabled={!selectable}
+                    onClick={() => {
+                      if (!selectable) return
+                      setExchange(id)
+                      setVerify(null)
+                      setError('')
+                      setPassphrase('')
+                      setSubAccounts([])
+                      setDiscoverRelaxed(false)
+                    }}
+                  >
+                    <span className="exchange-picker-name">{t(EXCHANGE_LABEL_KEYS[id])}</span>
+                    {!enabledExchanges.includes(id) && (
+                      <span className="exchange-picker-badge">{t('api.exchangeComingSoon')}</span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+            <p className="text-muted form-hint-sm section-mt-sm">{t('api.exchangeOpenNote')}</p>
           </div>
 
           <div className="form-field">

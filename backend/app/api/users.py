@@ -91,12 +91,20 @@ def profile(user: User = Depends(get_current_user)):
     return build_user_profile(user)
 
 
+def _assert_exchange_open(ex: str) -> None:
+    from app.services.platform_public_settings import is_exchange_enabled
+
+    if not is_exchange_enabled(ex):
+        raise_i18n(400, "api.exchange_not_open")
+
+
 @router.post("/bind-api/verify", response_model=ApiVerifyResponse)
 def verify_bind_api(req: ApiBindRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """绑定前校验：主账户或子账户模式。"""
     ex = parse_exchange(req.exchange)
     if ex is None:
         raise_i18n(400, "api.unsupported_exchange")
+    _assert_exchange_open(ex)
 
     mode = (req.account_mode or "master").strip().lower()
     if mode == "sub":
@@ -136,6 +144,8 @@ def discover_sub_accounts(req: DiscoverSubsRequest, user: User = Depends(get_cur
     ex = parse_exchange(req.exchange)
     if ex is None:
         raise_i18n(400, "api.unsupported_exchange")
+    _assert_exchange_open(ex)
+
     if exchange_requires_passphrase(ex) and not (req.master_passphrase or "").strip():
         raise_i18n(400, "api.passphrase_required")
 
@@ -200,6 +210,7 @@ def bind_api(
     ex = parse_exchange(req.exchange)
     if ex is None:
         raise_i18n(400, "api.unsupported_exchange")
+    _assert_exchange_open(ex)
 
     mode = (req.account_mode or "master").strip().lower()
     if mode == "sub":

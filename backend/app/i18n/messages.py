@@ -68,6 +68,10 @@ MESSAGES: dict[str, dict[str, str]] = {
         "zh": "不支持的交易所，请选择 Binance、DeepCoin、OKX 或 Gate.io",
         "en": "Unsupported exchange. Choose Binance, DeepCoin, OKX, or Gate.io",
     },
+    "api.exchange_not_open": {
+        "zh": "该交易所 API 绑定暂未开放，请选择已开放的交易所或稍后再试",
+        "en": "API binding for this exchange is not open yet. Choose an enabled exchange or try again later.",
+    },
     "api.verify_fail": {"zh": "API 验证失败", "en": "API verification failed"},
     "api.bind_success": {"zh": "绑定成功 · 初始本金 ${amount}", "en": "Bound successfully · Initial principal ${amount}"},
     "api.master_credentials_required": {

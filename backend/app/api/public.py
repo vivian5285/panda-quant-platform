@@ -121,6 +121,13 @@ def market_ticker():
     return payload
 
 
+@router.get("/platform-config")
+def platform_config():
+    from app.services.platform_public_settings import get_platform_public_settings
+
+    return get_platform_public_settings()
+
+
 @router.get("/stats")
 def platform_stats(db: Session = Depends(get_db)):
     users = db.query(User).count()

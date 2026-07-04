@@ -12,8 +12,26 @@ export default function AdminSystemTab() {
     online, monitor, signalLogs, riskAlerts, loginRecords, auditLogs,
     tradeLogs, exportTradeLogsCsv, orders, formatOrderUser, startupAudit, setTab,
     adminPwdDraft, setAdminPwdDraft, changeAdminPassword,
+    platformPublicSettings, platformPublicDraft, setPlatformPublicDraft, savePlatformPublicSettings,
   } = useAdmin()
   const [expandedLog, setExpandedLog] = useState<number | null>(null)
+
+  const allExchanges = platformPublicSettings?.all_exchanges || ['binance', 'okx', 'gate', 'deepcoin']
+  const exchangeLabelKeys: Record<string, string> = {
+    binance: 'api.exchangeBinance',
+    okx: 'api.exchangeOkx',
+    gate: 'api.exchangeGate',
+    deepcoin: 'api.exchangeDeepcoin',
+  }
+
+  const toggleExchange = (id: string) => {
+    const cur = platformPublicDraft?.enabled_exchanges || ['binance']
+    const next = cur.includes(id)
+      ? cur.filter((x: string) => x !== id)
+      : [...cur, id]
+    if (next.length === 0) return
+    setPlatformPublicDraft({ ...platformPublicDraft, enabled_exchanges: next })
+  }
 
   const audits = startupAudit?.audits || []
   const failures = startupAudit?.failures || []
@@ -24,6 +42,40 @@ export default function AdminSystemTab() {
 
   return (
     <>
+      <GlassCard className="p-6 section-mb-lg">
+        <h3 className="panel-title-sm mb-md">{t('admin.platformPublicSettingsTitle')}</h3>
+        <p className="text-muted text-sm section-mb-sm">{t('admin.platformPublicSettingsHint')}</p>
+        <form onSubmit={savePlatformPublicSettings} className="form-stack">
+          <div>
+            <p className="text-sm-strong section-mb-xs">{t('admin.enabledExchangesTitle')}</p>
+            <p className="text-muted text-xs section-mb-sm">{t('admin.enabledExchangesHint')}</p>
+            <div className="platform-exchange-toggles">
+              {allExchanges.map((id: string) => (
+                <label key={id} className="platform-exchange-toggle">
+                  <input
+                    type="checkbox"
+                    checked={(platformPublicDraft?.enabled_exchanges || []).includes(id)}
+                    onChange={() => toggleExchange(id)}
+                  />
+                  <span>{t(exchangeLabelKeys[id] as any) || id}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="form-field section-mt-sm">
+            <label className="form-label">{t('admin.supportTelegramTitle')}</label>
+            <input
+              className="input"
+              placeholder={t('admin.supportTelegramPh')}
+              value={platformPublicDraft?.support_telegram || ''}
+              onChange={e => setPlatformPublicDraft({ ...platformPublicDraft, support_telegram: e.target.value })}
+            />
+            <p className="text-muted form-hint-sm">{t('admin.supportTelegramHint')}</p>
+          </div>
+          <button className="btn btn-primary btn-sm" type="submit">{t('common.save')}</button>
+        </form>
+      </GlassCard>
+
       <div className="grid-2-col-gap section-mb-lg">
         <GlassCard className="p-6">
           <h3 className="panel-title-sm mb-md">{t('admin.platformSettingsLinkTitle')}</h3>

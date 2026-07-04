@@ -591,6 +591,17 @@ class DingTalkSettingsUpdate(BaseModel):
     clear: bool = False
 
 
+class PlatformPublicSettingsOut(BaseModel):
+    enabled_exchanges: list[str]
+    all_exchanges: list[str]
+    support_telegram: str = ""
+
+
+class PlatformPublicSettingsUpdate(BaseModel):
+    enabled_exchanges: Optional[list[str]] = None
+    support_telegram: Optional[str] = None
+
+
 class ChainRpcChainOut(BaseModel):
     configured: bool = False
     source: Optional[str] = None

@@ -54,6 +54,8 @@ export type AdminTabSetters = {
   setComplianceFilings?: (v: any[]) => void
   setComplianceReferralBlocks?: (v: any[]) => void
   setComplianceAuditLogs?: (v: any[]) => void
+  setPlatformPublicSettings?: (v: any) => void
+  setPlatformPublicDraft?: (v: { enabled_exchanges: string[]; support_telegram: string }) => void
 }
 
 export async function loadUsersList(filters: UserListFilters): Promise<any[]> {
@@ -271,6 +273,7 @@ export async function loadAdminTab(
         orders,
         startupAudit,
         dingtalk,
+        platformPublic,
       ] = await Promise.all([
         adminApi.systemMonitor().catch(() => null),
         adminApi.loginRecords().catch(() => []),
@@ -281,6 +284,7 @@ export async function loadAdminTab(
         adminApi.allOrders().catch(() => []),
         adminApi.startupAudit().catch(() => null),
         adminApi.dingtalkSettings().catch(() => null),
+        adminApi.platformPublicSettings().catch(() => null),
       ])
       setters.setMonitor(monitor)
       setters.setLoginRecords(loginRecords)
@@ -292,7 +296,14 @@ export async function loadAdminTab(
       setters.setStartupAudit?.(startupAudit)
       if (dingtalk) {
         setters.setDingtalkSettings(dingtalk)
-        setters.setDingtalkDraft({ webhook: '', secret: '' })
+        setters.setDingtalkDraft?.({ webhook: '', secret: '' })
+      }
+      if (platformPublic) {
+        setters.setPlatformPublicSettings?.(platformPublic)
+        setters.setPlatformPublicDraft?.({
+          enabled_exchanges: platformPublic.enabled_exchanges || ['binance'],
+          support_telegram: platformPublic.support_telegram || '',
+        })
       }
       break
     }

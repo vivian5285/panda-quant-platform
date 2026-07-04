@@ -114,6 +114,8 @@ export default function Admin() {
   const [walletOverviewLoading, setWalletOverviewLoading] = useState(false)
   const [dingtalkSettings, setDingtalkSettings] = useState<{ configured: boolean; has_secret: boolean; source?: string } | null>(null)
   const [dingtalkDraft, setDingtalkDraft] = useState({ webhook: '', secret: '' })
+  const [platformPublicSettings, setPlatformPublicSettings] = useState<any>(null)
+  const [platformPublicDraft, setPlatformPublicDraft] = useState({ enabled_exchanges: ['binance'] as string[], support_telegram: '' })
   const [chainRpcSettings, setChainRpcSettings] = useState<any>(null)
   const [chainRpcDraft, setChainRpcDraft] = useState<Record<string, string>>({
     ERC20: '', BEP20: '', ARBITRUM: '', POLYGON: '', tron_api_url: '', tron_api_key: '',
@@ -215,6 +217,8 @@ export default function Admin() {
     setComplianceFilings,
     setComplianceReferralBlocks,
     setComplianceAuditLogs,
+    setPlatformPublicSettings,
+    setPlatformPublicDraft,
   }), [])
 
   const userListFilters = useMemo((): UserListFilters => ({
@@ -455,6 +459,24 @@ export default function Admin() {
       load()
     } catch (err: any) {
       toast.error(err.response?.data?.detail || t('admin.dingtalkFail'))
+    }
+  }
+
+  const savePlatformPublicSettings = async (e: React.FormEvent) => {
+    e.preventDefault()
+    try {
+      const res = await adminApi.updatePlatformPublicSettings({
+        enabled_exchanges: platformPublicDraft.enabled_exchanges,
+        support_telegram: platformPublicDraft.support_telegram.trim(),
+      })
+      setPlatformPublicSettings(res)
+      setPlatformPublicDraft({
+        enabled_exchanges: res.enabled_exchanges || ['binance'],
+        support_telegram: res.support_telegram || '',
+      })
+      toast.success(t('admin.platformPublicSaved'))
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || t('admin.platformPublicSaveFail'))
     }
   }
 
@@ -1113,6 +1135,7 @@ export default function Admin() {
     saveSweepSettings, runSweepNow,
     walletOverview, walletOverviewLoading, refreshWalletOverview,
     dingtalkSettings, dingtalkDraft, setDingtalkDraft,
+    platformPublicSettings, platformPublicDraft, setPlatformPublicDraft, savePlatformPublicSettings,
     chainRpcSettings, chainRpcDraft, setChainRpcDraft,
     adminPwdDraft, setAdminPwdDraft,
     settlementDeposits, settlementAppeals, depositFilter, setDepositFilter, appealFilter, setAppealFilter,

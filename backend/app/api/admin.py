@@ -17,6 +17,7 @@ from app.schemas import (
     WalletOverviewOut,
     WebhookReceiveLogOut, WebhookReceiveLogDetailOut,
     DingTalkSettingsOut, DingTalkSettingsUpdate, ChainRpcSettingsOut, ChainRpcSettingsUpdate, AdminPasswordChange,
+    PlatformPublicSettingsOut, PlatformPublicSettingsUpdate,
     AdminSettlementDepositOut, AdminSettlementAppealOut, SettlementAppealReview,
     WithdrawThresholdsUpdate,
     WithdrawalOut, WithdrawalComplete, WithdrawalReject,
@@ -1093,6 +1094,44 @@ def admin_webhook_log_detail(
     if not detail:
         raise HTTPException(404, "Webhook log not found")
     return detail
+
+
+@router.get("/platform/public-settings", response_model=PlatformPublicSettingsOut)
+def admin_platform_public_settings(admin=Depends(get_admin_user)):
+    from app.services.platform_public_settings import get_platform_public_settings
+
+    return get_platform_public_settings()
+
+
+@router.patch("/platform/public-settings", response_model=PlatformPublicSettingsOut)
+def admin_update_platform_public_settings(
+    req: PlatformPublicSettingsUpdate,
+    request: Request,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.platform_public_settings import update_platform_public_settings
+
+    try:
+        updated = update_platform_public_settings(
+            enabled_exchanges=req.enabled_exchanges,
+            support_telegram=req.support_telegram,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    log_audit(
+        db,
+        "platform_public_settings.update",
+        actor_id=admin.id,
+        resource_type="platform_settings",
+        resource_id="platform_public",
+        detail={
+            "enabled_exchanges": updated.get("enabled_exchanges"),
+            "has_support_telegram": bool(updated.get("support_telegram")),
+        },
+        request=request,
+    )
+    return updated
 
 
 @router.get("/dingtalk/settings", response_model=DingTalkSettingsOut)

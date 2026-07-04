@@ -128,6 +128,7 @@ export const userApi = {
 export const publicApi = {
   stats: () => api.get('/public/stats').then(r => r.data),
   marketTicker: () => api.get('/public/market-ticker').then(r => r.data),
+  platformConfig: () => api.get('/public/platform-config').then(r => r.data),
 }
 
 export const strategyApi = {
@@ -239,6 +240,9 @@ export const adminApi = {
     api.get('/admin/compliance/referral-blocks', { params }).then(r => r.data),
   complianceAuditLogs: (params?: { q?: string; limit?: number }) =>
     api.get('/admin/compliance/audit-logs', { params }).then(r => r.data),
+  platformPublicSettings: () => api.get('/admin/platform/public-settings').then(r => r.data),
+  updatePlatformPublicSettings: (data: { enabled_exchanges?: string[]; support_telegram?: string }) =>
+    api.patch('/admin/platform/public-settings', data).then(r => r.data),
   referralsOverview: () => api.get('/admin/referrals/overview').then(r => r.data),
   syncUserExchangeLogs: (id: number, days = 90) =>
     api.post(`/admin/users/${id}/sync-exchange-logs`, null, { params: { days } }).then(r => r.data),
