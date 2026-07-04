@@ -118,6 +118,7 @@ export default function Admin() {
   const [dingtalkDraft, setDingtalkDraft] = useState({ webhook: '', secret: '' })
   const [webhookSettings, setWebhookSettings] = useState<{
     configured: boolean
+    production_ready?: boolean
     secret_length: number
     secret_preview: string
     source?: string
@@ -125,6 +126,7 @@ export default function Admin() {
     insecure: boolean
     min_length: number
   } | null>(null)
+  const [webhookSettingsLoadError, setWebhookSettingsLoadError] = useState(false)
   const [webhookSecretDraft, setWebhookSecretDraft] = useState('')
   const [platformPublicSettings, setPlatformPublicSettings] = useState<any>(null)
   const [platformPublicDraft, setPlatformPublicDraft] = useState({ enabled_exchanges: ['binance'] as string[], support_telegram: '' })
@@ -223,6 +225,7 @@ export default function Admin() {
     setDingtalkSettings,
     setDingtalkDraft,
     setWebhookSettings,
+    setWebhookSettingsLoadError,
     setChainRpcSettings,
     setChainRpcDraft,
     setSettlementDeposits,
@@ -489,6 +492,7 @@ export default function Admin() {
         secret: webhookSecretDraft.trim() || undefined,
       })
       setWebhookSettings(res)
+      setWebhookSettingsLoadError(false)
       setWebhookSecretDraft('')
       toast.success(t('admin.webhookSecretSaved'))
       load()
@@ -1221,7 +1225,7 @@ export default function Admin() {
     saveSweepSettings, runSweepNow,
     walletOverview, walletOverviewLoading, refreshWalletOverview,
     dingtalkSettings, dingtalkDraft, setDingtalkDraft,
-    webhookSettings, webhookSecretDraft, setWebhookSecretDraft,
+    webhookSettings, webhookSettingsLoadError, webhookSecretDraft, setWebhookSecretDraft,
     saveWebhookSettings, clearWebhookSettings,
     platformPublicSettings, platformPublicDraft, setPlatformPublicDraft, savePlatformPublicSettings,
     chainRpcSettings, chainRpcDraft, setChainRpcDraft,

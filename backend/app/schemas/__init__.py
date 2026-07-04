@@ -607,6 +607,7 @@ class DingTalkSettingsUpdate(BaseModel):
 
 class WebhookSettingsOut(BaseModel):
     configured: bool = False
+    production_ready: bool = False
     secret_length: int = 0
     secret_preview: str = ""
     source: Optional[str] = None

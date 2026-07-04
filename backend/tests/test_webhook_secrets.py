@@ -28,6 +28,7 @@ def test_update_webhook_settings_persists(monkeypatch):
     secret = "a" * 16
     out = ws.update_webhook_settings(secret=secret)
     assert out["configured"] is True
+    assert out["production_ready"] is True
     assert out["source"] == "runtime"
     assert out["insecure"] is False
     assert ws.get_webhook_secret() == secret
@@ -41,3 +42,17 @@ def test_update_rejects_short_secret():
 def test_update_rejects_insecure_default():
     with pytest.raises(ValueError, match="过于简单"):
         ws.update_webhook_settings(secret="528586528586")
+
+
+def test_get_webhook_public_url_production(monkeypatch):
+    monkeypatch.setattr(ws.settings, "API_PUBLIC_URL", "https://twinstar.pro")
+    monkeypatch.setattr(ws.settings, "WEBHOOK_PUBLIC_PATH", "/gemini/webhook")
+    monkeypatch.setattr(ws.settings, "PLATFORM_DOMAIN", "twinstar.pro")
+    assert ws.get_webhook_public_url() == "https://twinstar.pro/gemini/webhook"
+
+
+def test_get_webhook_public_url_domain_fallback(monkeypatch):
+    monkeypatch.setattr(ws.settings, "API_PUBLIC_URL", "")
+    monkeypatch.setattr(ws.settings, "PLATFORM_DOMAIN", "twinstar.pro")
+    monkeypatch.setattr(ws.settings, "WEBHOOK_PUBLIC_PATH", "/gemini/webhook")
+    assert ws.get_webhook_public_url() == "https://twinstar.pro/gemini/webhook"

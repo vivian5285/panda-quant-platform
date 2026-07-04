@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlparse
 
 from app.config import get_settings
 from app.services.platform_runtime import read_runtime_file, write_runtime_file
@@ -40,13 +41,26 @@ def _secret_insecure(secret: str) -> bool:
     return any(m in low for m in INSECURE_SECRET_MARKERS)
 
 
+def _normalize_public_path(path: str) -> str:
+    p = (path or "/gemini/webhook").strip()
+    return p if p.startswith("/") else f"/{p}"
+
+
 def get_webhook_public_url() -> str:
-    base = (settings.API_PUBLIC_URL or "").rstrip("/")
+    """Public TV alert URL — production uses https://twinstar.pro/gemini/webhook via nginx."""
+    path = _normalize_public_path(settings.WEBHOOK_PUBLIC_PATH)
+    base = (settings.API_PUBLIC_URL or "").strip().rstrip("/")
+    if base and not base.startswith("http://0000"):
+        parsed = urlparse(base)
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}{path}"
+
+    domain = (settings.PLATFORM_DOMAIN or "").strip()
+    if domain:
+        return f"https://{domain}{path}"
+
     port = int(settings.WEBHOOK_PORT or 6010)
-    if not base:
-        return f"http://localhost:{port}/webhook"
-    # If API_PUBLIC_URL already includes port, use as-is path only
-    return f"{base}:{port}/webhook" if ":6010" not in base and port != 443 and port != 80 else f"{base}/webhook"
+    return f"http://127.0.0.1:{port}/webhook"
 
 
 def get_webhook_settings() -> dict:
@@ -61,13 +75,15 @@ def get_webhook_settings() -> dict:
         preview = "*" * max(0, len(secret) - 4) + secret[-4:]
     elif secret:
         preview = "****"
+    insecure = _secret_insecure(secret)
     return {
         "configured": bool(secret),
+        "production_ready": bool(secret) and not insecure,
         "secret_length": len(secret),
         "secret_preview": preview,
         "source": source,
         "webhook_url": get_webhook_public_url(),
-        "insecure": _secret_insecure(secret),
+        "insecure": insecure,
         "min_length": 12,
     }
 

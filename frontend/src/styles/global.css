@@ -4099,6 +4099,8 @@ html[lang="zh-CN"] .framer-logo-text strong {
   overflow-x: auto;
   margin: 0;
 }
+.text-link { color: var(--primary, #3b82f6); text-decoration: underline; cursor: pointer; }
+.text-link:hover { opacity: 0.85; }
 .input-compact { font-size: 11px; padding: 4px 8px; }
 
 .chart-h-sm { height: 260px; }

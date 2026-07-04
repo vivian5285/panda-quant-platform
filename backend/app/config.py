@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:6080"
     API_PUBLIC_URL: str = "http://localhost:8000"
     WEBHOOK_PORT: int = 6010
+    WEBHOOK_PUBLIC_PATH: str = "/gemini/webhook"
     API_PORT: int = 8000
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7

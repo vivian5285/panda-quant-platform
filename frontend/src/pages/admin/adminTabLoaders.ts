@@ -43,6 +43,7 @@ export type AdminTabSetters = {
   setDingtalkSettings: (v: any) => void
   setDingtalkDraft: (v: { webhook: string; secret: string }) => void
   setWebhookSettings?: (v: any) => void
+  setWebhookSettingsLoadError?: (v: boolean) => void
   setChainRpcSettings?: (v: any) => void
   setChainRpcDraft?: (v: Record<string, string>) => void
   setSettlementDeposits: (v: any[]) => void
@@ -316,6 +317,9 @@ export async function loadAdminTab(
       }
       if (webhookSettings) {
         setters.setWebhookSettings?.(webhookSettings)
+        setters.setWebhookSettingsLoadError?.(false)
+      } else {
+        setters.setWebhookSettingsLoadError?.(true)
       }
       if (platformPublic) {
         setters.setPlatformPublicSettings?.(platformPublic)
