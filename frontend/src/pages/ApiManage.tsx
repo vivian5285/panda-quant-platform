@@ -332,6 +332,7 @@ export default function ApiManage() {
       const res = await userApi.verifyApi(buildBindPayload())
       setVerify(res)
       if (!isBindReady(res)) setError(res.message)
+      else setError('')
     } catch (err: any) {
       setError(err.response?.data?.detail || t('api.verifyFail'))
     } finally {

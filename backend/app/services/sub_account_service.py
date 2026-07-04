@@ -95,7 +95,7 @@ def scan_master_sub_accounts(
     can_list = bool(role_info.get("can_list_subs")) or (ex in STRICT_SUB_EXCHANGES and role_info.get("role") == "master")
 
     if ex in STRICT_SUB_EXCHANGES and require_sub_list:
-        if role_info.get("role") == "sub":
+        if role_info.get("role") == "sub" and role_info.get("confirmed_sub"):
             return {
                 "ok": False,
                 "message_key": "api.sub_api_in_master_mode",
@@ -446,8 +446,6 @@ def validate_master_account_binding(
     sub_scan_warning_key: str | None = None
     if not scan.get("ok"):
         scan_message_key = scan.get("message_key") or "api.master_sub_perm_required"
-        if scan_message_key == "api.sub_api_in_master_mode":
-            return _master_scan_failure(result, scan, scan_message_key)
 
         # Trading APIs often lack sub-account list permission; retry relaxed scan for UID.
         relaxed = scan_master_sub_accounts(
@@ -455,7 +453,7 @@ def validate_master_account_binding(
         )
         if relaxed.get("ok"):
             scan = relaxed
-            if scan_message_key == "api.master_sub_perm_required":
+            if scan_message_key in ("api.master_sub_perm_required", "api.sub_api_in_master_mode"):
                 sub_scan_warning_key = "api.master_sub_perm_recommended"
         else:
             return _master_scan_failure(result, scan, scan_message_key)

@@ -12,6 +12,20 @@ WS_MARKET_BASE = "wss://fstream.binance.com/market/ws"
 CLIENT_VERSION = "v13.4.6-flat-reconcile"
 
 
+def _error_indicates_sub_account_only(err: str) -> bool:
+    """True only when the exchange explicitly says this key is a sub-account key."""
+    e = err.lower()
+    explicit = (
+        "only available to master accounts",
+        "only master account",
+        "master account only",
+        "this endpoint only support master",
+        "sub-account api key",
+        "sub account api key",
+    )
+    return any(m in e for m in explicit)
+
+
 class BinanceClient:
     exchange_id = "binance"
 
@@ -367,28 +381,31 @@ class BinanceClient:
     def probe_trading_api_role(self) -> dict:
         """
         Detect whether this API key belongs to a master or sub-account.
-        Master keys can query sub-account/list; sub keys typically cannot.
+        Master keys can query sub-account/list when sub-management permission is enabled.
+        Permission denied on sub-account/list does NOT imply a sub-account key.
         """
         resolved_uid = self.get_exchange_uid()
         try:
             if not hasattr(self.client, "_request_margin_api"):
-                return {"role": "unknown", "resolved_uid": resolved_uid}
+                return {"role": "unknown", "resolved_uid": resolved_uid, "confirmed_sub": False}
             ts = self.client._get_timestamp() if hasattr(self.client, "_get_timestamp") else int(time.time() * 1000)
             self.client._request_margin_api(
                 "get", "sub-account/list", True, data={"timestamp": ts, "limit": 1}
             )
-            return {"role": "master", "resolved_uid": resolved_uid, "can_list_subs": True}
+            return {"role": "master", "resolved_uid": resolved_uid, "can_list_subs": True, "confirmed_sub": False}
         except Exception as e:
-            err = str(e).lower()
-            sub_markers = (
-                "sub-account", "sub account", "subaccount",
-                "not allowed", "permission", "-2015", "invalid api-key",
-            )
-            if any(m in err for m in sub_markers):
-                return {"role": "sub", "resolved_uid": resolved_uid, "can_list_subs": False}
+            err = str(e)
+            if _error_indicates_sub_account_only(err):
+                return {
+                    "role": "sub",
+                    "resolved_uid": resolved_uid,
+                    "can_list_subs": False,
+                    "confirmed_sub": True,
+                }
+            # Trading-only master APIs often lack sub-account/list permission (-2015 / -1002).
             if resolved_uid:
-                return {"role": "master", "resolved_uid": resolved_uid, "can_list_subs": False}
-            return {"role": "unknown", "resolved_uid": resolved_uid, "error": str(e)}
+                return {"role": "master", "resolved_uid": resolved_uid, "can_list_subs": False, "confirmed_sub": False}
+            return {"role": "unknown", "resolved_uid": resolved_uid, "error": err, "confirmed_sub": False}
 
     def verify_master_readonly(self) -> dict:
         """Verify master API can connect (no trading permission required)."""

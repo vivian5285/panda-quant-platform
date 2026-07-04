@@ -99,19 +99,27 @@ def test_validate_sub_account_binding_success(_taken, _filed, _blocked, mock_cli
 @patch("app.services.sub_account_service.scan_master_sub_accounts")
 @patch("app.services.sub_account_service.validate_exchange_api")
 @patch("app.services.sub_account_service.is_master_uid_blocked", return_value=False)
-def test_validate_master_rejects_sub_api(_blocked, mock_validate, mock_scan):
+def test_validate_master_rejects_confirmed_sub_scan(_blocked, mock_validate, mock_scan):
     mock_validate.return_value = {
         "valid": True,
         "total_balance": 100.0,
         "checks": [{"id": "connect", "ok": True}],
         "message_key": "api.verify_ok",
     }
-    mock_scan.return_value = {
-        "ok": False,
-        "message_key": "api.sub_api_in_master_mode",
-        "uid": "sub-99",
-        "sub_accounts": [],
-    }
+    mock_scan.side_effect = [
+        {
+            "ok": False,
+            "message_key": "api.sub_api_in_master_mode",
+            "uid": "sub-99",
+            "sub_accounts": [],
+        },
+        {
+            "ok": False,
+            "message_key": "api.sub_api_in_master_mode",
+            "uid": "sub-99",
+            "sub_accounts": [],
+        },
+    ]
     db = MagicMock()
     result = validate_master_account_binding(db, 1, "binance", "k", "s")
     assert result["valid"] is False

@@ -17,6 +17,7 @@ import requests
 
 from app.config import get_settings
 from app.core.symbol_precision import format_price, format_quantity
+from app.core.binance_client import _error_indicates_sub_account_only
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -464,19 +465,21 @@ class OkxClient:
         try:
             res = self._request("GET", "/users/subaccount/list")
             if isinstance(res, dict) and str(res.get("code", "")) == "0":
-                return {"role": "master", "resolved_uid": resolved_uid, "can_list_subs": True}
-            msg = str((res or {}).get("msg", "")).lower()
+                return {"role": "master", "resolved_uid": resolved_uid, "can_list_subs": True, "confirmed_sub": False}
+            msg = str((res or {}).get("msg", ""))
             code = str((res or {}).get("code", ""))
-            if code in ("53000", "53002", "50100") or "sub-account" in msg or "permission" in msg:
-                return {"role": "sub", "resolved_uid": resolved_uid, "can_list_subs": False}
+            if _error_indicates_sub_account_only(msg):
+                return {"role": "sub", "resolved_uid": resolved_uid, "can_list_subs": False, "confirmed_sub": True}
             if resolved_uid:
-                return {"role": "master", "resolved_uid": resolved_uid, "can_list_subs": False}
-            return {"role": "unknown", "resolved_uid": resolved_uid}
+                return {"role": "master", "resolved_uid": resolved_uid, "can_list_subs": False, "confirmed_sub": False}
+            return {"role": "unknown", "resolved_uid": resolved_uid, "confirmed_sub": False}
         except Exception as e:
-            err = str(e).lower()
-            if "sub" in err and "account" in err:
-                return {"role": "sub", "resolved_uid": resolved_uid, "can_list_subs": False}
-            return {"role": "unknown", "resolved_uid": resolved_uid, "error": str(e)}
+            err = str(e)
+            if _error_indicates_sub_account_only(err):
+                return {"role": "sub", "resolved_uid": resolved_uid, "can_list_subs": False, "confirmed_sub": True}
+            if resolved_uid:
+                return {"role": "master", "resolved_uid": resolved_uid, "can_list_subs": False, "confirmed_sub": False}
+            return {"role": "unknown", "resolved_uid": resolved_uid, "error": err, "confirmed_sub": False}
 
     def verify_master_readonly(self) -> dict:
         try:
