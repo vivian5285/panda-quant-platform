@@ -5085,6 +5085,102 @@ html[lang="zh-CN"] .framer-logo-text strong {
   margin: 0 0 6px;
 }
 
+.abg-step-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--abg-accent);
+  margin-bottom: 4px;
+}
+
+.abg-toc-card {
+  border: 1px solid color-mix(in srgb, var(--abg-accent) 22%, transparent);
+}
+
+.abg-toc-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.abg-toc {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px 16px;
+}
+
+.abg-toc a {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  text-decoration: none;
+  line-height: 1.45;
+  padding: 6px 8px;
+  border-radius: 8px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.abg-toc a:hover {
+  background: var(--abg-accent-soft);
+  color: var(--text-primary);
+}
+
+.abg-toc-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--abg-accent);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.abg-substeps {
+  list-style: none;
+  padding: 0;
+  margin: 14px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.abg-substeps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--pq-surface-hover, #1a1a2e) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--glass-border, #333) 50%, transparent);
+}
+
+.abg-substep-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--abg-accent) 18%, transparent);
+  color: var(--abg-accent);
+  font-weight: 700;
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
 .abg-step-lead {
   font-size: 0.9rem;
   line-height: 1.6;

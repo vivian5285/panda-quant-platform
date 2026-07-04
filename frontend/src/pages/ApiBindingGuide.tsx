@@ -11,18 +11,36 @@ import FramerBrand from '../components/FramerBrand'
 import { useAuth } from '../store/auth'
 import { useTranslation } from '../i18n'
 
-const BINANCE_STEP_IDS = ['bn1', 'bn2', 'bn3', 'bn4', 'bn5', 'bn6', 'bn7', 'bn8'] as const
-const GEMINI_STEP_IDS = ['gem1', 'gem2', 'gem3', 'gem4'] as const
-
-const STEP_IMAGES: Partial<Record<string, string>> = {
-  bn1: '/guides/api-binding/step-bn-01-futures.png',
-  gem1: '/guides/api-binding/step-gem-01-sidebar.png',
-  gem2: '/guides/api-binding/step-gem-02-exchange.png',
-  gem3: '/guides/api-binding/step-gem-03-paste-keys.png',
-  gem4: '/guides/api-binding/step-gem-04-verify-bind.png',
+type GuideStep = {
+  id: string
+  image?: string
+  substeps?: string[]
 }
 
+/** 币安 ①–⑬ + GEMINI ⑭–⑰，与截图标注序号一致 */
+const BINANCE_STEPS: GuideStep[] = [
+  { id: 'bn1', image: '/guides/api-binding/step-bn-01-futures.png', substeps: ['s1', 's2', 's3', 's4'] },
+  { id: 'bn2', substeps: ['s5'] },
+  { id: 'bn3', substeps: ['s6'] },
+  { id: 'bn4', substeps: ['s7', 's8'] },
+  { id: 'bn5', substeps: ['s9'] },
+  { id: 'bn6', substeps: ['s10'] },
+  { id: 'bn7', image: '/guides/api-binding/step-bn-07-permissions.png', substeps: ['s11', 's12', 's13'] },
+]
+
+const GEMINI_STEPS: GuideStep[] = [
+  { id: 'gem1', image: '/guides/api-binding/step-gem-01-sidebar.png', substeps: ['s14'] },
+  { id: 'gem2', image: '/guides/api-binding/step-gem-02-exchange.png', substeps: ['s15'] },
+  { id: 'gem3', image: '/guides/api-binding/step-gem-03-paste-keys.png', substeps: ['s16'] },
+  { id: 'gem4', image: '/guides/api-binding/step-gem-04-verify-bind.png', substeps: ['s17'] },
+]
+
 const CHECKLIST_KEYS = ['futures', 'noWithdraw', 'oneWay', 'balance', 'ip'] as const
+
+const TOC_IDS = [
+  ...BINANCE_STEPS.flatMap(s => s.substeps || []),
+  ...GEMINI_STEPS.flatMap(s => s.substeps || []),
+]
 
 function GuideFooter() {
   const { t } = useTranslation()
@@ -40,35 +58,58 @@ function GuideFooter() {
   )
 }
 
-function StepCard({ stepId, index }: { stepId: string; index: number }) {
+function StepCard({
+  step,
+  startIndex,
+}: {
+  step: GuideStep
+  startIndex: number
+}) {
   const { t } = useTranslation()
-  const image = STEP_IMAGES[stepId]
+  const substeps = step.substeps || []
+  const caption = t(`apiBindingGuide.steps.${step.id}.caption`)
+  const tip = t(`apiBindingGuide.steps.${step.id}.tip`)
+
   return (
-    <article className="abg-step-card" id={`step-${stepId}`}>
+    <article className="abg-step-card" id={`step-${step.id}`}>
       <div className="abg-step-head">
-        <span className="abg-step-num">{index}</span>
+        <span className="abg-step-num">{startIndex}</span>
         <div>
-          <h3>{t(`apiBindingGuide.steps.${stepId}.title`)}</h3>
-          <p className="text-muted abg-step-lead">{t(`apiBindingGuide.steps.${stepId}.body`)}</p>
+          <p className="abg-step-badge">{t(`apiBindingGuide.steps.${step.id}.badge`)}</p>
+          <h3>{t(`apiBindingGuide.steps.${step.id}.title`)}</h3>
+          <p className="text-muted abg-step-lead">{t(`apiBindingGuide.steps.${step.id}.body`)}</p>
         </div>
       </div>
-      {image && (
+
+      {substeps.length > 0 && (
+        <ol className="abg-substeps">
+          {substeps.map((sid, i) => (
+            <li key={sid} id={`step-${sid}`}>
+              <span className="abg-substep-index">{startIndex + i}</span>
+              <span>{t(`apiBindingGuide.substeps.${sid}`)}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+
+      {step.image && (
         <figure className="abg-step-figure">
           <img
-            src={image}
-            alt={t(`apiBindingGuide.steps.${stepId}.title`)}
+            src={step.image}
+            alt={t(`apiBindingGuide.steps.${step.id}.title`)}
             loading="lazy"
             decoding="async"
           />
-          <figcaption className="text-muted text-xs">
-            {t(`apiBindingGuide.steps.${stepId}.caption`)}
-          </figcaption>
+          {caption && (
+            <figcaption className="text-muted text-xs">{caption}</figcaption>
+          )}
         </figure>
       )}
-      {t(`apiBindingGuide.steps.${stepId}.tip`) && (
+
+      {tip && (
         <p className="abg-step-tip">
           <ChevronRight size={14} />
-          {t(`apiBindingGuide.steps.${stepId}.tip`)}
+          {tip}
         </p>
       )}
     </article>
@@ -78,6 +119,32 @@ function StepCard({ stepId, index }: { stepId: string; index: number }) {
 function GuideContent() {
   const { t } = useTranslation()
   const token = useAuth(s => s.token)
+
+  let stepCounter = 0
+  const renderPhase = (steps: GuideStep[], phaseKey: 'binance' | 'gemini') => {
+    const cards = steps.map(step => {
+      const subCount = step.substeps?.length || 1
+      const start = stepCounter + 1
+      stepCounter += subCount
+      return <StepCard key={step.id} step={step} startIndex={start} />
+    })
+    return (
+      <section className="abg-phase section-mb-lg">
+        <div className="abg-phase-head">
+          <span className={`abg-phase-badge abg-phase-badge-${phaseKey === 'binance' ? 'binance' : 'gemini'}`}>
+            {phaseKey === 'binance' ? 'A' : 'B'}
+          </span>
+          <div>
+            <h2>{t(`apiBindingGuide.phase${phaseKey === 'binance' ? 'Binance' : 'Gemini'}Title`)}</h2>
+            <p className="text-muted text-sm">
+              {t(`apiBindingGuide.phase${phaseKey === 'binance' ? 'Binance' : 'Gemini'}Desc`)}
+            </p>
+          </div>
+        </div>
+        <div className="abg-steps">{cards}</div>
+      </section>
+    )
+  }
 
   return (
     <div className="api-binding-guide">
@@ -108,6 +175,20 @@ function GuideContent() {
         </div>
       </GlassCard>
 
+      <GlassCard className="p-5 section-mb-lg abg-toc-card">
+        <h3 className="abg-toc-title">{t('apiBindingGuide.tocTitle')}</h3>
+        <ol className="abg-toc">
+          {TOC_IDS.map((sid, i) => (
+            <li key={sid}>
+              <a href={`#step-${sid}`}>
+                <span className="abg-toc-num">{i + 1}</span>
+                {t(`apiBindingGuide.substeps.${sid}`)}
+              </a>
+            </li>
+          ))}
+        </ol>
+      </GlassCard>
+
       <GlassCard className="p-5 section-mb-lg abg-checklist-card">
         <div className="abg-checklist-head">
           <Shield size={20} />
@@ -123,35 +204,8 @@ function GuideContent() {
         </ul>
       </GlassCard>
 
-      <section className="abg-phase section-mb-lg">
-        <div className="abg-phase-head">
-          <span className="abg-phase-badge abg-phase-badge-binance">A</span>
-          <div>
-            <h2>{t('apiBindingGuide.phaseBinanceTitle')}</h2>
-            <p className="text-muted text-sm">{t('apiBindingGuide.phaseBinanceDesc')}</p>
-          </div>
-        </div>
-        <div className="abg-steps">
-          {BINANCE_STEP_IDS.map((id, i) => (
-            <StepCard key={id} stepId={id} index={i + 1} />
-          ))}
-        </div>
-      </section>
-
-      <section className="abg-phase section-mb-lg">
-        <div className="abg-phase-head">
-          <span className="abg-phase-badge abg-phase-badge-gemini">B</span>
-          <div>
-            <h2>{t('apiBindingGuide.phaseGeminiTitle')}</h2>
-            <p className="text-muted text-sm">{t('apiBindingGuide.phaseGeminiDesc')}</p>
-          </div>
-        </div>
-        <div className="abg-steps">
-          {GEMINI_STEP_IDS.map((id, i) => (
-            <StepCard key={id} stepId={id} index={BINANCE_STEP_IDS.length + i + 1} />
-          ))}
-        </div>
-      </section>
+      {renderPhase(BINANCE_STEPS, 'binance')}
+      {renderPhase(GEMINI_STEPS, 'gemini')}
 
       <GlassCard className="p-6 abg-finish">
         <div className="abg-finish-icons">
