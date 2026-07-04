@@ -98,20 +98,6 @@ def validate_production_infra(db: Session | None = None) -> list[str]:
         if not settings.ENABLE_BACKGROUND_SCHEDULERS:
             notes.append("ENABLE_BACKGROUND_SCHEDULERS=false（结算扫描与充值监控未启用）")
 
-        rpc_checks = [
-            ("ETH_RPC_URL", settings.ETH_RPC_URL, "ERC20/Arbitrum 充值监控与 EVM 打款"),
-            ("BSC_RPC_URL", settings.BSC_RPC_URL, "BEP20 充值监控与 BSC 打款"),
-        ]
-        if is_deposit_mnemonic_configured() or settings.PAYOUT_AUTO_ENABLED:
-            for name, val, purpose in rpc_checks:
-                if not (val or "").strip():
-                    notes.append(f"{name} 未配置（{purpose}）")
-            if is_deposit_mnemonic_configured():
-                if not settings.ARBITRUM_RPC_URL.strip():
-                    notes.append("ARBITRUM_RPC_URL 未配置（Arbitrum USDT 充值监控）")
-                if not settings.POLYGON_RPC_URL.strip():
-                    notes.append("POLYGON_RPC_URL 未配置（Polygon USDT 充值监控）")
-
     return notes
 
 
