@@ -610,6 +610,29 @@ export default function ApiManage() {
           </div>
 
           {accountMode === 'sub' && (
+            <GlassCard className="p-4 section-mb-sm api-mode-guide">
+              <h4 className="card-heading text-sm">{t('api.subModeGuideTitle')}</h4>
+              <ol className="api-prep-steps text-sm">
+                <li><strong>{t('api.subModeStep1Title')}</strong><p>{t('api.subModeStep1Body')}</p></li>
+                <li><strong>{t('api.subModeStep2Title')}</strong><p>{t('api.subModeStep2Body')}</p></li>
+                <li><strong>{t('api.subModeStep3Title')}</strong><p>{t('api.subModeStep3Body')}</p></li>
+              </ol>
+            </GlassCard>
+          )}
+
+          {accountMode === 'master' && (
+            <GlassCard className="p-4 section-mb-sm api-mode-guide">
+              <h4 className="card-heading text-sm">{t('api.masterFilingTitle')}</h4>
+              <p className="text-muted text-sm section-mb-sm">{t('api.masterFilingHint')}</p>
+              <ol className="api-prep-steps text-sm">
+                <li><strong>{t('api.masterGuideStep1Title')}</strong><p>{t('api.masterGuideStep1Body')}</p></li>
+                <li><strong>{t('api.masterGuideStep2Title')}</strong><p>{t('api.masterGuideStep2Body')}</p></li>
+                <li><strong>{t('api.masterGuideStep3Title')}</strong><p>{t('api.masterGuideStep3Body')}</p></li>
+              </ol>
+            </GlassCard>
+          )}
+
+          {accountMode === 'sub' && (
             <GlassCard className="p-4 section-mb-sm">
               <h4 className="card-heading text-sm">{t('api.masterSectionTitle')}</h4>
               <p className="text-muted text-sm section-mb-sm">{t('api.masterSectionHint')}</p>
@@ -630,6 +653,7 @@ export default function ApiManage() {
               <div className="form-field">
                 <label className="form-label">{t('api.masterUidLabel')}</label>
                 <input className="input" value={masterExchangeUid} onChange={e => setMasterExchangeUid(e.target.value)} placeholder={t('api.masterUidPh')} />
+                <p className="text-muted form-hint-sm">{t('api.masterUidHintSub')}</p>
               </div>
               <div className="api-actions">
                 <button
@@ -687,7 +711,7 @@ export default function ApiManage() {
               <div className="form-field">
                 <label className="form-label">{t('api.masterUidLabel')}</label>
                 <input className="input" value={masterExchangeUid} onChange={e => setMasterExchangeUid(e.target.value)} placeholder={t('api.masterUidPh')} />
-                <p className="text-muted form-hint-sm">{t('api.masterUidPh')}</p>
+                <p className="text-muted form-hint-sm">{t('api.masterUidHintMaster')}</p>
               </div>
             )}
           </GlassCard>

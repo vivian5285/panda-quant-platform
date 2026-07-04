@@ -38,6 +38,48 @@ def downline_has_credit_default(db: Session, user_id: int) -> bool:
     return False
 
 
+def get_referral_block_details(db: Session, user_id: int) -> list[dict]:
+    """Per-user breakdown for referral block UI (own unpaid or which downlines)."""
+    reason = referral_block_reason(db, user_id)
+    if not reason:
+        return []
+
+    from app.services.referral_stats import build_downline_stats
+    from app.services.user_lookup import display_name
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        return []
+
+    def _row(u: User, level: int, scope: str) -> dict:
+        stats = build_downline_stats(db, u)
+        return {
+            "user_id": u.id,
+            "platform_uid": u.uid or "",
+            "display_name": display_name(u),
+            "level": level,
+            "scope": scope,
+            "pending_perf_fee": round(float(stats.get("pending_perf_fee") or 0), 2),
+            "settlement_status": stats.get("settlement_status"),
+            "exchange": stats.get("exchange", "binance"),
+        }
+
+    if reason == "own_credit_default":
+        return [_row(user, 0, "own")]
+
+    out: list[dict] = []
+    l1_rows = db.query(User).filter(User.referrer_id == user_id).all()
+    for u in l1_rows:
+        if user_is_credit_default(db, u.id):
+            out.append(_row(u, 1, "downline"))
+    l1_ids = [u.id for u in l1_rows]
+    if l1_ids:
+        for u in db.query(User).filter(User.referrer_id.in_(l1_ids)).all():
+            if user_is_credit_default(db, u.id):
+                out.append(_row(u, 2, "downline"))
+    return out
+
+
 def referral_block_reason(db: Session, user_id: int) -> str | None:
     """
     Why referral sharing is blocked.

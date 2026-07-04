@@ -10,6 +10,7 @@ import TabBar from '../components/TabBar'
 import { referralApi, walletApi } from '../api'
 import { useI18n, localeDate } from '../i18n'
 import ReferralTree from '../components/ReferralTree'
+import ReferralBlockDetailList from '../components/ReferralBlockDetailList'
 import DownlineLogsModal from '../components/DownlineLogsModal'
 
 type TabKey = 'overview' | 'l1' | 'l2' | 'commissions'
@@ -199,6 +200,11 @@ export default function Referrals() {
           <GlassCard className="p-4 section-mb-md referral-unpaid-banner">
             <p className="text-sm-strong text-red section-mb-xs">{copy.title}</p>
             <p className="text-sm text-muted">{copy.body}</p>
+            <ReferralBlockDetailList
+              details={data.referral_block_details || []}
+              reason={data.referral_block_reason}
+              t={t}
+            />
           </GlassCard>
         )
       })()}

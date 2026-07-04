@@ -51,6 +51,9 @@ export type AdminTabSetters = {
   setPlatformAnalytics: (v: any) => void
   setStartupAudit?: (v: any) => void
   setWalletOverview?: (v: any) => void
+  setComplianceFilings?: (v: any[]) => void
+  setComplianceReferralBlocks?: (v: any[]) => void
+  setComplianceAuditLogs?: (v: any[]) => void
 }
 
 export async function loadUsersList(filters: UserListFilters): Promise<any[]> {
@@ -71,10 +74,12 @@ export async function loadAdminTab(
   opts: {
     userFilters?: UserListFilters
     auditSearch?: string
+    complianceSearch?: string
+    complianceExchange?: string
     analyticsDays?: number
   } = {},
 ): Promise<void> {
-  const { userFilters, auditSearch = '', analyticsDays = 14 } = opts
+  const { userFilters, auditSearch = '', analyticsDays = 14, complianceSearch = '', complianceExchange = '' } = opts
 
   switch (tab) {
     case 'home': {
@@ -166,12 +171,28 @@ export async function loadAdminTab(
       break
     }
     case 'audit': {
-      const [auditLogs, webhookLogs] = await Promise.all([
+      const [auditLogs, webhookLogs, filings, referralBlocks, complianceLogs] = await Promise.all([
         adminApi.auditLogs({ q: auditSearch.trim() || undefined, limit: 200 }).catch(() => []),
         adminApi.webhookLogs({ limit: 200 }).catch(() => []),
+        adminApi.complianceSubFilings({
+          q: complianceSearch.trim() || undefined,
+          exchange: complianceExchange || undefined,
+          limit: 200,
+        }).catch(() => ({ items: [] })),
+        adminApi.complianceReferralBlocks({
+          q: complianceSearch.trim() || undefined,
+          limit: 100,
+        }).catch(() => ({ items: [] })),
+        adminApi.complianceAuditLogs({
+          q: complianceSearch.trim() || undefined,
+          limit: 200,
+        }).catch(() => ({ items: [] })),
       ])
       setters.setAuditLogs(auditLogs)
       setters.setWebhookLogs?.(webhookLogs)
+      setters.setComplianceFilings?.(filings?.items || [])
+      setters.setComplianceReferralBlocks?.(referralBlocks?.items || [])
+      setters.setComplianceAuditLogs?.(complianceLogs?.items || [])
       break
     }
     case 'withdrawals':

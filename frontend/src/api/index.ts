@@ -231,6 +231,14 @@ export const adminApi = {
     api.get(`/admin/users/${id}/referral-stats`).then(r => r.data),
   linkedExchangeAccounts: (id: number) =>
     api.get(`/admin/users/${id}/linked-exchange-accounts`).then(r => r.data),
+  userSubAccountFilings: (id: number) =>
+    api.get(`/admin/users/${id}/sub-account-filings`).then(r => r.data),
+  complianceSubFilings: (params?: { q?: string; exchange?: string; limit?: number; offset?: number }) =>
+    api.get('/admin/compliance/sub-account-filings', { params }).then(r => r.data),
+  complianceReferralBlocks: (params?: { q?: string; limit?: number; offset?: number }) =>
+    api.get('/admin/compliance/referral-blocks', { params }).then(r => r.data),
+  complianceAuditLogs: (params?: { q?: string; limit?: number }) =>
+    api.get('/admin/compliance/audit-logs', { params }).then(r => r.data),
   referralsOverview: () => api.get('/admin/referrals/overview').then(r => r.data),
   syncUserExchangeLogs: (id: number, days = 90) =>
     api.post(`/admin/users/${id}/sync-exchange-logs`, null, { params: { days } }).then(r => r.data),

@@ -186,7 +186,12 @@ def api_status(user: User = Depends(get_current_user)):
 
 
 @router.post("/bind-api")
-def bind_api(req: ApiBindRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def bind_api(
+    req: ApiBindRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     if user.email and user.phone:
         if not req.email_code or not req.phone_code:
             raise_i18n(400, "api.security_codes_required")
@@ -278,6 +283,21 @@ def bind_api(req: ApiBindRequest, db: Session = Depends(get_db), user: User = De
         equity=equity,
         note="首次绑定 API，记载初始本金",
     )
+    log_audit(
+        db,
+        "api.bind",
+        user_id=user.id,
+        resource_type="api",
+        resource_id=str(user.id),
+        detail={
+            "exchange": ex,
+            "account_mode": user.api_account_mode,
+            "exchange_uid": user.exchange_uid,
+            "master_exchange_uid": user.master_exchange_uid,
+            "filed_sub_count": filed_count,
+        },
+        request=request,
+    )
     db.commit()
 
     supervisor_pool.remove_user(user.id)
@@ -298,6 +318,7 @@ def bind_api(req: ApiBindRequest, db: Session = Depends(get_db), user: User = De
 def unbind_api(
     email_code: str,
     phone_code: str,
+    request: Request,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -310,6 +331,7 @@ def unbind_api(
         verify_security_dual(db, user, email_code, phone_code)
 
     supervisor_pool.remove_user(user.id)
+    prev_exchange = user.exchange
     user.api_key_enc = None
     user.api_secret_enc = None
     user.passphrase_enc = None
@@ -323,6 +345,15 @@ def unbind_api(
     user.master_exchange_uid = None
     deactivate_exchange_registry(db, user.id)
     deactivate_sub_account_filings(db, user.id)
+    log_audit(
+        db,
+        "api.unbind",
+        user_id=user.id,
+        resource_type="api",
+        resource_id=str(user.id),
+        detail={"previous_exchange": prev_exchange},
+        request=request,
+    )
     db.commit()
     return {"status": "ok", "api_status": user.api_status}
 

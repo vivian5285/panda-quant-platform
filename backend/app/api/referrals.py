@@ -11,7 +11,7 @@ from app.services.referral_code import canonical_referral_code
 from app.services.referral_stats import build_downline_stats, expected_referrer_reward
 from app.schemas import (
     ReferralSummary, ReferralUserOut, ReferralInviteOut, ReferralCommissionOut,
-    SettlementOut, TradeLogOut, ReferralDownlineDetailOut, TradeOut,
+    SettlementOut, TradeLogOut, ReferralDownlineDetailOut, TradeOut, ReferralBlockDetailOut,
 )
 from app.api.deps import get_current_user
 from app.config import get_settings
@@ -104,11 +104,13 @@ def _assert_downline_access(db: Session, referrer: User, target_id: int) -> tupl
 
 @router.get("/referrals/invite", response_model=ReferralInviteOut)
 def referral_invite(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    from app.services.credit_control import referral_block_reason
+    from app.services.credit_control import get_referral_block_details, referral_block_reason
+    from app.services.trading_control import get_user_control
 
     code = canonical_referral_code(user.referral_code)
     reason = referral_block_reason(db, user.id)
     ctrl = get_user_control(db, user.id)
+    details = get_referral_block_details(db, user.id) if reason else []
     return ReferralInviteOut(
         referral_code=code,
         invite_url=build_invite_url(user.referral_code, user.uid),
@@ -118,6 +120,7 @@ def referral_invite(user: User = Depends(get_current_user), db: Session = Depend
         referral_blocked=reason is not None,
         referral_block_reason=reason,
         referral_invite_override=bool(ctrl.get("referral_invite_override")),
+        referral_block_details=[ReferralBlockDetailOut(**d) for d in details],
     )
 
 
@@ -149,11 +152,12 @@ def referral_summary(user: User = Depends(get_current_user), db: Session = Depen
     all_downline = l1_out + l2_out
     unpaid = [u for u in all_downline if (u.pending_perf_fee or 0) > 0]
 
-    from app.services.credit_control import referral_block_reason
+    from app.services.credit_control import get_referral_block_details, referral_block_reason
     from app.services.trading_control import get_user_control
 
     blocked = referral_block_reason(db, user.id)
     ctrl = get_user_control(db, user.id)
+    block_details = get_referral_block_details(db, user.id) if blocked else []
 
     return ReferralSummary(
         referral_code=canonical_referral_code(user.referral_code),
@@ -171,6 +175,7 @@ def referral_summary(user: User = Depends(get_current_user), db: Session = Depen
         referral_blocked=blocked is not None,
         referral_block_reason=blocked,
         referral_invite_override=bool(ctrl.get("referral_invite_override")),
+        referral_block_details=[ReferralBlockDetailOut(**d) for d in block_details],
         l1_users=l1_out, l2_users=l2_out,
     )
 

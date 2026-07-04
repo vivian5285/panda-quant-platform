@@ -63,6 +63,12 @@ export default function Admin() {
   const [dispatchUserResults, setDispatchUserResults] = useState<any[]>([])
   const [dispatchResultsLoading, setDispatchResultsLoading] = useState(false)
   const [auditSearch, setAuditSearch] = useState('')
+  const [complianceSearch, setComplianceSearch] = useState('')
+  const [complianceExchangeFilter, setComplianceExchangeFilter] = useState('')
+  const [complianceFilings, setComplianceFilings] = useState<any[]>([])
+  const [complianceReferralBlocks, setComplianceReferralBlocks] = useState<any[]>([])
+  const [complianceAuditLogs, setComplianceAuditLogs] = useState<any[]>([])
+  const [userSubAccountFilings, setUserSubAccountFilings] = useState<any[]>([])
   const [riskDraft, setRiskDraft] = useState('1.0')
   const [auditLogs, setAuditLogs] = useState<any[]>([])
   const [webhookLogs, setWebhookLogs] = useState<any[]>([])
@@ -149,6 +155,7 @@ export default function Admin() {
     adminApi.userTradingControl(id).then(setUserTradingCtrl).catch(() => setUserTradingCtrl(null))
     adminApi.userReferralStats(id).then(setUserReferralStats).catch(() => setUserReferralStats(null))
     adminApi.linkedExchangeAccounts(id).then(setLinkedExchangeAccounts).catch(() => setLinkedExchangeAccounts(null))
+    adminApi.userSubAccountFilings(id).then((r: any) => setUserSubAccountFilings(r?.filings || [])).catch(() => setUserSubAccountFilings([]))
     adminApi.userPrincipalHistory(id).then(setUserPrincipalHistory).catch(() => setUserPrincipalHistory([]))
   }
 
@@ -159,6 +166,7 @@ export default function Admin() {
     setUserLogs([])
     setUserReferralStats(null)
     setLinkedExchangeAccounts(null)
+    setUserSubAccountFilings([])
     setUserPrincipalHistory([])
   }
 
@@ -204,6 +212,9 @@ export default function Admin() {
     setPlatformAnalytics,
     setStartupAudit,
     setWalletOverview,
+    setComplianceFilings,
+    setComplianceReferralBlocks,
+    setComplianceAuditLogs,
   }), [])
 
   const userListFilters = useMemo((): UserListFilters => ({
@@ -217,8 +228,10 @@ export default function Admin() {
     await loadAdminTab(targetTab, tabSetters, {
       userFilters: targetTab === 'users' ? userListFilters : undefined,
       auditSearch,
+      complianceSearch,
+      complianceExchange: complianceExchangeFilter,
     })
-  }, [tab, tabSetters, userListFilters, auditSearch])
+  }, [tab, tabSetters, userListFilters, auditSearch, complianceSearch, complianceExchangeFilter])
 
   const refreshTabRef = useRef(refreshTab)
   refreshTabRef.current = refreshTab
@@ -243,10 +256,14 @@ export default function Admin() {
   useEffect(() => {
     if (!token || tab !== 'audit') return
     const debounce = setTimeout(() => {
-      loadAdminTab('audit', tabSetters, { auditSearch }).catch(() => {})
+      loadAdminTab('audit', tabSetters, {
+        auditSearch,
+        complianceSearch,
+        complianceExchange: complianceExchangeFilter,
+      }).catch(() => {})
     }, 400)
     return () => clearTimeout(debounce)
-  }, [token, tab, auditSearch, tabSetters])
+  }, [token, tab, auditSearch, complianceSearch, complianceExchangeFilter, tabSetters])
 
   useEffect(() => {
     if (payoutSettings) setPayoutAutoDraft(!!payoutSettings.auto_enabled)
@@ -1077,6 +1094,9 @@ export default function Admin() {
     webhookPayload, setWebhookPayload,
     selectedDispatchId, setSelectedDispatchId, dispatchUserResults, dispatchResultsLoading,
     auditSearch, setAuditSearch,
+    complianceSearch, setComplianceSearch,
+    complianceExchangeFilter, setComplianceExchangeFilter,
+    complianceFilings, complianceReferralBlocks, complianceAuditLogs,
     webhookLogs, webhookSearch, setWebhookSearch, webhookStatusFilter, setWebhookStatusFilter,
     selectedWebhookId, webhookDetail, webhookDetailLoading,
     loadWebhookDetail, closeWebhookDetail, exportWebhookCsv, webhookEventStatusLabel,
@@ -1100,7 +1120,7 @@ export default function Admin() {
     completeTx, setCompleteTx,
     selectedUserId, userDetail, userTrades, userLogs, setUserLogs,
     userDetailTab, setUserDetailTab,
-    userReferralStats, userPrincipalHistory, referralOverview, linkedExchangeAccounts,
+    userReferralStats, userPrincipalHistory, referralOverview, linkedExchangeAccounts, userSubAccountFilings,
     signalTemplates, signalLogs, userTradingCtrl,
     newTemplate, setNewTemplate, editTemplate, setEditTemplate,
     platformAnalytics,

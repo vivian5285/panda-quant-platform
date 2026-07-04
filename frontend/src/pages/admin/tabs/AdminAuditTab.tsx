@@ -3,7 +3,7 @@ import GlassCard from '../../../components/GlassCard'
 import { localeDate } from '../../../i18n'
 import { useAdmin } from '../AdminContext'
 
-type AuditSubTab = 'ops' | 'webhook'
+type AuditSubTab = 'ops' | 'webhook' | 'compliance'
 
 function webhookStatusBadgeClass(status: string) {
   if (status === 'dispatched') return 'badge badge-green'
@@ -27,6 +27,8 @@ export default function AdminAuditTab() {
     webhookLogs, webhookSearch, setWebhookSearch, webhookStatusFilter, setWebhookStatusFilter,
     selectedWebhookId, webhookDetail, webhookDetailLoading,
     loadWebhookDetail, closeWebhookDetail, exportWebhookCsv, webhookEventStatusLabel,
+    complianceFilings, complianceReferralBlocks, complianceAuditLogs,
+    complianceSearch, setComplianceSearch, complianceExchangeFilter, setComplianceExchangeFilter,
   } = useAdmin()
 
   const [subTab, setSubTab] = useState<AuditSubTab>('ops')
@@ -74,6 +76,13 @@ export default function AdminAuditTab() {
           onClick={() => setSubTab('webhook')}
         >
           {t('admin.auditSubTabWebhook')}
+        </button>
+        <button
+          type="button"
+          className={`btn btn-sm ${subTab === 'compliance' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => setSubTab('compliance')}
+        >
+          {t('admin.auditSubTabCompliance')}
         </button>
       </div>
 
@@ -280,6 +289,158 @@ export default function AdminAuditTab() {
               )}
             </GlassCard>
           )}
+        </>
+      )}
+
+      {subTab === 'compliance' && (
+        <>
+          <p className="text-muted text-sm section-mb-sm">{t('admin.complianceIntro')}</p>
+          <div className="table-toolbar form-stack section-mb-md">
+            <input
+              className="input"
+              placeholder={t('admin.complianceSearchPh')}
+              value={complianceSearch}
+              onChange={e => setComplianceSearch(e.target.value)}
+            />
+            <select
+              className="input input-sm"
+              value={complianceExchangeFilter}
+              onChange={e => setComplianceExchangeFilter(e.target.value)}
+            >
+              <option value="">{t('admin.complianceExchangeAll')}</option>
+              <option value="binance">Binance</option>
+              <option value="okx">OKX</option>
+              <option value="gate">Gate.io</option>
+              <option value="deepcoin">DeepCoin</option>
+            </select>
+            <button className="btn btn-ghost btn-sm" type="button" onClick={load}>{t('admin.refresh')}</button>
+          </div>
+
+          <GlassCard className="p-0 table-wrap section-mb-lg">
+            <div className="panel-header p-4">
+              <h3 className="panel-title-sm">{t('admin.complianceFilingsTitle')}</h3>
+              <p className="text-muted text-xs section-mt-xs">{t('admin.complianceFilingsHint')}</p>
+            </div>
+            <table className="data-table data-table-sm">
+              <thead>
+                <tr>
+                  <th>{t('common.time')}</th>
+                  <th>{t('common.user')}</th>
+                  <th>{t('api.exchangeLabel')}</th>
+                  <th>{t('admin.complianceCols.masterUid')}</th>
+                  <th>{t('admin.complianceCols.subUid')}</th>
+                  <th>{t('admin.complianceCols.subLabel')}</th>
+                  <th>{t('common.status')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {complianceFilings.length === 0 && (
+                  <tr><td colSpan={7} className="empty-cell">{t('common.noData')}</td></tr>
+                )}
+                {complianceFilings.map((f: any) => (
+                  <tr key={f.id}>
+                    <td className="text-xs">{localeDate(f.filed_at, locale)}</td>
+                    <td>
+                      <div>{f.display_name || f.platform_uid}</div>
+                      <div className="text-muted text-xs">{f.platform_uid}</div>
+                    </td>
+                    <td>{f.exchange}</td>
+                    <td className="mono-cell text-xs">{f.master_exchange_uid}</td>
+                    <td className="mono-cell text-xs">{f.sub_exchange_uid}</td>
+                    <td className="text-xs">{f.sub_label || '—'}</td>
+                    <td>
+                      <span className={`badge ${f.is_active ? 'badge-green' : 'badge-gray'}`}>
+                        {f.is_active ? t('common.yes') : t('common.no')}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </GlassCard>
+
+          <GlassCard className="p-0 table-wrap section-mb-lg">
+            <div className="panel-header p-4">
+              <h3 className="panel-title-sm">{t('admin.complianceReferralBlocksTitle')}</h3>
+              <p className="text-muted text-xs section-mt-xs">{t('admin.complianceReferralBlocksHint')}</p>
+            </div>
+            <table className="data-table data-table-sm">
+              <thead>
+                <tr>
+                  <th>{t('common.user')}</th>
+                  <th>{t('admin.complianceCols.blockReason')}</th>
+                  <th>{t('admin.complianceCols.blockDetails')}</th>
+                  <th>{t('admin.referralOverrideAllow')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {complianceReferralBlocks.length === 0 && (
+                  <tr><td colSpan={4} className="empty-cell">{t('common.noData')}</td></tr>
+                )}
+                {complianceReferralBlocks.map((row: any) => (
+                  <tr key={row.user_id}>
+                    <td>
+                      <div>{row.display_name || row.platform_uid}</div>
+                      <div className="text-muted text-xs">{row.platform_uid}</div>
+                    </td>
+                    <td className="text-xs">
+                      {t(`referrals.blockReason.${row.referral_block_reason}` as any) || row.referral_block_reason}
+                    </td>
+                    <td className="text-xs">
+                      {(row.details || []).map((d: any) => (
+                        <div key={`${d.user_id}-${d.level}`} className="section-mb-xs">
+                          {d.display_name} ({d.platform_uid}) · L{d.level} · ${d.pending_perf_fee?.toFixed(2)}
+                        </div>
+                      ))}
+                    </td>
+                    <td>
+                      {row.referral_invite_override ? (
+                        <span className="badge badge-green">{t('common.yes')}</span>
+                      ) : (
+                        <span className="badge badge-gray">{t('common.no')}</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </GlassCard>
+
+          <GlassCard className="p-0 table-wrap">
+            <div className="panel-header p-4">
+              <h3 className="panel-title-sm">{t('admin.complianceAuditTitle')}</h3>
+              <p className="text-muted text-xs section-mt-xs">{t('admin.complianceAuditHint')}</p>
+            </div>
+            <table className="data-table data-table-sm">
+              <thead>
+                <tr>
+                  <th>{t('common.time')}</th>
+                  <th>{t('common.action')}</th>
+                  <th>{t('common.user')}</th>
+                  <th>{t('admin.cols.actor')}</th>
+                  <th>{t('admin.cols.ip')}</th>
+                  <th>{t('admin.cols.detail')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {complianceAuditLogs.length === 0 && (
+                  <tr><td colSpan={6} className="empty-cell">{t('common.noData')}</td></tr>
+                )}
+                {complianceAuditLogs.map((l: any) => (
+                  <tr key={l.id}>
+                    <td className="text-xs">{localeDate(l.created_at, locale)}</td>
+                    <td>{l.action}</td>
+                    <td>{l.user_id ?? '—'}</td>
+                    <td>{l.actor_id ?? '—'}</td>
+                    <td>{l.ip_address || '—'}</td>
+                    <td className="text-xs cell-ellipsis" style={{ maxWidth: 280 }} title={l.detail_json}>
+                      {l.detail_json || '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </GlassCard>
         </>
       )}
     </div>

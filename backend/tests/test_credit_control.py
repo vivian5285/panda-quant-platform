@@ -21,10 +21,11 @@ def test_referral_block_own_unpaid(mock_default, mock_ctrl):
     assert user_credit_default_blocks_referral(db, 5) is True
 
 
+@patch("app.services.credit_control.get_referral_block_details", return_value=[{"user_id": 10, "platform_uid": "u10", "display_name": "D", "level": 1, "scope": "downline", "pending_perf_fee": 50.0}])
 @patch("app.services.credit_control.get_downline_user_ids", return_value=[10])
 @patch("app.services.credit_control.get_user_control")
 @patch("app.services.credit_control.user_is_credit_default")
-def test_referral_block_downline_unpaid(mock_default, mock_ctrl, _downline):
+def test_referral_block_downline_unpaid(mock_default, mock_ctrl, _downline, _details):
     mock_default.side_effect = lambda _db, uid: uid == 10
     mock_ctrl.return_value = {"referral_invite_override": False}
     db = MagicMock()

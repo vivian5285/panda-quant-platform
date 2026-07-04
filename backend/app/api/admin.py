@@ -454,6 +454,55 @@ def admin_linked_exchange_accounts(user_id: int, admin=Depends(get_admin_user), 
     return {"master_uid": master_uid, "exchange": exchange, "accounts": accounts}
 
 
+@router.get("/users/{user_id}/sub-account-filings")
+def admin_user_sub_account_filings(user_id: int, admin=Depends(get_admin_user), db: Session = Depends(get_db)):
+    from app.services.compliance_service import list_user_sub_account_filings
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    return {"filings": list_user_sub_account_filings(db, user_id)}
+
+
+@router.get("/compliance/sub-account-filings")
+def admin_compliance_sub_filings(
+    q: str | None = None,
+    exchange: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.compliance_service import list_sub_account_filings
+
+    return {"items": list_sub_account_filings(db, q=q, exchange=exchange, limit=limit, offset=offset)}
+
+
+@router.get("/compliance/referral-blocks")
+def admin_compliance_referral_blocks(
+    q: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.compliance_service import list_referral_blocks
+
+    return {"items": list_referral_blocks(db, q=q, limit=limit, offset=offset)}
+
+
+@router.get("/compliance/audit-logs")
+def admin_compliance_audit_logs(
+    q: str | None = None,
+    limit: int = 200,
+    admin=Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.compliance_service import list_compliance_audit_logs
+
+    return {"items": list_compliance_audit_logs(db, q=q, limit=limit)}
+
+
 @router.get("/referrals/overview")
 def admin_referrals_overview(admin=Depends(get_admin_user), db: Session = Depends(get_db)):
     return build_admin_referral_overview(db)

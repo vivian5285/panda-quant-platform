@@ -389,6 +389,17 @@ class ReferralCommissionOut(BaseModel):
     l2_desc: str = "二级推广：下下级结算平台分成的 5%"
 
 
+class ReferralBlockDetailOut(BaseModel):
+    user_id: int
+    platform_uid: str
+    display_name: str
+    level: int
+    scope: str
+    pending_perf_fee: float = 0
+    settlement_status: Optional[str] = None
+    exchange: Optional[str] = None
+
+
 class ReferralInviteOut(BaseModel):
     referral_code: str
     invite_url: str
@@ -398,6 +409,7 @@ class ReferralInviteOut(BaseModel):
     referral_blocked: bool = False
     referral_block_reason: Optional[str] = None
     referral_invite_override: bool = False
+    referral_block_details: list[ReferralBlockDetailOut] = []
 
 
 class ReferralSummary(BaseModel):
@@ -419,6 +431,7 @@ class ReferralSummary(BaseModel):
     referral_blocked: bool = False
     referral_block_reason: Optional[str] = None
     referral_invite_override: bool = False
+    referral_block_details: list[ReferralBlockDetailOut] = []
     l1_users: list[ReferralUserOut]
     l2_users: list[ReferralUserOut]
 

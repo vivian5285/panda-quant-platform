@@ -4690,6 +4690,49 @@ html[lang="zh-CN"] .framer-logo-text strong {
   background: color-mix(in srgb, #ef4444 8%, transparent);
 }
 
+.referral-block-detail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.referral-block-detail-item {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-2, #111) 88%, transparent);
+  border: 1px solid color-mix(in srgb, #ef4444 20%, transparent);
+}
+
+.referral-block-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.api-mode-guide {
+  border: 1px solid color-mix(in srgb, var(--accent, #3b82f6) 25%, transparent);
+  background: color-mix(in srgb, var(--accent, #3b82f6) 6%, transparent);
+}
+
+.compliance-filing-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.compliance-filing-item {
+  padding: 6px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border, #333) 60%, transparent);
+}
+
+.compliance-filing-item:last-child {
+  border-bottom: none;
+}
+
 .admin-account-detail-cell {
   background: color-mix(in srgb, var(--surface-2, #111) 92%, transparent);
   padding: 0 12px 16px !important;

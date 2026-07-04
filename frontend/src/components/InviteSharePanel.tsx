@@ -4,6 +4,7 @@ import { Copy, Check, Link2, Image, Download, Share2, QrCode, Moon, Sun } from '
 import { useTranslation } from '../i18n'
 import GlassCard from './GlassCard'
 import { displayReferralCode } from '../utils/referralCode'
+import ReferralBlockDetailList from './ReferralBlockDetailList'
 import type { PosterTheme } from '../utils/invitePoster'
 
 type InviteData = {
@@ -28,6 +29,16 @@ type Props = {
   onClosePoster?: () => void
   referralBlocked?: boolean
   referralBlockReason?: string | null
+  referralBlockDetails?: Array<{
+    user_id: number
+    platform_uid: string
+    display_name: string
+    level: number
+    scope: string
+    pending_perf_fee: number
+    settlement_status?: string | null
+    exchange?: string | null
+  }>
 }
 
 export default function InviteSharePanel({
@@ -45,6 +56,7 @@ export default function InviteSharePanel({
   onClosePoster,
   referralBlocked = false,
   referralBlockReason = null,
+  referralBlockDetails = [],
 }: Props) {
   const { t } = useTranslation()
   const [qrUrl, setQrUrl] = useState('')
@@ -83,6 +95,11 @@ export default function InviteSharePanel({
                   ? t('referrals.downlineCreditDefaultBannerBody')
                   : t('referrals.creditDefaultBannerBody')}
               </p>
+              <ReferralBlockDetailList
+                details={referralBlockDetails}
+                reason={referralBlockReason}
+                t={t}
+              />
             </div>
           )}
           <div className="invite-share-main">

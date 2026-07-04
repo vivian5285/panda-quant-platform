@@ -13,7 +13,7 @@ export default function AdminUsersTab() {
     batchNotifyMessage, setBatchNotifyMessage, userSearch, setUserSearch,
     userApiFilter, setUserApiFilter, userPauseFilter, setUserPauseFilter,
     userFlagFilter, setUserFlagFilter, selectedUserId, userDetail, userTrades, userLogs,
-    userDetailTab, setUserDetailTab, userReferralStats, userPrincipalHistory, userTradingCtrl, linkedExchangeAccounts,
+    userDetailTab, setUserDetailTab, userReferralStats, userPrincipalHistory, userTradingCtrl, linkedExchangeAccounts, userSubAccountFilings,
     load, loadUserDetail, closeUserDetail, exportUsersCsv, toggleUserSelect, toggleSelectAllUsers,
     runBatchNotify, runBatchPause, forceUserPause, forceCloseUser, setUserRisk, toggleSettlementDefer, toggleReferralOverride,
     exportUserLogsCsv, setUserLogs,
@@ -71,6 +71,20 @@ export default function AdminUsersTab() {
             )}
             {linkedExchangeAccounts && !linkedExchangeAccounts.accounts?.length && userDetail.profile?.exchange_uid && (
               <div className="text-muted text-sm">{t('admin.linkedAccountsEmpty')}</div>
+            )}
+            {userSubAccountFilings?.length > 0 && (
+              <div className="section-mt-sm">
+                <p className="text-sm-strong section-mb-sm">{t('admin.subAccountFilingsTitle')}</p>
+                <ul className="text-sm compliance-filing-list">
+                  {userSubAccountFilings.map((f: any) => (
+                    <li key={f.id} className="compliance-filing-item">
+                      <span className="mono-cell">{f.sub_exchange_uid}</span>
+                      {f.sub_label ? ` · ${f.sub_label}` : ''}
+                      <span className="text-muted text-xs"> · {f.exchange}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
             {userTradingCtrl?.referral_blocked && !userTradingCtrl?.referral_invite_override && (
               <div className="section-mt-md p-4 settlement-defer-panel">
