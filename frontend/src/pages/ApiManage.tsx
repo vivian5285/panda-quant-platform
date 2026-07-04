@@ -197,22 +197,11 @@ export default function ApiManage() {
   }
 
   const isBindReady = (v: VerifyResult | null) => {
-    if (!v?.valid) return false
-    if (isAltExchange(v.exchange, exchange)) {
-      if (v.checks && v.checks.length > 0) {
-        return v.checks.every(c => c.ok)
-      }
-      return v.can_trade && v.leverage_ok && v.total_balance > 0
-    }
+    if (!v) return false
     if (v.checks && v.checks.length > 0) {
       return v.checks.every(c => c.ok)
     }
-    if (v.withdraw_disabled !== true) return false
-    if (!v.can_trade) return false
-    if (!v.one_way_mode) return false
-    if (!v.leverage_ok) return false
-    if (v.enable_futures === false) return false
-    return true
+    return !!v.valid
   }
 
   const bindReady = isBindReady(verify)
@@ -342,7 +331,7 @@ export default function ApiManage() {
     try {
       const res = await userApi.verifyApi(buildBindPayload())
       setVerify(res)
-      if (!res.valid) setError(res.message)
+      if (!isBindReady(res)) setError(res.message)
     } catch (err: any) {
       setError(err.response?.data?.detail || t('api.verifyFail'))
     } finally {
@@ -413,7 +402,7 @@ export default function ApiManage() {
           id,
           ok:
             (id === 'connect' && true) ||
-            (id === 'withdraw_off' && v.withdraw_disabled === true) ||
+            (id === 'withdraw_off' && v.withdraw_disabled !== false) ||
             (id === 'futures_on' && v.enable_futures !== false && v.can_trade) ||
             (id === 'can_trade' && v.can_trade) ||
             (id === 'balance' && v.total_balance > 0) ||
@@ -422,13 +411,14 @@ export default function ApiManage() {
         }))
     const passed = v.checks_passed ?? items.filter(i => i.ok).length
     const total = v.checks_total ?? items.length
+    const allChecksOk = items.length > 0 && items.every(i => i.ok)
 
     return (
       <div className="api-checklist">
         <div className="api-checklist-head">
           <ListChecks size={18} />
           <span>{t('api.checkListTitle')}</span>
-          <span className={`api-checklist-score ${v.valid ? 'ok' : 'fail'}`}>
+          <span className={`api-checklist-score ${allChecksOk || v.valid ? 'ok' : 'fail'}`}>
             {t('api.checkSummary', { passed, total })}
           </span>
         </div>
@@ -453,8 +443,8 @@ export default function ApiManage() {
             })}
           </p>
         ) : null}
-        <p className={`api-checklist-footer ${v.valid ? 'ok' : 'fail'}`}>
-          {v.valid ? t('api.allChecksPass') : t('api.checksPending')}
+        <p className={`api-checklist-footer ${allChecksOk || v.valid ? 'ok' : 'fail'}`}>
+          {allChecksOk || v.valid ? t('api.allChecksPass') : t('api.checksPending')}
         </p>
         {(v as VerifyResult).filed_sub_count != null && (v as VerifyResult).filed_sub_count! > 0 && (
           <p className="text-muted text-sm section-mt-sm">
@@ -465,8 +455,11 @@ export default function ApiManage() {
     )
   }
 
-  const renderVerifyPanel = (v: VerifyResult, title: string) => (
-    <div className={`verify-panel ${v.valid ? 'verify-ok' : 'verify-fail'}`}>
+  const renderVerifyPanel = (v: VerifyResult, title: string) => {
+    const allChecksOk = (v.checks?.length ?? 0) > 0 && v.checks!.every(c => c.ok)
+    const panelOk = v.valid || allChecksOk
+    return (
+    <div className={`verify-panel ${panelOk ? 'verify-ok' : 'verify-fail'}`}>
       <p className="verify-panel-title">{title}</p>
       <p className="verify-panel-msg">{v.message}</p>
       {renderChecklist(v)}
@@ -479,7 +472,8 @@ export default function ApiManage() {
         )}
       </div>
     </div>
-  )
+    )
+  }
 
   return (
     <Layout>

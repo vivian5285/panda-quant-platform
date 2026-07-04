@@ -100,7 +100,12 @@ def test_validate_sub_account_binding_success(_taken, _filed, _blocked, mock_cli
 @patch("app.services.sub_account_service.validate_exchange_api")
 @patch("app.services.sub_account_service.is_master_uid_blocked", return_value=False)
 def test_validate_master_rejects_sub_api(_blocked, mock_validate, mock_scan):
-    mock_validate.return_value = {"valid": True, "total_balance": 100.0, "checks": []}
+    mock_validate.return_value = {
+        "valid": True,
+        "total_balance": 100.0,
+        "checks": [{"id": "connect", "ok": True}],
+        "message_key": "api.verify_ok",
+    }
     mock_scan.return_value = {
         "ok": False,
         "message_key": "api.sub_api_in_master_mode",
@@ -111,6 +116,57 @@ def test_validate_master_rejects_sub_api(_blocked, mock_validate, mock_scan):
     result = validate_master_account_binding(db, 1, "binance", "k", "s")
     assert result["valid"] is False
     assert result["message_key"] == "api.sub_api_in_master_mode"
+    assert result["message_key"] != "api.verify_ok"
+
+
+@patch("app.services.sub_account_service.scan_master_sub_accounts")
+@patch("app.services.sub_account_service.validate_exchange_api")
+@patch("app.services.sub_account_service.is_master_uid_blocked", return_value=False)
+@patch("app.services.sub_account_service.is_exchange_uid_taken", return_value=False)
+def test_validate_master_allows_relaxed_sub_scan(_taken, _blocked, mock_validate, mock_scan):
+    """Trading checks pass; strict sub scan fails but relaxed scan succeeds."""
+    mock_validate.return_value = {
+        "valid": True,
+        "total_balance": 500.0,
+        "message_key": "api.verify_ok",
+        "checks": [
+            {"id": "connect", "ok": True},
+            {"id": "withdraw_off", "ok": True},
+            {"id": "futures_on", "ok": True},
+            {"id": "can_trade", "ok": True},
+            {"id": "balance", "ok": True},
+            {"id": "one_way", "ok": True},
+            {"id": "leverage", "ok": True},
+        ],
+    }
+    mock_scan.side_effect = [
+        {
+            "ok": False,
+            "message_key": "api.master_sub_perm_required",
+            "uid": "uid-100",
+            "sub_accounts": [],
+        },
+        {
+            "ok": True,
+            "uid": "uid-100",
+            "sub_accounts": [],
+            "can_list_subs": False,
+        },
+    ]
+    db = _mock_db_with_first(None)
+
+    result = validate_master_account_binding(
+        db,
+        user_id=1,
+        exchange="binance",
+        api_key="k",
+        api_secret="s",
+        master_exchange_uid="uid-100",
+    )
+    assert result["valid"] is True
+    assert result["message_key"] == "api.verify_ok"
+    assert result["sub_scan_warning_key"] == "api.master_sub_perm_recommended"
+    assert mock_scan.call_count == 2
 
 
 @patch("app.services.sub_account_service.scan_master_sub_accounts")

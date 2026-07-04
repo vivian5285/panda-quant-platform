@@ -330,6 +330,31 @@ def get_linked_accounts_for_master(db: Session, exchange: str, master_uid: str) 
     ]
 
 
+def _merge_trading_result(base: dict, overlay: dict) -> dict:
+    """Merge validation layers without letting a failed overlay keep a success message_key."""
+    skip = frozenset({"valid", "message_key"})
+    merged = {k: v for k, v in base.items() if k not in skip}
+    merged.update({k: v for k, v in overlay.items() if k not in skip})
+    merged["valid"] = bool(overlay.get("valid", base.get("valid")))
+    if "message_key" in overlay:
+        merged["message_key"] = overlay["message_key"]
+    elif "message_key" in base:
+        merged["message_key"] = base["message_key"]
+    return merged
+
+
+def _master_scan_failure(trading_result: dict, scan: dict, message_key: str) -> dict:
+    return _merge_trading_result(
+        trading_result,
+        {
+            "valid": False,
+            "message_key": message_key,
+            "exchange_uid": scan.get("uid"),
+            "checks": trading_result.get("checks") or [],
+        },
+    )
+
+
 def validate_sub_account_binding(
     db: Session,
     user_id: int,
@@ -418,14 +443,22 @@ def validate_master_account_binding(
     scan = scan_master_sub_accounts(
         ex, api_key, api_secret, passphrase, user_id, require_sub_list=True,
     )
+    sub_scan_warning_key: str | None = None
     if not scan.get("ok"):
-        return {
-            "valid": False,
-            "message_key": scan.get("message_key") or "api.master_sub_perm_required",
-            "exchange_uid": scan.get("uid"),
-            "checks": result.get("checks") or [],
-            **{k: v for k, v in result.items() if k not in ("valid",)},
-        }
+        scan_message_key = scan.get("message_key") or "api.master_sub_perm_required"
+        if scan_message_key == "api.sub_api_in_master_mode":
+            return _master_scan_failure(result, scan, scan_message_key)
+
+        # Trading APIs often lack sub-account list permission; retry relaxed scan for UID.
+        relaxed = scan_master_sub_accounts(
+            ex, api_key, api_secret, passphrase, user_id, require_sub_list=False,
+        )
+        if relaxed.get("ok"):
+            scan = relaxed
+            if scan_message_key == "api.master_sub_perm_required":
+                sub_scan_warning_key = "api.master_sub_perm_recommended"
+        else:
+            return _master_scan_failure(result, scan, scan_message_key)
 
     resolved_uid = scan.get("uid")
     uid = _normalize_uid(master_exchange_uid) or _normalize_uid(resolved_uid)
@@ -448,4 +481,6 @@ def validate_master_account_binding(
     result["exchange"] = ex
     result["discovered_sub_accounts"] = discovered
     result["filed_sub_count"] = len(discovered)
+    if sub_scan_warning_key:
+        result["sub_scan_warning_key"] = sub_scan_warning_key
     return result
