@@ -20,10 +20,13 @@ def validate_production_secrets() -> list[str]:
 
     warnings: list[str] = []
 
+    webhook_secret = get_webhook_secret()
+    if not webhook_secret:
+        warnings.append("WEBHOOK_SECRET 未设置")
+
     for name, value in (
         ("SECRET_KEY", settings.SECRET_KEY),
         ("ENCRYPTION_KEY", settings.ENCRYPTION_KEY),
-        ("WEBHOOK_SECRET", get_webhook_secret()),
         ("ADMIN_PASSWORD", settings.ADMIN_PASSWORD),
     ):
         low = (value or "").lower()

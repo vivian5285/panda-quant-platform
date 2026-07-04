@@ -123,8 +123,6 @@ export default function Admin() {
     secret_preview: string
     source?: string
     webhook_url: string
-    insecure: boolean
-    min_length: number
   } | null>(null)
   const [webhookSettingsLoadError, setWebhookSettingsLoadError] = useState(false)
   const [webhookSecretDraft, setWebhookSecretDraft] = useState('')

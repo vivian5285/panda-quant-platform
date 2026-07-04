@@ -612,8 +612,6 @@ class WebhookSettingsOut(BaseModel):
     secret_preview: str = ""
     source: Optional[str] = None
     webhook_url: str = ""
-    insecure: bool = True
-    min_length: int = 12
 
 
 class WebhookSettingsUpdate(BaseModel):

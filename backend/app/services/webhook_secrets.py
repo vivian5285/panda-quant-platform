@@ -7,7 +7,6 @@ from urllib.parse import urlparse
 
 from app.config import get_settings
 from app.services.platform_runtime import read_runtime_file, write_runtime_file
-from app.services.security_constants import INSECURE_SECRET_MARKERS
 from app.utils.crypto import decrypt_text, encrypt_text
 
 logger = logging.getLogger(__name__)
@@ -32,13 +31,6 @@ def get_webhook_secret() -> str:
 
 def is_webhook_secret_configured() -> bool:
     return bool(get_webhook_secret())
-
-
-def _secret_insecure(secret: str) -> bool:
-    low = (secret or "").lower()
-    if not secret or len(secret) < 12:
-        return True
-    return any(m in low for m in INSECURE_SECRET_MARKERS)
 
 
 def _normalize_public_path(path: str) -> str:
@@ -75,16 +67,14 @@ def get_webhook_settings() -> dict:
         preview = "*" * max(0, len(secret) - 4) + secret[-4:]
     elif secret:
         preview = "****"
-    insecure = _secret_insecure(secret)
+    configured = bool(secret)
     return {
-        "configured": bool(secret),
-        "production_ready": bool(secret) and not insecure,
+        "configured": configured,
+        "production_ready": configured,
         "secret_length": len(secret),
         "secret_preview": preview,
         "source": source,
         "webhook_url": get_webhook_public_url(),
-        "insecure": insecure,
-        "min_length": 12,
     }
 
 
@@ -98,10 +88,6 @@ def update_webhook_settings(*, secret: str | None = None, clear: bool = False) -
         s = secret.strip()
         if not s:
             raise ValueError("Webhook Secret 不能为空")
-        if len(s) < 12:
-            raise ValueError("Webhook Secret 至少 12 位")
-        if _secret_insecure(s):
-            raise ValueError("Secret 过于简单或为默认值，请使用随机字符串")
         block["secret"] = encrypt_text(s)
 
     data["webhook"] = block

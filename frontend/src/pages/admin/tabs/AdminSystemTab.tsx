@@ -21,24 +21,13 @@ export default function AdminSystemTab() {
   const displayWebhookUrl = webhookSettings?.webhook_url || defaultWebhookUrl
   const webhookStatusText = () => {
     if (webhookSettingsLoadError && !webhookSettings) return t('admin.webhookSettingsLoadFail')
-    if (!webhookSettings) return t('admin.webhookSecretMissing')
-    if (webhookSettings.production_ready) {
-      const src = webhookSettings.source
-        ? ` (${webhookSettings.source === 'runtime' ? t('admin.depositSourceRuntime') : t('admin.depositSourceEnv')})`
-        : ''
-      return `${t('admin.webhookSecretConfigured')}${webhookSettings.secret_preview ? ` · ${webhookSettings.secret_preview}` : ''}${src}`
-    }
-    if (webhookSettings.configured && webhookSettings.insecure) {
-      const src = webhookSettings.source === 'env' ? t('admin.webhookSecretEnvWeak') : ''
-      return `${t('admin.webhookSecretInsecure')}${src ? ` · ${src}` : ''}`
-    }
-    return t('admin.webhookSecretMissing')
+    if (!webhookSettings?.configured) return t('admin.webhookSecretMissing')
+    const src = webhookSettings.source
+      ? ` (${webhookSettings.source === 'runtime' ? t('admin.depositSourceRuntime') : t('admin.depositSourceEnv')})`
+      : ''
+    return `${t('admin.webhookSecretConfigured')}${webhookSettings.secret_preview ? ` · ${webhookSettings.secret_preview}` : ''}${src}`
   }
-  const webhookStatusClass = webhookSettings?.production_ready
-    ? 'text-green'
-    : (webhookSettingsLoadError && !webhookSettings) || !webhookSettings?.configured || webhookSettings?.insecure
-      ? 'text-red'
-      : 'text-muted'
+  const webhookStatusClass = webhookSettings?.configured ? 'text-green' : 'text-red'
 
   const allExchanges = platformPublicSettings?.all_exchanges || ['binance', 'okx', 'gate', 'deepcoin']
   const exchangeLabelKeys: Record<string, string> = {
@@ -89,7 +78,7 @@ export default function AdminSystemTab() {
               value={webhookSecretDraft}
               onChange={e => setWebhookSecretDraft(e.target.value)}
             />
-            <p className="text-muted form-hint-sm">{t('admin.webhookSecretFieldHint', { min: webhookSettings?.min_length || 12 })}</p>
+            <p className="text-muted form-hint-sm">{t('admin.webhookSecretFieldHint')}</p>
             <p className="text-muted form-hint-sm">{t('admin.webhookSecretPageSaveHint')}</p>
           </div>
           <div className="flex-gap-sm flex-wrap">

@@ -4,7 +4,6 @@ from __future__ import annotations
 import pytest
 
 from app.services import webhook_secrets as ws
-from app.services.platform_runtime import RUNTIME_FILE
 
 
 @pytest.fixture(autouse=True)
@@ -19,29 +18,22 @@ def isolated_runtime(tmp_path, monkeypatch):
 
 
 def test_get_webhook_secret_env_fallback(monkeypatch):
-    monkeypatch.setattr(ws.settings, "WEBHOOK_SECRET", "env-secret-12chars")
-    assert ws.get_webhook_secret() == "env-secret-12chars"
+    monkeypatch.setattr(ws.settings, "WEBHOOK_SECRET", "528586")
+    assert ws.get_webhook_secret() == "528586"
 
 
-def test_update_webhook_settings_persists(monkeypatch):
+def test_update_webhook_settings_persists_short_secret(monkeypatch):
     monkeypatch.setattr(ws.settings, "WEBHOOK_SECRET", "")
-    secret = "a" * 16
-    out = ws.update_webhook_settings(secret=secret)
+    out = ws.update_webhook_settings(secret="1")
     assert out["configured"] is True
     assert out["production_ready"] is True
     assert out["source"] == "runtime"
-    assert out["insecure"] is False
-    assert ws.get_webhook_secret() == secret
+    assert ws.get_webhook_secret() == "1"
 
 
-def test_update_rejects_short_secret():
-    with pytest.raises(ValueError, match="至少 12"):
-        ws.update_webhook_settings(secret="short")
-
-
-def test_update_rejects_insecure_default():
-    with pytest.raises(ValueError, match="过于简单"):
-        ws.update_webhook_settings(secret="528586528586")
+def test_update_rejects_empty_secret():
+    with pytest.raises(ValueError, match="不能为空"):
+        ws.update_webhook_settings(secret="   ")
 
 
 def test_get_webhook_public_url_production(monkeypatch):
