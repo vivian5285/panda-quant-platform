@@ -186,6 +186,13 @@ export default function Referrals() {
     <Layout>
       <PageHeader title={t('referrals.title')} subtitle={t('referrals.subtitlePromo')} />
 
+      {data?.referral_blocked && (
+        <GlassCard className="p-4 section-mb-md referral-unpaid-banner">
+          <p className="text-sm-strong text-red section-mb-xs">{t('referrals.creditDefaultBannerTitle')}</p>
+          <p className="text-sm text-muted">{t('referrals.creditDefaultBannerBody')}</p>
+        </GlassCard>
+      )}
+
       <GlassCard className="p-4 section-mb-md invite-promo-banner">
         <div className="invite-promo-banner-inner">
           <div className="flex-gap-sm">

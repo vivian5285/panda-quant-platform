@@ -26,6 +26,7 @@ type Props = {
   showPoster?: boolean
   onDownloadPoster?: () => void
   onClosePoster?: () => void
+  referralBlocked?: boolean
 }
 
 export default function InviteSharePanel({
@@ -41,6 +42,7 @@ export default function InviteSharePanel({
   showPoster,
   onDownloadPoster,
   onClosePoster,
+  referralBlocked = false,
 }: Props) {
   const { t } = useTranslation()
   const [qrUrl, setQrUrl] = useState('')
@@ -67,6 +69,12 @@ export default function InviteSharePanel({
           <p className="invite-share-sub">{t('referrals.inviteHeroSub')}</p>
         </div>
         <div className="invite-share-body">
+          {referralBlocked && (
+            <div className="p-4 section-mb-sm referral-unpaid-banner">
+              <p className="text-sm-strong text-red section-mb-xs">{t('referrals.creditDefaultBannerTitle')}</p>
+              <p className="text-sm text-muted">{t('referrals.creditDefaultBannerBody')}</p>
+            </div>
+          )}
           <div className="invite-share-main">
             <p className="text-muted invite-share-label">{t('referrals.myLink')}</p>
             <div className="invite-link-box">
@@ -85,11 +93,11 @@ export default function InviteSharePanel({
               )}
             </div>
             <div className="invite-action-grid">
-              <button type="button" className="btn btn-primary" onClick={() => onCopy(data?.invite_url || '', 'link')}>
+              <button type="button" className="btn btn-primary" disabled={referralBlocked} onClick={() => onCopy(data?.invite_url || '', 'link')}>
                 {copied === 'link' ? <Check size={16} /> : <Link2 size={16} />}
                 {copied === 'link' ? t('referrals.copyLinkDone') : t('referrals.copyLink')}
               </button>
-              <button type="button" className="btn btn-ghost" onClick={() => onCopy(displayCode, 'code')}>
+              <button type="button" className="btn btn-ghost" disabled={referralBlocked} onClick={() => onCopy(displayCode, 'code')}>
                 {copied === 'code' ? <Check size={16} /> : <Copy size={16} />}
                 {copied === 'code' ? t('common.copied') : t('referrals.copyCode')}
               </button>
@@ -97,7 +105,7 @@ export default function InviteSharePanel({
                 {copied === 'uid' ? <Check size={16} /> : <Copy size={16} />}
                 {copied === 'uid' ? t('common.copied') : t('referrals.copyUid')}
               </button>
-              <button type="button" className="btn btn-ghost" onClick={onShare}>
+              <button type="button" className="btn btn-ghost" disabled={referralBlocked} onClick={onShare}>
                 <Share2 size={16} /> {t('referrals.share')}
               </button>
             </div>
@@ -123,7 +131,7 @@ export default function InviteSharePanel({
                   <span className="poster-theme-desc">{t('referrals.posterThemeLightDesc')}</span>
                 </button>
               </div>
-              <button type="button" className="btn btn-ghost invite-poster-btn section-mt-sm" onClick={onGeneratePoster} disabled={posterLoading}>
+              <button type="button" className="btn btn-ghost invite-poster-btn section-mt-sm" onClick={onGeneratePoster} disabled={posterLoading || referralBlocked}>
                 <Image size={16} /> {posterLoading ? t('referrals.genPosterLoading') : t('referrals.genPoster')}
               </button>
             </div>

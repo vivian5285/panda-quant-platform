@@ -1080,6 +1080,8 @@ export default {
     settlementPendingConfirm: "待平台确认",
     unpaidBannerTitle: "下级待缴绩效费提醒",
     unpaidBannerBody: "以下下级尚未向平台缴纳 AI 绩效服务费。督促其完成缴纳并确认到账后，您的推广奖励才会入账。",
+    creditDefaultBannerTitle: "推广分享已暂停（失信）",
+    creditDefaultBannerBody: "您有未缴纳的 AI 绩效服务费，暂不可分享邀请链接或拉新。缴清并确认到账后自动恢复。",
     unpaidCount: "待缴人数",
     totalUnpaidFee: "待缴绩效费合计",
     totalExpectedReward: "预计可分润",

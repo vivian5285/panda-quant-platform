@@ -111,20 +111,21 @@ def is_user_paused(db: Session, user_id: int) -> bool:
     ctrl = get_user_control(db, user_id)
     if ctrl["trading_paused"]:
         return True
-    from app.services.settlement import user_has_unsettled_payment
+    from app.services.credit_control import user_trading_blocked_by_credit
 
-    if user_has_unsettled_payment(db, user_id):
-        return not ctrl.get("settlement_fee_deferred", False)
-    return False
+    blocked, _reason = user_trading_blocked_by_credit(db, user_id)
+    return blocked
 
 
 def build_trading_control_response(db: Session, user) -> dict:
     from app.services.settlement import get_pending_settlement
+    from app.services.credit_control import user_trading_blocked_by_credit, user_is_credit_default
 
     ctrl = get_user_control(db, user.id)
     pending = get_pending_settlement(db, user.id)
     settlement_blocked = pending is not None
     settlement_fee_deferred = bool(ctrl.get("settlement_fee_deferred")) and settlement_blocked
+    credit_blocked, credit_reason = user_trading_blocked_by_credit(db, user.id)
     pending_out = None
     if pending:
         pending_out = {
@@ -135,12 +136,14 @@ def build_trading_control_response(db: Session, user) -> dict:
             "period_end": pending.period_end.isoformat(),
         }
     global_paused = is_globally_paused()
-    settlement_pause = settlement_blocked and not settlement_fee_deferred
+    settlement_pause = credit_blocked
     return {
         **ctrl,
         "trading_paused": ctrl["trading_paused"],
         "settlement_blocked": settlement_blocked,
         "settlement_fee_deferred": settlement_fee_deferred,
+        "credit_default": user_is_credit_default(db, user.id),
+        "family_credit_blocked": credit_reason == "family_credit_default",
         "effective_paused": ctrl["trading_paused"] or settlement_pause or global_paused,
         "pending_settlement": pending_out,
         "api_status": user.api_status,

@@ -353,6 +353,32 @@ class BinanceClient:
             logger.warning(f"[User {self.user_id}] list sub-accounts failed: {e}")
         return out
 
+    def probe_trading_api_role(self) -> dict:
+        """
+        Detect whether this API key belongs to a master or sub-account.
+        Master keys can query sub-account/list; sub keys typically cannot.
+        """
+        resolved_uid = self.get_exchange_uid()
+        try:
+            if not hasattr(self.client, "_request_margin_api"):
+                return {"role": "unknown", "resolved_uid": resolved_uid}
+            ts = self.client._get_timestamp() if hasattr(self.client, "_get_timestamp") else int(time.time() * 1000)
+            self.client._request_margin_api(
+                "get", "sub-account/list", True, data={"timestamp": ts, "limit": 1}
+            )
+            return {"role": "master", "resolved_uid": resolved_uid, "can_list_subs": True}
+        except Exception as e:
+            err = str(e).lower()
+            sub_markers = (
+                "sub-account", "sub account", "subaccount",
+                "not allowed", "permission", "-2015", "invalid api-key",
+            )
+            if any(m in err for m in sub_markers):
+                return {"role": "sub", "resolved_uid": resolved_uid, "can_list_subs": False}
+            if resolved_uid:
+                return {"role": "master", "resolved_uid": resolved_uid, "can_list_subs": False}
+            return {"role": "unknown", "resolved_uid": resolved_uid, "error": str(e)}
+
     def verify_master_readonly(self) -> dict:
         """Verify master API can connect (no trading permission required)."""
         try:

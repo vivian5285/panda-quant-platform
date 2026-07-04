@@ -95,8 +95,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "This exchange UID is already bound to another platform account",
     },
     "api.master_uid_blocked": {
-        "zh": "主账户 UID 关联的账户已被封禁，无法绑定",
-        "en": "Master UID is linked to a blocked account — binding denied",
+        "zh": "主账户 UID 关联账户已被封禁或存在未缴绩效费，无法绑定",
+        "en": "Master UID is linked to a blocked or unpaid account — binding denied",
     },
     "api.sub_api_invalid": {
         "zh": "子账户 API 验证失败，请检查交易权限与余额",
@@ -109,6 +109,24 @@ MESSAGES: dict[str, dict[str, str]] = {
     "api.master_connect_failed": {
         "zh": "主账户 API 连接失败 — 请检查 Key/Secret 及子账户查询权限",
         "en": "Master API connection failed — check Key/Secret and sub-account read permission",
+    },
+    "api.sub_api_in_master_mode": {
+        "zh": "检测到您提交的是子账户 API，但选择了主账户模式。请切换为「子账户模式」并同时提交主账户 API + UID",
+        "en": "Sub-account API detected while master mode is selected. Switch to sub-account mode and submit master API + UID",
+    },
+    "api.master_sub_perm_recommended": {
+        "zh": "建议主账户 API 开启子账户查询权限，以便平台核验关联关系",
+        "en": "Enable sub-account query on master API so the platform can verify linkage",
+    },
+
+    # Referral credit default
+    "referral.referrer_credit_default": {
+        "zh": "邀请人存在未缴纳绩效费，邀请码暂不可用",
+        "en": "Referrer has unpaid performance fee — invite code unavailable",
+    },
+    "referral.credit_default_blocked": {
+        "zh": "您有未缴纳的绩效服务费，推广分享已暂停，缴清后自动恢复",
+        "en": "Unpaid performance fee — referral sharing paused until payment is cleared",
     },
 
     # Wallet

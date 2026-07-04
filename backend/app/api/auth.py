@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 
 from app.models import User
+from app.i18n.errors import raise_i18n
 
 from app.schemas import (
 
@@ -217,8 +218,11 @@ def register(req: RegisterRequest, request: Request, db: Session = Depends(get_d
 
     if req.referral_code:
         from app.services.referral_code import resolve_referral_user
+        from app.services.credit_control import user_credit_default_blocks_referral
         referrer = resolve_referral_user(db, req.referral_code)
         if referrer:
+            if user_credit_default_blocks_referral(db, referrer.id):
+                raise_i18n(400, "referral.referrer_credit_default")
             referrer_id = referrer.id
 
 

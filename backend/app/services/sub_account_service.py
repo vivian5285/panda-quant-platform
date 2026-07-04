@@ -11,6 +11,7 @@ from app.core.exchange_factory import exchange_requires_passphrase, parse_exchan
 from app.core.okx_client import OkxClient
 from app.models import ExchangeAccountRegistry, User
 from app.services.api_validation import validate_exchange_api
+from app.services.credit_control import is_master_uid_blocked
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,34 @@ RELAXED_SUB_EXCHANGES = frozenset({"gate", "deepcoin"})
 
 def _normalize_uid(val: str | None) -> str:
     return (val or "").strip()
+
+
+def _trading_client(exchange: str, api_key: str, api_secret: str, passphrase: str, user_id: int):
+    ex = parse_exchange(exchange)
+    if ex == "binance":
+        return BinanceClient(api_key, api_secret, user_id)
+    if ex == "okx":
+        return OkxClient(api_key, api_secret, passphrase, user_id)
+    return None
+
+
+def probe_trading_api_role(
+    exchange: str,
+    api_key: str,
+    api_secret: str,
+    passphrase: str = "",
+    user_id: int = 0,
+) -> dict:
+    """Detect master vs sub trading API (Binance/OKX); Gate/Deepcoin return unknown."""
+    ex = parse_exchange(exchange)
+    if ex is None:
+        return {"role": "unknown", "resolved_uid": None}
+    client = _trading_client(ex, api_key, api_secret, passphrase, user_id)
+    if client and hasattr(client, "probe_trading_api_role"):
+        return client.probe_trading_api_role()
+    if client and hasattr(client, "get_exchange_uid"):
+        return {"role": "unknown", "resolved_uid": client.get_exchange_uid()}
+    return {"role": "unknown", "resolved_uid": None}
 
 
 def _master_client(exchange: str, api_key: str, api_secret: str, passphrase: str, user_id: int):
@@ -126,31 +155,6 @@ def is_exchange_uid_taken(
     if exclude_user_id:
         q = q.filter(ExchangeAccountRegistry.user_id != exclude_user_id)
     return q.first() is not None
-
-
-def is_master_uid_blocked(db: Session, exchange: str, master_uid: str) -> bool:
-    """Block if same master UID was tied to a deactivated platform user."""
-    uid = _normalize_uid(master_uid)
-    if not uid:
-        return False
-    rows = (
-        db.query(ExchangeAccountRegistry)
-        .join(User, User.id == ExchangeAccountRegistry.user_id)
-        .filter(
-            ExchangeAccountRegistry.exchange == exchange,
-            ExchangeAccountRegistry.is_active.is_(True),
-            User.is_active.is_(False),
-        )
-        .filter(
-            (ExchangeAccountRegistry.master_exchange_uid == uid)
-            | (
-                (ExchangeAccountRegistry.account_mode == "master")
-                & (ExchangeAccountRegistry.exchange_uid == uid)
-            )
-        )
-        .all()
-    )
-    return len(rows) > 0
 
 
 def register_exchange_account(
@@ -288,16 +292,30 @@ def validate_master_account_binding(
     if not result.get("valid"):
         return result
 
+    role_info = probe_trading_api_role(ex, api_key, api_secret, passphrase, user_id)
+    resolved_uid = role_info.get("resolved_uid")
+    role = role_info.get("role")
+
+    if role == "sub":
+        return {
+            "valid": False,
+            "message_key": "api.sub_api_in_master_mode",
+            "exchange_uid": resolved_uid,
+            "checks": result.get("checks") or [],
+            "checks_passed": result.get("checks_passed", 0),
+            "checks_total": result.get("checks_total", 0),
+            **{k: v for k, v in result.items() if k not in ("valid", "message_key")},
+        }
+
     client = _master_client(ex, api_key, api_secret, passphrase, user_id)
-    resolved_uid = None
-    if client and hasattr(client, "get_exchange_uid"):
+    if not resolved_uid and client and hasattr(client, "get_exchange_uid"):
         resolved_uid = client.get_exchange_uid()
 
     uid = _normalize_uid(master_exchange_uid) or _normalize_uid(resolved_uid)
     if not uid:
         return {"valid": False, "message_key": "api.master_uid_required"}
 
-    if resolved_uid and master_exchange_uid and _normalize_uid(master_exchange_uid) != resolved_uid:
+    if resolved_uid and master_exchange_uid and _normalize_uid(master_exchange_uid) != str(resolved_uid):
         return {"valid": False, "message_key": "api.master_uid_mismatch"}
 
     if is_master_uid_blocked(db, ex, uid):
@@ -310,4 +328,6 @@ def validate_master_account_binding(
     result["exchange_uid"] = uid
     result["master_exchange_uid"] = uid
     result["exchange"] = ex
+    if role == "unknown" and ex in STRICT_SUB_EXCHANGES and not role_info.get("can_list_subs"):
+        result["warning_key"] = "api.master_sub_perm_recommended"
     return result

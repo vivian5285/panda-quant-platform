@@ -1080,6 +1080,8 @@ export default {
     settlementPendingConfirm: "Awaiting confirm",
     unpaidBannerTitle: "Downlines with unpaid performance fees",
     unpaidBannerBody: "These downlines have not paid the AI performance fee yet. Once paid and confirmed, your referral rewards will credit to your account.",
+    creditDefaultBannerTitle: "Referral sharing paused (credit default)",
+    creditDefaultBannerBody: "You have an unpaid AI performance service fee. Invite links and new referrals are disabled until payment is confirmed.",
     unpaidCount: "Unpaid count",
     totalUnpaidFee: "Total unpaid fees",
     totalExpectedReward: "Expected rewards",

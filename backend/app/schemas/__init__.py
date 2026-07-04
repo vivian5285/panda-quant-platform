@@ -394,6 +394,8 @@ class ReferralInviteOut(BaseModel):
     uid: str
     display_name: str
     commission: ReferralCommissionOut
+    referral_blocked: bool = False
+    referral_block_reason: Optional[str] = None
 
 
 class ReferralSummary(BaseModel):
@@ -412,6 +414,8 @@ class ReferralSummary(BaseModel):
     unpaid_fee_count: int = 0
     total_unpaid_perf_fee: float = 0.0
     total_expected_reward: float = 0.0
+    referral_blocked: bool = False
+    referral_block_reason: Optional[str] = None
     l1_users: list[ReferralUserOut]
     l2_users: list[ReferralUserOut]
 

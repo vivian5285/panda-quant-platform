@@ -456,6 +456,26 @@ class OkxClient:
             logger.warning("[User %s] OKX list sub-accounts failed: %s", self.user_id, e)
         return out
 
+    def probe_trading_api_role(self) -> dict:
+        """Sub-account API keys cannot list sub-accounts under the master."""
+        resolved_uid = self.get_exchange_uid()
+        try:
+            res = self._request("GET", "/users/subaccount/list")
+            if isinstance(res, dict) and str(res.get("code", "")) == "0":
+                return {"role": "master", "resolved_uid": resolved_uid, "can_list_subs": True}
+            msg = str((res or {}).get("msg", "")).lower()
+            code = str((res or {}).get("code", ""))
+            if code in ("53000", "53002", "50100") or "sub-account" in msg or "permission" in msg:
+                return {"role": "sub", "resolved_uid": resolved_uid, "can_list_subs": False}
+            if resolved_uid:
+                return {"role": "master", "resolved_uid": resolved_uid, "can_list_subs": False}
+            return {"role": "unknown", "resolved_uid": resolved_uid}
+        except Exception as e:
+            err = str(e).lower()
+            if "sub" in err and "account" in err:
+                return {"role": "sub", "resolved_uid": resolved_uid, "can_list_subs": False}
+            return {"role": "unknown", "resolved_uid": resolved_uid, "error": str(e)}
+
     def verify_master_readonly(self) -> dict:
         try:
             bal = self._data_list(self._request("GET", "/account/balance"))

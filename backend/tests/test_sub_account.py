@@ -59,7 +59,7 @@ def test_register_exchange_account_calls_db():
 @patch("app.services.sub_account_service.validate_exchange_api")
 @patch("app.services.sub_account_service._master_client")
 @patch("app.services.sub_account_service.is_exchange_uid_taken", return_value=False)
-@patch("app.services.sub_account_service.is_master_uid_blocked", return_value=False)
+@patch("app.services.credit_control.is_master_uid_blocked", return_value=False)
 def test_validate_sub_account_binding_success(_blocked, _taken, mock_client_factory, mock_validate):
     mock_client = MagicMock()
     mock_client.list_sub_accounts.return_value = [{"uid": "sub-42", "label": "sub@email"}]
@@ -88,10 +88,21 @@ def test_validate_sub_account_binding_success(_blocked, _taken, mock_client_fact
     assert result["master_exchange_uid"] == "master-1"
 
 
+@patch("app.services.sub_account_service.probe_trading_api_role", return_value={"role": "sub", "resolved_uid": "sub-99"})
+@patch("app.services.sub_account_service.validate_exchange_api")
+@patch("app.services.credit_control.is_master_uid_blocked", return_value=False)
+def test_validate_master_rejects_sub_api(_blocked, mock_validate, mock_probe):
+    mock_validate.return_value = {"valid": True, "total_balance": 100.0, "checks": []}
+    db = MagicMock()
+    result = validate_master_account_binding(db, 1, "binance", "k", "s")
+    assert result["valid"] is False
+    assert result["message_key"] == "api.sub_api_in_master_mode"
+
+
 @patch("app.services.sub_account_service.validate_exchange_api")
 @patch("app.services.sub_account_service._master_client")
 @patch("app.services.sub_account_service.is_exchange_uid_taken", return_value=False)
-@patch("app.services.sub_account_service.is_master_uid_blocked", return_value=False)
+@patch("app.services.credit_control.is_master_uid_blocked", return_value=False)
 def test_validate_sub_account_binding_rejects_unknown_sub(_blocked, _taken, mock_client_factory, mock_validate):
     mock_client = MagicMock()
     mock_client.list_sub_accounts.return_value = [{"uid": "other-sub", "label": "x"}]
@@ -114,11 +125,12 @@ def test_validate_sub_account_binding_rejects_unknown_sub(_blocked, _taken, mock
     mock_validate.assert_not_called()
 
 
+@patch("app.services.sub_account_service.probe_trading_api_role", return_value={"role": "master", "resolved_uid": "uid-100"})
 @patch("app.services.sub_account_service.validate_exchange_api")
 @patch("app.services.sub_account_service._master_client")
 @patch("app.services.sub_account_service.is_exchange_uid_taken", return_value=False)
-@patch("app.services.sub_account_service.is_master_uid_blocked", return_value=False)
-def test_validate_master_account_binding(_blocked, _taken, mock_client_factory, mock_validate):
+@patch("app.services.credit_control.is_master_uid_blocked", return_value=False)
+def test_validate_master_account_binding(_blocked, _taken, mock_client_factory, mock_validate, mock_probe):
     mock_client = MagicMock()
     mock_client.get_exchange_uid.return_value = "uid-100"
     mock_client_factory.return_value = mock_client

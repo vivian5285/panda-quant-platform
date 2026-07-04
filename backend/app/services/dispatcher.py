@@ -223,10 +223,12 @@ class SignalDispatcher:
                     })
                     continue
                 if is_user_paused(db, s.user_id):
+                    from app.services.credit_control import user_trading_blocked_by_credit
                     reason = "user_paused"
                     ctrl = get_user_control(db, s.user_id)
                     if not ctrl.get("trading_paused"):
-                        reason = "settlement_blocked"
+                        _, credit_reason = user_trading_blocked_by_credit(db, s.user_id)
+                        reason = credit_reason or "settlement_blocked"
                     results.append({
                         "user_id": s.user_id,
                         "status": "risk_blocked",

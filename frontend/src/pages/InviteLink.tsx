@@ -123,6 +123,7 @@ export default function InviteLink() {
         copied={copied}
         onCopy={copyText}
         onShare={shareLink}
+        referralBlocked={!!data?.referral_blocked}
         posterTheme={posterTheme}
         onPosterThemeChange={setPosterTheme}
         onGeneratePoster={generatePoster}
