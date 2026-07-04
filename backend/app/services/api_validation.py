@@ -377,13 +377,66 @@ def validate_gate_api(api_key: str, api_secret: str, user_id: int = 0) -> dict:
     )
 
 
-def validate_exchange_api(
+def validate_connect_only(
     exchange: str,
     api_key: str,
     api_secret: str,
     user_id: int = 0,
     passphrase: str = "",
 ) -> dict:
+    """Lightweight API check for master read-only verification (no trading requirements)."""
+    ex = (exchange or "binance").strip().lower()
+    if ex == "gateio":
+        ex = "gate"
+    checks: list[dict] = []
+    try:
+        if ex == "deepcoin":
+            from app.core.deepcoin_client import DeepcoinClient
+            client = DeepcoinClient(api_key, api_secret, passphrase, user_id or 0)
+        elif ex == "okx":
+            from app.core.okx_client import OkxClient
+            client = OkxClient(api_key, api_secret, passphrase, user_id or 0)
+        elif ex == "gate":
+            from app.core.gate_client import GateClient
+            client = GateClient(api_key, api_secret, user_id or 0)
+        else:
+            client = BinanceClient(api_key, api_secret, user_id or 0)
+        if hasattr(client, "verify_master_readonly"):
+            result = client.verify_master_readonly()
+            ok = bool(result.get("ok"))
+        elif hasattr(client, "test_connection"):
+            ok = bool(client.test_connection())
+        else:
+            client.get_futures_account_summary()
+            ok = True
+        checks.append(_check_item("connect", ok, hint_key="api.hint.connect" if not ok else None))
+        if not ok:
+            return _build_failure(checks, "api.connect_failed")
+        return {
+            "valid": True,
+            "message_key": "api.master_verify_ok",
+            "checks": checks,
+            "checks_passed": 1,
+            "checks_total": 1,
+            "exchange": ex,
+        }
+    except Exception as e:
+        logger.warning("Connect-only validation failed user=%s ex=%s: %s", user_id, ex, e)
+        checks.append(_check_item("connect", False, hint_key="api.hint.connect"))
+        return _build_failure(checks, "api.connect_failed", detail=str(e))
+
+
+def validate_exchange_api(
+    exchange: str,
+    api_key: str,
+    api_secret: str,
+    user_id: int = 0,
+    passphrase: str = "",
+    *,
+    skip_trading_checks: bool = False,
+) -> dict:
+    if skip_trading_checks:
+        return validate_connect_only(exchange, api_key, api_secret, user_id, passphrase)
     ex = (exchange or "binance").strip().lower()
     if ex == "gateio":
         ex = "gate"

@@ -429,6 +429,46 @@ class OkxClient:
     def get_api_key_restrictions(self) -> dict:
         return {}
 
+    def get_exchange_uid(self) -> str | None:
+        try:
+            res = self._request("GET", "/account/config")
+            if isinstance(res, dict) and str(res.get("code", "")) == "0":
+                rows = res.get("data") or []
+                if rows:
+                    uid = rows[0].get("uid")
+                    return str(uid) if uid is not None else None
+        except Exception as e:
+            logger.warning("[User %s] OKX uid fetch failed: %s", self.user_id, e)
+        return None
+
+    def list_sub_accounts(self) -> list[dict]:
+        out: list[dict] = []
+        try:
+            res = self._request("GET", "/users/subaccount/list")
+            if not isinstance(res, dict) or str(res.get("code", "")) != "0":
+                return out
+            for row in res.get("data") or []:
+                uid = row.get("subAcct") or row.get("uid")
+                if not uid:
+                    continue
+                out.append({"uid": str(uid), "label": str(uid)})
+        except Exception as e:
+            logger.warning("[User %s] OKX list sub-accounts failed: %s", self.user_id, e)
+        return out
+
+    def verify_master_readonly(self) -> dict:
+        try:
+            bal = self._data_list(self._request("GET", "/account/balance"))
+            if not bal:
+                return {"ok": False, "error": "connect failed", "uid": None, "sub_accounts": []}
+            return {
+                "ok": True,
+                "uid": self.get_exchange_uid(),
+                "sub_accounts": self.list_sub_accounts(),
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e), "uid": None, "sub_accounts": []}
+
     def get_funding_fees(self, symbol: str | None = None, start_time_ms: int | None = None) -> float:
         return 0.0
 

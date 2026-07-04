@@ -319,6 +319,49 @@ class BinanceClient:
             logger.warning(f"[User {self.user_id}] api restrictions fetch failed: {e}")
             return {}
 
+    def get_exchange_uid(self) -> str | None:
+        """Master account UID via SAPI (read-only)."""
+        try:
+            if hasattr(self.client, "_request_margin_api"):
+                info = self.client._request_margin_api("get", "account/info", True)
+                if isinstance(info, dict) and info.get("uid") is not None:
+                    return str(info["uid"])
+        except Exception as e:
+            logger.warning(f"[User {self.user_id}] exchange uid fetch failed: {e}")
+        return None
+
+    def list_sub_accounts(self) -> list[dict]:
+        """List sub-accounts under master (requires master API with sub-account read)."""
+        out: list[dict] = []
+        try:
+            if not hasattr(self.client, "_request_margin_api"):
+                return out
+            ts = self.client._get_timestamp() if hasattr(self.client, "_get_timestamp") else int(time.time() * 1000)
+            data = self.client._request_margin_api(
+                "get", "sub-account/list", True, data={"timestamp": ts}
+            )
+            rows = data if isinstance(data, list) else (data or {}).get("subAccounts", [])
+            for row in rows or []:
+                uid = row.get("subUserId") or row.get("subAccountId") or row.get("email")
+                if uid is None:
+                    continue
+                out.append({
+                    "uid": str(uid),
+                    "label": str(row.get("email") or row.get("remark") or uid),
+                })
+        except Exception as e:
+            logger.warning(f"[User {self.user_id}] list sub-accounts failed: {e}")
+        return out
+
+    def verify_master_readonly(self) -> dict:
+        """Verify master API can connect (no trading permission required)."""
+        try:
+            uid = self.get_exchange_uid()
+            subs = self.list_sub_accounts()
+            return {"ok": True, "uid": uid, "sub_accounts": subs}
+        except Exception as e:
+            return {"ok": False, "error": str(e), "uid": None, "sub_accounts": []}
+
     def get_funding_fees(self, symbol="ETHUSDT", start_time_ms: int | None = None) -> float:
         """Sum FUNDING_FEE income since position open (negative = paid by user)."""
         try:

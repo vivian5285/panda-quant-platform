@@ -126,6 +126,12 @@ def _ensure_schema_migrations():
         user_patches = [
             ("exchange", "VARCHAR(20) DEFAULT 'binance'"),
             ("passphrase_enc", "TEXT"),
+            ("api_account_mode", "VARCHAR(10) DEFAULT 'master'"),
+            ("exchange_uid", "VARCHAR(64)"),
+            ("master_exchange_uid", "VARCHAR(64)"),
+            ("master_api_key_enc", "TEXT"),
+            ("master_api_secret_enc", "TEXT"),
+            ("master_passphrase_enc", "TEXT"),
         ]
         with engine.begin() as conn:
             for name, typ in user_patches:

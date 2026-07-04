@@ -70,6 +70,46 @@ MESSAGES: dict[str, dict[str, str]] = {
     },
     "api.verify_fail": {"zh": "API 验证失败", "en": "API verification failed"},
     "api.bind_success": {"zh": "绑定成功 · 初始本金 ${amount}", "en": "Bound successfully · Initial principal ${amount}"},
+    "api.master_credentials_required": {
+        "zh": "子账户模式需同时提交主账户 API Key 与 Secret",
+        "en": "Sub-account mode requires master API Key and Secret",
+    },
+    "api.master_uid_required": {
+        "zh": "请填写主账户 UID（可通过「查询子账户」自动获取）",
+        "en": "Master account UID required (use Discover Sub-accounts to auto-fill)",
+    },
+    "api.sub_uid_required": {
+        "zh": "请选择或填写子账户 UID",
+        "en": "Sub-account UID required",
+    },
+    "api.master_uid_mismatch": {
+        "zh": "主账户 UID 与 API 查询结果不一致",
+        "en": "Master UID does not match API query result",
+    },
+    "api.sub_not_under_master": {
+        "zh": "该子账户不属于所提交的主账户",
+        "en": "Sub-account is not under the submitted master account",
+    },
+    "api.exchange_uid_taken": {
+        "zh": "该交易所 UID 已被其他平台账户绑定",
+        "en": "This exchange UID is already bound to another platform account",
+    },
+    "api.master_uid_blocked": {
+        "zh": "主账户 UID 关联的账户已被封禁，无法绑定",
+        "en": "Master UID is linked to a blocked account — binding denied",
+    },
+    "api.sub_api_invalid": {
+        "zh": "子账户 API 验证失败，请检查交易权限与余额",
+        "en": "Sub-account API verification failed — check trading permission and balance",
+    },
+    "api.master_verify_ok": {
+        "zh": "主账户 API 连接成功（仅用于关联验证）",
+        "en": "Master API connected (used for linkage verification only)",
+    },
+    "api.master_connect_failed": {
+        "zh": "主账户 API 连接失败 — 请检查 Key/Secret 及子账户查询权限",
+        "en": "Master API connection failed — check Key/Secret and sub-account read permission",
+    },
 
     # Wallet
     "withdraw_password_not_set": {"zh": "请先设置提现密码", "en": "Please set withdraw password first"},

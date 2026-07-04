@@ -184,6 +184,34 @@ class ApiBindRequest(BaseModel):
     passphrase: Optional[str] = None
     email_code: Optional[str] = Field(default=None, min_length=4, max_length=8)
     phone_code: Optional[str] = Field(default=None, min_length=4, max_length=8)
+    account_mode: str = "master"
+    exchange_uid: Optional[str] = None
+    master_api_key: Optional[str] = None
+    master_api_secret: Optional[str] = None
+    master_passphrase: Optional[str] = None
+    master_exchange_uid: Optional[str] = None
+    sub_exchange_uid: Optional[str] = None
+
+
+class DiscoverSubsRequest(BaseModel):
+    exchange: str = "binance"
+    master_api_key: str
+    master_api_secret: str
+    master_passphrase: Optional[str] = None
+
+
+class SubAccountItem(BaseModel):
+    uid: str
+    label: str = ""
+
+
+class DiscoverSubsResponse(BaseModel):
+    ok: bool
+    uid: Optional[str] = None
+    sub_accounts: list[SubAccountItem] = Field(default_factory=list)
+    strict: bool = True
+    relaxed: bool = False
+    message: str = ""
 
 
 class ApiVerifyCheckItem(BaseModel):
@@ -216,6 +244,9 @@ class ApiVerifyResponse(BaseModel):
     open_positions_count: int = 0
     hedge_mode: Optional[bool] = None
     exchange: str = "binance"
+    account_mode: str = "master"
+    exchange_uid: Optional[str] = None
+    master_exchange_uid: Optional[str] = None
 
 
 class PrincipalSnapshotOut(BaseModel):
@@ -246,6 +277,9 @@ class UserProfile(BaseModel):
     referral_code: str
     api_status: str
     exchange: str = "binance"
+    api_account_mode: str = "master"
+    exchange_uid: Optional[str] = None
+    master_exchange_uid: Optional[str] = None
     role: str
     is_active: bool
     high_water_mark: float
@@ -769,6 +803,10 @@ class AdminUserOut(BaseModel):
     nickname: Optional[str] = None
     role: str
     api_status: str
+    exchange: str = "binance"
+    api_account_mode: str = "master"
+    exchange_uid: Optional[str] = None
+    master_exchange_uid: Optional[str] = None
     is_active: bool
     referrer_id: Optional[int]
     trading_paused: bool = False

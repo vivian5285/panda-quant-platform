@@ -53,6 +53,10 @@ const BINANCE_CHECK_IDS = [
 
 const ALT_EXCHANGE_CHECK_IDS = ['connect', 'balance', 'can_trade', 'leverage'] as const
 
+type AccountMode = 'master' | 'sub'
+
+type SubAccountOption = { uid: string; label: string }
+
 type ExchangeId = 'binance' | 'deepcoin' | 'okx' | 'gate'
 
 /** Display order: Binance → OKX → Gate → DeepCoin */
@@ -87,9 +91,18 @@ export default function ApiManage() {
   const locale = useI18n(s => s.locale)
   const t = useI18n(s => s.t)
   const [exchange, setExchange] = useState<ExchangeId>('binance')
+  const [accountMode, setAccountMode] = useState<AccountMode>('master')
   const [apiKey, setApiKey] = useState('')
   const [apiSecret, setApiSecret] = useState('')
   const [passphrase, setPassphrase] = useState('')
+  const [masterApiKey, setMasterApiKey] = useState('')
+  const [masterApiSecret, setMasterApiSecret] = useState('')
+  const [masterPassphrase, setMasterPassphrase] = useState('')
+  const [masterExchangeUid, setMasterExchangeUid] = useState('')
+  const [subExchangeUid, setSubExchangeUid] = useState('')
+  const [subAccounts, setSubAccounts] = useState<SubAccountOption[]>([])
+  const [discoverRelaxed, setDiscoverRelaxed] = useState(false)
+  const [discovering, setDiscovering] = useState(false)
   const [verify, setVerify] = useState<VerifyResult | null>(null)
   const [boundStatus, setBoundStatus] = useState<VerifyResult | null>(null)
   const [profile, setProfile] = useState<any>(null)
@@ -105,6 +118,41 @@ export default function ApiManage() {
   const needsDualVerify = profile?.has_email && profile?.has_phone
 
   const requiresPassphrase = needsPassphrase(exchange)
+  const masterRequiresPassphrase = needsPassphrase(exchange)
+
+  const buildBindPayload = (email_code?: string, phone_code?: string) => {
+    const base = {
+      api_key: apiKey,
+      api_secret: apiSecret,
+      exchange,
+      passphrase: passphrase || undefined,
+      email_code,
+      phone_code,
+    }
+    if (accountMode === 'sub') {
+      return {
+        ...base,
+        account_mode: 'sub',
+        master_api_key: masterApiKey,
+        master_api_secret: masterApiSecret,
+        master_passphrase: masterRequiresPassphrase ? masterPassphrase || undefined : undefined,
+        master_exchange_uid: masterExchangeUid,
+        sub_exchange_uid: subExchangeUid,
+      }
+    }
+    return {
+      ...base,
+      account_mode: 'master',
+      exchange_uid: masterExchangeUid || undefined,
+    }
+  }
+
+  const subFieldsReady =
+    !!masterApiKey &&
+    !!masterApiSecret &&
+    !!masterExchangeUid &&
+    !!subExchangeUid &&
+    (!masterRequiresPassphrase || !!masterPassphrase)
 
   const passphrasePlaceholder = () => {
     if (exchange === 'okx') return t('api.passphrasePhOkx')
@@ -146,7 +194,46 @@ export default function ApiManage() {
 
   const bindReady = isBindReady(verify)
   const dualCodesOk = !needsDualVerify || (secEmailCode.length > 0 && secPhoneCode.length > 0)
-  const canBind = bindReady && dualCodesOk && !!apiKey && !!apiSecret && (!requiresPassphrase || !!passphrase)
+  const canBind =
+    bindReady &&
+    dualCodesOk &&
+    !!apiKey &&
+    !!apiSecret &&
+    (!requiresPassphrase || !!passphrase) &&
+    (accountMode !== 'sub' || subFieldsReady)
+
+  const handleDiscoverSubs = async () => {
+    if (!masterApiKey || !masterApiSecret || (masterRequiresPassphrase && !masterPassphrase)) {
+      setError(t('api.fillRequired'))
+      return
+    }
+    setDiscovering(true)
+    setError('')
+    try {
+      const res = await userApi.discoverSubs({
+        exchange,
+        master_api_key: masterApiKey,
+        master_api_secret: masterApiSecret,
+        master_passphrase: masterRequiresPassphrase ? masterPassphrase : undefined,
+      })
+      if (!res.ok) {
+        setError(res.message || t('api.discoverSubsFail'))
+        return
+      }
+      if (res.uid) setMasterExchangeUid(String(res.uid))
+      setSubAccounts(res.sub_accounts || [])
+      setDiscoverRelaxed(!!res.relaxed)
+      toast.success(
+        res.relaxed
+          ? t('api.discoverSubsRelaxed')
+          : t('api.discoverSubsOk', { count: String((res.sub_accounts || []).length) }),
+      )
+    } catch (err: any) {
+      setError(err.response?.data?.detail || t('api.discoverSubsFail'))
+    } finally {
+      setDiscovering(false)
+    }
+  }
 
   useEffect(() => {
     userApi.apiStatus().then(res => {
@@ -156,6 +243,7 @@ export default function ApiManage() {
     authApi.me().then(p => {
       setProfile(p)
       if (p.exchange) setExchange(normalizeExchangeFromApi(p.exchange))
+      if (p.api_account_mode === 'sub') setAccountMode('sub')
     }).catch(() => {})
     settingsApi.get().then(p => setTotpEnabled(!!p.totp_enabled)).catch(() => {})
   }, [])
@@ -200,7 +288,12 @@ export default function ApiManage() {
   }
 
   const handleVerify = async () => {
-    if (!apiKey || !apiSecret || (requiresPassphrase && !passphrase)) {
+    if (accountMode === 'sub') {
+      if (!subFieldsReady || !apiKey || !apiSecret || (requiresPassphrase && !passphrase)) {
+        setError(t('api.fillRequired'))
+        return
+      }
+    } else if (!apiKey || !apiSecret || (requiresPassphrase && !passphrase)) {
       setError(t('api.fillRequired'))
       return
     }
@@ -208,7 +301,7 @@ export default function ApiManage() {
     setError('')
     setVerify(null)
     try {
-      const res = await userApi.verifyApi(apiKey, apiSecret, exchange, passphrase || undefined)
+      const res = await userApi.verifyApi(buildBindPayload())
       setVerify(res)
       if (!res.valid) setError(res.message)
     } catch (err: any) {
@@ -238,7 +331,7 @@ export default function ApiManage() {
     setError('')
     try {
       if (!verify?.valid || !isBindReady(verify)) {
-        const res = await userApi.verifyApi(apiKey, apiSecret, exchange, passphrase || undefined)
+        const res = await userApi.verifyApi(buildBindPayload())
         setVerify(res)
         if (!isBindReady(res)) {
           setError(res.message || t('api.bindBlockedHint'))
@@ -246,12 +339,10 @@ export default function ApiManage() {
         }
       }
       const res = await userApi.bindApi(
-        apiKey,
-        apiSecret,
-        exchange,
-        passphrase || undefined,
-        needsDualVerify ? secEmailCode : undefined,
-        needsDualVerify ? secPhoneCode : undefined,
+        buildBindPayload(
+          needsDualVerify ? secEmailCode : undefined,
+          needsDualVerify ? secPhoneCode : undefined,
+        ),
       )
       toast.success(res.message || t('api.bindSuccessMsg', { amount: `$${res.initial_principal?.toFixed(2)}` }))
       const snapshot = await userApi.apiStatus()
@@ -259,6 +350,12 @@ export default function ApiManage() {
       setApiKey('')
       setApiSecret('')
       setPassphrase('')
+      setMasterApiKey('')
+      setMasterApiSecret('')
+      setMasterPassphrase('')
+      setMasterExchangeUid('')
+      setSubExchangeUid('')
+      setSubAccounts([])
       setVerify(null)
       setSecEmailCode('')
       setSecPhoneCode('')
@@ -449,7 +546,22 @@ export default function ApiManage() {
             {checking ? t('api.checking') : t('api.recheckBound')}
           </button>
         </div>
-        {boundStatus && renderVerifyPanel(boundStatus, t('api.boundStatusTitle'))}
+        {boundStatus && (
+          <>
+            {profile?.api_account_mode === 'sub' && profile?.master_exchange_uid && (
+              <p className="text-muted text-sm section-mb-sm">
+                {t('api.boundModeSub', { master: profile.master_exchange_uid })}
+                {profile.exchange_uid ? ` · ${t('api.boundExchangeUid')}: ${profile.exchange_uid}` : ''}
+              </p>
+            )}
+            {profile?.api_account_mode !== 'sub' && profile?.exchange_uid && (
+              <p className="text-muted text-sm section-mb-sm">
+                {t('api.boundModeMaster')} · {t('api.boundExchangeUid')}: {profile.exchange_uid}
+              </p>
+            )}
+            {renderVerifyPanel(boundStatus, t('api.boundStatusTitle'))}
+          </>
+        )}
 
         <form onSubmit={handleBind}>
           <div className="form-field">
@@ -462,6 +574,8 @@ export default function ApiManage() {
                 setVerify(null)
                 setError('')
                 setPassphrase('')
+                setSubAccounts([])
+                setDiscoverRelaxed(false)
               }}
             >
               {EXCHANGE_OPTIONS.map(id => (
@@ -469,23 +583,119 @@ export default function ApiManage() {
               ))}
             </select>
           </div>
+
           <div className="form-field">
-            <label className="form-label">{keyLabel()}</label>
-            <input className="input" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={t('api.keyPh')} required />
+            <label className="form-label">{t('api.accountModeLabel')}</label>
+            <select
+              className="input"
+              value={accountMode}
+              onChange={e => {
+                setAccountMode(e.target.value as AccountMode)
+                setVerify(null)
+                setError('')
+              }}
+            >
+              <option value="master">{t('api.accountModeMaster')}</option>
+              <option value="sub">{t('api.accountModeSub')}</option>
+            </select>
+            <p className="text-muted form-hint-sm section-mt-sm">
+              {accountMode === 'sub' ? t('api.accountModeSubHint') : t('api.accountModeMasterHint')}
+            </p>
           </div>
-          <div className="form-field">
-            <label className="form-label">{secretLabel()}</label>
-            <input className="input" type="password" value={apiSecret} onChange={e => setApiSecret(e.target.value)} placeholder={t('api.secretPh')} required />
-          </div>
-          {requiresPassphrase && (
-            <div className="form-field">
-              <label className="form-label">{t('api.passphraseLabel')}</label>
-              <input className="input" type="password" value={passphrase} onChange={e => setPassphrase(e.target.value)} placeholder={passphrasePlaceholder()} required />
-            </div>
+
+          {accountMode === 'sub' && (
+            <GlassCard className="p-4 section-mb-sm">
+              <h4 className="card-heading text-sm">{t('api.masterSectionTitle')}</h4>
+              <p className="text-muted text-sm section-mb-sm">{t('api.masterSectionHint')}</p>
+              <div className="form-field">
+                <label className="form-label">{t('api.masterKey')}</label>
+                <input className="input" value={masterApiKey} onChange={e => setMasterApiKey(e.target.value)} placeholder={t('api.keyPh')} />
+              </div>
+              <div className="form-field">
+                <label className="form-label">{t('api.masterSecret')}</label>
+                <input className="input" type="password" value={masterApiSecret} onChange={e => setMasterApiSecret(e.target.value)} placeholder={t('api.secretPh')} />
+              </div>
+              {masterRequiresPassphrase && (
+                <div className="form-field">
+                  <label className="form-label">{t('api.masterPassphrase')}</label>
+                  <input className="input" type="password" value={masterPassphrase} onChange={e => setMasterPassphrase(e.target.value)} placeholder={passphrasePlaceholder()} />
+                </div>
+              )}
+              <div className="form-field">
+                <label className="form-label">{t('api.masterUidLabel')}</label>
+                <input className="input" value={masterExchangeUid} onChange={e => setMasterExchangeUid(e.target.value)} placeholder={t('api.masterUidPh')} />
+              </div>
+              <div className="api-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  disabled={discovering || !masterApiKey || !masterApiSecret || (masterRequiresPassphrase && !masterPassphrase)}
+                  onClick={handleDiscoverSubs}
+                >
+                  {discovering ? t('api.discoveringSubs') : t('api.discoverSubs')}
+                </button>
+              </div>
+              {discoverRelaxed && (
+                <p className="text-muted form-hint-sm">{t('api.discoverSubsRelaxed')}</p>
+              )}
+            </GlassCard>
           )}
 
+          <GlassCard className={`p-4 ${accountMode === 'sub' ? 'section-mb-sm' : ''}`}>
+            {accountMode === 'sub' && (
+              <>
+                <h4 className="card-heading text-sm">{t('api.subSectionTitle')}</h4>
+                <p className="text-muted text-sm section-mb-sm">{t('api.subSectionHint')}</p>
+              </>
+            )}
+            <div className="form-field">
+              <label className="form-label">{accountMode === 'sub' ? t('api.subSectionTitle') + ' · ' + keyLabel() : keyLabel()}</label>
+              <input className="input" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={t('api.keyPh')} required />
+            </div>
+            <div className="form-field">
+              <label className="form-label">{secretLabel()}</label>
+              <input className="input" type="password" value={apiSecret} onChange={e => setApiSecret(e.target.value)} placeholder={t('api.secretPh')} required />
+            </div>
+            {requiresPassphrase && (
+              <div className="form-field">
+                <label className="form-label">{t('api.passphraseLabel')}</label>
+                <input className="input" type="password" value={passphrase} onChange={e => setPassphrase(e.target.value)} placeholder={passphrasePlaceholder()} required />
+              </div>
+            )}
+            {accountMode === 'sub' && (
+              <div className="form-field">
+                <label className="form-label">{t('api.subUidLabel')}</label>
+                {subAccounts.length > 0 ? (
+                  <select className="input" value={subExchangeUid} onChange={e => setSubExchangeUid(e.target.value)}>
+                    <option value="">{t('api.subUidPh')}</option>
+                    {subAccounts.map(s => (
+                      <option key={s.uid} value={s.uid}>{s.label} ({s.uid})</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input className="input" value={subExchangeUid} onChange={e => setSubExchangeUid(e.target.value)} placeholder={t('api.subUidPh')} />
+                )}
+              </div>
+            )}
+            {accountMode === 'master' && (
+              <div className="form-field">
+                <label className="form-label">{t('api.masterUidLabel')}</label>
+                <input className="input" value={masterExchangeUid} onChange={e => setMasterExchangeUid(e.target.value)} placeholder={t('api.masterUidPh')} />
+                <p className="text-muted form-hint-sm">{t('api.masterUidPh')}</p>
+              </div>
+            )}
+          </GlassCard>
+
           <div className="api-actions">
-            <button type="button" className="btn btn-secondary" disabled={checking || !apiKey || !apiSecret || (requiresPassphrase && !passphrase)} onClick={handleVerify}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={
+                checking ||
+                (accountMode === 'sub' ? !subFieldsReady || !apiKey || !apiSecret || (requiresPassphrase && !passphrase) : !apiKey || !apiSecret || (requiresPassphrase && !passphrase))
+              }
+              onClick={handleVerify}
+            >
               {checking ? t('api.verifying') : t('api.verify')}
             </button>
           </div>

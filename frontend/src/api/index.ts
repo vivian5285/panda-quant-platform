@@ -80,18 +80,41 @@ export const userApi = {
   syncExchangeLogs: (days = 90) => api.post('/users/sync-exchange-logs', null, { params: { days } }).then(r => r.data),
   analytics: (days = 90) => api.get('/users/analytics', { params: { days } }).then(r => r.data),
   signals: (limit = 100) => api.get('/users/signals', { params: { limit } }).then(r => r.data),
-  verifyApi: (api_key: string, api_secret: string, exchange = 'binance', passphrase?: string) =>
-    api.post('/users/bind-api/verify', { api_key, api_secret, exchange, passphrase }).then(r => r.data),
+  verifyApi: (payload: {
+    api_key: string
+    api_secret: string
+    exchange?: string
+    passphrase?: string
+    account_mode?: string
+    exchange_uid?: string
+    master_api_key?: string
+    master_api_secret?: string
+    master_passphrase?: string
+    master_exchange_uid?: string
+    sub_exchange_uid?: string
+  }) => api.post('/users/bind-api/verify', payload).then(r => r.data),
+  discoverSubs: (payload: {
+    exchange: string
+    master_api_key: string
+    master_api_secret: string
+    master_passphrase?: string
+  }) => api.post('/users/bind-api/discover-subs', payload).then(r => r.data),
   apiStatus: () => api.get('/users/api-status').then(r => r.data),
-  bindApi: (
-    api_key: string,
-    api_secret: string,
-    exchange = 'binance',
-    passphrase?: string,
-    email_code?: string,
-    phone_code?: string,
-  ) =>
-    api.post('/users/bind-api', { api_key, api_secret, exchange, passphrase, email_code, phone_code }).then(r => r.data),
+  bindApi: (payload: {
+    api_key: string
+    api_secret: string
+    exchange?: string
+    passphrase?: string
+    email_code?: string
+    phone_code?: string
+    account_mode?: string
+    exchange_uid?: string
+    master_api_key?: string
+    master_api_secret?: string
+    master_passphrase?: string
+    master_exchange_uid?: string
+    sub_exchange_uid?: string
+  }) => api.post('/users/bind-api', payload).then(r => r.data),
   unbindApi: (email_code: string, phone_code: string) =>
     api.delete('/users/bind-api', { params: { email_code, phone_code } }).then(r => r.data),
   positions: () => api.get('/users/positions').then(r => r.data),
@@ -206,6 +229,8 @@ export const adminApi = {
     api.get(`/admin/users/${id}/principal-history`).then(r => r.data),
   userReferralStats: (id: number) =>
     api.get(`/admin/users/${id}/referral-stats`).then(r => r.data),
+  linkedExchangeAccounts: (id: number) =>
+    api.get(`/admin/users/${id}/linked-exchange-accounts`).then(r => r.data),
   referralsOverview: () => api.get('/admin/referrals/overview').then(r => r.data),
   syncUserExchangeLogs: (id: number, days = 90) =>
     api.post(`/admin/users/${id}/sync-exchange-logs`, null, { params: { days } }).then(r => r.data),

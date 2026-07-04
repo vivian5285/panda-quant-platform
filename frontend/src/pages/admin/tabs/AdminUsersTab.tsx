@@ -13,7 +13,7 @@ export default function AdminUsersTab() {
     batchNotifyMessage, setBatchNotifyMessage, userSearch, setUserSearch,
     userApiFilter, setUserApiFilter, userPauseFilter, setUserPauseFilter,
     userFlagFilter, setUserFlagFilter, selectedUserId, userDetail, userTrades, userLogs,
-    userDetailTab, setUserDetailTab, userReferralStats, userPrincipalHistory, userTradingCtrl,
+    userDetailTab, setUserDetailTab, userReferralStats, userPrincipalHistory, userTradingCtrl, linkedExchangeAccounts,
     load, loadUserDetail, closeUserDetail, exportUsersCsv, toggleUserSelect, toggleSelectAllUsers,
     runBatchNotify, runBatchPause, forceUserPause, forceCloseUser, setUserRisk, toggleSettlementDefer,
     exportUserLogsCsv, setUserLogs,
@@ -41,6 +41,13 @@ export default function AdminUsersTab() {
             <div><span className="text-muted">{t('common.email')}:</span> {userDetail.profile?.email || t('common.none')}</div>
             <div><span className="text-muted">{t('common.phone')}:</span> {userDetail.profile?.phone || t('common.none')}</div>
             <div><span className="text-muted">{t('admin.cols.api')}:</span> {userDetail.profile?.api_status}</div>
+            <div><span className="text-muted">{t('admin.exchangeAccountMode')}:</span> {userDetail.profile?.api_account_mode === 'sub' ? t('admin.accountModeSub') : t('admin.accountModeMaster')}</div>
+            {userDetail.profile?.exchange_uid && (
+              <div><span className="text-muted">{t('admin.exchangeUid')}:</span> {userDetail.profile.exchange_uid}</div>
+            )}
+            {userDetail.profile?.master_exchange_uid && userDetail.profile?.api_account_mode === 'sub' && (
+              <div><span className="text-muted">{t('admin.masterExchangeUid')}:</span> {userDetail.profile.master_exchange_uid}</div>
+            )}
             <div><span className="text-muted">{t('admin.apiKeyMask')}:</span> {userDetail.api_key_mask || t('common.none')}</div>
             <div><span className="text-muted">{t('admin.cols.cumulativePnl')}:</span> ${userDetail.cumulative_pnl?.toFixed(2) ?? '0'}</div>
             <div><span className="text-muted">{t('admin.cols.execSuccessRate')}:</span> {userDetail.execution_success_rate != null ? `${userDetail.execution_success_rate}%` : '—'}</div>
@@ -48,6 +55,22 @@ export default function AdminUsersTab() {
             <div><span className="text-muted">{t('dashboard.principal')}:</span> ${userDetail.profile?.initial_principal?.toFixed(2) ?? '0'}</div>
             {userDetail.risk_flag && (
               <div className="text-red"><span className="text-muted">{t('admin.flagged')}:</span> {t(`admin.flagReason.${userDetail.risk_flag_reason}` as any) || userDetail.risk_flag_reason}</div>
+            )}
+            {linkedExchangeAccounts?.accounts?.length > 0 && (
+              <div className="section-mt-sm">
+                <p className="text-sm-strong section-mb-sm">{t('admin.linkedExchangeAccounts')} ({linkedExchangeAccounts.master_uid})</p>
+                <ul className="text-sm">
+                  {linkedExchangeAccounts.accounts.map((a: any) => (
+                    <li key={`${a.user_id}-${a.exchange_uid}`}>
+                      {a.platform_uid} · {a.exchange_uid} · {a.account_mode === 'sub' ? t('admin.accountModeSub') : t('admin.accountModeMaster')}
+                      {!a.is_active ? ` · ${t('admin.flagged')}` : ''}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {linkedExchangeAccounts && !linkedExchangeAccounts.accounts?.length && userDetail.profile?.exchange_uid && (
+              <div className="text-muted text-sm">{t('admin.linkedAccountsEmpty')}</div>
             )}
             {userTradingCtrl?.settlement_blocked && (
               <div className="section-mt-md p-4 settlement-defer-panel">

@@ -75,6 +75,13 @@ class User(Base):
     settlement_cycle_start = Column(Date, nullable=True)
     settlement_target_days = Column(Integer, default=30)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Exchange account binding (master / sub)
+    api_account_mode = Column(String(10), default="master")
+    exchange_uid = Column(String(64), nullable=True, index=True)
+    master_exchange_uid = Column(String(64), nullable=True, index=True)
+    master_api_key_enc = Column(Text, nullable=True)
+    master_api_secret_enc = Column(Text, nullable=True)
+    master_passphrase_enc = Column(Text, nullable=True)
 
     referrer = relationship("User", remote_side=[id], backref="referrals")
     reward_account = relationship("RewardAccount", back_populates="user", uselist=False)
@@ -419,6 +426,22 @@ class AdminAlert(Base):
     detail_json = Column(Text, nullable=True)
     is_read = Column(Boolean, default=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    user = relationship("User", foreign_keys=[user_id])
+
+
+class ExchangeAccountRegistry(Base):
+    """Maps exchange UIDs to platform users for anti-abuse and master-sub linkage."""
+    __tablename__ = "exchange_account_registry"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    exchange = Column(String(20), nullable=False, index=True)
+    account_mode = Column(String(10), nullable=False, default="master")
+    exchange_uid = Column(String(64), nullable=False)
+    master_exchange_uid = Column(String(64), nullable=True, index=True)
+    is_active = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", foreign_keys=[user_id])
 

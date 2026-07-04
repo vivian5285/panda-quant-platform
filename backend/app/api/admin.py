@@ -132,6 +132,10 @@ def _admin_user_row(user: User, db: Session) -> AdminUserOut:
         nickname=user.nickname,
         role=user.role,
         api_status=user.api_status,
+        exchange=user.exchange or "binance",
+        api_account_mode=user.api_account_mode or "master",
+        exchange_uid=user.exchange_uid,
+        master_exchange_uid=user.master_exchange_uid,
         is_active=user.is_active,
         referrer_id=user.referrer_id,
         trading_paused=trading_paused,
@@ -432,6 +436,22 @@ def admin_user_referral_stats(user_id: int, admin=Depends(get_admin_user), db: S
     if not user:
         raise HTTPException(404, "User not found")
     return build_user_referral_stats(db, user)
+
+
+@router.get("/users/{user_id}/linked-exchange-accounts")
+def admin_linked_exchange_accounts(user_id: int, admin=Depends(get_admin_user), db: Session = Depends(get_db)):
+    """List platform users sharing the same master exchange UID."""
+    from app.services.sub_account_service import get_linked_accounts_for_master
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    master_uid = user.master_exchange_uid or user.exchange_uid
+    if not master_uid:
+        return {"master_uid": None, "accounts": []}
+    exchange = user.exchange or "binance"
+    accounts = get_linked_accounts_for_master(db, exchange, master_uid)
+    return {"master_uid": master_uid, "exchange": exchange, "accounts": accounts}
 
 
 @router.get("/referrals/overview")

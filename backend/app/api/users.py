@@ -8,11 +8,19 @@ from app.core.exchange_factory import exchange_requires_passphrase, parse_exchan
 from app.schemas import (
     ApiBindRequest, ApiVerifyResponse, ApiVerifyCheckItem, UserProfile, DashboardStats,
     TradeOut, TradeLogOut, PrincipalSnapshotOut, UserAnalyticsOut, SignalStatsOut,
+    DiscoverSubsRequest, DiscoverSubsResponse, SubAccountItem,
 )
 from app.api.deps import get_current_user
 from app.utils.crypto import encrypt_text, decrypt_text
 from app.services.dispatcher import supervisor_pool
 from app.services.api_validation import validate_exchange_api
+from app.services.sub_account_service import (
+    discover_master_sub_accounts,
+    validate_sub_account_binding,
+    validate_master_account_binding,
+    register_exchange_account,
+    deactivate_exchange_registry,
+)
 from app.services.principal import start_new_profit_cycle
 from app.services.analytics import build_user_analytics, build_signal_stats
 from app.services.platform_analytics import enrich_trades
@@ -68,6 +76,9 @@ def _verify_response(result: dict) -> ApiVerifyResponse:
         open_positions_count=int(result.get("open_positions_count") or 0),
         hedge_mode=result.get("hedge_mode"),
         exchange=result.get("exchange", "binance"),
+        account_mode=result.get("account_mode", "master"),
+        exchange_uid=result.get("exchange_uid"),
+        master_exchange_uid=result.get("master_exchange_uid"),
     )
 
 
@@ -78,19 +89,77 @@ def profile(user: User = Depends(get_current_user)):
 
 
 @router.post("/bind-api/verify", response_model=ApiVerifyResponse)
-def verify_bind_api(req: ApiBindRequest, user: User = Depends(get_current_user)):
-    """绑定前校验：连接、余额、交易权限、单向持仓、杠杆。"""
+def verify_bind_api(req: ApiBindRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """绑定前校验：主账户或子账户模式。"""
     ex = parse_exchange(req.exchange)
     if ex is None:
         raise_i18n(400, "api.unsupported_exchange")
-    result = validate_exchange_api(
-        ex,
-        req.api_key,
-        req.api_secret,
-        user.id,
-        req.passphrase or "",
-    )
+
+    mode = (req.account_mode or "master").strip().lower()
+    if mode == "sub":
+        if not (req.master_api_key and req.master_api_secret):
+            raise_i18n(400, "api.master_credentials_required")
+        if exchange_requires_passphrase(ex) and not (req.master_passphrase or "").strip():
+            raise_i18n(400, "api.passphrase_required")
+        result = validate_sub_account_binding(
+            db,
+            user.id,
+            ex,
+            sub_api_key=req.api_key,
+            sub_api_secret=req.api_secret,
+            sub_passphrase=req.passphrase or "",
+            master_api_key=req.master_api_key,
+            master_api_secret=req.master_api_secret,
+            master_passphrase=req.master_passphrase or "",
+            master_exchange_uid=req.master_exchange_uid or req.exchange_uid or "",
+            sub_exchange_uid=req.sub_exchange_uid or "",
+        )
+    else:
+        result = validate_master_account_binding(
+            db,
+            user.id,
+            ex,
+            req.api_key,
+            req.api_secret,
+            req.passphrase or "",
+            req.exchange_uid or req.master_exchange_uid,
+        )
     return _verify_response(result)
+
+
+@router.post("/bind-api/discover-subs", response_model=DiscoverSubsResponse)
+def discover_sub_accounts(req: DiscoverSubsRequest, user: User = Depends(get_current_user)):
+    """子账户模式：用主账户 API 查询 UID 与子账户列表。"""
+    ex = parse_exchange(req.exchange)
+    if ex is None:
+        raise_i18n(400, "api.unsupported_exchange")
+    if exchange_requires_passphrase(ex) and not (req.master_passphrase or "").strip():
+        raise_i18n(400, "api.passphrase_required")
+
+    raw = discover_master_sub_accounts(
+        ex,
+        req.master_api_key,
+        req.master_api_secret,
+        req.master_passphrase or "",
+        user.id,
+    )
+    locale = get_locale()
+    msg = ""
+    if not raw.get("ok"):
+        msg = t("api.master_connect_failed", locale)
+    subs = [
+        SubAccountItem(uid=str(s.get("uid", "")), label=str(s.get("label") or s.get("uid") or ""))
+        for s in (raw.get("sub_accounts") or [])
+        if s.get("uid")
+    ]
+    return DiscoverSubsResponse(
+        ok=bool(raw.get("ok")),
+        uid=raw.get("uid"),
+        sub_accounts=subs,
+        strict=bool(raw.get("strict", True)),
+        relaxed=bool(raw.get("relaxed")),
+        message=msg,
+    )
 
 
 @router.get("/api-status", response_model=ApiVerifyResponse)
@@ -123,16 +192,39 @@ def bind_api(req: ApiBindRequest, db: Session = Depends(get_db), user: User = De
     ex = parse_exchange(req.exchange)
     if ex is None:
         raise_i18n(400, "api.unsupported_exchange")
-    if exchange_requires_passphrase(ex) and not (req.passphrase or "").strip():
-        raise_i18n(400, "api.passphrase_required")
 
-    result = validate_exchange_api(
-        ex,
-        req.api_key,
-        req.api_secret,
-        user.id,
-        req.passphrase or "",
-    )
+    mode = (req.account_mode or "master").strip().lower()
+    if mode == "sub":
+        if not (req.master_api_key and req.master_api_secret):
+            raise_i18n(400, "api.master_credentials_required")
+        if exchange_requires_passphrase(ex) and not (req.master_passphrase or "").strip():
+            raise_i18n(400, "api.passphrase_required")
+        result = validate_sub_account_binding(
+            db,
+            user.id,
+            ex,
+            sub_api_key=req.api_key,
+            sub_api_secret=req.api_secret,
+            sub_passphrase=req.passphrase or "",
+            master_api_key=req.master_api_key,
+            master_api_secret=req.master_api_secret,
+            master_passphrase=req.master_passphrase or "",
+            master_exchange_uid=req.master_exchange_uid or req.exchange_uid or "",
+            sub_exchange_uid=req.sub_exchange_uid or "",
+        )
+    else:
+        if exchange_requires_passphrase(ex) and not (req.passphrase or "").strip():
+            raise_i18n(400, "api.passphrase_required")
+        result = validate_master_account_binding(
+            db,
+            user.id,
+            ex,
+            req.api_key,
+            req.api_secret,
+            req.passphrase or "",
+            req.exchange_uid or req.master_exchange_uid,
+        )
+
     if not result.get("valid"):
         localized = translate_api_message(result, get_locale())
         raise HTTPException(400, localized.get("message") or t("api.verify_fail", get_locale()))
@@ -141,8 +233,33 @@ def bind_api(req: ApiBindRequest, db: Session = Depends(get_db), user: User = De
     user.exchange = ex
     user.api_key_enc = encrypt_text(req.api_key)
     user.api_secret_enc = encrypt_text(req.api_secret)
-    user.passphrase_enc = encrypt_text(req.passphrase) if exchange_requires_passphrase(ex) else None
+    user.passphrase_enc = encrypt_text(req.passphrase) if exchange_requires_passphrase(ex) and (req.passphrase or "").strip() else None
     user.api_status = ApiStatus.ACTIVE.value
+    user.api_account_mode = mode if mode == "sub" else "master"
+    user.exchange_uid = result.get("exchange_uid")
+    user.master_exchange_uid = result.get("master_exchange_uid")
+
+    if mode == "sub":
+        user.master_api_key_enc = encrypt_text(req.master_api_key)
+        user.master_api_secret_enc = encrypt_text(req.master_api_secret)
+        user.master_passphrase_enc = (
+            encrypt_text(req.master_passphrase)
+            if exchange_requires_passphrase(ex) and (req.master_passphrase or "").strip()
+            else None
+        )
+    else:
+        user.master_api_key_enc = None
+        user.master_api_secret_enc = None
+        user.master_passphrase_enc = None
+
+    register_exchange_account(
+        db,
+        user,
+        exchange=ex,
+        account_mode=user.api_account_mode,
+        exchange_uid=user.exchange_uid or "",
+        master_exchange_uid=user.master_exchange_uid,
+    )
 
     start_new_profit_cycle(
         db, user,
@@ -158,6 +275,9 @@ def bind_api(req: ApiBindRequest, db: Session = Depends(get_db), user: User = De
         "status": "ok",
         "api_status": user.api_status,
         "initial_principal": user.initial_principal,
+        "account_mode": user.api_account_mode,
+        "exchange_uid": user.exchange_uid,
+        "master_exchange_uid": user.master_exchange_uid,
         "message": t("api.bind_success", get_locale(), amount=f"{user.initial_principal:.2f}"),
     }
 
@@ -181,8 +301,15 @@ def unbind_api(
     user.api_key_enc = None
     user.api_secret_enc = None
     user.passphrase_enc = None
+    user.master_api_key_enc = None
+    user.master_api_secret_enc = None
+    user.master_passphrase_enc = None
     user.exchange = ExchangeType.BINANCE.value
     user.api_status = ApiStatus.NONE.value
+    user.api_account_mode = "master"
+    user.exchange_uid = None
+    user.master_exchange_uid = None
+    deactivate_exchange_registry(db, user.id)
     db.commit()
     return {"status": "ok", "api_status": user.api_status}
 

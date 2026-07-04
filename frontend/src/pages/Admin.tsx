@@ -124,6 +124,7 @@ export default function Admin() {
   const [userLogs, setUserLogs] = useState<any[]>([])
   const [userDetailTab, setUserDetailTab] = useState<'overview' | 'trades' | 'logs' | 'referrals' | 'principal'>('overview')
   const [userReferralStats, setUserReferralStats] = useState<any>(null)
+  const [linkedExchangeAccounts, setLinkedExchangeAccounts] = useState<any>(null)
   const [userPrincipalHistory, setUserPrincipalHistory] = useState<any[]>([])
   const [referralOverview, setReferralOverview] = useState<any>(null)
   const [signalTemplates, setSignalTemplates] = useState<any[]>([])
@@ -147,6 +148,7 @@ export default function Admin() {
     adminApi.userLogs(id).then(setUserLogs)
     adminApi.userTradingControl(id).then(setUserTradingCtrl).catch(() => setUserTradingCtrl(null))
     adminApi.userReferralStats(id).then(setUserReferralStats).catch(() => setUserReferralStats(null))
+    adminApi.linkedExchangeAccounts(id).then(setLinkedExchangeAccounts).catch(() => setLinkedExchangeAccounts(null))
     adminApi.userPrincipalHistory(id).then(setUserPrincipalHistory).catch(() => setUserPrincipalHistory([]))
   }
 
@@ -156,6 +158,7 @@ export default function Admin() {
     setUserTrades([])
     setUserLogs([])
     setUserReferralStats(null)
+    setLinkedExchangeAccounts(null)
     setUserPrincipalHistory([])
   }
 
@@ -1079,7 +1082,7 @@ export default function Admin() {
     completeTx, setCompleteTx,
     selectedUserId, userDetail, userTrades, userLogs, setUserLogs,
     userDetailTab, setUserDetailTab,
-    userReferralStats, userPrincipalHistory, referralOverview,
+    userReferralStats, userPrincipalHistory, referralOverview, linkedExchangeAccounts,
     signalTemplates, signalLogs, userTradingCtrl,
     newTemplate, setNewTemplate, editTemplate, setEditTemplate,
     platformAnalytics,
