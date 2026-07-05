@@ -44,8 +44,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "One-way mode not ready — close all futures positions/orders or switch manually on Binance",
     },
     "api.leverage_failed": {
-        "zh": "无法将 ETHUSDT 杠杆设为 20x — 请检查 API 合约交易权限",
-        "en": "Could not set ETHUSDT leverage to 20x — check Futures trading permission",
+        "zh": "无法将 ETHUSDT 杠杆设为 8x — 请检查 API 合约交易权限",
+        "en": "Could not set ETHUSDT leverage to 8x — check Futures trading permission",
     },
     "api.withdraw_enabled": {
         "zh": "API 仍开启提现权限 — 请在币安关闭 Withdraw 后重新验证",

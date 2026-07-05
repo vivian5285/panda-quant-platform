@@ -85,7 +85,7 @@ class BinanceClient:
             logger.warning(f"[User {self.user_id}] one-way mode check: {e}")
             return False
 
-    def set_leverage(self, symbol="ETHUSDT", leverage=20):
+    def set_leverage(self, symbol="ETHUSDT", leverage=8):
         try:
             return self.client.futures_change_leverage(symbol=symbol, leverage=leverage)
         except Exception as e:

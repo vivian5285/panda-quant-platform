@@ -42,10 +42,10 @@ def test_reading_enabled_without_withdraw_key_treated_as_off():
 
 
 def test_regime_margin_formula():
-    """Regime 1: 15% margin × 20x on $100 balance @ $3500 ETH."""
+    """Regime 1: 15% margin × 8x on $100 balance @ $3500 ETH."""
     balance = 100.0
     margin_pct = 0.15
-    leverage = 20
+    leverage = 8
     price = 3500.0
     qty = (balance * margin_pct * leverage) / price
-    assert round(qty, 3) == 0.086
+    assert round(qty, 3) == 0.034
