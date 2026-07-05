@@ -53,6 +53,10 @@ export default function Register() {
       setError(t('auth.passwordMismatch'))
       return
     }
+    if (!referralCode.trim()) {
+      toast.error(t('auth.referralRequired'))
+      return
+    }
     setLoading(true)
     setError('')
     try {
@@ -60,7 +64,7 @@ export default function Register() {
         email,
         password,
         verification_code: code,
-        referral_code: referralCode || undefined,
+        referral_code: referralCode.trim(),
       })
       setAuth(data.access_token, data.uid, data.display_name, data.role)
       navigate('/api')
@@ -103,8 +107,9 @@ export default function Register() {
             <PasswordInput value={confirmPassword} onChange={setConfirmPassword} minLength={6} required autoComplete="new-password" />
           </div>
           <div className="form-field">
-            <label className="form-label">{t('auth.referralOptional')}</label>
-            <input className="input" value={referralCode} onChange={e => setReferralCode(e.target.value)} placeholder="GEMINI-XXXXXXXX" readOnly={!!searchParams.get('ref')} />
+            <label className="form-label">{t('auth.referralRequired')}</label>
+            <input className="input" value={referralCode} onChange={e => setReferralCode(e.target.value)} placeholder="UID 或 GEMINI-XXXXXXXX" required readOnly={!!searchParams.get('ref')} />
+            <p className="text-muted text-xs section-mt-xs">{t('auth.referralRequiredHint')}</p>
           </div>
           {error && <p className="form-error">{error}</p>}
           <RippleButton type="submit" className="btn btn-auth-primary auth-submit" disabled={loading}>

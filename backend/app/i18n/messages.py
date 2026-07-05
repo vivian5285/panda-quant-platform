@@ -144,6 +144,18 @@ MESSAGES: dict[str, dict[str, str]] = {
         "zh": "您推广线下级有未缴绩效费，整条推广线暂停拉新，下级缴清或管理员特批后可恢复",
         "en": "A downline user has unpaid performance fees — referrals paused until they pay or admin approves",
     },
+    "auth.referral_required": {
+        "zh": "注册须填写有效推荐人 UID 或邀请码",
+        "en": "A valid referrer UID or invite code is required to register",
+    },
+    "auth.referral_invalid": {
+        "zh": "推荐人 UID 或邀请码无效",
+        "en": "Invalid referrer UID or invite code",
+    },
+    "api.credit_default_bind_blocked": {
+        "zh": "您有未缴纳的绩效服务费，暂不可绑定 API，缴清后自动恢复",
+        "en": "Unpaid performance fee — API binding is blocked until payment is cleared",
+    },
 
     # Wallet
     "withdraw_password_not_set": {"zh": "请先设置提现密码", "en": "Please set withdraw password first"},

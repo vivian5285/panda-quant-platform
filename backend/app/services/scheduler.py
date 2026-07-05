@@ -7,9 +7,10 @@ import time
 
 from app.config import get_settings
 from app.database import SessionLocal
-from app.services.settlement import run_scheduled_settlements
+from app.services.settlement import run_scheduled_settlements, run_awaiting_flat_settlements
 from app.services.deposit_monitor import run_deposit_monitor_once
 from app.services.deposit_sweep import run_deposit_sweep_once
+from app.services.settlement_reminder import send_daily_settlement_reminders
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -58,11 +59,45 @@ def _sweep_loop():
         _stop.wait(interval)
 
 
+def _awaiting_flat_loop():
+    interval = max(120, getattr(settings, "SETTLEMENT_AWAITING_FLAT_SCAN_SEC", 300))
+    logger.info("[Scheduler] awaiting-flat settlement scan every %ss", interval)
+    while not _stop.is_set():
+        db = SessionLocal()
+        try:
+            created = run_awaiting_flat_settlements(db)
+            if created:
+                logger.info("[Scheduler] awaiting-flat billed %s settlement(s)", len(created))
+        except Exception as e:
+            logger.exception("[Scheduler] awaiting-flat scan failed: %s", e)
+        finally:
+            db.close()
+        _stop.wait(interval)
+
+
+def _settlement_reminder_loop():
+    interval = max(3600, getattr(settings, "SETTLEMENT_REMINDER_INTERVAL_SEC", 86400))
+    logger.info("[Scheduler] settlement reminder every %ss", interval)
+    while not _stop.is_set():
+        db = SessionLocal()
+        try:
+            stats = send_daily_settlement_reminders(db)
+            if stats.get("notified"):
+                logger.info("[Scheduler] settlement reminders: %s", stats)
+        except Exception as e:
+            logger.exception("[Scheduler] settlement reminder failed: %s", e)
+        finally:
+            db.close()
+        _stop.wait(interval)
+
+
 def start_background_schedulers():
     if not settings.ENABLE_BACKGROUND_SCHEDULERS:
         logger.info("[Scheduler] background schedulers disabled")
         return
     threading.Thread(target=_settlement_loop, daemon=True, name="settlement-scan").start()
+    threading.Thread(target=_awaiting_flat_loop, daemon=True, name="awaiting-flat-scan").start()
+    threading.Thread(target=_settlement_reminder_loop, daemon=True, name="settlement-reminder").start()
     threading.Thread(target=_deposit_loop, daemon=True, name="deposit-monitor").start()
     threading.Thread(target=_sweep_loop, daemon=True, name="deposit-sweep").start()
 

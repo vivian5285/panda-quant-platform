@@ -1670,6 +1670,9 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
                         alert_type = "CLOSE_PROTECT"
                 self._alert(sev, alert_type, "全平完成", reason, close_detail)
 
+        if closed_successfully and had_position:
+            self._trigger_settlement_on_flat()
+
         self.monitoring = False
         self.watched_qty = 0.0
         self.initial_qty = 0.0
@@ -1678,6 +1681,28 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
         self.trade_opened_at = None
         self._save_state()
         self.client.cancel_all_open_orders(self.symbol)
+
+    def _trigger_settlement_on_flat(self) -> None:
+        """Profitable cycle awaiting flat: bill immediately after position closes."""
+        try:
+            from app.database import SessionLocal
+            from app.models import User
+            from app.services.settlement import try_settlement_on_flat
+
+            db = SessionLocal()
+            try:
+                user = db.query(User).filter(User.id == self.user_id).first()
+                if user:
+                    settlement = try_settlement_on_flat(db, user)
+                    if settlement:
+                        logger.info(
+                            "[User %s] settlement billed on flat: #%s payable=%.2f",
+                            self.user_id, settlement.id, settlement.user_payable,
+                        )
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning("[User %s] settlement-on-flat hook failed: %s", self.user_id, e)
 
     def recover_on_startup(
         self,

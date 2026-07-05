@@ -24,6 +24,7 @@ export type SettlementCycleStatus = {
   pending_settlement_id?: number | null
   pending_payable: number
   historical_settled_cycles: number
+  settlement_awaiting_flat: boolean
 }
 
 type Props = {
@@ -102,10 +103,17 @@ export default function SettlementCycleCard({ status, onPayClick }: Props) {
         />
       </div>
 
-      {status.has_open_position && (
+      {status.has_open_position && status.phase !== 'awaiting_flat' && (
         <div className="settlement-cycle-alert section-mt-md">
           <AlertTriangle size={16} />
           <p className="text-sm">{t('settlements.cycleFlatRequired')}</p>
+        </div>
+      )}
+
+      {status.phase === 'awaiting_flat' && (
+        <div className="settlement-cycle-alert section-mt-md">
+          <AlertTriangle size={16} />
+          <p className="text-sm">{t('settlements.cycleAwaitingFlat')}</p>
         </div>
       )}
 

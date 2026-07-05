@@ -22,6 +22,7 @@ def _default_state() -> dict:
         "settlement_defer_note": "",
         "referral_invite_override": False,
         "referral_override_note": "",
+        "settlement_awaiting_flat": False,
     }
 
 
@@ -43,6 +44,7 @@ def _parse(row: UserTradingState | None) -> dict:
         "settlement_defer_note": str(data.get("settlement_defer_note") or ""),
         "referral_invite_override": bool(data.get("referral_invite_override", False)),
         "referral_override_note": str(data.get("referral_override_note") or ""),
+        "settlement_awaiting_flat": bool(data.get("settlement_awaiting_flat", False)),
     }
 
 
@@ -61,6 +63,7 @@ def set_user_control(
     settlement_defer_note: str | None = None,
     referral_invite_override: bool | None = None,
     referral_override_note: str | None = None,
+    settlement_awaiting_flat: bool | None = None,
 ) -> dict:
     row = db.query(UserTradingState).filter(UserTradingState.user_id == user_id).first()
     state = _parse(row)
@@ -83,6 +86,8 @@ def set_user_control(
             state["referral_override_note"] = ""
     if referral_override_note is not None:
         state["referral_override_note"] = referral_override_note[:500]
+    if settlement_awaiting_flat is not None:
+        state["settlement_awaiting_flat"] = settlement_awaiting_flat
     payload = {
         "trading_paused": state["trading_paused"],
         "risk_level": state["risk_level"],
@@ -90,6 +95,7 @@ def set_user_control(
         "settlement_defer_note": state.get("settlement_defer_note", ""),
         "referral_invite_override": state.get("referral_invite_override", False),
         "referral_override_note": state.get("referral_override_note", ""),
+        "settlement_awaiting_flat": state.get("settlement_awaiting_flat", False),
     }
     if row:
         row.state_json = json.dumps(payload)
@@ -101,6 +107,14 @@ def set_user_control(
 
 def clear_settlement_fee_deferred(db: Session, user_id: int) -> None:
     set_user_control(db, user_id, settlement_fee_deferred=False, settlement_defer_note="")
+
+
+def set_settlement_awaiting_flat(db: Session, user_id: int, awaiting: bool) -> None:
+    set_user_control(db, user_id, settlement_awaiting_flat=awaiting)
+
+
+def clear_settlement_awaiting_flat(db: Session, user_id: int) -> None:
+    set_user_control(db, user_id, settlement_awaiting_flat=False)
 
 
 def count_settlement_gate_stats(db: Session) -> dict[str, int]:
@@ -126,6 +140,8 @@ def is_user_paused(db: Session, user_id: int) -> bool:
     ctrl = get_user_control(db, user_id)
     if ctrl["trading_paused"]:
         return True
+    if ctrl.get("settlement_awaiting_flat"):
+        return True
     from app.services.credit_control import user_trading_blocked_by_credit
 
     blocked, _reason = user_trading_blocked_by_credit(db, user_id)
@@ -141,6 +157,7 @@ def build_trading_control_response(db: Session, user) -> dict:
     settlement_blocked = pending is not None
     settlement_fee_deferred = bool(ctrl.get("settlement_fee_deferred")) and settlement_blocked
     credit_blocked, credit_reason = user_trading_blocked_by_credit(db, user.id)
+    awaiting_flat = bool(ctrl.get("settlement_awaiting_flat"))
     pending_out = None
     if pending:
         pending_out = {
@@ -158,11 +175,12 @@ def build_trading_control_response(db: Session, user) -> dict:
         "settlement_blocked": settlement_blocked,
         "settlement_fee_deferred": settlement_fee_deferred,
         "credit_default": user_is_credit_default(db, user.id),
+        "settlement_awaiting_flat": awaiting_flat,
         "family_credit_blocked": credit_reason == "family_credit_default",
         "referral_blocked": bool(referral_block_reason(db, user.id)),
         "referral_block_reason": referral_block_reason(db, user.id),
         "referral_invite_override": bool(ctrl.get("referral_invite_override")),
-        "effective_paused": ctrl["trading_paused"] or settlement_pause or global_paused,
+        "effective_paused": ctrl["trading_paused"] or settlement_pause or global_paused or awaiting_flat,
         "pending_settlement": pending_out,
         "api_status": user.api_status,
         "global_paused": global_paused,

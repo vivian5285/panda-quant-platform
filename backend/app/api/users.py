@@ -207,6 +207,11 @@ def bind_api(
             raise_i18n(400, "api.security_codes_required")
         verify_security_dual(db, user, req.email_code, req.phone_code)
 
+    from app.services.credit_control import user_api_bind_blocked
+    bind_blocked, bind_reason = user_api_bind_blocked(db, user.id)
+    if bind_blocked:
+        raise_i18n(403, "api.credit_default_bind_blocked")
+
     ex = parse_exchange(req.exchange)
     if ex is None:
         raise_i18n(400, "api.unsupported_exchange")

@@ -29,12 +29,14 @@ class RegisterRequest(BaseModel):
     phone: Optional[str] = None
     password: str = Field(min_length=6)
     verification_code: str = Field(min_length=4, max_length=8)
-    referral_code: Optional[str] = None
+    referral_code: str = Field(min_length=3)
 
     @model_validator(mode="after")
     def require_email_or_phone(self):
         if not self.email and not self.phone:
             raise ValueError("Email or phone is required")
+        if not (self.referral_code or "").strip():
+            raise ValueError("Referral code is required")
         return self
 
 
@@ -488,6 +490,7 @@ class SettlementCycleStatusOut(BaseModel):
     pending_settlement_id: Optional[int] = None
     pending_payable: float = 0.0
     historical_settled_cycles: int = 0
+    settlement_awaiting_flat: bool = False
 
 
 class DepositAddressOut(BaseModel):

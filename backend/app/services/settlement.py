@@ -150,9 +150,42 @@ def _reset_cycle(user: User, today: date):
 
 
 def _rollover_cycle(user: User):
-    """Loss or still holding at period end: extend window by 30d; PnL still accumulates from cycle_start."""
+    """Loss at period end: extend window by 30d; PnL still accumulates from cycle_start."""
     base = user.settlement_target_days or settings.SETTLEMENT_PRIMARY_DAYS
     user.settlement_target_days = base + settings.SETTLEMENT_PRIMARY_DAYS
+
+
+def _cycle_net_profit_preview(db: Session, user: User, period_start: date, period_end: date) -> float:
+    from app.services.profit_audit import settlement_profit_from_trades
+
+    gross, _ = settlement_profit_from_trades(db, user, period_start, period_end)
+    new_hwm = max(float(user.high_water_mark or 0) + gross, float(user.high_water_mark or 0))
+    return max(0.0, new_hwm - float(user.high_water_mark or 0))
+
+
+def try_settlement_on_flat(db: Session, user: User, today: date | None = None) -> Settlement | None:
+    """Cycle due + profitable + was holding: bill immediately once flat."""
+    from app.services.trading_control import clear_settlement_awaiting_flat, get_user_control
+
+    today = today or date.today()
+    ctrl = get_user_control(db, user.id)
+    if not ctrl.get("settlement_awaiting_flat"):
+        return None
+    if get_pending_settlement(db, user.id):
+        clear_settlement_awaiting_flat(db, user.id)
+        return None
+    if user_has_open_position(db, user.id):
+        return None
+
+    clear_settlement_awaiting_flat(db, user.id)
+    period_start = user.settlement_cycle_start or today
+    settlement = calculate_settlement(
+        db, user, period_start, today, user.settlement_target_days or settings.SETTLEMENT_PRIMARY_DAYS
+    )
+    if settlement:
+        _reset_cycle(user, today)
+    db.commit()
+    return settlement
 
 
 def build_settlement_cycle_status(db: Session, user: User, today: date | None = None) -> dict:
@@ -177,9 +210,14 @@ def build_settlement_cycle_status(db: Session, user: User, today: date | None = 
     has_position = user_has_open_position(db, user.id)
     pending = get_pending_settlement(db, user.id)
     initial = float(user.initial_principal or 0)
+    from app.services.trading_control import get_user_control
+
+    awaiting_flat = bool(get_user_control(db, user.id).get("settlement_awaiting_flat"))
 
     if pending:
         phase = "pending_payment"
+    elif awaiting_flat and has_position:
+        phase = "awaiting_flat"
     elif days_elapsed < target_days:
         phase = "active"
     elif has_position:
@@ -216,6 +254,7 @@ def build_settlement_cycle_status(db: Session, user: User, today: date | None = 
         "pending_settlement_id": pending.id if pending else None,
         "pending_payable": round(float(pending.user_payable or 0), 2) if pending else 0.0,
         "historical_settled_cycles": historical_settled,
+        "settlement_awaiting_flat": awaiting_flat,
         "profit_audit": audit,
     }
 
@@ -224,16 +263,30 @@ def process_user_settlement_cycle(db: Session, user: User, today: date | None = 
     today = today or date.today()
     _ensure_cycle_started(user, today)
 
+    if get_pending_settlement(db, user.id):
+        return None
+
+    billed = try_settlement_on_flat(db, user, today)
+    if billed:
+        return billed
+
     days_elapsed = (today - user.settlement_cycle_start).days
     if days_elapsed < user.settlement_target_days:
         return None
 
+    period_start = user.settlement_cycle_start
+
     if user_has_open_position(db, user.id):
+        if _cycle_net_profit_preview(db, user, period_start, today) > 0:
+            from app.services.trading_control import set_settlement_awaiting_flat
+
+            set_settlement_awaiting_flat(db, user.id, True)
+            db.commit()
+            return None
         _rollover_cycle(user)
         db.commit()
         return None
 
-    period_start = user.settlement_cycle_start
     period_end = today
     settlement = calculate_settlement(
         db, user, period_start, period_end, user.settlement_target_days
@@ -247,6 +300,31 @@ def process_user_settlement_cycle(db: Session, user: User, today: date | None = 
     _rollover_cycle(user)
     db.commit()
     return None
+
+
+def run_awaiting_flat_settlements(db: Session) -> list[Settlement]:
+    """Frequent scan: bill users flagged awaiting_flat once position is zero."""
+    from app.models import UserTradingState
+    import json
+
+    created: list[Settlement] = []
+    rows = db.query(UserTradingState).all()
+    for row in rows:
+        if not row.state_json:
+            continue
+        try:
+            state = json.loads(row.state_json)
+        except json.JSONDecodeError:
+            continue
+        if not state.get("settlement_awaiting_flat"):
+            continue
+        user = db.query(User).filter(User.id == row.user_id, User.is_active == True).first()
+        if not user:
+            continue
+        s = try_settlement_on_flat(db, user)
+        if s:
+            created.append(s)
+    return created
 
 
 def run_scheduled_settlements(db: Session) -> list[Settlement]:
@@ -383,10 +461,11 @@ def confirm_settlement_payment(db: Session, settlement: Settlement, admin_note: 
     user = db.query(User).filter(User.id == settlement.user_id).first()
     if user:
         from app.services.principal import reset_after_settlement_confirmed
-        from app.services.trading_control import clear_settlement_fee_deferred
+        from app.services.trading_control import clear_settlement_fee_deferred, clear_settlement_awaiting_flat
 
         reset_after_settlement_confirmed(db, user, settlement.id)
         clear_settlement_fee_deferred(db, user.id)
+        clear_settlement_awaiting_flat(db, user.id)
         from app.services.trade_logger import TradeLogger
 
         TradeLogger(db).log_event(

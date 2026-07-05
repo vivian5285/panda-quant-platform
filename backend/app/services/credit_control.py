@@ -164,6 +164,25 @@ def family_has_credit_default_trading_block(
     return False
 
 
+def user_entry_blocked_by_settlement(db: Session, user_id: int) -> tuple[bool, str | None]:
+    """Block new entries: unpaid bill, family default, or awaiting flat after profitable cycle."""
+    from app.services.trading_control import get_user_control
+
+    ctrl = get_user_control(db, user_id)
+    if ctrl.get("settlement_awaiting_flat"):
+        return True, "settlement_awaiting_flat"
+    return user_trading_blocked_by_credit(db, user_id)
+
+
+def user_api_bind_blocked(db: Session, user_id: int) -> tuple[bool, str | None]:
+    """失信用户禁止绑定/重绑 API。"""
+    if user_is_credit_default(db, user_id):
+        ctrl = get_user_control(db, user_id)
+        if not ctrl.get("settlement_fee_deferred"):
+            return True, "own_credit_default"
+    return False, None
+
+
 def user_trading_blocked_by_credit(db: Session, user_id: int) -> tuple[bool, str | None]:
     """
     Returns (blocked, reason).
