@@ -17,6 +17,7 @@ from app.core.same_direction_policy import (
     format_refresh_reason,
     format_reopen_reason,
 )
+from app.core.close_attribution import diagnose_flat_close, format_close_reason
 from app.core.symbol_precision import normalize_tv_targets, round_price, round_quantity, PRICE_TICK
 from app.core.position_sizing import compute_eth_qty
 from app.config import get_settings
@@ -39,6 +40,8 @@ TP_COMPLETE_RESIDUAL_RATIO = 0.12
 RADAR_SL_MIN_MOVE = 1.0
 FLAT_WAIT_TIMEOUT = 12.0
 FLAT_WAIT_POLL = 0.6
+FLAT_CONFIRM_POLLS = 3
+FLAT_CONFIRM_DELAY = 0.45
 
 
 @dataclass
@@ -1203,11 +1206,190 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
             return True
         return False
 
+    def _confirm_exchange_flat(self, polls: int = FLAT_CONFIRM_POLLS, delay: float = FLAT_CONFIRM_DELAY) -> bool:
+        """Require consecutive zero-amt reads to avoid transient API glitches."""
+        for i in range(polls):
+            pos = self.position_manager.get_position(self.symbol)
+            amt = float(pos.get("positionAmt", 0)) if pos else 0.0
+            if amt != 0:
+                return False
+            if i < polls - 1:
+                time.sleep(delay)
+        return True
+
+    def _fetch_recent_tv_close(self) -> dict | None:
+        try:
+            from app.database import SessionLocal
+            from app.services.radar_context import get_latest_tv_signal
+
+            db = SessionLocal()
+            try:
+                tv = get_latest_tv_signal(db)
+                if tv and str(tv.get("action") or "").upper().startswith("CLOSE"):
+                    return tv
+            finally:
+                db.close()
+        except Exception as e:
+            logger.debug("[User %s] fetch recent TV close failed: %s", self.user_id, e)
+        return None
+
+    def _diagnose_flat_close(self, trigger: str, had_position: bool, *, platform_market: bool = False) -> dict:
+        return diagnose_flat_close(
+            client=self.client,
+            symbol=self.symbol,
+            side=self.current_side,
+            qty=float(self.watched_qty or 0),
+            entry=float(self.watched_entry or 0),
+            trade_opened_at=self.trade_opened_at,
+            consumed_tp_levels=list(self.consumed_tp_levels or []),
+            tv_tps=list(self.tv_tps or []),
+            trigger=trigger,
+            had_position_before_close=had_position,
+            recent_tv_close=self._fetch_recent_tv_close(),
+            radar_active=self._is_radar_active(),
+            platform_initiated_market=platform_market,
+        )
+
+    def _record_trade_close(
+        self,
+        reason: str,
+        exit_price: float,
+        *,
+        attribution: dict | None = None,
+        close_action: str | None = None,
+        tv_side: str | None = None,
+        tv_pnl_pct: float | None = None,
+        alert_sev: str = "info",
+        extra_detail: dict | None = None,
+    ) -> None:
+        if not self.current_trade_id:
+            return
+        pnl = 0.0
+        live_pnl_pct = None
+        if self.watched_entry and exit_price:
+            diff = exit_price - self.watched_entry
+            if self.current_side == "SHORT":
+                diff = -diff
+            pnl = diff * float(self.watched_qty or 0)
+            if self.watched_entry > 0:
+                live_pnl_pct = round(diff / self.watched_entry * 100, 2)
+
+        start_ms = int(self.trade_opened_at * 1000) if self.trade_opened_at else None
+        funding_fee = self.client.get_funding_fees(self.symbol, start_ms)
+        close_detail: dict = {
+            "exit_price": exit_price,
+            "pnl": round(pnl, 4),
+            "funding_fee": funding_fee,
+            "reason": reason,
+            "regime": self.regime,
+            "side": self.current_side,
+            "qty": self.watched_qty,
+            "entry": self.watched_entry,
+        }
+        if extra_detail:
+            close_detail.update(extra_detail)
+        if attribution:
+            close_detail["close_trigger"] = attribution.get("close_trigger")
+            close_detail["close_origin"] = attribution.get("close_origin")
+            close_detail["close_actor"] = attribution.get("close_actor")
+            close_detail["human_reason"] = attribution.get("human_reason")
+            close_detail["attribution"] = attribution
+        if close_action:
+            close_detail["close_action"] = close_action
+        if tv_side:
+            close_detail["tv_side"] = tv_side
+        if tv_pnl_pct is not None:
+            close_detail["tv_pnl_pct"] = round(float(tv_pnl_pct), 2)
+        if live_pnl_pct is not None:
+            close_detail["live_pnl_pct"] = live_pnl_pct
+        if tv_pnl_pct is not None and live_pnl_pct is not None:
+            close_detail["pnl_pct_delta"] = round(live_pnl_pct - float(tv_pnl_pct), 2)
+        if tv_side and self.current_side and tv_side != self.current_side:
+            close_detail["tv_side_mismatch"] = True
+            self._log(
+                "WARN",
+                f"TV 方向 {tv_side} 与实盘 {self.current_side} 不一致（仍按实盘全平）",
+                {"tv_side": tv_side, "live_side": self.current_side, "close_action": close_action},
+            )
+
+        self.on_trade_close(self.current_trade_id, exit_price, pnl, reason, funding_fee)
+        close_detail["trade_id"] = self.current_trade_id
+        self._log("CLOSE", reason, close_detail)
+        alert_type = "CLOSE"
+        if close_action:
+            ca = str(close_action).upper()
+            if "CLOSE_TP3" in ca:
+                alert_type = "CLOSE_TP3"
+            elif "CLOSE_PROTECT" in ca:
+                alert_type = "CLOSE_PROTECT"
+        self._alert(alert_sev, alert_type, "全平完成", reason, close_detail)
+        if attribution and attribution.get("anomaly"):
+            self._alert(
+                "warning",
+                "CLOSE_ANOMALY",
+                "平仓原因待核实",
+                attribution.get("human_reason") or reason,
+                attribution,
+            )
+
+    def _handle_detected_flat(self, trigger: str = "sentinel_zero") -> bool:
+        """Confirm flat, attribute cause, book-close, and detect false-flat / sync issues."""
+        if not self._confirm_exchange_flat():
+            self._log(
+                "WARN",
+                "哨兵归零检测未确认(可能瞬时读数)，继续监控",
+                {"trigger": trigger, "watched_qty": self.watched_qty},
+            )
+            self._alert(
+                "warning",
+                "FLAT_UNCONFIRMED",
+                "平仓检测未确认",
+                "盘口瞬时出现零仓读数，已忽略并继续监控",
+                {"trigger": trigger, "watched_qty": self.watched_qty},
+            )
+            return False
+
+        pos_before = self.position_manager.get_position(self.symbol)
+        had_position = bool(
+            pos_before and float(pos_before.get("positionAmt", 0) or 0) != 0
+        )
+        attribution = self._diagnose_flat_close(trigger, had_position)
+        reason = format_close_reason(attribution)
+        self._close_all(reason, attribution=attribution, close_trigger=trigger)
+
+        time.sleep(0.35)
+        pos_after = self.position_manager.get_position(self.symbol)
+        still_amt = float(pos_after.get("positionAmt", 0)) if pos_after else 0.0
+        if still_amt != 0:
+            side = "LONG" if still_amt > 0 else "SHORT"
+            detail = {
+                "still_amt": still_amt,
+                "still_side": side,
+                "trigger": trigger,
+                "attribution": attribution,
+            }
+            self._alert(
+                "critical",
+                "FALSE_FLAT",
+                "误判平仓 · 盘口仍有持仓",
+                f"账本已收口但交易所仍显示 {side} {abs(still_amt)}，已尝试恢复监控",
+                detail,
+            )
+            self.watched_qty = abs(still_amt)
+            self.watched_entry = float(pos_after.get("entryPrice", 0) or self.watched_entry or 0)
+            self.current_side = side
+            self.monitoring = True
+            self._save_state()
+            threading.Thread(target=self._sentinel_loop, daemon=True).start()
+            return False
+        return True
+
     def _sweep_dust_and_finalize(self, reason: str) -> None:
         logger.warning(f"[User {self.user_id}] dust sweep → {reason}")
         self.monitoring = False
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.4)
+        had_market_close = False
         for round_i in range(4):
             pos = self._get_active_position()
             if not pos or pos["size"] <= 0:
@@ -1217,14 +1399,29 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
                 f"[User {self.user_id}] dust round {round_i + 1}/4: {close_side} {pos['size']}"
             )
             self.client.place_market_order(close_side, pos["size"], reduce_only=True)
+            had_market_close = True
             time.sleep(1.0)
+        exit_price = self.client.get_current_price(self.symbol)
+        attribution = self._diagnose_flat_close(
+            "dust_sweep",
+            had_position=had_market_close,
+            platform_market=had_market_close,
+        )
+        close_reason = format_close_reason(attribution)
+        self._record_trade_close(
+            close_reason,
+            exit_price,
+            attribution=attribution,
+            extra_detail={"swept_dust": True, "sweep_label": reason},
+        )
         self.watched_qty = 0.0
         self.initial_qty = 0.0
         self.current_side = None
         self.consumed_tp_levels = []
+        self.current_trade_id = None
+        self.trade_opened_at = None
         self._save_state()
         self.client.cancel_all_open_orders(self.symbol)
-        self._log("CLOSE", f"蚂蚁仓扫尾收网: {reason}", {"swept_dust": True})
 
     def _scan_and_sweep_dust_on_startup(self) -> bool:
         pos = self._get_active_position()
@@ -1261,16 +1458,45 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
         )
         self.client.cancel_all_open_orders(self.symbol)
         self.monitoring = False
+        exit_price = self.client.get_current_price(self.symbol)
+        if not self.current_trade_id:
+            try:
+                from app.database import SessionLocal
+                from app.models import Trade
+
+                db = SessionLocal()
+                try:
+                    row = (
+                        db.query(Trade)
+                        .filter(Trade.user_id == self.user_id, Trade.status == "open")
+                        .order_by(Trade.created_at.desc())
+                        .first()
+                    )
+                    if row:
+                        self.current_trade_id = row.id
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.debug("[User %s] open trade lookup on flat recover: %s", self.user_id, e)
+        attribution = self._diagnose_flat_close("startup_reconcile", had_position=False)
+        close_reason = format_close_reason(attribution)
+        self._record_trade_close(
+            close_reason,
+            exit_price,
+            attribution=attribution,
+            extra_detail={
+                "prev_watched": prev_watched,
+                "prev_side": prev_side,
+                "flat_reconcile": True,
+            },
+        )
         self.watched_qty = 0.0
         self.initial_qty = 0.0
         self.current_side = None
         self.consumed_tp_levels = []
+        self.current_trade_id = None
+        self.trade_opened_at = None
         self._save_state()
-        self._log(
-            "CLOSE",
-            "重启对账：账本曾有仓但盘口已全平",
-            {"prev_watched": prev_watched, "prev_side": prev_side, "flat_reconcile": True},
-        )
         return True
 
     def _start_idle_flat_patrol(self) -> None:
@@ -1429,8 +1655,10 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
 
                     if real_amt == 0:
                         if self.watched_qty > 0:
-                            self._close_all("仓位归零 (达到目标止盈或 TV 强制平仓)")
-                        break
+                            if self._handle_detected_flat("sentinel_zero"):
+                                break
+                        else:
+                            break
 
                     if self.watched_qty > 0 and self._should_finalize_tp_victory(actual_qty):
                         self._sweep_dust_and_finalize(
@@ -1569,6 +1797,8 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
         tv_side: str | None = None,
         tv_pnl_pct: float | None = None,
         close_action: str | None = None,
+        attribution: dict | None = None,
+        close_trigger: str | None = None,
     ):
         pos_before = self.position_manager.get_position(self.symbol)
         had_position = bool(
@@ -1617,58 +1847,24 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
                     empty_detail,
                 )
             elif self.current_trade_id:
-                pnl = 0.0
-                live_pnl_pct = None
-                if self.watched_entry and exit_price:
-                    diff = exit_price - self.watched_entry
-                    if self.current_side == "SHORT":
-                        diff = -diff
-                    pnl = diff * self.watched_qty
-                    if self.watched_entry > 0:
-                        live_pnl_pct = round(diff / self.watched_entry * 100, 2)
-
-                start_ms = int(self.trade_opened_at * 1000) if self.trade_opened_at else None
-                funding_fee = self.client.get_funding_fees(self.symbol, start_ms)
-                close_detail = {
-                    "exit_price": exit_price,
-                    "pnl": round(pnl, 4),
-                    "funding_fee": funding_fee,
-                    "reason": reason,
-                    "regime": self.regime,
-                    "side": self.current_side,
-                    "qty": self.watched_qty,
-                    "entry": self.watched_entry,
-                }
-                if close_action:
-                    close_detail["close_action"] = close_action
-                if tv_side:
-                    close_detail["tv_side"] = tv_side
-                if tv_pnl_pct is not None:
-                    close_detail["tv_pnl_pct"] = round(float(tv_pnl_pct), 2)
-                if live_pnl_pct is not None:
-                    close_detail["live_pnl_pct"] = live_pnl_pct
-                if tv_pnl_pct is not None and live_pnl_pct is not None:
-                    close_detail["pnl_pct_delta"] = round(live_pnl_pct - float(tv_pnl_pct), 2)
-                if tv_side and self.current_side and tv_side != self.current_side:
-                    close_detail["tv_side_mismatch"] = True
-                    self._log(
-                        "WARN",
-                        f"TV 方向 {tv_side} 与实盘 {self.current_side} 不一致（仍按实盘全平）",
-                        {"tv_side": tv_side, "live_side": self.current_side, "close_action": close_action},
-                        self.current_trade_id,
+                if attribution is None:
+                    trigger = close_trigger or "code_close_all"
+                    attribution = self._diagnose_flat_close(
+                        trigger,
+                        had_position,
+                        platform_market=had_position,
                     )
-
-                self.on_trade_close(self.current_trade_id, exit_price, pnl, reason, funding_fee)
-                self._log("CLOSE", reason, close_detail)
+                    reason = format_close_reason(attribution)
                 sev = "critical" if "背离" in reason else "info"
-                alert_type = "CLOSE"
-                if close_action:
-                    ca = str(close_action).upper()
-                    if "CLOSE_TP3" in ca:
-                        alert_type = "CLOSE_TP3"
-                    elif "CLOSE_PROTECT" in ca:
-                        alert_type = "CLOSE_PROTECT"
-                self._alert(sev, alert_type, "全平完成", reason, close_detail)
+                self._record_trade_close(
+                    reason,
+                    exit_price,
+                    attribution=attribution,
+                    close_action=close_action,
+                    tv_side=tv_side,
+                    tv_pnl_pct=tv_pnl_pct,
+                    alert_sev=sev,
+                )
 
         if closed_successfully and had_position:
             self._trigger_settlement_on_flat()

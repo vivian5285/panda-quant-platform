@@ -331,7 +331,7 @@ def get_supervisor_position_status(
     db: Session | None = None,
     user_id: int | None = None,
 ) -> dict[str, Any]:
-    """Exchange API first; fall back to memory, DB logs, state file, startup audit."""
+    """Exchange API first; fall back only when API is degraded."""
     uid = user_id or (getattr(supervisor, "user_id", None) if supervisor else None)
     api_error: str | None = None
 
@@ -340,6 +340,11 @@ def get_supervisor_position_status(
         api_status, api_error = _try_exchange_api(supervisor)
         if api_status.get("has_position"):
             return api_status
+
+        if api_error is None:
+            if db is not None and uid is not None:
+                reconcile_exchange_flat(db, uid, supervisor)
+            return {"has_position": False, "snapshot_source": "exchange_api"}
 
     fallbacks = _collect_position_fallbacks(supervisor, db, uid)
     if fallbacks:
@@ -416,6 +421,76 @@ def get_supervisor_account_summary(
     if user is not None:
         return _account_summary_fallback(db, user, position)
     return {}
+
+
+def reconcile_exchange_flat(db: Session, user_id: int, supervisor=None) -> dict[str, Any]:
+    """
+    Exchange reports flat but ledger still shows open — close stale trades and reset supervisor state.
+    """
+    result: dict[str, Any] = {"reconciled": False, "closed_trade_ids": [], "supervisor_reset": False}
+    open_trades = (
+        db.query(Trade)
+        .filter(Trade.user_id == user_id, Trade.status == "open")
+        .order_by(Trade.created_at.desc())
+        .all()
+    )
+    exit_price = 0.0
+    if supervisor is not None and hasattr(supervisor, "client"):
+        try:
+            symbol = getattr(supervisor, "symbol", settings.SYMBOL)
+            exit_price = float(supervisor.client.get_current_price(symbol) or 0)
+        except Exception:
+            pass
+
+    if open_trades:
+        from app.services.trade_logger import TradeLogger
+
+        tl = TradeLogger(db)
+        for trade in open_trades:
+            tl.on_trade_close(
+                trade.id,
+                exit_price,
+                0.0,
+                "exchange_flat_reconcile",
+                0.0,
+            )
+            tl.log_event(
+                user_id,
+                "CLOSE",
+                "账本对账：交易所无仓，收口未平交易记录",
+                {
+                    "trade_id": trade.id,
+                    "reconcile": True,
+                    "exit_price": exit_price,
+                    "snapshot_source": "exchange_api",
+                },
+                trade_id=trade.id,
+            )
+            result["closed_trade_ids"].append(trade.id)
+        result["reconciled"] = True
+        logger.warning(
+            "flat reconcile closed %s open trade(s) for user=%s",
+            len(open_trades),
+            user_id,
+        )
+
+    if supervisor is not None:
+        qty = float(getattr(supervisor, "watched_qty", 0) or 0)
+        side = getattr(supervisor, "current_side", None)
+        if qty > 0 or side in ("LONG", "SHORT"):
+            supervisor.watched_qty = 0.0
+            supervisor.initial_qty = 0.0
+            supervisor.current_side = None
+            supervisor.monitoring = False
+            supervisor.current_trade_id = None
+            if hasattr(supervisor, "trade_opened_at"):
+                supervisor.trade_opened_at = None
+            if hasattr(supervisor, "_save_state"):
+                supervisor._save_state()
+            result["supervisor_reset"] = True
+            result["reconciled"] = True
+
+    return result
 
 
 def get_user_live_snapshot(db: Session, user) -> tuple[dict[str, Any], dict[str, Any]]:

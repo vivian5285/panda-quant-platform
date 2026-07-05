@@ -19,6 +19,7 @@ from app.services.position_snapshot import (
     get_supervisor_account_summary,
     get_supervisor_position_status,
     position_fields_from_status,
+    reconcile_exchange_flat,
 )
 
 
@@ -179,3 +180,57 @@ def test_account_summary_estimated_fallback():
     summary = get_supervisor_account_summary(sup, user=user, position=position)
     assert summary["total_margin_balance"] == 1012.5
     assert summary["snapshot_source"] == "estimated"
+
+
+def test_exchange_flat_ignores_db_open_trade(db):
+    user = User(id=9, email="u9@x.com", password_hash="x", referral_code="T-9")
+    db.add(user)
+    db.add(Trade(
+        user_id=9,
+        symbol="ETHUSDT",
+        side="LONG",
+        action="LONG",
+        quantity=0.2,
+        entry_price=1780.32,
+        status="open",
+    ))
+    db.commit()
+    sup = _PmSupervisor({"has_position": False})
+    sup.user_id = 9
+    sup.watched_qty = 0.2
+    sup.current_side = "LONG"
+    status = get_supervisor_position_status(sup, db=db, user_id=9)
+    assert status["has_position"] is False
+    assert status["snapshot_source"] == "exchange_api"
+    trade = db.query(Trade).filter(Trade.user_id == 9).one()
+    assert trade.status == "closed"
+
+
+def test_reconcile_exchange_flat_closes_open_trade(db):
+    user = User(id=10, email="u10@x.com", password_hash="x", referral_code="T-10")
+    db.add(user)
+    trade = Trade(
+        user_id=10,
+        symbol="ETHUSDT",
+        side="LONG",
+        action="LONG",
+        quantity=0.2,
+        entry_price=1780.0,
+        status="open",
+    )
+    db.add(trade)
+    db.commit()
+    sup = MagicMock()
+    sup.watched_qty = 0.2
+    sup.current_side = "LONG"
+    sup.monitoring = True
+    sup.current_trade_id = trade.id
+    sup.client.get_current_price.return_value = 1780.5
+    result = reconcile_exchange_flat(db, 10, sup)
+    assert result["reconciled"] is True
+    assert trade.id in result["closed_trade_ids"]
+    db.refresh(trade)
+    assert trade.status == "closed"
+    assert sup.watched_qty == 0.0
+    assert sup.monitoring is False
+
