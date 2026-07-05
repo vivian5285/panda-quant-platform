@@ -138,7 +138,15 @@ function DownlineTable({
               <td className={(u.cycle_pnl ?? 0) >= 0 ? 'text-green' : 'text-red'}>${(u.cycle_pnl ?? 0).toFixed(2)}</td>
               <td className={(u.total_pnl ?? u.week_pnl ?? 0) >= 0 ? 'text-green' : 'text-red'}>${(u.total_pnl ?? u.week_pnl ?? 0).toFixed(2)}</td>
               <td className={(u.unrealized_pnl ?? 0) >= 0 ? 'text-green' : 'text-red'}>${(u.unrealized_pnl ?? 0).toFixed(2)}</td>
-              <td>{u.has_open_position ? (u.position_side ? `${u.position_side} ${Number(u.position_qty || 0).toFixed(4)}` : t('referrals.hasPosition')) : '—'}</td>
+              <td>{u.has_open_position ? (
+                <div>
+                  <span className={`badge ${u.position_side === 'LONG' ? 'badge-green' : 'badge-red'}`}>{u.position_side}</span>
+                  <span className="text-sm"> {Number(u.position_qty || 0).toFixed(4)}</span>
+                  {(u.position_entry ?? 0) > 0 && (
+                    <div className="text-muted text-xs">@ ${Number(u.position_entry).toFixed(2)}</div>
+                  )}
+                </div>
+              ) : '—'}</td>
               <td><span className="badge badge-gray">{u.api_status || '—'}</span></td>
               <td className={(u.pending_perf_fee ?? 0) > 0 ? 'text-red text-md-strong' : 'text-muted'}>
                 {(u.pending_perf_fee ?? 0) > 0 ? `$${u.pending_perf_fee.toFixed(2)}` : '—'}

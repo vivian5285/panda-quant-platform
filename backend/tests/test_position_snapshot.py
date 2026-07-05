@@ -43,6 +43,7 @@ class _PmSupervisor:
             "available_balance": 800,
         }
         self.client.get_current_price.return_value = 1774.22
+        self.client.get_position.return_value = None
 
     def _save_state(self):
         pass
@@ -104,10 +105,29 @@ def test_get_supervisor_position_falls_back_to_memory():
     assert status["api_degraded"] is True
 
 
-def test_position_from_supervisor_memory_requires_monitoring():
+def test_position_from_supervisor_memory_without_monitoring():
     sup = _PmSupervisor({"has_position": False})
     sup.monitoring = False
-    assert _position_from_supervisor_memory(sup)["has_position"] is False
+    pos = _position_from_supervisor_memory(sup)
+    assert pos["has_position"] is True
+    assert pos["qty"] == 0.197
+
+
+def test_position_from_state_file(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    path = state_dir / "user_8.json"
+    path.write_text(json.dumps({
+        "watched_qty": 0.197,
+        "current_side": "LONG",
+        "watched_entry": 1770.79,
+        "best_price": 1774.22,
+    }), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    from app.services.position_snapshot import _position_from_state_file
+    pos = _position_from_state_file(8)
+    assert pos["has_position"] is True
+    assert pos["snapshot_source"] == "state_file"
 
 
 def test_position_from_db_startup_log(db):

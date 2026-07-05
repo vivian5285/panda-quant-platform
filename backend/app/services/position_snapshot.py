@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -47,6 +48,51 @@ def _estimate_unrealized(side: str, qty: float, entry: float, mark: float) -> fl
     return round(diff * qty, 4)
 
 
+def _reload_supervisor_state(supervisor) -> None:
+    if supervisor is not None and hasattr(supervisor, "_load_state"):
+        try:
+            supervisor._load_state()
+        except Exception as e:
+            logger.debug("reload supervisor state failed user=%s: %s", getattr(supervisor, "user_id", "?"), e)
+
+
+def _state_file_paths(user_id: int):
+    seen: set[str] = set()
+    for base in ("state", os.path.join(os.getcwd(), "state"), "/app/state"):
+        norm = os.path.normpath(base)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        yield os.path.join(norm, f"user_{user_id}.json")
+
+
+def _position_from_state_file(user_id: int) -> dict[str, Any]:
+    for path in _state_file_paths(user_id):
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                s = json.load(f)
+            qty = float(s.get("watched_qty", 0) or 0)
+            side = s.get("current_side")
+            entry = float(s.get("watched_entry", 0) or 0)
+            if qty <= 0 or not side:
+                continue
+            mark = float(s.get("best_price", 0) or 0)
+            unrealized = _estimate_unrealized(side, qty, entry, mark) if mark > 0 else 0.0
+            return _as_position_status(
+                side=side,
+                qty=qty,
+                entry_price=entry,
+                mark_price=mark,
+                unrealized_pnl=unrealized,
+                snapshot_source="state_file",
+            )
+        except Exception as e:
+            logger.warning("read state file failed %s: %s", path, e)
+    return {"has_position": False}
+
+
 def _mark_from_supervisor(supervisor, entry: float, side: str, qty: float) -> tuple[float, float]:
     mark = 0.0
     unrealized = 0.0
@@ -65,8 +111,6 @@ def _mark_from_supervisor(supervisor, entry: float, side: str, qty: float) -> tu
 
 
 def _position_from_supervisor_memory(supervisor) -> dict[str, Any]:
-    if not getattr(supervisor, "monitoring", False):
-        return {"has_position": False}
     qty = float(getattr(supervisor, "watched_qty", 0) or 0)
     entry = float(getattr(supervisor, "watched_entry", 0) or 0)
     side = getattr(supervisor, "current_side", None)
@@ -91,7 +135,7 @@ def _position_from_log_detail(detail: dict, source: str) -> dict[str, Any] | Non
         side = detail.get("side")
         qty = float(detail.get("qty", 0) or 0)
         entry = float(detail.get("entry", 0) or 0)
-    elif source == "OPEN":
+    elif source in ("OPEN", "STARTUP"):
         side = detail.get("side")
         qty = float(detail.get("qty", 0) or 0)
         entry = float(detail.get("entry", detail.get("entry_price", 0)) or 0)
@@ -128,7 +172,7 @@ def _position_from_db(db: Session, user_id: int) -> dict[str, Any]:
             snapshot_source="db_open_trade",
         )
 
-    for event_type in ("STARTUP", "OPEN"):
+    for event_type in ("STARTUP", "OPEN", "POSITION"):
         row = (
             db.query(TradeLog)
             .filter(TradeLog.user_id == user_id, TradeLog.event_type == event_type)
@@ -174,6 +218,35 @@ def _position_from_startup_audit(user_id: int) -> dict[str, Any]:
     return {"has_position": False}
 
 
+def _position_from_raw_client(supervisor) -> dict[str, Any]:
+    client = getattr(supervisor, "client", None)
+    if not client or not hasattr(client, "get_position"):
+        return {"has_position": False}
+    symbol = getattr(supervisor, "symbol", None) or getattr(client, "trading_symbol", settings.SYMBOL)
+    try:
+        pos = client.get_position(symbol)
+        if not pos or float(pos.get("positionAmt", 0) or 0) == 0:
+            return {"has_position": False}
+        amt = float(pos.get("positionAmt", 0))
+        side = "LONG" if amt > 0 else "SHORT"
+        qty = abs(amt)
+        entry = float(pos.get("entryPrice", 0) or 0)
+        mark = float(pos.get("markPrice", 0) or 0)
+        unrealized = float(pos.get("unRealizedProfit", 0) or 0)
+        return _as_position_status(
+            side=side,
+            qty=qty,
+            entry_price=entry,
+            mark_price=mark,
+            unrealized_pnl=unrealized,
+            leverage=pos.get("leverage", "N/A"),
+            snapshot_source="exchange_api",
+        )
+    except Exception as e:
+        logger.warning("raw client position failed user=%s: %s", getattr(supervisor, "user_id", "?"), e)
+        return {"has_position": False, "error": str(e)}
+
+
 def _try_exchange_api(supervisor) -> tuple[dict[str, Any], str | None]:
     api_error: str | None = None
 
@@ -183,7 +256,6 @@ def _try_exchange_api(supervisor) -> tuple[dict[str, Any], str | None]:
             if status.get("has_position"):
                 status["snapshot_source"] = "exchange_api"
                 return status, None
-            return status, None
         except Exception as e:
             api_error = str(e)
             logger.warning(
@@ -191,6 +263,12 @@ def _try_exchange_api(supervisor) -> tuple[dict[str, Any], str | None]:
                 getattr(supervisor, "user_id", "?"),
                 e,
             )
+
+    raw = _position_from_raw_client(supervisor)
+    if raw.get("has_position"):
+        return raw, api_error
+    if raw.get("error") and not api_error:
+        api_error = str(raw["error"])
 
     if hasattr(supervisor, "_get_active_position"):
         try:
@@ -223,13 +301,28 @@ def _try_exchange_api(supervisor) -> tuple[dict[str, Any], str | None]:
             ), api_error
         except Exception as e:
             api_error = str(e)
-            logger.warning(
-                "deepcoin position status failed user=%s: %s",
-                getattr(supervisor, "user_id", "?"),
-                e,
-            )
 
     return {"has_position": False}, api_error
+
+
+def _collect_position_fallbacks(supervisor, db: Session | None, user_id: int | None) -> list[dict[str, Any]]:
+    fallbacks: list[dict[str, Any]] = []
+    if supervisor is not None:
+        mem = _position_from_supervisor_memory(supervisor)
+        if mem.get("has_position"):
+            fallbacks.append(mem)
+    if db is not None and user_id is not None:
+        db_pos = _position_from_db(db, user_id)
+        if db_pos.get("has_position"):
+            fallbacks.append(db_pos)
+    if user_id is not None:
+        audit_pos = _position_from_startup_audit(user_id)
+        if audit_pos.get("has_position"):
+            fallbacks.append(audit_pos)
+        state_pos = _position_from_state_file(user_id)
+        if state_pos.get("has_position"):
+            fallbacks.append(state_pos)
+    return fallbacks
 
 
 def get_supervisor_position_status(
@@ -238,33 +331,23 @@ def get_supervisor_position_status(
     db: Session | None = None,
     user_id: int | None = None,
 ) -> dict[str, Any]:
-    """Exchange API first; fall back to supervisor memory, DB trade/log, startup audit."""
-    if supervisor is None:
-        return {"has_position": False}
+    """Exchange API first; fall back to memory, DB logs, state file, startup audit."""
+    uid = user_id or (getattr(supervisor, "user_id", None) if supervisor else None)
+    api_error: str | None = None
 
-    uid = user_id or getattr(supervisor, "user_id", None)
-    api_status, api_error = _try_exchange_api(supervisor)
-    if api_status.get("has_position"):
-        return api_status
+    if supervisor is not None:
+        _reload_supervisor_state(supervisor)
+        api_status, api_error = _try_exchange_api(supervisor)
+        if api_status.get("has_position"):
+            return api_status
 
-    fallbacks: list[dict[str, Any]] = []
-    mem = _position_from_supervisor_memory(supervisor)
-    if mem.get("has_position"):
-        fallbacks.append(mem)
-    if db is not None and uid is not None:
-        db_pos = _position_from_db(db, uid)
-        if db_pos.get("has_position"):
-            fallbacks.append(db_pos)
-    if uid is not None:
-        audit_pos = _position_from_startup_audit(uid)
-        if audit_pos.get("has_position"):
-            fallbacks.append(audit_pos)
-
+    fallbacks = _collect_position_fallbacks(supervisor, db, uid)
     if fallbacks:
-        chosen = fallbacks[0]
+        chosen = dict(fallbacks[0])
         if api_error:
-            chosen = {**chosen, "api_degraded": True, "api_error": api_error}
-        if chosen.get("mark_price", 0) <= 0 and supervisor is not None:
+            chosen["api_degraded"] = True
+            chosen["api_error"] = api_error
+        if supervisor is not None and chosen.get("mark_price", 0) <= 0:
             mark, unrealized = _mark_from_supervisor(
                 supervisor,
                 float(chosen.get("entry_price", 0) or 0),
@@ -283,22 +366,21 @@ def get_supervisor_position_status(
     return result
 
 
-def get_supervisor_account_summary(supervisor, *, user=None, position: dict | None = None) -> dict[str, Any]:
-    if supervisor is None:
-        return {}
-    try:
-        summary = supervisor.client.get_futures_account_summary() or {}
-        if float(summary.get("total_margin_balance", 0) or 0) > 0:
-            summary["snapshot_source"] = "exchange_api"
-            return summary
-    except Exception as e:
-        logger.warning(
-            "account summary failed user=%s: %s",
-            getattr(supervisor, "user_id", "?"),
-            e,
-        )
+def _account_summary_fallback(db: Session | None, user, position: dict | None) -> dict[str, Any]:
+    from app.services.principal import fetch_live_equity
 
-    initial = float(getattr(user, "initial_principal", 0) or 0) if user else 0.0
+    try:
+        equity = float(fetch_live_equity(user) or 0)
+        if equity > 0:
+            return {
+                "total_margin_balance": round(equity, 2),
+                "available_balance": round(equity, 2),
+                "snapshot_source": "direct_api",
+            }
+    except Exception as e:
+        logger.debug("direct equity fallback failed user=%s: %s", getattr(user, "id", "?"), e)
+
+    initial = float(getattr(user, "initial_principal", 0) or 0)
     unrealized = float((position or {}).get("unrealized_pnl", 0) or 0)
     if initial > 0 or (position or {}).get("has_position"):
         equity = round(initial + unrealized, 2) if initial > 0 else round(unrealized, 2)
@@ -310,6 +392,42 @@ def get_supervisor_account_summary(supervisor, *, user=None, position: dict | No
             "api_degraded": True,
         }
     return {}
+
+
+def get_supervisor_account_summary(
+    supervisor,
+    *,
+    user=None,
+    position: dict | None = None,
+    db: Session | None = None,
+) -> dict[str, Any]:
+    if supervisor is not None:
+        try:
+            summary = supervisor.client.get_futures_account_summary() or {}
+            if float(summary.get("total_margin_balance", 0) or 0) > 0:
+                summary["snapshot_source"] = "exchange_api"
+                return summary
+        except Exception as e:
+            logger.warning(
+                "account summary failed user=%s: %s",
+                getattr(supervisor, "user_id", "?"),
+                e,
+            )
+    if user is not None:
+        return _account_summary_fallback(db, user, position)
+    return {}
+
+
+def get_user_live_snapshot(db: Session, user) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Single entry: live position + account summary for admin/user/referral views."""
+    from app.services.dispatcher import supervisor_pool
+
+    supervisor = supervisor_pool.get(user.id)
+    position = get_supervisor_position_status(supervisor, db=db, user_id=user.id)
+    summary = get_supervisor_account_summary(supervisor, user=user, position=position, db=db)
+    if position.get("has_position"):
+        ensure_open_trade_from_snapshot(db, user.id, supervisor, position)
+    return position, summary
 
 
 def ensure_open_trade_from_snapshot(
@@ -332,8 +450,8 @@ def ensure_open_trade_from_snapshot(
 
     from app.services.trade_logger import TradeLogger
 
-    regime = int(getattr(supervisor, "regime", 0) or 0)
-    tv_tps = list(getattr(supervisor, "tv_tps", [0.0, 0.0, 0.0]) or [0.0, 0.0, 0.0])
+    regime = int(getattr(supervisor, "regime", 0) or 0) if supervisor else 0
+    tv_tps = list(getattr(supervisor, "tv_tps", [0.0, 0.0, 0.0]) or [0.0, 0.0, 0.0]) if supervisor else [0.0, 0.0, 0.0]
     trade_id = TradeLogger(db).on_trade_open(
         user_id,
         position["side"],

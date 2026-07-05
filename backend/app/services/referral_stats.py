@@ -4,13 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import User, Trade, PaymentStatus, ApiStatus
-from app.services.dispatcher import supervisor_pool
-from app.services.position_snapshot import (
-    ensure_open_trade_from_snapshot,
-    get_supervisor_account_summary,
-    get_supervisor_position_status,
-    position_fields_from_status,
-)
+from app.services.position_snapshot import get_user_live_snapshot, position_fields_from_status
 from app.services.principal import fetch_live_equity
 from app.services.settlement import get_pending_settlement, user_has_open_position
 from app.services.user_lookup import display_name
@@ -38,32 +32,24 @@ def build_downline_stats(db: Session, user: User) -> dict:
     position_entry = 0.0
     position_mark = 0.0
 
-    supervisor = supervisor_pool.get(user.id)
-    if supervisor:
-        try:
-            status = get_supervisor_position_status(supervisor, db=db, user_id=user.id)
-            summary = get_supervisor_account_summary(
-                supervisor, user=user, position=status if status.get("has_position") else None,
-            )
-            equity = float(summary.get("total_margin_balance", 0) or 0)
-            balance = float(summary.get("available_balance", equity) or equity)
-            if status.get("has_position"):
-                ensure_open_trade_from_snapshot(db, user.id, supervisor, status)
-            pf = position_fields_from_status(status)
-            has_position = pf["has_position"]
-            position_side = pf["position_side"]
-            position_qty = pf["position_qty"]
-            position_entry = pf["position_entry"]
-            position_mark = pf["position_mark"]
-            unrealized = pf["position_unrealized"] if has_position else 0.0
-        except Exception:
-            pass
-    elif user.api_key_enc and user.api_status == ApiStatus.ACTIVE.value:
-        try:
-            equity = fetch_live_equity(user)
-            balance = equity
-        except Exception:
-            pass
+    try:
+        position, summary = get_user_live_snapshot(db, user)
+        equity = float(summary.get("total_margin_balance", 0) or 0)
+        balance = float(summary.get("available_balance", equity) or equity)
+        pf = position_fields_from_status(position)
+        has_position = pf["has_position"]
+        position_side = pf["position_side"]
+        position_qty = pf["position_qty"]
+        position_entry = pf["position_entry"]
+        position_mark = pf["position_mark"]
+        unrealized = pf["position_unrealized"] if has_position else 0.0
+    except Exception:
+        if user.api_key_enc and user.api_status == ApiStatus.ACTIVE.value:
+            try:
+                equity = fetch_live_equity(user)
+                balance = equity
+            except Exception:
+                pass
 
     if not has_position:
         has_position = user_has_open_position(db, user.id)

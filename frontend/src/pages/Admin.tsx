@@ -142,6 +142,8 @@ export default function Admin() {
   const [appealFilter, setAppealFilter] = useState('submitted')
   const [completeTx, setCompleteTx] = useState<Record<number, string>>({})
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null)
+  const [userDetailLoading, setUserDetailLoading] = useState(false)
+  const [userDetailError, setUserDetailError] = useState<string | null>(null)
   const [userDetail, setUserDetail] = useState<any>(null)
   const [userTrades, setUserTrades] = useState<any[]>([])
   const [userLogs, setUserLogs] = useState<any[]>([])
@@ -166,9 +168,18 @@ export default function Admin() {
     if (tab !== 'users') setSearchParams({ tab: 'users' })
     setSelectedUserId(id)
     setUserDetailTab('overview')
-    adminApi.userDetail(id).then(setUserDetail)
-    adminApi.userTrades(id).then(setUserTrades)
-    adminApi.userLogs(id).then(setUserLogs)
+    setUserDetail(null)
+    setUserDetailLoading(true)
+    setUserDetailError(null)
+    adminApi.userDetail(id)
+      .then(setUserDetail)
+      .catch((err: any) => {
+        setUserDetailError(err.response?.data?.detail || t('admin.accountsDetailFail'))
+        toast.error(t('admin.accountsDetailFail'))
+      })
+      .finally(() => setUserDetailLoading(false))
+    adminApi.userTrades(id).then(setUserTrades).catch(() => setUserTrades([]))
+    adminApi.userLogs(id, { sync_exchange: true, limit: 200 }).then(setUserLogs).catch(() => setUserLogs([]))
     adminApi.userTradingControl(id).then(setUserTradingCtrl).catch(() => setUserTradingCtrl(null))
     adminApi.userReferralStats(id).then(setUserReferralStats).catch(() => setUserReferralStats(null))
     adminApi.linkedExchangeAccounts(id).then(setLinkedExchangeAccounts).catch(() => setLinkedExchangeAccounts(null))
@@ -1233,7 +1244,7 @@ export default function Admin() {
     depositMonitorStatus, paymentTracking, depositScanLoading, triggerDepositScan,
     saveDingtalkSettings, saveChainRpcSettings, clearChainRpcSettings, changeAdminPassword, approveAppeal, rejectAppeal,
     completeTx, setCompleteTx,
-    selectedUserId, userDetail, userTrades, userLogs, setUserLogs,
+    selectedUserId, userDetail, userDetailLoading, userDetailError, userTrades, userLogs, setUserLogs,
     userDetailTab, setUserDetailTab,
     userReferralStats, userPrincipalHistory, referralOverview, linkedExchangeAccounts, userSubAccountFilings,
     signalTemplates, signalLogs, userTradingCtrl,

@@ -12,16 +12,31 @@ export default function AdminUsersTab() {
     t, locale, users, abnormalUsers, selectedUserIds, batchNotifyTitle, setBatchNotifyTitle,
     batchNotifyMessage, setBatchNotifyMessage, userSearch, setUserSearch,
     userApiFilter, setUserApiFilter, userPauseFilter, setUserPauseFilter,
-    userFlagFilter, setUserFlagFilter, selectedUserId, userDetail, userTrades, userLogs,
+    userFlagFilter, setUserFlagFilter, selectedUserId, userDetail, userDetailLoading, userDetailError,
+    userTrades, userLogs,
     userDetailTab, setUserDetailTab, userReferralStats, userPrincipalHistory, userTradingCtrl, linkedExchangeAccounts, userSubAccountFilings,
     load, loadUserDetail, closeUserDetail, exportUsersCsv, toggleUserSelect, toggleSelectAllUsers,
     runBatchNotify, runBatchPause, forceUserPause, forceCloseUser, setUserRisk, toggleSettlementDefer, toggleReferralOverride,
     exportUserLogsCsv, setUserLogs,
   } = useAdmin()
 
-  if (selectedUserId && !userDetail) {
+  if (selectedUserId && (userDetailLoading || (!userDetail && !userDetailError))) {
     return (
       <GlassCard className="p-8"><p className="text-muted">{t('common.loading')}</p></GlassCard>
+    )
+  }
+
+  if (selectedUserId && userDetailError && !userDetail) {
+    return (
+      <div>
+        <button className="btn btn-ghost btn-sm section-mb-sm" onClick={closeUserDetail}>{t('admin.backToList')}</button>
+        <GlassCard className="p-8">
+          <p className="text-red section-mb-sm">{userDetailError}</p>
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => loadUserDetail(selectedUserId)}>
+            {t('admin.accountsRefresh')}
+          </button>
+        </GlassCard>
+      </div>
     )
   }
 
