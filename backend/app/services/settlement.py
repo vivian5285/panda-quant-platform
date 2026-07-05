@@ -149,8 +149,75 @@ def _reset_cycle(user: User, today: date):
     user.settlement_target_days = settings.SETTLEMENT_PRIMARY_DAYS
 
 
-def _extend_cycle(user: User):
-    user.settlement_target_days = settings.SETTLEMENT_EXTENDED_DAYS
+def _rollover_cycle(user: User):
+    """Loss or still holding at period end: extend window by 30d; PnL still accumulates from cycle_start."""
+    base = user.settlement_target_days or settings.SETTLEMENT_PRIMARY_DAYS
+    user.settlement_target_days = base + settings.SETTLEMENT_PRIMARY_DAYS
+
+
+def build_settlement_cycle_status(db: Session, user: User, today: date | None = None) -> dict:
+    """Real-time in-cycle stats for user settlement page."""
+    from app.services.profit_audit import settlement_profit_from_trades
+
+    today = today or date.today()
+    _ensure_cycle_started(user, today)
+
+    period_start = user.settlement_cycle_start
+    target_days = user.settlement_target_days or settings.SETTLEMENT_PRIMARY_DAYS
+    days_elapsed = max(0, (today - period_start).days)
+    days_remaining = max(0, target_days - days_elapsed)
+    progress_pct = min(100.0, round(days_elapsed / target_days * 100, 1)) if target_days > 0 else 0.0
+    rollover_count = max(0, (target_days - settings.SETTLEMENT_PRIMARY_DAYS) // settings.SETTLEMENT_PRIMARY_DAYS)
+
+    gross_profit, audit = settlement_profit_from_trades(db, user, period_start, today)
+    new_hwm = max(float(user.high_water_mark or 0) + gross_profit, float(user.high_water_mark or 0))
+    net_profit = max(0.0, new_hwm - float(user.high_water_mark or 0))
+    estimated_fee = round(net_profit * settings.PLATFORM_FEE_RATE, 2) if net_profit > 0 else 0.0
+
+    has_position = user_has_open_position(db, user.id)
+    pending = get_pending_settlement(db, user.id)
+    initial = float(user.initial_principal or 0)
+
+    if pending:
+        phase = "pending_payment"
+    elif days_elapsed < target_days:
+        phase = "active"
+    elif has_position:
+        phase = "due_holding"
+    elif net_profit > 0:
+        phase = "due_flat_profit"
+    else:
+        phase = "due_flat_loss"
+
+    historical_settled = (
+        db.query(Settlement)
+        .filter(Settlement.user_id == user.id, Settlement.payment_status == PaymentStatus.CONFIRMED.value)
+        .count()
+    )
+
+    return {
+        "cycle_start": period_start.isoformat(),
+        "cycle_end_scheduled": (period_start + timedelta(days=target_days)).isoformat(),
+        "target_days": target_days,
+        "days_elapsed": days_elapsed,
+        "days_remaining": days_remaining,
+        "progress_pct": progress_pct,
+        "rollover_count": rollover_count,
+        "phase": phase,
+        "has_open_position": has_position,
+        "initial_principal": round(initial, 2),
+        "high_water_mark": round(float(user.high_water_mark or 0), 2),
+        "cycle_trade_pnl": round(float(audit.get("trade_profit", gross_profit) or 0), 2),
+        "cycle_equity_delta": round(float(audit.get("equity_delta", 0) or 0), 2),
+        "cycle_net_profit": round(net_profit, 2),
+        "estimated_fee": estimated_fee,
+        "is_profitable": net_profit > 0,
+        "requires_flat": days_elapsed >= target_days and net_profit > 0,
+        "pending_settlement_id": pending.id if pending else None,
+        "pending_payable": round(float(pending.user_payable or 0), 2) if pending else 0.0,
+        "historical_settled_cycles": historical_settled,
+        "profit_audit": audit,
+    }
 
 
 def process_user_settlement_cycle(db: Session, user: User, today: date | None = None) -> Settlement | None:
@@ -162,9 +229,8 @@ def process_user_settlement_cycle(db: Session, user: User, today: date | None = 
         return None
 
     if user_has_open_position(db, user.id):
-        if user.settlement_target_days == settings.SETTLEMENT_PRIMARY_DAYS:
-            _extend_cycle(user)
-            db.commit()
+        _rollover_cycle(user)
+        db.commit()
         return None
 
     period_start = user.settlement_cycle_start
@@ -178,10 +244,7 @@ def process_user_settlement_cycle(db: Session, user: User, today: date | None = 
         db.commit()
         return settlement
 
-    if user.settlement_target_days == settings.SETTLEMENT_PRIMARY_DAYS:
-        _extend_cycle(user)
-    else:
-        _reset_cycle(user, today)
+    _rollover_cycle(user)
     db.commit()
     return None
 

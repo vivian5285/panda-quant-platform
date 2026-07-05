@@ -1,10 +1,10 @@
-/** Display label for settlement billing cycle (monthly = 30d primary, 35d extended grace). */
+/** Display label for settlement billing cycle (30d rolling periods). */
 export function formatSettlementCycle(
   days: number | undefined | null,
-  t: (key: string) => string,
+  t: (key: string, params?: Record<string, string | number>) => string,
 ): string {
   const d = days ?? 30
-  if (d >= 35) return t('settlements.cycleExtended')
-  if (d >= 28) return t('settlements.cycleMonthly')
-  return `${d}${t('common.days')}`
+  const periods = Math.max(1, Math.ceil(d / 30))
+  if (periods > 1) return t('settlements.cycleMultiPeriod', { n: periods })
+  return t('settlements.cycleMonthly')
 }

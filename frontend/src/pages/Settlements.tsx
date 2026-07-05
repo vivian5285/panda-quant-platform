@@ -6,6 +6,7 @@ import PageHeader from '../components/PageHeader'
 import GlassCard from '../components/GlassCard'
 import StatCard from '../components/StatCard'
 import PendingPerfFeeCard from '../components/PendingPerfFeeCard'
+import SettlementCycleCard, { type SettlementCycleStatus } from '../components/SettlementCycleCard'
 import { referralApi, walletApi } from '../api'
 import { useI18n } from '../i18n'
 import { toast } from '../store/toast'
@@ -23,6 +24,7 @@ export default function Settlements() {
   const [deposits, setDeposits] = useState<any[]>([])
   const [appeals, setAppeals] = useState<any[]>([])
   const [tracking, setTracking] = useState<any>(null)
+  const [cycleStatus, setCycleStatus] = useState<SettlementCycleStatus | null>(null)
   const [payingId, setPayingId] = useState<number | null>(null)
   const [appealingId, setAppealingId] = useState<number | null>(null)
   const [appealNote, setAppealNote] = useState('')
@@ -34,6 +36,7 @@ export default function Settlements() {
 
   const load = () => {
     referralApi.settlements().then(setItems)
+    referralApi.settlementCycleStatus().then(setCycleStatus).catch(() => setCycleStatus(null))
     walletApi.depositAddresses().then(setAddresses).catch(() => setAddresses([]))
     walletApi.myDepositAddresses().then(setMyAddresses).catch(() => setMyAddresses([]))
     walletApi.settlementDeposits().then(setDeposits).catch(() => setDeposits([]))
@@ -48,7 +51,7 @@ export default function Settlements() {
 
   useEffect(() => {
     load()
-    const timer = setInterval(load, 30000)
+    const timer = setInterval(load, 15000)
     return () => clearInterval(timer)
   }, [])
 
@@ -124,16 +127,32 @@ export default function Settlements() {
     }
   }, [items])
 
+  const scrollToPay = () => {
+    paySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   return (
     <Layout>
       <PageHeader title={t('settlements.title')} subtitle={t('settlements.subtitle')} />
+
+      {cycleStatus && (
+        <div className="section-mb-lg">
+          <SettlementCycleCard
+            status={cycleStatus}
+            onPayClick={pendingItem ? scrollToPay : undefined}
+          />
+        </div>
+      )}
 
       {pendingItem && (
         <div className="section-mb-md" ref={paySectionRef} id="perf-fee-pay-section">
           <PendingPerfFeeCard settlement={pendingItem} showPayButton={false} variant="compact" />
           <GlassCard className="p-4 section-mt-sm settlement-pay-hint-card">
             <p className="text-sm-strong section-mb-xs">{t('settlements.payHeroTitle')}</p>
-            <p className="text-muted text-sm">{t('settlements.payHeroHint')}</p>
+            <p className="text-muted text-sm section-mb-sm">{t('settlements.payHeroHint')}</p>
+            <button type="button" className="btn btn-primary btn-sm" onClick={scrollToPay}>
+              {t('settlements.oneClickPayCta', { amount: pendingItem.user_payable?.toFixed(2) ?? '0' })}
+            </button>
           </GlassCard>
           <UserUniqueDepositPanel addresses={myAddresses} />
         </div>
@@ -193,10 +212,11 @@ export default function Settlements() {
         </GlassCard>
       )}
 
-      <GlassCard className="p-4 section-mb-lg">
+      <GlassCard className="p-4 section-mb-lg settlement-rules-card">
         <p className="text-sm"><strong>{t('perfFee.cycleTitle')}</strong></p>
         <p className="text-muted text-sm section-mt-xs">{t('perfFee.flowSteps')}</p>
-        <p className="text-muted text-xs section-mt-sm">{t('perfFee.resetNote')}</p>
+        <p className="text-muted text-xs section-mt-sm">{t('perfFee.rolloverNote')}</p>
+        <p className="text-muted text-xs section-mt-xs">{t('perfFee.resetNote')}</p>
         <p className="text-sm section-mt-md"><strong>{t('perfFee.splitTitle')}</strong></p>
         <p className="text-muted text-sm section-mt-xs">{t('perfFee.splitExample')}</p>
       </GlassCard>

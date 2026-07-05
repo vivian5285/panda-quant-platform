@@ -467,6 +467,29 @@ class SettlementOut(BaseModel):
         from_attributes = True
 
 
+class SettlementCycleStatusOut(BaseModel):
+    cycle_start: str
+    cycle_end_scheduled: str
+    target_days: int
+    days_elapsed: int
+    days_remaining: int
+    progress_pct: float
+    rollover_count: int = 0
+    phase: str
+    has_open_position: bool = False
+    initial_principal: float = 0.0
+    high_water_mark: float = 0.0
+    cycle_trade_pnl: float = 0.0
+    cycle_equity_delta: float = 0.0
+    cycle_net_profit: float = 0.0
+    estimated_fee: float = 0.0
+    is_profitable: bool = False
+    requires_flat: bool = False
+    pending_settlement_id: Optional[int] = None
+    pending_payable: float = 0.0
+    historical_settled_cycles: int = 0
+
+
 class DepositAddressOut(BaseModel):
     id: int
     chain: str

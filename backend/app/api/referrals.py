@@ -12,6 +12,7 @@ from app.services.referral_stats import build_downline_stats, expected_referrer_
 from app.schemas import (
     ReferralSummary, ReferralUserOut, ReferralInviteOut, ReferralCommissionOut,
     SettlementOut, TradeLogOut, ReferralDownlineDetailOut, TradeOut, ReferralBlockDetailOut,
+    SettlementCycleStatusOut,
 )
 from app.api.deps import get_current_user
 from app.config import get_settings
@@ -180,6 +181,15 @@ def referral_summary(user: User = Depends(get_current_user), db: Session = Depen
         referral_block_details=[ReferralBlockDetailOut(**d) for d in block_details],
         l1_users=l1_out, l2_users=l2_out,
     )
+
+
+@router.get("/settlements/cycle-status", response_model=SettlementCycleStatusOut)
+def settlement_cycle_status(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.services.settlement import build_settlement_cycle_status
+    from app.services.user_deposit_wallet import ensure_user_deposit_addresses
+
+    ensure_user_deposit_addresses(db, user)
+    return build_settlement_cycle_status(db, user)
 
 
 @router.get("/settlements", response_model=list[SettlementOut])

@@ -169,6 +169,7 @@ export const referralApi = {
   summary: () => api.get('/referrals').then(r => r.data),
   invite: () => api.get('/referrals/invite').then(r => r.data),
   settlements: () => api.get('/settlements').then(r => r.data),
+  settlementCycleStatus: () => api.get('/settlements/cycle-status').then(r => r.data),
   tree: () => api.get('/referrals/tree').then(r => r.data),
   settlementPdf: (id: number) => api.get(`/settlements/${id}/pdf`, { responseType: 'blob' }).then(r => r.data),
   downlineAccount: (userId: number) => api.get(`/referrals/downline/${userId}/account`).then(r => r.data),
