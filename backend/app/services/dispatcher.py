@@ -200,8 +200,12 @@ class SignalDispatcher:
 
     def dispatch(self, payload: dict) -> dict:
         from app.services.trading_control import get_user_control, is_globally_paused, is_user_paused
+        from app.services.webhook_guard import is_close_signal
 
-        if is_globally_paused():
+        action = str(payload.get("action", "")).upper().strip()
+        is_close = is_close_signal(action)
+
+        if is_globally_paused() and not is_close:
             logger.warning("Signal rejected: platform globally paused")
             notify_system(
                 "warning", "GLOBAL_PAUSE",
@@ -249,7 +253,7 @@ class SignalDispatcher:
                         "reason": "exchange_not_open",
                     })
                     continue
-                if is_user_paused(db, s.user_id):
+                if is_user_paused(db, s.user_id) and not is_close:
                     from app.services.credit_control import user_trading_blocked_by_credit
                     reason = "user_paused"
                     ctrl = get_user_control(db, s.user_id)
@@ -315,13 +319,21 @@ class SignalDispatcher:
 
     def _execute_for_user(self, supervisor, payload: dict) -> dict:
         from app.services.platform_runtime import get_global_risk_multiplier
-        from app.services.trading_control import get_user_control
+        from app.services.trading_control import get_user_control, is_user_paused
+        from app.services.webhook_guard import ENTRY_ACTIONS
 
         t0 = time.time()
+        action = str(payload.get("action", "")).upper().strip()
         db = SessionLocal()
         try:
+            if action in ENTRY_ACTIONS and is_user_paused(db, supervisor.user_id):
+                return {
+                    "status": "risk_blocked",
+                    "reason": "user_paused",
+                    "latency_ms": max(1, int((time.time() - t0) * 1000)),
+                }
             ctrl = get_user_control(db, supervisor.user_id)
-            effective_risk = round(get_global_risk_multiplier() * ctrl["risk_multiplier"], 4)
+            effective_risk = round(get_global_risk_multiplier() * ctrl.get("risk_multiplier", 1.0), 4)
             user_payload = {**payload, "risk_multiplier": effective_risk}
         finally:
             db.close()

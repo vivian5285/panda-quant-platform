@@ -17,6 +17,7 @@ def _default_state() -> dict:
     return {
         "trading_paused": False,
         "risk_level": "balanced",
+        "risk_multiplier": RISK_MULTIPLIERS["balanced"],
         "settlement_fee_deferred": False,
         "settlement_defer_note": "",
         "referral_invite_override": False,

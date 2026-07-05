@@ -12,6 +12,12 @@ VALID_ACTIONS = frozenset({"LONG", "SHORT", "CLOSE", "CLOSE_PROTECT", "CLOSE_TP3
 ENTRY_ACTIONS = frozenset({"LONG", "SHORT"})
 
 
+def is_close_signal(action: str) -> bool:
+    """True for TV exit actions (CLOSE / CLOSE_TP3 / CLOSE_PROTECT*)."""
+    act = str(action or "").upper().strip()
+    return act in ("CLOSE", "CLOSE_TP3") or act.startswith("CLOSE")
+
+
 def _client_ip() -> str:
     forwarded = request.headers.get("X-Forwarded-For", "")
     if forwarded:

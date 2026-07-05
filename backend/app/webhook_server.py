@@ -158,7 +158,12 @@ def webhook():
         return jsonify({"status": "error", "message": err}), 400
 
     from app.services.trading_control import is_globally_paused
-    if is_globally_paused():
+    from app.services.webhook_guard import is_close_signal
+
+    action = str(data.get("action", "UNKNOWN")).upper()
+    is_close = is_close_signal(action)
+
+    if is_globally_paused() and not is_close:
         _log_reject_async(
             payload=data,
             event_status="rejected",
@@ -177,9 +182,6 @@ def webhook():
         acquired, existing_dispatch_id = try_acquire(db, fingerprint)
     finally:
         db.close()
-
-    action = str(data.get("action", "UNKNOWN")).upper()
-    is_close = action in ("CLOSE", "CLOSE_PROTECT", "CLOSE_TP3") or "CLOSE_PROTECT" in action
 
     if not acquired:
         logger.info("[Webhook] Duplicate fingerprint=%s dispatch_id=%s", fingerprint[:16], existing_dispatch_id)

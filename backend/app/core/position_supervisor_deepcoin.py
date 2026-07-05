@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Callable, Optional
 
 from app.core.deepcoin_client import DeepcoinClient, CLIENT_VERSION
+from app.core.regime_utils import clamp_regime
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,7 @@ class DeepcoinPositionSupervisor:
         self.face_value = 0.1
 
         self.regime = 3
+        self.risk_multiplier = 1.0
         self.current_atr = 30.0
         self.best_price = 0.0
         self.current_sl = 0.0
@@ -282,7 +284,7 @@ class DeepcoinPositionSupervisor:
             tv_tp_count = sum(1 for t in tv_tps_saved if t > 0)
 
             if last_tv.get("regime"):
-                self.regime = int(last_tv["regime"])
+                self.regime = clamp_regime(last_tv["regime"])
             if last_tv.get("atr"):
                 self.current_atr = float(last_tv["atr"])
             if self.tv_price <= 0 and float(last_tv.get("price", 0) or 0) > 0:
@@ -1097,11 +1099,10 @@ class DeepcoinPositionSupervisor:
 
     def _process_signal(self, payload):
         raw_action = str(payload.get("action", "")).strip().upper()
-        self.regime = self._safe_int(payload.get("regime"), 3)
-        if self.regime not in self.regime_settings:
-            self.regime = 3
+        self.regime = clamp_regime(self._safe_int(payload.get("regime"), 3))
 
         self.current_atr = self._safe_float(payload.get("atr"), 30.0)
+        self.risk_multiplier = float(payload.get("risk_multiplier", 1.0))
         self.tv_price = self._safe_float(payload.get("price"), 0.0)
         self.tv_tps = self._sanitize_tp_prices([
             self._safe_float(payload.get("tv_tp1"), 0),
@@ -1187,7 +1188,7 @@ class DeepcoinPositionSupervisor:
 
     def _open_position(self, action, curr_px):
         balance = self.client.get_available_balance()
-        margin_pct = self.regime_settings[self.regime]["margin"]
+        margin_pct = self.regime_settings[self.regime]["margin"] * self.risk_multiplier
 
         self.client.set_leverage(self.symbol, leverage=self.leverage)
         qty = max(int((balance * margin_pct * self.leverage) / (curr_px * self.face_value)), 1)
@@ -1540,7 +1541,7 @@ class DeepcoinPositionSupervisor:
                     self.last_tv_side = s.get("last_tv_side")
                     self.current_side = s.get("current_side")
                     self.current_sl = s.get("current_sl", 0.0)
-                    self.regime = s.get("regime", 3)
+                    self.regime = clamp_regime(s.get("regime", 3))
                     self.current_atr = s.get("current_atr", 30.0)
                     self.tv_tps = self._sanitize_tp_prices(s.get("tv_tps", [0.0, 0.0, 0.0]))
                     self.tv_price = float(s.get("tv_price", 0.0) or 0.0)
@@ -1713,7 +1714,7 @@ class DeepcoinPositionSupervisor:
                 if src.get("tv_tps"):
                     self.tv_tps = [float(x) for x in src["tv_tps"][:3]]
                 if src.get("regime"):
-                    self.regime = int(src["regime"])
+                    self.regime = clamp_regime(src["regime"])
                 if src.get("side"):
                     self.last_tv_side = str(src["side"]).upper()
         try:

@@ -10,6 +10,7 @@ from typing import Callable, Optional
 from app.core.binance_client import BinanceClient
 from app.core.binance_smart_defense import BinanceSmartDefenseMixin
 from app.core.position_manager import PositionManager
+from app.core.regime_utils import clamp_regime
 from app.core.symbol_precision import normalize_tv_targets, round_price, round_quantity, PRICE_TICK
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
@@ -139,7 +140,7 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
                     self.watched_entry = float(s.get("watched_entry", 0) or 0)
                     self.current_sl = float(s.get("current_sl", 0) or 0)
                     self.best_price = float(s.get("best_price", 0) or 0)
-                    self.regime = int(s.get("regime", 3) or 3)
+                    self.regime = clamp_regime(s.get("regime", 3))
                     self.current_atr = float(s.get("current_atr", 30) or 30)
                     self.monitoring = bool(s.get("monitoring", False))
                     self.initial_qty = float(s.get("initial_qty", 0) or 0)
@@ -223,8 +224,7 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
     def _execute_signal(self, payload: dict) -> dict:
         raw_action = str(payload.get("action", "")).upper()
         self.regime = int(payload.get("regime", 3))
-        if self.regime not in self.regime_settings:
-            self.regime = 3
+        self.regime = clamp_regime(self.regime)
 
         self.current_atr = float(payload.get("atr", 30.0))
         self.tv_price = round_price(payload.get("price", 0))
@@ -443,7 +443,7 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
             if not any(self.tv_tps) and trade.get("tv_tps"):
                 self.tv_tps = normalize_tv_targets(trade["tv_tps"])
             if trade.get("regime"):
-                self.regime = int(trade["regime"])
+                self.regime = clamp_regime(trade["regime"])
             if trade.get("side") and not self.last_tv_side:
                 self.last_tv_side = trade["side"]
 
@@ -455,7 +455,7 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
             if open_log.get("tv_tps"):
                 self.tv_tps = normalize_tv_targets(open_log["tv_tps"])
             if open_log.get("regime"):
-                self.regime = int(open_log["regime"])
+                self.regime = clamp_regime(open_log["regime"])
             if open_log.get("side"):
                 self.last_tv_side = open_log["side"]
             if open_log.get("atr"):
@@ -471,7 +471,7 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
                 if any(latest_tv.get("tv_tps") or []):
                     self.tv_tps = normalize_tv_targets(latest_tv["tv_tps"])
                 if latest_tv.get("regime"):
-                    self.regime = int(latest_tv["regime"])
+                    self.regime = clamp_regime(latest_tv["regime"])
                 if latest_tv.get("atr"):
                     self.current_atr = float(latest_tv["atr"])
             elif tv_action.startswith("CLOSE"):
