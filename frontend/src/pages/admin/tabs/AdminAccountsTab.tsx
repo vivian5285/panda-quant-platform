@@ -28,6 +28,8 @@ type ManagedAccount = {
   supervisor_active?: boolean
   trading_paused?: boolean
   snapshot_error?: string | null
+  snapshot_degraded?: boolean
+  snapshot_source?: string | null
 }
 
 type TradeStats = {
@@ -104,7 +106,7 @@ export default function AdminAccountsTab() {
     try {
       const [trades, logs, stats] = await Promise.all([
         adminApi.userTrades(userId, queryParams),
-        adminApi.userLogs(userId, queryParams as LogQueryParams),
+        adminApi.userLogs(userId, { ...queryParams, sync_exchange: true } as LogQueryParams),
         adminApi.userTradeStats(userId, { start: queryParams.start, end: queryParams.end }),
       ])
       setDetailTrades(trades || [])
@@ -280,6 +282,11 @@ export default function AdminAccountsTab() {
                       {row.trading_paused && (
                         <span className="badge badge-amber badge-spaced">
                           <PauseCircle size={10} /> {t('admin.accountsTradingPaused')}
+                        </span>
+                      )}
+                      {row.snapshot_degraded && !row.snapshot_error && (
+                        <span className="badge badge-amber badge-spaced" title={row.snapshot_source || ''}>
+                          {t('admin.accountsSnapshotDegraded')}
                         </span>
                       )}
                       {row.snapshot_error && (

@@ -34,7 +34,7 @@ export default function DownlineLogsModal({ userId, displayName, onClose }: Prop
     setExpanded(null)
     Promise.all([
       referralApi.downlineAccount(userId),
-      referralApi.downlineLogs(userId, { limit: 100 }),
+      referralApi.downlineLogs(userId, { limit: 100, sync_exchange: true }),
       referralApi.downlineTrades(userId, { limit: 100 }),
     ])
       .then(([acc, lg, tr]) => {

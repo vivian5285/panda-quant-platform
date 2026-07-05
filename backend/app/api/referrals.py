@@ -249,11 +249,15 @@ def downline_logs(
     offset: int = 0,
     start: str | None = None,
     end: str | None = None,
+    sync_exchange: bool = False,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """推广者查看一级/二级下线的详细交易日志（实盘核实明细在 detail_json）。"""
     target, _level = _assert_downline_access(db, user, user_id)
+    if sync_exchange:
+        from app.services.binance_sync import sync_user_binance_fills
+        sync_user_binance_fills(db, target)
     q = db.query(TradeLog).filter(TradeLog.user_id == target.id)
     q = apply_log_date_filter(q, parse_date_param(start), parse_date_param(end), TradeLog)
     rows = q.order_by(TradeLog.created_at.desc()).offset(offset).limit(min(limit, 500)).all()

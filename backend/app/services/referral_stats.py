@@ -6,6 +6,7 @@ from app.config import get_settings
 from app.models import User, Trade, PaymentStatus, ApiStatus
 from app.services.dispatcher import supervisor_pool
 from app.services.position_snapshot import (
+    ensure_open_trade_from_snapshot,
     get_supervisor_account_summary,
     get_supervisor_position_status,
     position_fields_from_status,
@@ -40,10 +41,14 @@ def build_downline_stats(db: Session, user: User) -> dict:
     supervisor = supervisor_pool.get(user.id)
     if supervisor:
         try:
-            summary = get_supervisor_account_summary(supervisor)
+            status = get_supervisor_position_status(supervisor, db=db, user_id=user.id)
+            summary = get_supervisor_account_summary(
+                supervisor, user=user, position=status if status.get("has_position") else None,
+            )
             equity = float(summary.get("total_margin_balance", 0) or 0)
             balance = float(summary.get("available_balance", equity) or equity)
-            status = get_supervisor_position_status(supervisor)
+            if status.get("has_position"):
+                ensure_open_trade_from_snapshot(db, user.id, supervisor, status)
             pf = position_fields_from_status(status)
             has_position = pf["has_position"]
             position_side = pf["position_side"]

@@ -8,6 +8,7 @@ from app.models import User, Trade, TradeLog, ApiStatus
 from app.schemas import DashboardStats, UserProfile
 from app.services.dispatcher import supervisor_pool
 from app.services.position_snapshot import (
+    ensure_open_trade_from_snapshot,
     get_supervisor_account_summary,
     get_supervisor_position_status,
 )
@@ -48,11 +49,14 @@ def build_dashboard_stats(db: Session, user: User) -> DashboardStats:
 
     supervisor = supervisor_pool.get(user.id)
     if supervisor:
-        summary = get_supervisor_account_summary(supervisor)
+        status = get_supervisor_position_status(supervisor, db=db, user_id=user.id)
+        summary = get_supervisor_account_summary(
+            supervisor, user=user, position=status if status.get("has_position") else None,
+        )
         equity = float(summary.get("total_margin_balance", 0) or 0)
         balance = float(summary.get("available_balance", equity) or equity)
-        status = get_supervisor_position_status(supervisor)
         if status.get("has_position"):
+            ensure_open_trade_from_snapshot(db, user.id, supervisor, status)
             unrealized = float(status.get("unrealized_pnl", 0) or 0)
             position = status
     elif user.api_key_enc and user.api_status == ApiStatus.ACTIVE.value:

@@ -924,6 +924,8 @@ class AdminManagedAccountOut(BaseModel):
     trade_count: int = 0
     closed_trade_count: int = 0
     snapshot_error: Optional[str] = None
+    snapshot_source: Optional[str] = None
+    snapshot_degraded: bool = False
 
 
 class AdminPortfolioSummaryOut(BaseModel):

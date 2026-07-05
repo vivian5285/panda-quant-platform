@@ -10,6 +10,7 @@ from app.models import ApiStatus, Trade, User
 from app.services.admin_user_stats import user_cumulative_pnl
 from app.services.dispatcher import supervisor_pool
 from app.services.position_snapshot import (
+    ensure_open_trade_from_snapshot,
     get_supervisor_account_summary,
     get_supervisor_position_status,
     position_fields_from_status,
@@ -38,29 +39,34 @@ def build_managed_account_row(db: Session, user: User) -> dict:
         dash = build_dashboard_stats(db, user)
         pos = _open_position_dict(dash)
         ctrl = get_user_control(db, user.id)
-        trade_count = db.query(Trade).filter(Trade.user_id == user.id).count()
-        closed_count = db.query(Trade).filter(
-            Trade.user_id == user.id,
-            Trade.status == "closed",
-        ).count()
         cumulative = user_cumulative_pnl(db, user.id)
 
         # Prefer live supervisor snapshot when pool is active (all exchanges).
         supervisor = supervisor_pool.get(user.id)
         if supervisor:
-            summary = get_supervisor_account_summary(supervisor)
+            live_pos = get_supervisor_position_status(supervisor, db=db, user_id=user.id)
+            summary = get_supervisor_account_summary(supervisor, user=user, position=live_pos)
             if summary:
                 equity = float(summary.get("total_margin_balance", 0) or 0)
                 balance = float(summary.get("available_balance", equity) or equity)
                 dash.balance = balance
                 if equity > 0 and float(user.initial_principal or 0) > 0:
                     dash.cycle_pnl = round(equity - float(user.initial_principal), 2)
-            live_pos = get_supervisor_position_status(supervisor)
             if live_pos.get("has_position"):
+                ensure_open_trade_from_snapshot(db, user.id, supervisor, live_pos)
                 pos = live_pos
                 dash.unrealized_pnl = float(live_pos.get("unrealized_pnl", 0) or 0)
-            elif live_pos.get("error"):
+                dash.open_position = live_pos
+            elif live_pos.get("error") and not live_pos.get("api_degraded"):
                 snapshot_error = str(live_pos["error"])
+            elif live_pos.get("api_degraded"):
+                snapshot_error = None
+
+        trade_count = db.query(Trade).filter(Trade.user_id == user.id).count()
+        closed_count = db.query(Trade).filter(
+            Trade.user_id == user.id,
+            Trade.status == "closed",
+        ).count()
 
         pf = position_fields_from_status(pos)
 
@@ -86,7 +92,9 @@ def build_managed_account_row(db: Session, user: User) -> dict:
             "trade_count": trade_count,
             "closed_trade_count": closed_count,
             "snapshot_error": snapshot_error,
-            **pf,
+            "snapshot_source": pf.get("snapshot_source"),
+            "snapshot_degraded": pf.get("snapshot_degraded", False),
+            **{k: v for k, v in pf.items() if k not in ("snapshot_source", "snapshot_degraded")},
         }
     except Exception as e:
         logger.exception("build_managed_account_row failed user=%s", user.id)
