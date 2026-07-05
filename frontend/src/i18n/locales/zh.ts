@@ -313,7 +313,10 @@ export default {
       old_tv_tps: "原TV止盈",
       new_tv_tps: "新TV止盈",
       decision: "智能决策",
-      regime_changed: "档位变化"
+      regime_changed: "档位变化",
+      held_atr: "持仓ATR",
+      new_atr: "新信号ATR",
+      atr_changed: "ATR变化"
     }
   },
   risk: {

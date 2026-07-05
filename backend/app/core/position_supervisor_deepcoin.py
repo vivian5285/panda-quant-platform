@@ -10,7 +10,12 @@ from typing import Callable, Optional
 
 from app.core.deepcoin_client import DeepcoinClient, CLIENT_VERSION
 from app.core.regime_utils import clamp_regime
-from app.core.same_direction_policy import SameDirAction, evaluate_same_direction
+from app.core.same_direction_policy import (
+    SameDirAction,
+    evaluate_same_direction,
+    format_refresh_reason,
+    format_reopen_reason,
+)
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 
@@ -1105,6 +1110,7 @@ class DeepcoinPositionSupervisor:
     def _process_signal(self, payload):
         raw_action = str(payload.get("action", "")).strip().upper()
         held_regime = self.regime
+        held_atr = self.current_atr
         prev_tv_tps = list(self.tv_tps)
         self.regime = clamp_regime(self._safe_int(payload.get("regime"), 3))
 
@@ -1158,6 +1164,7 @@ class DeepcoinPositionSupervisor:
                 self._handle_smart_entry(
                     raw_action,
                     held_regime=held_regime,
+                    held_atr=held_atr,
                     prev_tv_tps=prev_tv_tps,
                 )
             else:
@@ -1181,10 +1188,12 @@ class DeepcoinPositionSupervisor:
         action,
         *,
         held_regime: int | None = None,
+        held_atr: float | None = None,
         prev_tv_tps: list | None = None,
     ):
         threshold = float(settings.SAME_DIR_IGNORE_PRICE_DIFF_PCT)
         held_regime = held_regime if held_regime is not None else self.regime
+        held_atr = float(held_atr if held_atr is not None else self.current_atr)
 
         pos = self._get_active_position()
         has_pos = bool(pos and self._safe_qty(pos.get("size", 0)) > 0)
@@ -1210,6 +1219,8 @@ class DeepcoinPositionSupervisor:
                 mark_price=curr_px,
                 held_regime=held_regime,
                 new_regime=self.regime,
+                held_atr=held_atr,
+                new_atr=self.current_atr,
                 threshold_pct=threshold,
             )
             if ev.action == SameDirAction.REFRESH_TPS:
@@ -1234,12 +1245,8 @@ class DeepcoinPositionSupervisor:
         self._open_position(action, curr_px)
 
     def _close_then_open_entry(self, action, curr_px, ev):
-        if ev.regime_changed:
-            reason = f"同方向档位变化 {ev.held_regime}→{ev.new_regime}，先平后开换仓"
-        else:
-            reason = (
-                f"同方向价差 {ev.price_diff_pct:.3f}% ≥ 阈值 {settings.SAME_DIR_IGNORE_PRICE_DIFF_PCT}%，先平后开"
-            )
+        threshold = float(settings.SAME_DIR_IGNORE_PRICE_DIFF_PCT)
+        reason = format_reopen_reason(ev, threshold)
         logger.info(f"⚡ 收到建仓信号 [{action}]，{reason}")
         theme = resolve_exchange_theme(self.exchange_id)
         detail = {
@@ -1248,12 +1255,15 @@ class DeepcoinPositionSupervisor:
             "entry": ev.entry_price,
             "tv_price": ev.tv_price,
             "price_diff_pct": round(ev.price_diff_pct, 4),
-            "threshold_pct": settings.SAME_DIR_IGNORE_PRICE_DIFF_PCT,
+            "threshold_pct": threshold,
             "held_regime": ev.held_regime,
             "new_regime": ev.new_regime,
+            "held_atr": ev.held_atr,
+            "new_atr": ev.new_atr,
+            "atr_changed": ev.atr_changed,
             "regime_changed": ev.regime_changed,
+            "decision": ev.reason,
             "tv_tps": list(self.tv_tps),
-            "atr": self.current_atr,
         }
         self._alert(
             "info",
@@ -1283,24 +1293,25 @@ class DeepcoinPositionSupervisor:
         self.monitoring = True
 
         theme = resolve_exchange_theme(self.exchange_id)
+        threshold = float(settings.SAME_DIR_IGNORE_PRICE_DIFF_PCT)
         detail = {
             "exchange": self.exchange_id,
             "side": action,
             "entry": entry_price,
             "tv_price": ev.tv_price,
             "price_diff_pct": round(ev.price_diff_pct, 4),
-            "threshold_pct": settings.SAME_DIR_IGNORE_PRICE_DIFF_PCT,
+            "threshold_pct": threshold,
             "held_regime": ev.held_regime,
             "new_regime": ev.new_regime,
+            "held_atr": ev.held_atr,
+            "new_atr": ev.new_atr,
+            "atr_changed": ev.atr_changed,
+            "regime_changed": ev.regime_changed,
+            "decision": ev.reason,
             "old_tv_tps": list(prev_tv_tps),
             "new_tv_tps": list(self.tv_tps),
-            "atr": self.current_atr,
-            "decision": "refresh_tps_only",
         }
-        msg = (
-            f"同向{action}价差 {ev.price_diff_pct:.3f}% < {settings.SAME_DIR_IGNORE_PRICE_DIFF_PCT}% "
-            f"→ 忽略重复开仓，更新止盈 {prev_tv_tps} → {self.tv_tps}"
-        )
+        msg = f"{format_refresh_reason(ev, threshold)} {prev_tv_tps} → {self.tv_tps}"
         self._log("SAME_DIR_TP_REFRESH", msg, detail)
         self._alert(
             "info",

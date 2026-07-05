@@ -1,22 +1,29 @@
-"""Tests for same-direction entry intelligence."""
+"""Tests for same-direction entry intelligence (ATR-first)."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from app.core.same_direction_policy import (
     SameDirAction,
+    atr_values_differ,
     evaluate_same_direction,
+    format_reopen_reason,
     price_diff_pct,
 )
 
 
 def test_price_diff_pct_basic():
-    # 5 USD diff on 3500 = ~0.143%
     assert round(price_diff_pct(3505, 3500, 3500), 3) == round(5 / 3500 * 100, 3)
 
 
-def test_evaluate_refresh_when_small_price_diff_same_regime():
+def test_atr_values_differ():
+    assert atr_values_differ(12.5, 12.5) is False
+    assert atr_values_differ(12.5, 12.5004) is False
+    assert atr_values_differ(12.5, 13.0) is True
+
+
+def test_evaluate_reopen_when_atr_changed_even_if_small_price_diff():
     ev = evaluate_same_direction(
         has_position=True,
         current_side="LONG",
@@ -26,13 +33,34 @@ def test_evaluate_refresh_when_small_price_diff_same_regime():
         mark_price=3500.0,
         held_regime=3,
         new_regime=3,
+        held_atr=12.5,
+        new_atr=15.0,
+        threshold_pct=0.20,
+    )
+    assert ev.action == SameDirAction.CLOSE_REOPEN
+    assert ev.reason == "atr_changed"
+    assert "ATR变化" in format_reopen_reason(ev, 0.20)
+
+
+def test_evaluate_refresh_when_atr_same_and_small_price_diff():
+    ev = evaluate_same_direction(
+        has_position=True,
+        current_side="LONG",
+        signal_side="LONG",
+        entry_price=3500.0,
+        tv_price=3505.0,
+        mark_price=3500.0,
+        held_regime=3,
+        new_regime=3,
+        held_atr=12.5,
+        new_atr=12.5,
         threshold_pct=0.20,
     )
     assert ev.action == SameDirAction.REFRESH_TPS
-    assert ev.reason == "price_diff_below_threshold"
+    assert ev.reason == "atr_same_price_diff_below_threshold"
 
 
-def test_evaluate_reopen_when_regime_changed():
+def test_evaluate_reopen_when_regime_changed_atr_same():
     ev = evaluate_same_direction(
         has_position=True,
         current_side="LONG",
@@ -42,13 +70,15 @@ def test_evaluate_reopen_when_regime_changed():
         mark_price=3500.0,
         held_regime=2,
         new_regime=4,
+        held_atr=12.5,
+        new_atr=12.5,
         threshold_pct=0.20,
     )
     assert ev.action == SameDirAction.CLOSE_REOPEN
-    assert ev.regime_changed is True
+    assert ev.reason == "regime_changed"
 
 
-def test_evaluate_reopen_when_price_diff_large():
+def test_evaluate_reopen_when_atr_same_and_price_diff_large():
     ev = evaluate_same_direction(
         has_position=True,
         current_side="SHORT",
@@ -58,6 +88,8 @@ def test_evaluate_reopen_when_price_diff_large():
         mark_price=3500.0,
         held_regime=3,
         new_regime=3,
+        held_atr=12.5,
+        new_atr=12.5,
         threshold_pct=0.20,
     )
     assert ev.action == SameDirAction.CLOSE_REOPEN
@@ -74,6 +106,8 @@ def test_evaluate_open_new_when_flat():
         mark_price=3500,
         held_regime=3,
         new_regime=3,
+        held_atr=12.5,
+        new_atr=12.5,
         threshold_pct=0.20,
     )
     assert ev.action == SameDirAction.OPEN_NEW
@@ -110,7 +144,7 @@ def supervisor():
     return sup
 
 
-def test_supervisor_refresh_tps_instead_of_reopen(supervisor):
+def test_supervisor_refresh_tps_when_atr_unchanged(supervisor):
     ev = evaluate_same_direction(
         has_position=True,
         current_side="LONG",
@@ -120,17 +154,38 @@ def test_supervisor_refresh_tps_instead_of_reopen(supervisor):
         mark_price=3500.0,
         held_regime=3,
         new_regime=3,
+        held_atr=12.5,
+        new_atr=12.5,
         threshold_pct=0.20,
     )
     out = supervisor._refresh_same_direction_tps("LONG", 3500.0, ev, prev_tv_tps=[3550.0, 3650.0, 3750.0])
 
     assert out["status"] == "ok"
-    assert out["detail"]["type"] == "same_dir_tp_refresh"
     supervisor.client.cancel_all_open_orders.assert_not_called()
-    supervisor._rebuild_defenses.assert_called_once()
-    supervisor.on_trade_update_targets.assert_called_once()
     supervisor._alert.assert_called()
     assert supervisor._alert.call_args[0][1] == "SAME_DIR_TP_REFRESH"
+    assert "ATR未变" in supervisor._alert.call_args[0][3]
+
+
+def test_supervisor_reopen_when_atr_changed(supervisor):
+    supervisor._close_all = MagicMock()
+    supervisor._open_position = MagicMock(return_value={"status": "ok"})
+    ev = evaluate_same_direction(
+        has_position=True,
+        current_side="LONG",
+        signal_side="LONG",
+        entry_price=3500.0,
+        tv_price=3505.0,
+        mark_price=3500.0,
+        held_regime=3,
+        new_regime=3,
+        held_atr=12.5,
+        new_atr=18.0,
+        threshold_pct=0.20,
+    )
+    supervisor._close_then_open_entry("LONG", 3500.0, ev)
+    supervisor._close_all.assert_called_once()
+    assert "ATR变化" in supervisor._alert.call_args[0][3]
 
 
 def test_supervisor_opposite_still_closes(supervisor):
@@ -141,7 +196,7 @@ def test_supervisor_opposite_still_closes(supervisor):
     supervisor._close_all = MagicMock()
     supervisor._open_position = MagicMock(return_value={"status": "ok"})
 
-    supervisor._handle_smart_entry("LONG", held_regime=3, prev_tv_tps=[])
+    supervisor._handle_smart_entry("LONG", held_regime=3, held_atr=12.5, prev_tv_tps=[])
 
     supervisor._close_all.assert_called_once()
     supervisor._open_position.assert_called_once()

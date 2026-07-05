@@ -313,7 +313,10 @@ export default {
       old_tv_tps: "Previous TV TPs",
       new_tv_tps: "New TV TPs",
       decision: "Smart decision",
-      regime_changed: "Regime changed"
+      regime_changed: "Regime changed",
+      held_atr: "Held ATR",
+      new_atr: "New signal ATR",
+      atr_changed: "ATR changed"
     }
   },
   risk: {
