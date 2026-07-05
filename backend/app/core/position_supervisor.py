@@ -18,6 +18,7 @@ from app.core.same_direction_policy import (
     format_reopen_reason,
 )
 from app.core.symbol_precision import normalize_tv_targets, round_price, round_quantity, PRICE_TICK
+from app.core.position_sizing import compute_eth_qty
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 
@@ -36,6 +37,8 @@ SENTINEL_POLL_RADAR = 2
 DUST_QTY_ETH = 0.004
 TP_COMPLETE_RESIDUAL_RATIO = 0.12
 RADAR_SL_MIN_MOVE = 1.0
+FLAT_WAIT_TIMEOUT = 12.0
+FLAT_WAIT_POLL = 0.6
 
 
 @dataclass
@@ -56,6 +59,7 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
         self,
         user_id: int,
         client: BinanceClient,
+        initial_principal: float = 0.0,
         on_log: Optional[Callable] = None,
         on_trade_open: Optional[Callable] = None,
         on_trade_close: Optional[Callable] = None,
@@ -64,6 +68,7 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
     ):
         self.user_id = user_id
         self.client = client
+        self.initial_principal = float(initial_principal or 0)
         self.position_manager = PositionManager(client)
         self.on_log = on_log or (lambda *a, **k: None)
         self.on_trade_open = on_trade_open or (lambda *a, **k: None)
@@ -341,7 +346,11 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
             self.client.cancel_all_open_orders(self.symbol)
             time.sleep(0.5)
             self._close_all("反方向指令到达，触发【先平后开】原子对冲换防")
-            time.sleep(1.2)
+            if not self._wait_until_flat():
+                self._log("ERROR", "反方向平仓后仍未归零，暂缓新开仓")
+                return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
+            self.client.cancel_all_open_orders(self.symbol)
+            time.sleep(0.4)
             return self._open_position(action, curr_px)
 
         return self._open_position(action, curr_px)
@@ -377,7 +386,11 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.5)
         self._close_all("同方向新指令到达，触发【先平后开】洗清旧阵地")
-        time.sleep(1.2)
+        if not self._wait_until_flat():
+            self._log("ERROR", "同向换仓平仓后仍未归零，暂缓新开仓")
+            return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
+        self.client.cancel_all_open_orders(self.symbol)
+        time.sleep(0.4)
         return self._open_position(action, curr_px)
 
     def _refresh_same_direction_tps(
@@ -455,14 +468,27 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
         balance = self.client.get_available_balance()
         margin_pct = self.regime_settings[self.regime]["margin"] * self.risk_multiplier
         self.client.set_leverage(self.symbol, leverage=self.leverage)
-        qty = round_quantity((balance * margin_pct * self.leverage) / curr_px)
+        self.client.cancel_all_open_orders(self.symbol)
+        time.sleep(0.4)
+        qty, sizing_meta = compute_eth_qty(
+            live_balance=balance,
+            initial_principal=self.initial_principal,
+            margin_pct=margin_pct,
+            leverage=self.leverage,
+            price=curr_px,
+            round_fn=round_quantity,
+        )
         if qty <= 0:
             self._log("ERROR", "余额不足，无法开仓")
             self._alert("warning", "INSUFFICIENT_BALANCE", "余额不足", f"用户 {self.user_id} 无法开仓")
             return {"status": "error", "reason": "insufficient_balance", "message": "余额不足，无法开仓"}
 
         open_side = "BUY" if action == "LONG" else "SELL"
-        self._log("SIGNAL", f"🚀 [唯一主仓] 极速开仓: {open_side} {qty} 个ETH | 档位 {self.regime}")
+        self._log(
+            "SIGNAL",
+            f"🚀 [唯一主仓] 极速开仓: {open_side} {qty} 个ETH | 档位 {self.regime} | "
+            f"保证金 {sizing_meta['margin_usd']}U ({sizing_meta['sizing_source']})",
+        )
         self.client.place_market_order(action, qty, self.symbol)
         time.sleep(2.0)
 
@@ -492,6 +518,7 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
                 "risk_multiplier": self.risk_multiplier,
                 "leverage": self.leverage,
                 "atr": self.current_atr,
+                **sizing_meta,
             }
             open_title = f"{theme['accent']} GEMINI开仓 · {theme['label']} 档位{self.regime}"
             self._log("OPEN", f"🔶 战神出击：{action} {real_qty} ETH @ {entry_price} | 滑点 {slip:+.2f}", detail)
@@ -1097,13 +1124,12 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
         self.watched_entry = entry_price
         self.monitoring = True
         self._ensure_price_ws()
-        self._rebuild_tp_limit_orders(qty, entry_price, dynamic_sl=None)
         pos = self._get_active_position()
         if pos:
             result = self._smart_realign_defenses(
                 pos["size"],
                 pos["entry_price"],
-                reason="开仓后二次核查",
+                reason="开仓后智能防线对齐",
             )
             summary = self._format_audit_summary(result["audit"])
             self._log(
@@ -1146,6 +1172,17 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
             "entry_price": float(pos.get("entryPrice", 0)),
             "side": "LONG" if amt > 0 else "SHORT",
         }
+
+    def _wait_until_flat(self, timeout: float = FLAT_WAIT_TIMEOUT, poll: float = FLAT_WAIT_POLL) -> bool:
+        """确认交易所持仓归零后再新开，避免残仓叠加。"""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            pos = self._get_active_position()
+            if not pos or pos["size"] <= 0:
+                return True
+            time.sleep(poll)
+        pos = self._get_active_position()
+        return not pos or pos["size"] <= 0
 
     def _is_dust_qty(self, qty: float) -> bool:
         try:

@@ -55,9 +55,25 @@ def test_position_status_includes_qty_and_mark_price():
 def test_risk_multiplier_applied_to_margin():
     from app.core.position_supervisor import PositionSupervisor
 
-    sup = PositionSupervisor(user_id=999, client=MagicMock())
+    sup = PositionSupervisor(user_id=999, client=MagicMock(), initial_principal=700.0)
     sup.regime = 3
     sup.risk_multiplier = 0.6
     base_margin = sup.regime_settings[3]["margin"]
     effective = base_margin * sup.risk_multiplier
     assert round(effective, 4) == round(0.35 * 0.6, 4)
+
+
+def test_binance_principal_cap_regime4_margin():
+    from app.core.position_sizing import compute_eth_qty
+    from app.core.symbol_precision import round_quantity
+
+    _, meta = compute_eth_qty(
+        live_balance=1000.0,
+        initial_principal=700.0,
+        margin_pct=0.50,
+        leverage=10,
+        price=1770.0,
+        round_fn=round_quantity,
+    )
+    assert meta["margin_usd"] == 350.0
+    assert meta["sizing_source"] == "principal_cap"

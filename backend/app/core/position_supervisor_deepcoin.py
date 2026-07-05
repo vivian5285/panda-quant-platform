@@ -16,6 +16,7 @@ from app.core.same_direction_policy import (
     format_refresh_reason,
     format_reopen_reason,
 )
+from app.core.position_sizing import compute_deepcoin_contracts
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 
@@ -28,6 +29,8 @@ SENTINEL_POLL_ARMING = 3
 SENTINEL_POLL_RADAR = 2
 DUST_ORPHAN_CONTRACTS = 1
 TP_COMPLETE_RESIDUAL_RATIO = 0.12
+FLAT_WAIT_TIMEOUT = 12.0
+FLAT_WAIT_POLL = 0.6
 
 
 class _DingtalkBridge:
@@ -56,6 +59,7 @@ class DeepcoinPositionSupervisor:
         self,
         user_id: int,
         client: DeepcoinClient,
+        initial_principal: float = 0.0,
         on_log: Optional[Callable] = None,
         on_trade_open: Optional[Callable] = None,
         on_trade_close: Optional[Callable] = None,
@@ -64,6 +68,7 @@ class DeepcoinPositionSupervisor:
     ):
         self.user_id = user_id
         self.client = client
+        self.initial_principal = float(initial_principal or 0)
         self.on_log = on_log or (lambda *a, **k: None)
         self.on_trade_open = on_trade_open or (lambda *a, **k: None)
         self.on_trade_close = on_trade_close or (lambda *a, **k: None)
@@ -412,6 +417,15 @@ class DeepcoinPositionSupervisor:
     def _verify_flat(self):
         pos = self._get_active_position()
         return pos is None or self._safe_qty(pos.get("size")) == 0
+
+    def _wait_until_flat(self, timeout: float = FLAT_WAIT_TIMEOUT, poll: float = FLAT_WAIT_POLL) -> bool:
+        """确认交易所持仓归零后再新开，避免残仓叠加。"""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._verify_flat():
+                return True
+            time.sleep(poll)
+        return self._verify_flat()
 
     def _is_dust_qty(self, qty):
         """深币最小 1 张；无主仓账本时的孤立 1 张视为蚂蚁仓"""
@@ -962,6 +976,12 @@ class DeepcoinPositionSupervisor:
                 "nuclear": False,
             }
 
+        if self._has_duplicate_tp_orders() or self._audit_requires_nuclear(initial):
+            logger.warning("🧹 检测到重复/错位止盈，先清场再重挂")
+            self._cancel_all_tp_limit_orders()
+            time.sleep(0.5)
+            initial = self._audit_tp_levels(live_qty)
+
         self._cancel_orphan_tp_orders(live_qty)
         matched, pending_prices, expected, rebuilt = self._ensure_defenses_on_recover(
             live_qty, entry, dynamic_sl=dynamic_sl,
@@ -1236,9 +1256,11 @@ class DeepcoinPositionSupervisor:
             self.client.cancel_all_open_orders(self.symbol)
             time.sleep(0.5)
             self._close_all("反方向指令到达，触发【先平后开】原子对冲换防")
-            time.sleep(1.2)
+            if not self._wait_until_flat():
+                logger.error("反方向平仓后仍未归零，暂缓新开仓")
+                return
             self.client.cancel_all_open_orders(self.symbol)
-            time.sleep(0.5)
+            time.sleep(0.4)
             self._open_position(action, curr_px)
             return
 
@@ -1275,9 +1297,11 @@ class DeepcoinPositionSupervisor:
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.5)
         self._close_all("同方向新指令到达，触发【先平后开】洗清旧阵地")
-        time.sleep(1.2)
+        if not self._wait_until_flat():
+            logger.error("同向换仓平仓后仍未归零，暂缓新开仓")
+            return
         self.client.cancel_all_open_orders(self.symbol)
-        time.sleep(0.5)
+        time.sleep(0.4)
         self._open_position(action, curr_px)
 
     def _refresh_same_direction_tps(self, action, entry_price, ev, *, prev_tv_tps: list):
@@ -1337,11 +1361,23 @@ class DeepcoinPositionSupervisor:
         margin_pct = self.regime_settings[self.regime]["margin"] * self.risk_multiplier
 
         self.client.set_leverage(self.symbol, leverage=self.leverage)
-        qty = max(int((balance * margin_pct * self.leverage) / (curr_px * self.face_value)), 1)
+        self.client.cancel_all_open_orders(self.symbol)
+        time.sleep(0.4)
+        qty, sizing_meta = compute_deepcoin_contracts(
+            live_balance=balance,
+            initial_principal=self.initial_principal,
+            margin_pct=margin_pct,
+            leverage=self.leverage,
+            price=curr_px,
+            face_value=self.face_value,
+        )
         open_side = "buy" if action == "LONG" else "sell"
         pos_side = "long" if action == "LONG" else "short"
 
-        logger.info(f"🚀 [唯一主仓] 极速开仓: {open_side} {qty} 张 | 档位 {self.regime}")
+        logger.info(
+            f"🚀 [唯一主仓] 极速开仓: {open_side} {qty} 张 | 档位 {self.regime} | "
+            f"保证金 {sizing_meta['margin_usd']}U ({sizing_meta['sizing_source']})"
+        )
         self.client.place_market_order(self.symbol, open_side, pos_side, qty)
         time.sleep(2.0)
 
@@ -1360,13 +1396,12 @@ class DeepcoinPositionSupervisor:
         self._save_state()
 
         self._ensure_price_ws()
-        self._rebuild_defenses(qty, entry_price, dynamic_sl=None)
 
         verified = self._wait_verify(lambda: self._verify_position(self.current_side))
         if verified:
             result = self._smart_realign_defenses(
                 self._safe_qty(verified["size"]), verified["entry_price"],
-                reason="开仓后二次核查",
+                reason="开仓后智能防线对齐",
             )
             matched, expected = result["matched"], result["expected"]
             audit = result["audit"]

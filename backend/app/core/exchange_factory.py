@@ -101,6 +101,7 @@ def create_supervisor(
         return DeepcoinPositionSupervisor(
             user_id=user.id,
             client=client,  # type: ignore[arg-type]
+            initial_principal=float(user.initial_principal or 0),
             on_log=on_log,
             on_trade_open=on_trade_open,
             on_trade_close=on_trade_close,
@@ -110,6 +111,7 @@ def create_supervisor(
     return PositionSupervisor(
         user_id=user.id,
         client=client,  # type: ignore[arg-type]
+        initial_principal=float(user.initial_principal or 0),
         on_log=on_log,
         on_trade_open=on_trade_open,
         on_trade_close=on_trade_close,

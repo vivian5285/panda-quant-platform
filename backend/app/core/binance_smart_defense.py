@@ -509,6 +509,12 @@ class BinanceSmartDefenseMixin:
                 "summary": self._format_audit_summary(initial),
             }
 
+        if self._has_duplicate_tp_orders() or self._audit_requires_nuclear(initial):
+            self._def_log("🧹 检测到重复/错位止盈，先清场再重挂", logging.WARNING)
+            self._cancel_all_tp_limit_orders()
+            time.sleep(0.5)
+            initial = self._audit_tp_levels(live_qty)
+
         self._cancel_orphan_tp_orders(live_qty)
         matched, pending_prices, expected, rebuilt = self._ensure_defenses_on_recover(
             live_qty, entry, dynamic_sl=dynamic_sl,

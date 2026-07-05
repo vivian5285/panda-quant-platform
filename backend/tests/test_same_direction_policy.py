@@ -170,6 +170,7 @@ def test_supervisor_refresh_tps_when_atr_unchanged(supervisor):
 def test_supervisor_reopen_when_atr_changed(supervisor):
     supervisor._close_all = MagicMock()
     supervisor._open_position = MagicMock(return_value={"status": "ok"})
+    supervisor._wait_until_flat = MagicMock(return_value=True)
     ev = evaluate_same_direction(
         has_position=True,
         current_side="LONG",
@@ -195,6 +196,7 @@ def test_supervisor_opposite_still_closes(supervisor):
     }
     supervisor._close_all = MagicMock()
     supervisor._open_position = MagicMock(return_value={"status": "ok"})
+    supervisor._wait_until_flat = MagicMock(return_value=True)
 
     supervisor._handle_smart_entry("LONG", held_regime=3, held_atr=12.5, prev_tv_tps=[])
 

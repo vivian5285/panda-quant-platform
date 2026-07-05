@@ -40,22 +40,31 @@ def test_is_close_signal(action, expected):
 
 def test_deepcoin_open_position_applies_risk_multiplier():
     from app.core.position_supervisor_deepcoin import DeepcoinPositionSupervisor
+    from app.core.position_sizing import compute_deepcoin_contracts
 
     client = MagicMock()
     client.get_available_balance.return_value = 1000.0
     client.get_current_price.return_value = 3000.0
     client.place_market_order.return_value = {}
 
-    sup = DeepcoinPositionSupervisor(user_id=1, client=client)
+    sup = DeepcoinPositionSupervisor(user_id=1, client=client, initial_principal=0)
     sup.regime = 3
     sup.risk_multiplier = 0.6
     sup._get_active_position = MagicMock(return_value={"size": 1, "entry_price": 3000, "posSide": "long"})
+    sup._protect_and_monitor = MagicMock()
 
     sup._open_position("LONG", 3000.0)
 
     base_margin = sup.regime_settings[3]["margin"]
     expected_margin = base_margin * 0.6
-    expected_qty = max(int((1000 * expected_margin * sup.leverage) / (3000 * sup.face_value)), 1)
+    expected_qty, _ = compute_deepcoin_contracts(
+        live_balance=1000.0,
+        initial_principal=0,
+        margin_pct=expected_margin,
+        leverage=sup.leverage,
+        price=3000.0,
+        face_value=sup.face_value,
+    )
     client.place_market_order.assert_called_once()
     assert client.place_market_order.call_args[0][3] == expected_qty
 
