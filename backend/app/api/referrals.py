@@ -66,6 +66,8 @@ def _referral_user_out(db: Session, referrer_id: int, u: User, level: int) -> Re
         has_open_position=stats["has_open_position"],
         position_side=stats["position_side"],
         position_qty=stats["position_qty"],
+        position_entry=stats.get("position_entry", 0),
+        position_mark=stats.get("position_mark", 0),
         settlement_status=stats["settlement_status"],
         api_status=stats["api_status"],
         exchange=stats.get("exchange", "binance"),

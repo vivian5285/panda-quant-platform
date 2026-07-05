@@ -52,9 +52,10 @@ def test_user_trade_stats_sums_closed(db):
 def test_portfolio_summary():
     rows = [
         {"has_position": True, "balance": 100, "unrealized_pnl": 5, "cumulative_trade_pnl": 20},
-        {"has_position": False, "balance": 50, "unrealized_pnl": 0, "cumulative_trade_pnl": -5},
+        {"has_position": False, "balance": 50, "unrealized_pnl": 0, "cumulative_trade_pnl": -5, "snapshot_error": "timeout"},
     ]
     s = portfolio_summary(rows)
     assert s["account_count"] == 2
     assert s["with_position"] == 1
     assert s["total_balance"] == 150.0
+    assert s["snapshot_errors"] == 1

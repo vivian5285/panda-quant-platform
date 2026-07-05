@@ -3987,6 +3987,37 @@ html[lang="zh-CN"] .framer-logo-text strong {
   margin-bottom: 16px;
 }
 .downline-logs-list { max-height: 420px; overflow: auto; }
+.downline-account-summary { background: rgba(255, 255, 255, 0.03); }
+
+.admin-snapshot-warn {
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.08);
+}
+.admin-position-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+}
+.admin-status-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.admin-live-position-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+}
+.data-table tr.row-warn td {
+  background: rgba(245, 158, 11, 0.06);
+}
+.admin-account-uid { font-weight: 600; }
 
 .dash-main-grid {
   display: grid;

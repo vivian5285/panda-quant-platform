@@ -371,6 +371,8 @@ class ReferralUserOut(BaseModel):
     has_open_position: bool = False
     position_side: Optional[str] = None
     position_qty: float = 0.0
+    position_entry: float = 0.0
+    position_mark: float = 0.0
     settlement_status: str = "none"
     api_status: str = "none"
     exchange: str = "binance"
@@ -921,6 +923,7 @@ class AdminManagedAccountOut(BaseModel):
     position_unrealized: float = 0.0
     trade_count: int = 0
     closed_trade_count: int = 0
+    snapshot_error: Optional[str] = None
 
 
 class AdminPortfolioSummaryOut(BaseModel):
@@ -929,6 +932,7 @@ class AdminPortfolioSummaryOut(BaseModel):
     total_balance: float = 0.0
     total_unrealized: float = 0.0
     total_cumulative_pnl: float = 0.0
+    snapshot_errors: int = 0
 
 
 class AdminManagedAccountsOut(BaseModel):

@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
-import { RefreshCw, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react'
+import { RefreshCw, ChevronDown, ChevronUp, AlertTriangle, Activity, PauseCircle } from 'lucide-react'
 import GlassCard from '../../../components/GlassCard'
 import StatCard from '../../../components/StatCard'
 import TradeLogDetailPanel from '../../../components/TradeLogDetailPanel'
@@ -21,11 +21,13 @@ type ManagedAccount = {
   position_side?: string
   position_qty?: number
   position_entry?: number
+  position_mark?: number
   position_unrealized?: number
   trade_count?: number
   closed_trade_count?: number
   supervisor_active?: boolean
   trading_paused?: boolean
+  snapshot_error?: string | null
 }
 
 type TradeStats = {
@@ -53,6 +55,10 @@ function resolveRange(filter: string, from: string, to: string): TradeQueryParam
   const start = new Date()
   start.setDate(start.getDate() - days)
   return { start: fmtDate(start), end: fmtDate(end), limit: 300 }
+}
+
+function pnlClass(v: number) {
+  return v >= 0 ? 'text-green' : 'text-red'
 }
 
 export default function AdminAccountsTab() {
@@ -147,6 +153,8 @@ export default function AdminAccountsTab() {
     }
   }
 
+  const snapshotErrors = summary?.snapshot_errors ?? 0
+
   return (
     <div>
       <div className="table-toolbar table-toolbar-between section-mb-sm">
@@ -165,6 +173,15 @@ export default function AdminAccountsTab() {
         </div>
       </div>
 
+      {snapshotErrors > 0 && (
+        <GlassCard className="p-3 section-mb-sm admin-snapshot-warn">
+          <div className="flex-gap-sm">
+            <AlertTriangle size={16} className="text-amber" />
+            <p className="text-sm text-muted">{t('admin.accountsSnapshotErrorHint', { n: snapshotErrors })}</p>
+          </div>
+        </GlassCard>
+      )}
+
       {summary && (
         <div className="stat-grid section-mb-sm">
           <StatCard label={t('admin.accountsTotal')} value={String(summary.account_count ?? 0)} />
@@ -172,6 +189,9 @@ export default function AdminAccountsTab() {
           <StatCard label={t('admin.accountsTotalBalance')} value={`$${(summary.total_balance ?? 0).toFixed(2)}`} />
           <StatCard label={t('admin.accountsTotalUnrealized')} value={`$${(summary.total_unrealized ?? 0).toFixed(2)}`} />
           <StatCard label={t('admin.cols.cumulativePnl')} value={`$${(summary.total_cumulative_pnl ?? 0).toFixed(2)}`} />
+          {snapshotErrors > 0 && (
+            <StatCard label={t('admin.accountsSnapshotErrors')} value={String(snapshotErrors)} />
+          )}
         </div>
       )}
 
@@ -201,46 +221,109 @@ export default function AdminAccountsTab() {
               <th>{t('admin.cols.cumulativePnl')}</th>
               <th>{t('dashboard.currentPosition')}</th>
               <th>{t('admin.tradeCount')}</th>
+              <th>{t('common.status')}</th>
               <th>{t('common.action')}</th>
             </tr>
           </thead>
           <tbody>
             {accounts.map(row => (
               <Fragment key={row.user_id}>
-                <tr className={row.has_position ? 'row-highlight' : undefined}>
+                <tr className={row.has_position ? 'row-highlight' : row.snapshot_error ? 'row-warn' : undefined}>
                   <td>
                     <button type="button" className="btn btn-ghost btn-xs" onClick={() => toggleExpand(row.user_id)}>
                       {expandedId === row.user_id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                     </button>
                   </td>
-                  <td>{row.uid}</td>
-                  <td>{row.exchange}</td>
+                  <td>
+                    <div className="admin-account-uid">{row.uid}</div>
+                    {row.email && <div className="text-muted text-xs">{row.email}</div>}
+                  </td>
+                  <td><span className="badge badge-gray">{row.exchange}</span></td>
                   <td>${(row.balance ?? 0).toFixed(2)}</td>
-                  <td className={(row.unrealized_pnl ?? 0) >= 0 ? 'text-green' : 'text-red'}>
+                  <td className={pnlClass(row.unrealized_pnl ?? 0)}>
                     ${(row.unrealized_pnl ?? 0).toFixed(2)}
                   </td>
-                  <td className={(row.cycle_pnl ?? 0) >= 0 ? 'text-green' : 'text-red'}>
+                  <td className={pnlClass(row.cycle_pnl ?? 0)}>
                     ${(row.cycle_pnl ?? 0).toFixed(2)}
                   </td>
-                  <td className={(row.cumulative_trade_pnl ?? 0) >= 0 ? 'text-green' : 'text-red'}>
+                  <td className={pnlClass(row.cumulative_trade_pnl ?? 0)}>
                     ${(row.cumulative_trade_pnl ?? 0).toFixed(2)}
                   </td>
                   <td>
-                    {row.has_position
-                      ? `${row.position_side} · ${row.position_qty?.toFixed(4)} @ $${row.position_entry?.toFixed(2)}`
-                      : t('admin.accountsFlat')}
+                    {row.has_position ? (
+                      <div className="admin-position-cell">
+                        <span className={`badge ${row.position_side === 'LONG' ? 'badge-green' : 'badge-red'}`}>
+                          {row.position_side}
+                        </span>
+                        <span className="text-sm">{Number(row.position_qty ?? 0).toFixed(4)}</span>
+                        <span className="text-muted text-xs">
+                          @ ${Number(row.position_entry ?? 0).toFixed(2)}
+                          {(row.position_mark ?? 0) > 0 && (
+                            <> · {t('admin.accountsMarkPrice')} ${Number(row.position_mark).toFixed(2)}</>
+                          )}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-muted">{t('admin.accountsFlat')}</span>
+                    )}
                   </td>
                   <td>{row.closed_trade_count ?? 0}/{row.trade_count ?? 0}</td>
                   <td>
-                    <button type="button" className="btn btn-danger btn-xs" onClick={() => forceCloseOne(row.user_id)}>
+                    <div className="admin-status-badges">
+                      {row.supervisor_active ? (
+                        <span className="badge badge-green badge-spaced">
+                          <Activity size={10} /> {t('admin.accountsSupervisorActive')}
+                        </span>
+                      ) : (
+                        <span className="badge badge-gray badge-spaced">{t('admin.accountsSupervisorOff')}</span>
+                      )}
+                      {row.trading_paused && (
+                        <span className="badge badge-amber badge-spaced">
+                          <PauseCircle size={10} /> {t('admin.accountsTradingPaused')}
+                        </span>
+                      )}
+                      {row.snapshot_error && (
+                        <span className="badge badge-amber badge-spaced" title={row.snapshot_error}>
+                          {t('admin.accountsSnapshotRowError')}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className="btn btn-danger btn-xs"
+                      disabled={!row.has_position}
+                      onClick={() => forceCloseOne(row.user_id)}
+                    >
                       {t('admin.forceClose')}
                     </button>
                   </td>
                 </tr>
                 {expandedId === row.user_id && (
                   <tr>
-                    <td colSpan={10} className="admin-account-detail-cell">
+                    <td colSpan={11} className="admin-account-detail-cell">
                       <GlassCard className="p-4 section-mt-sm">
+                        {row.has_position && (
+                          <div className="admin-live-position-banner section-mb-sm">
+                            <span className={`badge ${row.position_side === 'LONG' ? 'badge-green' : 'badge-red'}`}>
+                              {row.position_side}
+                            </span>
+                            <span>{Number(row.position_qty ?? 0).toFixed(4)} ETH</span>
+                            <span className="text-muted">
+                              {t('referrals.positionEntry')} ${Number(row.position_entry ?? 0).toFixed(2)}
+                            </span>
+                            {(row.position_mark ?? 0) > 0 && (
+                              <span className="text-muted">
+                                {t('referrals.positionMark')} ${Number(row.position_mark).toFixed(2)}
+                              </span>
+                            )}
+                            <span className={pnlClass(row.position_unrealized ?? row.unrealized_pnl ?? 0)}>
+                              {t('dashboard.floatingPnl')} ${Number(row.position_unrealized ?? row.unrealized_pnl ?? 0).toFixed(2)}
+                            </span>
+                          </div>
+                        )}
+
                         <div className="flex-gap-sm trades-filter-wrap section-mb-sm">
                           <label className="trades-filter">
                             <span className="text-muted">{t('trades.filterTime')}</span>
@@ -301,7 +384,7 @@ export default function AdminAccountsTab() {
                                       <td>{tr.quantity}</td>
                                       <td>{tr.entry_price}</td>
                                       <td>{tr.exit_price ?? '—'}</td>
-                                      <td className={(tr.realized_pnl ?? 0) >= 0 ? 'text-green' : 'text-red'}>
+                                      <td className={pnlClass(tr.realized_pnl ?? 0)}>
                                         {tr.realized_pnl != null ? tr.realized_pnl.toFixed(2) : '—'}
                                       </td>
                                       <td>{tr.status}</td>
@@ -337,7 +420,7 @@ export default function AdminAccountsTab() {
               </Fragment>
             ))}
             {!loading && !accounts.length && (
-              <tr><td colSpan={10} className="text-muted p-4">{t('common.noData')}</td></tr>
+              <tr><td colSpan={11} className="text-muted p-4">{t('common.noData')}</td></tr>
             )}
           </tbody>
         </table>

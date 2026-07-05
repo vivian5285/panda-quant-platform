@@ -5,6 +5,11 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import User, Trade, PaymentStatus, ApiStatus
 from app.services.dispatcher import supervisor_pool
+from app.services.position_snapshot import (
+    get_supervisor_account_summary,
+    get_supervisor_position_status,
+    position_fields_from_status,
+)
 from app.services.principal import fetch_live_equity
 from app.services.settlement import get_pending_settlement, user_has_open_position
 from app.services.user_lookup import display_name
@@ -29,19 +34,23 @@ def build_downline_stats(db: Session, user: User) -> dict:
     has_position = False
     position_side = None
     position_qty = 0.0
+    position_entry = 0.0
+    position_mark = 0.0
 
     supervisor = supervisor_pool.get(user.id)
     if supervisor:
         try:
-            summary = supervisor.client.get_futures_account_summary()
-            equity = float(summary.get("total_margin_balance", 0))
-            balance = float(summary.get("available_balance", equity))
-            status = supervisor.position_manager.get_position_status()
-            has_position = bool(status.get("has_position"))
-            if has_position:
-                unrealized = float(status.get("unrealized_pnl", 0))
-                position_side = status.get("side")
-                position_qty = float(status.get("qty", 0))
+            summary = get_supervisor_account_summary(supervisor)
+            equity = float(summary.get("total_margin_balance", 0) or 0)
+            balance = float(summary.get("available_balance", equity) or equity)
+            status = get_supervisor_position_status(supervisor)
+            pf = position_fields_from_status(status)
+            has_position = pf["has_position"]
+            position_side = pf["position_side"]
+            position_qty = pf["position_qty"]
+            position_entry = pf["position_entry"]
+            position_mark = pf["position_mark"]
+            unrealized = pf["position_unrealized"] if has_position else 0.0
         except Exception:
             pass
     elif user.api_key_enc and user.api_status == ApiStatus.ACTIVE.value:
@@ -92,6 +101,8 @@ def build_downline_stats(db: Session, user: User) -> dict:
         "has_open_position": has_position,
         "position_side": position_side,
         "position_qty": position_qty,
+        "position_entry": position_entry,
+        "position_mark": position_mark,
         "settlement_status": settlement_status,
         "pending_perf_fee": pending_perf_fee,
         "pending_net_profit": pending_net_profit,

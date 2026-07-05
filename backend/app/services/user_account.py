@@ -7,6 +7,10 @@ from sqlalchemy.orm import Session
 from app.models import User, Trade, TradeLog, ApiStatus
 from app.schemas import DashboardStats, UserProfile
 from app.services.dispatcher import supervisor_pool
+from app.services.position_snapshot import (
+    get_supervisor_account_summary,
+    get_supervisor_position_status,
+)
 from app.services.principal import fetch_live_equity
 from app.services.settlement import get_pending_settlement
 from app.services.user_lookup import display_name
@@ -44,14 +48,13 @@ def build_dashboard_stats(db: Session, user: User) -> DashboardStats:
 
     supervisor = supervisor_pool.get(user.id)
     if supervisor:
-        summary = supervisor.client.get_futures_account_summary()
-        equity = float(summary.get("total_margin_balance", 0))
-        balance = float(summary.get("available_balance", equity))
-        if hasattr(supervisor, "position_manager"):
-            status = supervisor.position_manager.get_position_status()
-            if status.get("has_position"):
-                unrealized = status.get("unrealized_pnl", 0)
-                position = status
+        summary = get_supervisor_account_summary(supervisor)
+        equity = float(summary.get("total_margin_balance", 0) or 0)
+        balance = float(summary.get("available_balance", equity) or equity)
+        status = get_supervisor_position_status(supervisor)
+        if status.get("has_position"):
+            unrealized = float(status.get("unrealized_pnl", 0) or 0)
+            position = status
     elif user.api_key_enc and user.api_status == ApiStatus.ACTIVE.value:
         try:
             equity = fetch_live_equity(user)
