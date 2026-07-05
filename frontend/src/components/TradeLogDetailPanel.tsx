@@ -45,7 +45,8 @@ const HIGHLIGHT_KEYS = [
   'live_verified', 'verified_at', 'source', 'side', 'tv_side', 'qty', 'entry', 'exit_price', 'pnl',
   'realized_pnl', 'price', 'aligned', 'healed', 'skipped', 'before_summary', 'after_summary',
   'live_audit', 'regime', 'tv_tps', 'slippage', 'funding_fee', 'reason', 'scan', 'close_action',
-  'tv_side_mismatch',
+  'tv_side_mismatch', 'price_diff_pct', 'threshold_pct', 'old_tv_tps', 'new_tv_tps', 'decision',
+  'regime_changed',
 ]
 
 const PNL_COMPARE_KEYS = ['tv_pnl_pct', 'live_pnl_pct', 'pnl_pct_delta'] as const

@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     GATE_LEVERAGE: int = 10
     GATE_QUANTO_MULTIPLIER: float = 0.01
 
+    # Same-direction TV entry: skip re-open when |TV价−持仓价|/现价 below this % (regime unchanged)
+    SAME_DIR_IGNORE_PRICE_DIFF_PCT: float = 0.20
+
     SETTLEMENT_PRIMARY_DAYS: int = 30
     SETTLEMENT_EXTENDED_DAYS: int = 35
     SETTLEMENT_SCAN_INTERVAL_SEC: int = 3600

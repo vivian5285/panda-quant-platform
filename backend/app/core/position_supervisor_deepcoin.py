@@ -10,7 +10,9 @@ from typing import Callable, Optional
 
 from app.core.deepcoin_client import DeepcoinClient, CLIENT_VERSION
 from app.core.regime_utils import clamp_regime
+from app.core.same_direction_policy import SameDirAction, evaluate_same_direction
 from app.config import get_settings
+from app.services.trading_alerts import resolve_exchange_theme
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -52,6 +54,7 @@ class DeepcoinPositionSupervisor:
         on_log: Optional[Callable] = None,
         on_trade_open: Optional[Callable] = None,
         on_trade_close: Optional[Callable] = None,
+        on_trade_update_targets: Optional[Callable] = None,
         on_alert: Optional[Callable] = None,
     ):
         self.user_id = user_id
@@ -59,9 +62,11 @@ class DeepcoinPositionSupervisor:
         self.on_log = on_log or (lambda *a, **k: None)
         self.on_trade_open = on_trade_open or (lambda *a, **k: None)
         self.on_trade_close = on_trade_close or (lambda *a, **k: None)
+        self.on_trade_update_targets = on_trade_update_targets or (lambda *a, **k: None)
         self.on_alert = on_alert or (lambda *a, **k: None)
         self._dt = _DingtalkBridge(self)
         self.current_trade_id: int | None = None
+        self.exchange_id = "deepcoin"
 
         self.symbol = settings.DEEPCOIN_SYMBOL
         self.monitoring = False
@@ -1099,6 +1104,8 @@ class DeepcoinPositionSupervisor:
 
     def _process_signal(self, payload):
         raw_action = str(payload.get("action", "")).strip().upper()
+        held_regime = self.regime
+        prev_tv_tps = list(self.tv_tps)
         self.regime = clamp_regime(self._safe_int(payload.get("regime"), 3))
 
         self.current_atr = self._safe_float(payload.get("atr"), 30.0)
@@ -1148,7 +1155,11 @@ class DeepcoinPositionSupervisor:
             elif raw_action in ["LONG", "SHORT"]:
                 self.last_tv_side = raw_action
                 self._save_state()
-                self._handle_smart_entry(raw_action)
+                self._handle_smart_entry(
+                    raw_action,
+                    held_regime=held_regime,
+                    prev_tv_tps=prev_tv_tps,
+                )
             else:
                 logger.warning(f"未识别的 TV action: {raw_action}")
         finally:
@@ -1165,26 +1176,150 @@ class DeepcoinPositionSupervisor:
         self._save_state()
         self._report_flat_close(reason or "仓位归零 (人工全平 / 止盈吃满)")
 
-    def _handle_smart_entry(self, action):
-        """三重把关之一：新 TV 方向到达 → 先平后开（撤单→平仓→再开仓）"""
-        logger.info(f"⚡ 收到建仓信号 [{action}]，启动绝对先平后开机制")
-        self.client.cancel_all_open_orders(self.symbol)
-        time.sleep(0.5)
+    def _handle_smart_entry(
+        self,
+        action,
+        *,
+        held_regime: int | None = None,
+        prev_tv_tps: list | None = None,
+    ):
+        threshold = float(settings.SAME_DIR_IGNORE_PRICE_DIFF_PCT)
+        held_regime = held_regime if held_regime is not None else self.regime
 
         pos = self._get_active_position()
-        if pos and pos.get('size', 0) > 0:
-            current_side = "LONG" if pos["posSide"] == "long" else "SHORT"
-            if current_side == action:
-                self._close_all("同方向新指令到达，触发【先平后开】洗清旧阵地")
-            else:
-                self._close_all("反方向指令到达，触发【先平后开】原子对冲换防")
+        has_pos = bool(pos and self._safe_qty(pos.get("size", 0)) > 0)
+        current_side = None
+        entry_price = float(self.watched_entry or 0)
+        if has_pos:
+            current_side = "LONG" if pos.get("posSide") == "long" else "SHORT"
+            entry_price = float(pos.get("entry_price") or entry_price or 0)
+
+        curr_px = self.client.get_current_price(self.symbol)
+        if curr_px <= 0:
+            logger.error("无法获取当前价格，跳过建仓信号")
+            return
+
+        tv_price = float(self.tv_price or curr_px)
+        if has_pos and current_side == action:
+            ev = evaluate_same_direction(
+                has_position=True,
+                current_side=current_side,
+                signal_side=action,
+                entry_price=entry_price,
+                tv_price=tv_price,
+                mark_price=curr_px,
+                held_regime=held_regime,
+                new_regime=self.regime,
+                threshold_pct=threshold,
+            )
+            if ev.action == SameDirAction.REFRESH_TPS:
+                self._refresh_same_direction_tps(
+                    action, entry_price, ev, prev_tv_tps=prev_tv_tps or []
+                )
+                return
+            self._close_then_open_entry(action, curr_px, ev)
+            return
+
+        if has_pos and current_side != action:
+            logger.info(f"⚡ 收到建仓信号 [{action}]，反方向先平后开")
+            self.client.cancel_all_open_orders(self.symbol)
+            time.sleep(0.5)
+            self._close_all("反方向指令到达，触发【先平后开】原子对冲换防")
             time.sleep(1.2)
             self.client.cancel_all_open_orders(self.symbol)
             time.sleep(0.5)
-
-        curr_px = self.client.get_current_price(self.symbol)
-        if curr_px > 0:
             self._open_position(action, curr_px)
+            return
+
+        self._open_position(action, curr_px)
+
+    def _close_then_open_entry(self, action, curr_px, ev):
+        if ev.regime_changed:
+            reason = f"同方向档位变化 {ev.held_regime}→{ev.new_regime}，先平后开换仓"
+        else:
+            reason = (
+                f"同方向价差 {ev.price_diff_pct:.3f}% ≥ 阈值 {settings.SAME_DIR_IGNORE_PRICE_DIFF_PCT}%，先平后开"
+            )
+        logger.info(f"⚡ 收到建仓信号 [{action}]，{reason}")
+        theme = resolve_exchange_theme(self.exchange_id)
+        detail = {
+            "exchange": self.exchange_id,
+            "side": action,
+            "entry": ev.entry_price,
+            "tv_price": ev.tv_price,
+            "price_diff_pct": round(ev.price_diff_pct, 4),
+            "threshold_pct": settings.SAME_DIR_IGNORE_PRICE_DIFF_PCT,
+            "held_regime": ev.held_regime,
+            "new_regime": ev.new_regime,
+            "regime_changed": ev.regime_changed,
+            "tv_tps": list(self.tv_tps),
+            "atr": self.current_atr,
+        }
+        self._alert(
+            "info",
+            "SAME_DIR_REOPEN",
+            f"{theme['accent']} 同向换仓 · {theme['label']}",
+            reason,
+            detail,
+        )
+        self.client.cancel_all_open_orders(self.symbol)
+        time.sleep(0.5)
+        self._close_all("同方向新指令到达，触发【先平后开】洗清旧阵地")
+        time.sleep(1.2)
+        self.client.cancel_all_open_orders(self.symbol)
+        time.sleep(0.5)
+        self._open_position(action, curr_px)
+
+    def _refresh_same_direction_tps(self, action, entry_price, ev, *, prev_tv_tps: list):
+        pos = self._get_active_position()
+        if not pos:
+            logger.warning("同向止盈更新时无持仓")
+            return
+
+        real_qty = self._safe_qty(pos.get("size", 0))
+        self.current_side = action
+        self.watched_qty = real_qty
+        self.watched_entry = entry_price
+        self.monitoring = True
+
+        theme = resolve_exchange_theme(self.exchange_id)
+        detail = {
+            "exchange": self.exchange_id,
+            "side": action,
+            "entry": entry_price,
+            "tv_price": ev.tv_price,
+            "price_diff_pct": round(ev.price_diff_pct, 4),
+            "threshold_pct": settings.SAME_DIR_IGNORE_PRICE_DIFF_PCT,
+            "held_regime": ev.held_regime,
+            "new_regime": ev.new_regime,
+            "old_tv_tps": list(prev_tv_tps),
+            "new_tv_tps": list(self.tv_tps),
+            "atr": self.current_atr,
+            "decision": "refresh_tps_only",
+        }
+        msg = (
+            f"同向{action}价差 {ev.price_diff_pct:.3f}% < {settings.SAME_DIR_IGNORE_PRICE_DIFF_PCT}% "
+            f"→ 忽略重复开仓，更新止盈 {prev_tv_tps} → {self.tv_tps}"
+        )
+        self._log("SAME_DIR_TP_REFRESH", msg, detail)
+        self._alert(
+            "info",
+            "SAME_DIR_TP_REFRESH",
+            f"{theme['accent']} 同向智能持仓 · {theme['label']}",
+            msg,
+            detail,
+        )
+        if self.current_trade_id:
+            self.on_trade_update_targets(
+                self.current_trade_id,
+                tv_tps=list(self.tv_tps),
+                regime=self.regime,
+                atr=self.current_atr,
+            )
+
+        dynamic_sl = self._radar_sl_to_pass()
+        self._rebuild_defenses(real_qty, entry_price, dynamic_sl=dynamic_sl)
+        self._save_state()
 
     def _open_position(self, action, curr_px):
         balance = self.client.get_available_balance()

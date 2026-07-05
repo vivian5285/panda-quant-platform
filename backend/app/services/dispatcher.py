@@ -113,6 +113,7 @@ class UserSupervisorPool:
                 on_log=trade_logger.log_event,
                 on_trade_open=trade_logger.on_trade_open,
                 on_trade_close=trade_logger.on_trade_close,
+                on_trade_update_targets=trade_logger.on_trade_update_targets,
                 on_alert=user_events,
             )
             recovery = build_radar_recovery_context(db, user.id)

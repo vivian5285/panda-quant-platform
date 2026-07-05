@@ -307,7 +307,13 @@ export default {
       live_pnl_pct: "Live P&L %",
       pnl_pct_delta: "P&L % delta",
       close_action: "Close action",
-      tv_side_mismatch: "Side mismatch"
+      tv_side_mismatch: "Side mismatch",
+      price_diff_pct: "Price diff %",
+      threshold_pct: "Ignore threshold %",
+      old_tv_tps: "Previous TV TPs",
+      new_tv_tps: "New TV TPs",
+      decision: "Smart decision",
+      regime_changed: "Regime changed"
     }
   },
   risk: {

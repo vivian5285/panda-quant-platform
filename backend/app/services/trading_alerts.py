@@ -72,6 +72,8 @@ ALERT_TYPE_TAGS = {
     "INSUFFICIENT_BALANCE": "余额不足",
     "LOCK_TIMEOUT": "锁超时",
     "CLOSE_PROTECT_EMPTY": "空仓保护复位",
+    "SAME_DIR_TP_REFRESH": "同向止盈更新",
+    "SAME_DIR_REOPEN": "同向换仓",
 }
 
 # 管理员钉钉仅抄送关键动作；完整明细在用户/管理端/推广者日志中查看
@@ -89,6 +91,8 @@ ADMIN_DINGTALK_KEY_TYPES = frozenset({
     "INSUFFICIENT_BALANCE",
     "LOCK_TIMEOUT",
     "CLOSE_PROTECT_EMPTY",
+    "SAME_DIR_TP_REFRESH",
+    "SAME_DIR_REOPEN",
     "SENTINEL_ERROR",
     "TP_RETRY_FAIL",
     "SL_RETRY_FAIL",

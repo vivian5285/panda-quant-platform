@@ -93,6 +93,7 @@ def create_supervisor(
     on_log: Optional[Callable] = None,
     on_trade_open: Optional[Callable] = None,
     on_trade_close: Optional[Callable] = None,
+    on_trade_update_targets: Optional[Callable] = None,
     on_alert: Optional[Callable] = None,
 ) -> SupervisorType:
     ex = user_exchange(user)
@@ -103,6 +104,7 @@ def create_supervisor(
             on_log=on_log,
             on_trade_open=on_trade_open,
             on_trade_close=on_trade_close,
+            on_trade_update_targets=on_trade_update_targets,
             on_alert=on_alert,
         )
     return PositionSupervisor(
@@ -111,6 +113,7 @@ def create_supervisor(
         on_log=on_log,
         on_trade_open=on_trade_open,
         on_trade_close=on_trade_close,
+        on_trade_update_targets=on_trade_update_targets,
         on_alert=on_alert,
     )
 

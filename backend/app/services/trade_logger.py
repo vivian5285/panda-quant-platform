@@ -85,3 +85,31 @@ class TradeLogger:
         except Exception as e:
             logger.error(f"Trade close log failed trade={trade_id}: {e}")
             self.db.rollback()
+
+    def on_trade_update_targets(
+        self,
+        trade_id: int,
+        *,
+        tv_tps: list,
+        regime: int | None = None,
+        atr: float | None = None,
+    ) -> None:
+        """Refresh open trade TV targets after same-direction TP-only update."""
+        if not trade_id:
+            return
+        try:
+            trade = self.db.query(Trade).filter(Trade.id == trade_id).first()
+            if not trade or trade.status != "open":
+                return
+            if len(tv_tps) > 0:
+                trade.tv_tp1 = float(tv_tps[0] or 0)
+            if len(tv_tps) > 1:
+                trade.tv_tp2 = float(tv_tps[1] or 0)
+            if len(tv_tps) > 2:
+                trade.tv_tp3 = float(tv_tps[2] or 0)
+            if regime is not None:
+                trade.regime = int(regime)
+            self.db.commit()
+        except Exception as e:
+            logger.error(f"Trade target update failed trade={trade_id}: {e}")
+            self.db.rollback()

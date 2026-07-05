@@ -307,7 +307,13 @@ export default {
       live_pnl_pct: "实盘盈亏率",
       pnl_pct_delta: "盈亏率偏差",
       close_action: "平仓动作",
-      tv_side_mismatch: "方向不一致"
+      tv_side_mismatch: "方向不一致",
+      price_diff_pct: "价差百分比",
+      threshold_pct: "忽略阈值%",
+      old_tv_tps: "原TV止盈",
+      new_tv_tps: "新TV止盈",
+      decision: "智能决策",
+      regime_changed: "档位变化"
     }
   },
   risk: {
