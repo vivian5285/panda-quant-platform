@@ -1,4 +1,4 @@
-"""Tests for GEMINI per-exchange DingTalk themes and 8x leverage labels."""
+"""Tests for GEMINI per-exchange DingTalk themes and 10x leverage labels."""
 
 from app.services.trading_alerts import (
     EXCHANGE_THEMES,
@@ -8,17 +8,17 @@ from app.services.trading_alerts import (
 )
 
 
-def test_binance_theme_8x():
+def test_binance_theme_10x():
     theme = resolve_exchange_theme("binance")
-    assert theme["leverage"] == 8
-    assert theme["tag"] == "#币安8x"
+    assert theme["leverage"] == 10
+    assert theme["tag"] == "#币安10x"
     assert "GEMINI量化" in theme["brand"]
     assert "黄金" not in theme["brand"]
 
 
-def test_all_exchanges_8x_leverage():
+def test_all_exchanges_10x_leverage():
     for key in ("binance", "deepcoin", "okx", "gate"):
-        assert EXCHANGE_THEMES[key]["leverage"] == 8
+        assert EXCHANGE_THEMES[key]["leverage"] == 10
 
 
 def test_exchange_themes_distinct_palettes():
@@ -27,7 +27,7 @@ def test_exchange_themes_distinct_palettes():
 
 
 def test_resolve_gateio_alias():
-    assert resolve_exchange_theme("gateio")["tag"] == "#Gate8x"
+    assert resolve_exchange_theme("gateio")["tag"] == "#Gate10x"
 
 
 def test_alert_body_includes_gemini_header_and_exchange_accent():
@@ -43,8 +43,8 @@ def test_alert_body_includes_gemini_header_and_exchange_accent():
         display="test@example.com",
     )
     assert "GEMINI量化 · OKX" in body
-    assert "#OKX8x" in body
-    assert "8×" in body
+    assert "#OKX10x" in body
+    assert "10×" in body
     assert "紫罗兰" in body
 
 

@@ -74,14 +74,14 @@ def test_create_supervisor_routes_by_exchange():
     user.exchange = ExchangeType.OKX.value
     okx_client = MagicMock()
     okx_client.trading_symbol = "ETH-USDT-SWAP"
-    okx_client.trading_leverage = 8
+    okx_client.trading_leverage = 10
     sup_okx = create_supervisor(user, okx_client)
     assert isinstance(sup_okx, PositionSupervisor)
 
     user.exchange = ExchangeType.GATE.value
     gate_client = MagicMock()
     gate_client.trading_symbol = "ETH_USDT"
-    gate_client.trading_leverage = 8
+    gate_client.trading_leverage = 10
     sup_gate = create_supervisor(user, gate_client)
     assert isinstance(sup_gate, PositionSupervisor)
 

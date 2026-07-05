@@ -203,7 +203,7 @@ TV 信号 → 用户交易所实盘 → 周期结束且全平仓
   TradeLog      全域日志       DownlineLogsModal
                    │
                    ▼
-         钉钉（按交易所 GEMINI 主题 #币安8x / #深币8x / #OKX8x / #Gate8x，仅关键动作）
+         钉钉（按交易所 GEMINI 主题 #币安10x / #深币10x / #OKX10x / #Gate10x，仅关键动作）
 ```
 
 ### Docker 拓扑
@@ -346,7 +346,7 @@ panda-quant-platform/
 **开仓数量公式（全交易所统一）：**
 
 ```
-qty = (可用余额 × margin_pct × 8×杠杆) / 当前价格
+qty = (可用余额 × margin_pct × 10×杠杆) / 当前价格
 ```
 
 | Regime | 保证金占可用余额 | TP 分批 | 雷达激活（至 TP1 路径比例） | Trail ATR 倍数 |
@@ -356,7 +356,7 @@ qty = (可用余额 × margin_pct × 8×杠杆) / 当前价格
 | 3 | 35% | 18% / 32% / 50% | 60% | 0.90 |
 | 4 | 50% | 5% / 20% / 75% | 70% | 1.30 |
 
-杠杆：**全交易所统一 8×**（`LEVERAGE` / `OKX_LEVERAGE` / `GATE_LEVERAGE` / `DEEPCOIN_LEVERAGE` 默认均为 8）。实盘 `set_leverage` 与钉钉标签一致。
+杠杆：**全交易所统一 10×**（`LEVERAGE` / `OKX_LEVERAGE` / `GATE_LEVERAGE` / `DEEPCOIN_LEVERAGE` 默认均为 10）。实盘 `set_leverage` 与钉钉标签一致。
 
 实现位置：
 - 币安 / OKX / Gate → `position_supervisor.py` `_open_position()`
@@ -531,10 +531,10 @@ https://twinstar.pro/gemini/webhook
 
 | 交易所 | 标签 | 主题色 | 品牌 |
 |--------|------|--------|------|
-| Binance | `#币安8x` | 靛蓝 🔷 | GEMINI量化 · 币安合约实盘引擎 |
-| DeepCoin | `#深币8x` | 翡翠绿 🟢 | GEMINI量化 · 深币 SWAP 实盘引擎 |
-| OKX | `#OKX8x` | 紫罗兰 🟣 | GEMINI量化 · OKX 合约实盘引擎 |
-| Gate | `#Gate8x` | 琥珀橙 🟠 | GEMINI量化 · Gate 合约实盘引擎 |
+| Binance | `#币安10x` | 靛蓝 🔷 | GEMINI量化 · 币安合约实盘引擎 |
+| DeepCoin | `#深币10x` | 翡翠绿 🟢 | GEMINI量化 · 深币 SWAP 实盘引擎 |
+| OKX | `#OKX10x` | 紫罗兰 🟣 | GEMINI量化 · OKX 合约实盘引擎 |
+| Gate | `#Gate10x` | 琥珀橙 🟠 | GEMINI量化 · Gate 合约实盘引擎 |
 
 前端 API 绑定页交易所卡片使用同色主题（`exchange-picker-{exchange}`），便于与原版系统视觉区分。
 
@@ -749,7 +749,7 @@ Swagger：`http://127.0.0.1:8000/docs`（`PRODUCTION_STRICT=1` 时关闭）
 | 变量 | 默认 |
 |------|------|
 | `SYMBOL` | ETHUSDT |
-| `LEVERAGE` | 8 |
+| `LEVERAGE` | 10 |
 | `OKX_SYMBOL` / `GATE_SYMBOL` / `DEEPCOIN_SYMBOL` | 见 `.env.example` |
 
 ### 结算与监控

@@ -28,15 +28,15 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
     SYMBOL: str = "ETHUSDT"
-    LEVERAGE: int = 8
+    LEVERAGE: int = 10
     DEEPCOIN_SYMBOL: str = "ETH-USDT-SWAP"
-    DEEPCOIN_LEVERAGE: int = 8
+    DEEPCOIN_LEVERAGE: int = 10
     OKX_SYMBOL: str = "ETH-USDT-SWAP"
-    OKX_LEVERAGE: int = 8
+    OKX_LEVERAGE: int = 10
     OKX_CONTRACT_VALUE: float = 0.1
     OKX_LOT_SIZE: float = 0.01
     GATE_SYMBOL: str = "ETH_USDT"
-    GATE_LEVERAGE: int = 8
+    GATE_LEVERAGE: int = 10
     GATE_QUANTO_MULTIPLIER: float = 0.01
 
     SETTLEMENT_PRIMARY_DAYS: int = 30
