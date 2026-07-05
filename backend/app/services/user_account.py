@@ -1,4 +1,5 @@
 """Shared user account stats for member API and admin views."""
+import logging
 from datetime import date, timedelta
 
 from sqlalchemy import func
@@ -11,16 +12,18 @@ from app.services.principal import fetch_live_equity
 from app.services.settlement import get_pending_settlement
 from app.services.user_lookup import display_name
 
+logger = logging.getLogger(__name__)
+
 
 def build_user_profile(user: User) -> UserProfile:
     return UserProfile(
         id=user.id,
-        uid=user.uid,
+        uid=user.uid or "",
         email=user.email,
         phone=user.phone,
         nickname=user.nickname,
         display_name=display_name(user),
-        referral_code=user.referral_code,
+        referral_code=user.referral_code or "",
         api_status=user.api_status,
         exchange=user.exchange or "binance",
         api_account_mode=user.api_account_mode or "master",
@@ -42,26 +45,35 @@ def build_dashboard_stats(db: Session, user: User) -> DashboardStats:
     balance, unrealized, position = 0.0, 0.0, None
     equity = 0.0
 
-    position, summary = get_user_live_snapshot(db, user)
-    if summary:
-        equity = float(summary.get("total_margin_balance", 0) or 0)
-        balance = float(summary.get("available_balance", equity) or equity)
-    if position.get("has_position"):
-        unrealized = float(position.get("unrealized_pnl", 0) or 0)
-    elif user.api_key_enc and user.api_status == ApiStatus.ACTIVE.value and equity <= 0:
-        try:
-            equity = fetch_live_equity(user)
-            balance = equity
-        except Exception:
-            pass
+    try:
+        position, summary = get_user_live_snapshot(db, user)
+        if summary:
+            equity = float(summary.get("total_margin_balance", 0) or 0)
+            balance = float(summary.get("available_balance", equity) or equity)
+        if position.get("has_position"):
+            unrealized = float(position.get("unrealized_pnl", 0) or 0)
+        elif user.api_key_enc and user.api_status == ApiStatus.ACTIVE.value and equity <= 0:
+            try:
+                equity = fetch_live_equity(user)
+                balance = equity
+            except Exception:
+                pass
+    except Exception:
+        logger.exception("live snapshot failed user=%s", user.id)
+        position = {"has_position": False}
 
     initial = float(user.initial_principal or 0)
     cycle_pnl = round(equity - initial, 2) if initial > 0 and equity > 0 else 0.0
 
-    from app.services.profit_audit import sum_closed_trade_pnl, cycle_bounds
-    period_start, period_end = cycle_bounds(user)
-    trade_cycle_pnl = sum_closed_trade_pnl(db, user.id, period_start, period_end)
-    profit_divergence = round(cycle_pnl - trade_cycle_pnl, 2) if initial > 0 else 0.0
+    trade_cycle_pnl = 0.0
+    profit_divergence = 0.0
+    try:
+        from app.services.profit_audit import sum_closed_trade_pnl, cycle_bounds
+        period_start, period_end = cycle_bounds(user)
+        trade_cycle_pnl = sum_closed_trade_pnl(db, user.id, period_start, period_end)
+        profit_divergence = round(cycle_pnl - trade_cycle_pnl, 2) if initial > 0 else 0.0
+    except Exception:
+        logger.exception("trade cycle pnl failed user=%s", user.id)
 
     today = date.today()
     week_start = today - timedelta(days=today.weekday())

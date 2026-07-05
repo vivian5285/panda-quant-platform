@@ -1,4 +1,5 @@
 from datetime import datetime, date
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -86,6 +87,7 @@ import json
 import threading
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/overview", response_model=AdminOverview)
@@ -352,32 +354,36 @@ def get_user_detail(user_id: int, admin=Depends(get_admin_user), db: Session = D
         raise HTTPException(404, "User not found")
     from app.services.user_account import build_user_profile, build_dashboard_stats
 
-    trade_count = db.query(Trade).filter(Trade.user_id == user.id).count()
-    log_count = db.query(TradeLog).filter(TradeLog.user_id == user.id).count()
-    ctrl = get_user_control(db, user.id)
-    trading_paused = ctrl.get("trading_paused", False)
-    cumulative_pnl = user_cumulative_pnl(db, user.id)
-    exec_rate = user_execution_success_rate(db, user.id)
-    flagged, flag_reason = user_risk_flag(
-        user,
-        trading_paused=trading_paused,
-        cumulative_pnl=cumulative_pnl,
-        exec_rate=exec_rate,
-    )
-    return AdminUserDetailOut(
-        profile=build_user_profile(user),
-        dashboard=build_dashboard_stats(db, user),
-        trade_count=trade_count,
-        log_count=log_count,
-        supervisor_active=supervisor_pool.get(user.id) is not None,
-        api_key_mask=mask_api_key(user),
-        trading_paused=trading_paused,
-        risk_level=ctrl.get("risk_level", "balanced"),
-        risk_flag=flagged,
-        risk_flag_reason=flag_reason,
-        cumulative_pnl=cumulative_pnl,
-        execution_success_rate=exec_rate,
-    )
+    try:
+        trade_count = db.query(Trade).filter(Trade.user_id == user.id).count()
+        log_count = db.query(TradeLog).filter(TradeLog.user_id == user.id).count()
+        ctrl = get_user_control(db, user.id)
+        trading_paused = ctrl.get("trading_paused", False)
+        cumulative_pnl = user_cumulative_pnl(db, user.id)
+        exec_rate = user_execution_success_rate(db, user.id)
+        flagged, flag_reason = user_risk_flag(
+            user,
+            trading_paused=trading_paused,
+            cumulative_pnl=cumulative_pnl,
+            exec_rate=exec_rate,
+        )
+        return AdminUserDetailOut(
+            profile=build_user_profile(user),
+            dashboard=build_dashboard_stats(db, user),
+            trade_count=trade_count,
+            log_count=log_count,
+            supervisor_active=supervisor_pool.get(user.id) is not None,
+            api_key_mask=mask_api_key(user),
+            trading_paused=trading_paused,
+            risk_level=ctrl.get("risk_level", "balanced"),
+            risk_flag=flagged,
+            risk_flag_reason=flag_reason,
+            cumulative_pnl=cumulative_pnl,
+            execution_success_rate=exec_rate,
+        )
+    except Exception as e:
+        logger.exception("get_user_detail failed user=%s", user_id)
+        raise HTTPException(500, f"Failed to load user detail: {e}") from e
 
 
 @router.get("/users/{user_id}/trades", response_model=list[TradeOut])

@@ -426,7 +426,10 @@ def get_user_live_snapshot(db: Session, user) -> tuple[dict[str, Any], dict[str,
     position = get_supervisor_position_status(supervisor, db=db, user_id=user.id)
     summary = get_supervisor_account_summary(supervisor, user=user, position=position, db=db)
     if position.get("has_position"):
-        ensure_open_trade_from_snapshot(db, user.id, supervisor, position)
+        try:
+            ensure_open_trade_from_snapshot(db, user.id, supervisor, position)
+        except Exception:
+            logger.exception("ensure_open_trade_from_snapshot failed user=%s", user.id)
     return position, summary
 
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date, datetime, timedelta
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
