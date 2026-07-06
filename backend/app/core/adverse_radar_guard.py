@@ -466,6 +466,114 @@ class AdverseRadarMixin:
                 time.sleep(0.15)
         return cancelled
 
+    def _verify_adverse_tier_prices_present(self, plan: list[dict]) -> int:
+        """Count tiers with ≥1 live stop at the correct entry-based trigger price."""
+        if not plan:
+            return 0
+        open_stops = self._collect_adverse_stop_orders()
+        matched = 0
+        for tier in plan:
+            target_px = round(float(tier["stop_price"]), 2)
+            for o in open_stops:
+                if abs(_order_stop_price(o) - target_px) <= ADVERSE_STOP_TOLERANCE:
+                    matched += 1
+                    break
+        return matched
+
+    def _tier_has_live_stop(self, tier: dict[str, Any], open_stops: list[dict]) -> bool:
+        target_px = round(float(tier["stop_price"]), 2)
+        target_qty = float(tier["qty"])
+        qty_tol = self._qty_match_tol(target_qty, target_qty)
+        for o in open_stops:
+            if abs(_order_stop_price(o) - target_px) > ADVERSE_STOP_TOLERANCE:
+                continue
+            if abs(_order_qty_value(o) - target_qty) <= qty_tol:
+                return True
+        return False
+
+    def _missing_adverse_tier_slices(self, plan: list[dict]) -> list[dict]:
+        """Only tiers with no matching live stop (price + qty) — incremental patch target."""
+        if not plan:
+            return []
+        open_stops = self._collect_adverse_stop_orders()
+        return [t for t in plan if not self._tier_has_live_stop(t, open_stops)]
+
+    def _audit_adverse_shield_live(self, plan: list[dict]) -> dict[str, Any]:
+        open_stops = self._collect_adverse_stop_orders()
+        verified_strict = self._verify_adverse_stops(plan)
+        price_present = self._verify_adverse_tier_prices_present(plan)
+        missing = self._missing_adverse_tier_slices(plan)
+        open_count = len(open_stops)
+        expected = len(plan)
+        aligned = (
+            expected > 0
+            and price_present >= expected
+            and open_count <= ADVERSE_MAX_TIER_ORDERS
+            and not missing
+        )
+        return {
+            "verified_strict": verified_strict,
+            "price_present": price_present,
+            "expected": expected,
+            "open_count": open_count,
+            "missing_tiers": missing,
+            "aligned": aligned,
+            "needs_purge_only": (
+                expected > 0
+                and price_present >= expected
+                and open_count > ADVERSE_MAX_TIER_ORDERS
+            ),
+        }
+
+    def _sync_adverse_shield_from_exchange(self, live_qty: float) -> dict[str, Any]:
+        """
+        Step 1 in adverse flow: trust exchange book, then align internal records.
+        Restart-safe — does not place or cancel orders.
+        """
+        self._init_adverse_radar_fields()
+        live_qty = self._resolve_adverse_live_qty(live_qty)
+        plan = self._compute_adverse_stop_plan(live_qty)
+        audit = self._audit_adverse_shield_live(plan)
+        open_stops = self._collect_adverse_stop_orders()
+
+        if open_stops:
+            live_prices = sorted({
+                _order_stop_price(o) for o in open_stops if _order_stop_price(o) > 0
+            })
+            if live_prices:
+                self.adverse_sl_prices = live_prices
+                self.adverse_sl_armed = True
+        elif audit["aligned"]:
+            self.adverse_sl_prices = [float(t["stop_price"]) for t in plan]
+            self.adverse_sl_armed = True
+        elif not self.adverse_consumed_tiers:
+            self.adverse_sl_armed = False
+            self.adverse_sl_prices = []
+
+        audit["live_qty"] = live_qty
+        audit["plan"] = plan
+        audit["synced_armed"] = self.adverse_sl_armed
+        return audit
+
+    def _on_adverse_startup_reconcile(self, live_qty: float, curr_px: float) -> dict[str, Any]:
+        """Restart: read live stops first, purge duplicates, never blind re-arm."""
+        self._init_adverse_radar_fields()
+        self._adverse_last_repair_ts = time.time()
+        audit = self._sync_adverse_shield_from_exchange(live_qty)
+        plan = audit.get("plan") or []
+        purged = 0
+        if audit.get("needs_purge_only") and plan:
+            purged = self._purge_excess_adverse_stops(plan)
+            audit = self._sync_adverse_shield_from_exchange(live_qty)
+        audit["startup_purged"] = purged
+        audit["adverse_pct"] = round(self._adverse_move_pct(curr_px) * 100, 2)
+        if audit.get("aligned"):
+            logger.info(
+                "[User %s] adverse shield startup: live book aligned (%s/%s tiers), skip re-arm",
+                self.user_id, audit.get("price_present"), audit.get("expected"),
+            )
+        return audit
+
     def _verify_adverse_stops(self, plan: list[dict]) -> int:
         if not plan:
             return 0
@@ -493,15 +601,12 @@ class AdverseRadarMixin:
         return matched
 
     def _adverse_stops_need_repair(self, plan: list[dict]) -> bool:
-        if not plan:
+        audit = self._audit_adverse_shield_live(plan)
+        if audit["aligned"]:
             return False
-        open_count = len(self._collect_adverse_stop_orders())
-        verified = self._verify_adverse_stops(plan)
-        if verified >= len(plan):
-            return False
-        if open_count > ADVERSE_MAX_TIER_ORDERS:
+        if audit["needs_purge_only"]:
             return True
-        return verified < len(plan)
+        return bool(audit["missing_tiers"])
 
     def _can_repair_adverse_stops(self) -> bool:
         return (time.time() - float(getattr(self, "_adverse_last_repair_ts", 0) or 0)) >= ADVERSE_REPAIR_COOLDOWN_SEC
@@ -525,49 +630,84 @@ class AdverseRadarMixin:
     def _arm_adverse_staged_stops(
         self, live_qty: float, adverse_pct: float, *, repair: bool = False,
     ) -> dict[str, Any]:
+        """
+        Adverse arm sequence (exchange-first):
+        1) sync live position + open stops
+        2) skip if already aligned
+        3) purge duplicates only
+        4) place ONLY missing tier slices (never cancel-all + blind re-arm)
+        """
         live_qty = self._resolve_adverse_live_qty(live_qty)
         if live_qty <= 0:
             return {"armed": False, "reason": "no_live_position", "live_qty": 0}
 
-        plan = self._compute_adverse_stop_plan(live_qty)
+        audit = self._sync_adverse_shield_from_exchange(live_qty)
+        plan = audit.get("plan") or []
         if not plan:
             if self.adverse_consumed_tiers:
                 self.adverse_sl_armed = True
             return {"armed": False, "reason": "all_tiers_consumed", "consumed": list(self.adverse_consumed_tiers)}
 
-        verified_before = self._verify_adverse_stops(plan)
-        if not repair and self.adverse_sl_armed and verified_before >= len(plan):
+        if audit["aligned"]:
+            if hasattr(self, "_save_state"):
+                self._save_state()
             return {
                 "armed": True,
                 "placed": 0,
-                "verified": verified_before,
+                "verified": audit["verified_strict"],
                 "plan": plan,
-                "skipped": "already_aligned",
+                "skipped": "live_already_aligned",
+                "open_adverse_stops": audit["open_count"],
             }
 
-        cancelled = self._cancel_adverse_stop_orders()
-        if cancelled:
-            time.sleep(0.35)
-        elif repair:
-            time.sleep(0.25)
-        else:
-            time.sleep(0.15)
+        purged = 0
+        if audit["needs_purge_only"] or audit["open_count"] > ADVERSE_MAX_TIER_ORDERS:
+            purged = self._purge_excess_adverse_stops(plan)
+            if purged:
+                time.sleep(0.35)
+                audit = self._sync_adverse_shield_from_exchange(live_qty)
+                if audit["aligned"]:
+                    self._adverse_last_repair_ts = time.time()
+                    return {
+                        "armed": True,
+                        "placed": 0,
+                        "verified": audit["verified_strict"],
+                        "plan": plan,
+                        "skipped": "purged_duplicates_only",
+                        "purged_duplicates": purged,
+                    }
+
+        missing = audit.get("missing_tiers") or self._missing_adverse_tier_slices(plan)
+        if not missing:
+            self._adverse_last_repair_ts = time.time()
+            return {
+                "armed": self.adverse_sl_armed,
+                "placed": 0,
+                "verified": audit["verified_strict"],
+                "plan": plan,
+                "skipped": "no_missing_tiers",
+                "purged_duplicates": purged,
+            }
 
         placed = 0
-        prices: list[float] = []
-        for tier in plan:
+        prices = list(self.adverse_sl_prices or [])
+        for tier in missing:
             ok = self._place_adverse_stop_slice(tier["stop_price"], tier["qty"])
             if ok:
                 placed += 1
-                prices.append(float(tier["stop_price"]))
+                px = float(tier["stop_price"])
+                if px not in prices:
+                    prices.append(px)
             time.sleep(0.4)
 
-        time.sleep(0.5)
-        purged = self._purge_excess_adverse_stops(plan)
-        verified = self._verify_adverse_stops(plan)
-        open_count = len(self._collect_adverse_stop_orders())
+        if placed:
+            time.sleep(0.5)
+        purged += self._purge_excess_adverse_stops(plan)
+        audit = self._sync_adverse_shield_from_exchange(live_qty)
+        verified = audit["verified_strict"]
+        open_count = audit["open_count"]
 
-        self.adverse_sl_armed = placed > 0 or bool(self.adverse_consumed_tiers) or verified > 0
+        self.adverse_sl_armed = audit["synced_armed"] or placed > 0 or bool(self.adverse_consumed_tiers)
         self.adverse_sl_prices = prices or [float(t["stop_price"]) for t in plan]
         self._adverse_last_repair_ts = time.time()
 
@@ -579,15 +719,28 @@ class AdverseRadarMixin:
             "live_qty": live_qty,
             "plan": plan,
             "placed": placed,
+            "placed_missing_only": placed,
+            "missing_before": [t.get("tier_pct") for t in missing],
             "verified": verified,
             "open_adverse_stops": open_count,
-            "cancelled_before_place": cancelled,
             "purged_duplicates": purged,
             "consumed_tiers": list(self.adverse_consumed_tiers),
             "tiers": list(ADVERSE_SL_TIERS),
             "repair": repair,
+            "synced_from_exchange": True,
         }
-        if not repair:
+        if placed == 0 and not repair:
+            if hasattr(self, "_save_state"):
+                self._save_state()
+            return {
+                "armed": self.adverse_sl_armed,
+                "placed": 0,
+                "verified": verified,
+                "plan": plan,
+                "skipped": "no_placement_needed",
+                **detail,
+            }
+        if not repair and placed > 0:
             msg = (
                 f"逆势分批止损已激活 | 浮亏 {detail['adverse_pct']:.1f}% | "
                 f"挂出 {placed}/{len(plan)} 档 @ {[p['stop_price'] for p in plan]}"
@@ -610,6 +763,13 @@ class AdverseRadarMixin:
     def _process_adverse_radar_guard(
         self, live_qty: float, curr_px: float, adverse_pct: float | None = None,
     ) -> bool:
+        """
+        Sentinel adverse branch — strict order:
+        1) read live position
+        2) sync open stops from exchange (align memory)
+        3) skip if live book already has all tiers
+        4) purge duplicates / patch missing only (cooldown-gated)
+        """
         self._init_adverse_radar_fields()
         if adverse_pct is None:
             adverse_pct = self._adverse_move_pct(curr_px)
@@ -618,28 +778,25 @@ class AdverseRadarMixin:
         if live_qty <= 0:
             return False
 
-        if adverse_pct < ADVERSE_ARM_PCT and not self.adverse_sl_armed and not self.adverse_consumed_tiers:
-            return False
+        audit = self._sync_adverse_shield_from_exchange(live_qty)
+        plan = audit.get("plan") or []
 
-        plan = self._compute_adverse_stop_plan(live_qty)
-        if self.adverse_sl_armed or self.adverse_consumed_tiers:
-            if plan and not self._adverse_stops_need_repair(plan):
-                return False
-            if plan and self._can_repair_adverse_stops():
-                return bool(
-                    self._repair_adverse_stops_remaining(live_qty, adverse_pct).get("armed")
-                )
-            if len(self._collect_adverse_stop_orders()) > ADVERSE_MAX_TIER_ORDERS and self._can_repair_adverse_stops():
+        if adverse_pct < ADVERSE_ARM_PCT and not self.adverse_consumed_tiers:
+            if audit.get("needs_purge_only") and plan and self._can_repair_adverse_stops():
                 purged = self._purge_excess_adverse_stops(plan)
                 if purged:
-                    logger.warning(
-                        "[User %s] adverse SL purged %s duplicate stops (open>%s)",
-                        self.user_id, purged, ADVERSE_MAX_TIER_ORDERS,
-                    )
+                    self._sync_adverse_shield_from_exchange(live_qty)
+                    self._adverse_last_repair_ts = time.time()
             return False
 
-        if adverse_pct >= ADVERSE_ARM_PCT:
-            return bool(self._arm_adverse_staged_stops(live_qty, adverse_pct).get("armed"))
+        if audit.get("aligned"):
+            return False
+
+        if not self._can_repair_adverse_stops():
+            return False
+
+        if adverse_pct >= ADVERSE_ARM_PCT or self.adverse_consumed_tiers or audit.get("open_count", 0) > 0:
+            return bool(self._arm_adverse_staged_stops(live_qty, adverse_pct, repair=True).get("armed"))
         return False
 
     def _boost_radar_after_tp_fill(self, change_type: str, curr_px: float, live_qty: float) -> None:

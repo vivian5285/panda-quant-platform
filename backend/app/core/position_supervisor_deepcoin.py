@@ -395,6 +395,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin):
                     "adverse_sl_armed": self.adverse_sl_armed,
                     "adverse_sl_prices": self.adverse_sl_prices,
                     "adverse_consumed_tiers": list(self.adverse_consumed_tiers),
+                    "adverse_last_repair_ts": float(getattr(self, "_adverse_last_repair_ts", 0) or 0),
                 }, f)
         except Exception as e:
             logger.error(f"保存状态失败: {e}")
@@ -1777,6 +1778,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin):
                     self.adverse_consumed_tiers = [
                         float(x) for x in (s.get("adverse_consumed_tiers") or [])
                     ]
+                    self._adverse_last_repair_ts = float(s.get("adverse_last_repair_ts", 0) or 0)
 
             if self._scan_and_sweep_dust_on_startup():
                 return
@@ -1819,6 +1821,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin):
 
                 curr_px = self.client.get_current_price(self.symbol)
                 self._refresh_radar_state_on_recover(curr_px, self.watched_entry)
+
+                if self._adverse_move_pct(curr_px or self.watched_entry) >= ADVERSE_ARM_PCT:
+                    self._on_adverse_startup_reconcile(real_amt, curr_px or self.watched_entry)
+                else:
+                    self._sync_adverse_shield_from_exchange(real_amt)
 
                 cap_result = self._enforce_regime_cap_alignment(
                     real_amt,

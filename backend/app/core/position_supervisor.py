@@ -148,6 +148,7 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
                     "adverse_sl_armed": self.adverse_sl_armed,
                     "adverse_sl_prices": self.adverse_sl_prices,
                     "adverse_consumed_tiers": list(self.adverse_consumed_tiers),
+                    "adverse_last_repair_ts": float(getattr(self, "_adverse_last_repair_ts", 0) or 0),
                 }, f)
         except Exception as e:
             logger.error(f"[User {self.user_id}] save state failed: {e}")
@@ -178,6 +179,7 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
                     self.adverse_consumed_tiers = [
                         float(x) for x in (s.get("adverse_consumed_tiers") or [])
                     ]
+                    self._adverse_last_repair_ts = float(s.get("adverse_last_repair_ts", 0) or 0)
         except Exception as e:
             logger.error(f"[User {self.user_id}] load state failed: {e}")
 
@@ -2008,6 +2010,13 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
             curr_px = self.client.get_current_price(self.symbol)
             self._refresh_radar_state_on_recover(curr_px, self.watched_entry)
 
+            if self._adverse_move_pct(curr_px or self.watched_entry) >= ADVERSE_ARM_PCT:
+                adverse_startup = self._on_adverse_startup_reconcile(
+                    self.watched_qty, curr_px or self.watched_entry,
+                )
+            else:
+                adverse_startup = self._sync_adverse_shield_from_exchange(self.watched_qty)
+
             cap_result = self._enforce_regime_cap_alignment(
                 self.watched_qty,
                 self.watched_entry,
@@ -2058,6 +2067,7 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
                 "defense_summary": defense.get("after_summary") or defense.get("summary"),
                 "tp_matched": defense.get("matched"),
                 "tp_expected": defense.get("expected"),
+                "adverse_startup": adverse_startup,
             })
             self._save_state()
             threading.Thread(target=self._sentinel_loop, daemon=True).start()

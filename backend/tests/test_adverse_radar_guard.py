@@ -142,15 +142,15 @@ def test_adverse_tier_prices_from_entry():
 
 def test_arm_adverse_uses_stop_limit_orders():
     probe = _AdverseProbe()
-    with patch.object(probe, "_cancel_adverse_stop_orders", return_value=0):
-        result = probe._arm_adverse_staged_stops(0.6, 0.03)
+    probe.client.get_open_orders.return_value = []
+    result = probe._arm_adverse_staged_stops(0.6, 0.03)
     assert result["armed"] is True
     assert probe.client.place_stop_limit_order.call_count == 3
 
 
 def test_arm_skips_when_already_aligned():
     probe = _AdverseProbe()
-    probe.adverse_sl_armed = True
+    probe.adverse_sl_armed = False
     plan = probe._compute_adverse_stop_plan(0.6)
     probe.client.get_open_orders.return_value = [
         {
@@ -162,12 +162,47 @@ def test_arm_skips_when_already_aligned():
         }
         for i, t in enumerate(plan)
     ]
-    with patch.object(probe, "_cancel_adverse_stop_orders", return_value=0) as cancel:
-        result = probe._arm_adverse_staged_stops(0.6, 0.03)
-    assert result.get("skipped") == "already_aligned"
+    result = probe._arm_adverse_staged_stops(0.6, 0.03)
+    assert result.get("skipped") == "live_already_aligned"
     assert result["placed"] == 0
-    cancel.assert_not_called()
     probe.client.place_stop_limit_order.assert_not_called()
+
+
+def test_startup_reconcile_syncs_armed_from_exchange():
+    probe = _AdverseProbe()
+    probe.adverse_sl_armed = False
+    plan = probe._compute_adverse_stop_plan(0.6)
+    probe.client.get_open_orders.return_value = [
+        {
+            "type": "STOP",
+            "orderId": 1,
+            "stopPrice": str(plan[0]["stop_price"]),
+            "origQty": str(plan[0]["qty"]),
+            "side": "SELL",
+        }
+    ]
+    audit = probe._on_adverse_startup_reconcile(0.6, 1940.0)
+    assert probe.adverse_sl_armed is True
+    assert audit["price_present"] >= 1
+    probe.client.place_stop_limit_order.assert_not_called()
+
+
+def test_incremental_place_only_missing_tier():
+    probe = _AdverseProbe()
+    plan = probe._compute_adverse_stop_plan(0.6)
+    probe.client.get_open_orders.return_value = [
+        {
+            "type": "STOP",
+            "orderId": 1,
+            "stopPrice": str(plan[0]["stop_price"]),
+            "origQty": str(plan[0]["qty"]),
+            "side": "SELL",
+        }
+    ]
+    with patch.object(probe, "_purge_excess_adverse_stops", return_value=0):
+        result = probe._arm_adverse_staged_stops(0.6, 0.03)
+    assert result["placed"] == 2
+    assert probe.client.place_stop_limit_order.call_count == 2
 
 
 def test_repair_cooldown_blocks_rapid_rearm():
@@ -199,6 +234,7 @@ def test_purge_excess_adverse_stops():
 def test_process_adverse_guard_waits_until_3pct():
     probe = _AdverseProbe()
     assert probe._process_adverse_radar_guard(0.6, 1960.0, 0.02) is False
+    probe.client.get_open_orders.return_value = []
     with patch.object(probe, "_arm_adverse_staged_stops", return_value={"armed": True}) as arm:
         assert probe._process_adverse_radar_guard(0.6, 1940.0, 0.03) is True
     arm.assert_called_once()
