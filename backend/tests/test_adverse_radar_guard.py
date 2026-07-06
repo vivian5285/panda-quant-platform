@@ -67,6 +67,7 @@ class _AdverseProbe(AdverseRadarMixin):
     adverse_sl_armed = False
     adverse_sl_prices = []
     adverse_consumed_tiers = []
+    adverse_arm_dingtalk_sent = False
     symbol = "ETHUSDT"
     regime = 3
     regime_settings = {
@@ -121,8 +122,40 @@ class _AdverseProbe(AdverseRadarMixin):
     def _alert(self, *a, **k):
         pass
 
+    def on_alert(self, *a, **k):
+        pass
+
     def _save_state(self):
         pass
+
+
+def test_disarm_when_partial_shield_and_price_recovers():
+    probe = _AdverseProbe()
+    probe.adverse_sl_armed = True
+    probe.adverse_consumed_tiers = [0.03]
+    assert probe._should_disarm_adverse_for_recovery(1990.0) is True
+
+
+def test_arm_dingtalk_only_once():
+    probe = _AdverseProbe()
+    plan = probe._compute_adverse_stop_plan(0.6)
+    probe.client.get_open_orders.return_value = []
+    probe._arm_adverse_staged_stops(0.6, 0.03)
+    assert probe.adverse_arm_dingtalk_sent is True
+    probe.client.get_open_orders.return_value = [
+        {
+            "type": "STOP",
+            "orderId": i + 1,
+            "stopPrice": str(t["stop_price"]),
+            "origQty": str(t["qty"]),
+            "side": "SELL",
+        }
+        for i, t in enumerate(plan)
+    ]
+    with patch.object(probe, "_alert") as alert:
+        result = probe._arm_adverse_staged_stops(0.6, 0.03)
+    assert result.get("skipped") == "live_already_aligned"
+    alert.assert_not_called()
 
 
 def test_disarm_only_on_floating_profit():

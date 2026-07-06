@@ -81,6 +81,8 @@ ALERT_TYPE_TAGS = {
     "CAP_ALIGN_FAIL": "叠仓减仓失败",
     "CAP_ALIGN_OVERTRIM": "叠仓过度减仓",
     "ADVERSE_SL": "逆势分批止损",
+    "ADVERSE_SL_DISARM": "防护盾撤销",
+    "ADVERSE_SL_HIT": "防护盾触发",
     "ADVERSE_SL_REPAIR": "逆势止损补挂",
     "FALSE_FLAT": "误报空仓",
     "CLOSE_ATTRIBUTION": "平仓归因",
@@ -112,6 +114,8 @@ ADMIN_DINGTALK_KEY_TYPES = frozenset({
     "CAP_ALIGN_FAIL",
     "CAP_ALIGN_OVERTRIM",
     "ADVERSE_SL",
+    "ADVERSE_SL_DISARM",
+    "ADVERSE_SL_HIT",
     "FALSE_FLAT",
     "CLOSE_ATTRIBUTION",
 })
@@ -126,6 +130,7 @@ DINGTALK_VERBOSE_EXCLUDED = frozenset({
     "TP_RETRY",
     "SIGNAL",
     "ADVERSE_SL_REPAIR",
+    "RECOVERY",
 })
 
 

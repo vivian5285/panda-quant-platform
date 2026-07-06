@@ -148,6 +148,7 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
                     "adverse_sl_armed": self.adverse_sl_armed,
                     "adverse_sl_prices": self.adverse_sl_prices,
                     "adverse_consumed_tiers": list(self.adverse_consumed_tiers),
+                    "adverse_arm_dingtalk_sent": bool(getattr(self, "adverse_arm_dingtalk_sent", False)),
                     "adverse_last_repair_ts": float(getattr(self, "_adverse_last_repair_ts", 0) or 0),
                 }, f)
         except Exception as e:
@@ -180,6 +181,7 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
                         float(x) for x in (s.get("adverse_consumed_tiers") or [])
                     ]
                     self._adverse_last_repair_ts = float(s.get("adverse_last_repair_ts", 0) or 0)
+                    self.adverse_arm_dingtalk_sent = bool(s.get("adverse_arm_dingtalk_sent", False))
         except Exception as e:
             logger.error(f"[User {self.user_id}] load state failed: {e}")
 
