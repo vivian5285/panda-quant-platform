@@ -339,18 +339,27 @@ class GateClient:
             body["reduce_only"] = True
         return self._request("POST", "/futures/usdt/orders", body=body)
 
-    def place_stop_market_order(self, side, stop_price, symbol: str | None = None):
+    def place_stop_market_order(
+        self, side, stop_price, symbol: str | None = None, quantity=None, reduce_only=False,
+    ):
         contract = symbol or self.trading_symbol
         close_side = str(side).upper()
-        size = 0
-        pos = self.get_position(contract)
-        if pos:
-            amt = float(pos.get("positionAmt") or 0)
-            if amt != 0:
-                size = self._eth_to_contracts(abs(amt))
-                size = -abs(size) if amt > 0 and close_side in ("SELL", "SHORT") else abs(size)
-        if size == 0:
-            size = -1 if close_side in ("SELL", "SHORT") else 1
+        if quantity is not None and float(quantity) > 0:
+            size = self._eth_to_contracts(float(quantity))
+            if close_side in ("SELL", "SHORT"):
+                size = -abs(size)
+            else:
+                size = abs(size)
+        else:
+            size = 0
+            pos = self.get_position(contract)
+            if pos:
+                amt = float(pos.get("positionAmt") or 0)
+                if amt != 0:
+                    size = self._eth_to_contracts(abs(amt))
+                    size = -abs(size) if amt > 0 and close_side in ("SELL", "SHORT") else abs(size)
+            if size == 0:
+                size = -1 if close_side in ("SELL", "SHORT") else 1
         body = {
             "contract": contract,
             "size": size,

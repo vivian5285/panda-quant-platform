@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from app.core.binance_client import BinanceClient
+from app.core.adverse_radar_guard import ADVERSE_ARM_PCT, AdverseRadarMixin
 from app.core.binance_smart_defense import BinanceSmartDefenseMixin
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.position_manager import PositionManager
@@ -53,7 +54,7 @@ class _QueuedSignal:
     result: dict = field(default_factory=dict)
 
 
-class PositionSupervisor(PositionCapGuardMixin, BinanceSmartDefenseMixin):
+class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartDefenseMixin):
     """
     多用户版 position_supervisor_binance.py
     TV 军师指挥价格/regime → VPS 自主执行仓位管理、止盈网格、雷达锁润、先平后开、单向持仓。
@@ -114,6 +115,7 @@ class PositionSupervisor(PositionCapGuardMixin, BinanceSmartDefenseMixin):
         self.risk_multiplier = 1.0
         self.consumed_tp_levels: list[int] = []
         self._scan_ticks = 0
+        self._init_adverse_radar_fields()
 
         os.makedirs("state", exist_ok=True)
         self.state_file = f"state/user_{user_id}.json"
@@ -142,6 +144,8 @@ class PositionSupervisor(PositionCapGuardMixin, BinanceSmartDefenseMixin):
                     "tv_tps": self.tv_tps,
                     "initial_qty": self.initial_qty,
                     "consumed_tp_levels": self.consumed_tp_levels,
+                    "adverse_sl_armed": self.adverse_sl_armed,
+                    "adverse_sl_prices": self.adverse_sl_prices,
                 }, f)
         except Exception as e:
             logger.error(f"[User {self.user_id}] save state failed: {e}")
@@ -164,6 +168,10 @@ class PositionSupervisor(PositionCapGuardMixin, BinanceSmartDefenseMixin):
                     self.tv_tps = normalize_tv_targets(s.get("tv_tps", [0.0, 0.0, 0.0]))
                     self.consumed_tp_levels = [
                         int(x) for x in (s.get("consumed_tp_levels") or []) if int(x) in (1, 2, 3)
+                    ]
+                    self.adverse_sl_armed = bool(s.get("adverse_sl_armed", False))
+                    self.adverse_sl_prices = [
+                        float(x) for x in (s.get("adverse_sl_prices") or [])
                     ]
         except Exception as e:
             logger.error(f"[User {self.user_id}] load state failed: {e}")
@@ -1128,6 +1136,7 @@ class PositionSupervisor(PositionCapGuardMixin, BinanceSmartDefenseMixin):
         return self._ensure_defenses(qty, entry, dynamic_sl, force_rebuild=False)
 
     def _protect_and_monitor(self, qty: float, entry_price: float):
+        self._reset_adverse_radar()
         self.current_sl = entry_price
         self.best_price = entry_price
         self.watched_qty = qty
@@ -1781,8 +1790,13 @@ class PositionSupervisor(PositionCapGuardMixin, BinanceSmartDefenseMixin):
                             else min(self.best_price, curr_px)
                         )
                         progress = self._radar_activation_progress(curr_px)
+                        adverse_pct = self._adverse_move_pct(curr_px)
                         if self._is_radar_active() or progress >= 1.0:
+                            if self.adverse_sl_armed:
+                                self._disarm_adverse_staged_stops()
                             self._process_radar_trailing(actual_qty, curr_px)
+                        elif adverse_pct >= ADVERSE_ARM_PCT or self.adverse_sl_armed:
+                            self._process_adverse_radar_guard(actual_qty, curr_px, adverse_pct)
                         elif progress >= 0.5 and self._scan_ticks % 5 == 0:
                             logger.info(
                                 f"[User {self.user_id}] 📡 雷达预热: 进度 {progress:.0%} | "
@@ -1889,6 +1903,7 @@ class PositionSupervisor(PositionCapGuardMixin, BinanceSmartDefenseMixin):
             self._trigger_settlement_on_flat()
 
         self.monitoring = False
+        self._disarm_adverse_staged_stops()
         self.watched_qty = 0.0
         self.initial_qty = 0.0
         self.consumed_tp_levels = []

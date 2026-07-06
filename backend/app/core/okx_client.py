@@ -364,15 +364,20 @@ class OkxClient:
             body["reduceOnly"] = True
         return self._place_order(body)
 
-    def place_stop_market_order(self, side, stop_price, symbol: str | None = None):
+    def place_stop_market_order(
+        self, side, stop_price, symbol: str | None = None, quantity=None, reduce_only=False,
+    ):
         inst = symbol or self.trading_symbol
         okx_side = "buy" if str(side).upper() in ("BUY", "LONG") else "sell"
-        sz = self._eth_to_contracts(0.01)
-        pos = self.get_position(inst)
-        if pos:
-            amt = abs(float(pos.get("positionAmt") or 0))
-            if amt > 0:
-                sz = self._eth_to_contracts(amt)
+        if quantity is not None and float(quantity) > 0:
+            sz = self._eth_to_contracts(float(quantity))
+        else:
+            sz = self._eth_to_contracts(0.01)
+            pos = self.get_position(inst)
+            if pos:
+                amt = abs(float(pos.get("positionAmt") or 0))
+                if amt > 0:
+                    sz = self._eth_to_contracts(amt)
         body = {
             "instId": inst,
             "tdMode": "cross",

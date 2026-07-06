@@ -283,22 +283,37 @@ class BinanceClient:
             logger.error(f"[User {self.user_id}] limit order failed: {e} qty={quantity} price={price}")
             return None
 
-    def place_stop_market_order(self, side, stop_price, symbol="ETHUSDT"):
+    def place_stop_market_order(
+        self,
+        side,
+        stop_price,
+        symbol="ETHUSDT",
+        quantity=None,
+        reduce_only=False,
+    ):
         try:
             binance_side = "BUY" if side.upper() in ["BUY", "LONG"] else "SELL"
             stop_str = format_price(stop_price)
             if float(stop_str) <= 0:
                 logger.error(f"[User {self.user_id}] stop order invalid price: {stop_price}")
                 return None
-            params = {
+            params: dict = {
                 "symbol": symbol,
                 "side": binance_side,
                 "type": "STOP_MARKET",
                 "stopPrice": stop_str,
-                "closePosition": "true",
+                "workingType": "CONTRACT_PRICE",
             }
+            if quantity is not None and float(format_quantity(quantity)) > 0:
+                params["quantity"] = format_quantity(quantity)
+                params["reduceOnly"] = "true"
+            else:
+                params["closePosition"] = "true"
             order = self.client.futures_create_order(**params)
-            logger.info(f"[User {self.user_id}] stop {side} @ {stop_str}")
+            logger.info(
+                f"[User {self.user_id}] stop {side} @ {stop_str} "
+                f"qty={params.get('quantity', 'close-all')}"
+            )
             return order
         except Exception as e:
             logger.error(f"[User {self.user_id}] stop order failed: {e} stop={stop_price}")

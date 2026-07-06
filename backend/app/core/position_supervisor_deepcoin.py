@@ -18,6 +18,7 @@ from app.core.same_direction_policy import (
 )
 from app.core.position_sizing import compute_deepcoin_contracts
 from app.core.position_cap_guard import PositionCapGuardMixin
+from app.core.adverse_radar_guard import ADVERSE_ARM_PCT, AdverseRadarMixin
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 
@@ -55,7 +56,7 @@ class _DingtalkBridge:
 
         return _call
 
-class DeepcoinPositionSupervisor(PositionCapGuardMixin):
+class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin):
     def __init__(
         self,
         user_id: int,
@@ -110,6 +111,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin):
         self._scan_ticks = 0
         self._signal_queue = queue.Queue()
         self._signal_worker_started = False
+        self._init_adverse_radar_fields()
 
         base_dir = os.path.join("data", "supervisor", f"deepcoin_{user_id}")
         os.makedirs(base_dir, exist_ok=True)
@@ -389,9 +391,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin):
                     "best_price": self.best_price,
                     "initial_qty": self.initial_qty,
                     "last_tv_signal": self.last_tv_signal,
+                    "adverse_sl_armed": self.adverse_sl_armed,
+                    "adverse_sl_prices": self.adverse_sl_prices,
                 }, f)
         except Exception as e:
             logger.error(f"保存状态失败: {e}")
+
+    def _close_order_side(self) -> str:
+        return "sell" if self.current_side == "LONG" else "buy"
 
     @staticmethod
     def _safe_qty(val, default=0):
@@ -1397,6 +1404,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin):
             self._protect_and_monitor(real_qty, entry_price or pos['entry_price'])
 
     def _protect_and_monitor(self, qty, entry_price):
+        self._reset_adverse_radar()
         tp_pxs = self.tv_tps
         self.current_sl = entry_price
         self.best_price = entry_price
@@ -1617,8 +1625,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin):
                         self.best_price = min(self.best_price, curr_px)
 
                     progress = self._radar_activation_progress(curr_px)
+                    adverse_pct = self._adverse_move_pct(curr_px)
                     if self._is_radar_active() or progress >= 1.0:
+                        if self.adverse_sl_armed:
+                            self._disarm_adverse_staged_stops()
                         self._process_radar_trailing(real_amt, curr_px)
+                    elif adverse_pct >= ADVERSE_ARM_PCT or self.adverse_sl_armed:
+                        self._process_adverse_radar_guard(real_amt, curr_px, adverse_pct)
                     elif progress >= 0.5 and self._scan_ticks % 5 == 0:
                         logger.info(
                             f"📡 雷达预热: 进度 {progress:.0%} | 现价 {curr_px:.2f} | "
@@ -1711,6 +1724,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin):
                 )
 
         self.monitoring = False
+        self._disarm_adverse_staged_stops()
         self.watched_qty = 0
         self.initial_qty = 0
         self.current_side = None
@@ -1748,6 +1762,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin):
                     self.watched_entry = s.get("watched_entry", 0.0)
                     self.initial_qty = s.get("initial_qty", 0)
                     self.last_tv_signal = s.get("last_tv_signal")
+                    self.adverse_sl_armed = bool(s.get("adverse_sl_armed", False))
+                    self.adverse_sl_prices = [
+                        float(x) for x in (s.get("adverse_sl_prices") or [])
+                    ]
 
             if self._scan_and_sweep_dust_on_startup():
                 return
