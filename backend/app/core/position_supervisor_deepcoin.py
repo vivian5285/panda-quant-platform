@@ -393,6 +393,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin):
                     "last_tv_signal": self.last_tv_signal,
                     "adverse_sl_armed": self.adverse_sl_armed,
                     "adverse_sl_prices": self.adverse_sl_prices,
+                    "adverse_consumed_tiers": list(self.adverse_consumed_tiers),
                 }, f)
         except Exception as e:
             logger.error(f"保存状态失败: {e}")
@@ -1563,20 +1564,22 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin):
                     qty_changed = real_amt != self.watched_qty
                     if qty_changed:
                         old_qty = self.watched_qty
+                        curr_px_chg = self.client.get_current_price(self.symbol) or float(
+                            pos.get("entry_price", 0) or 0
+                        )
+                        orch = self._orchestrate_qty_change(
+                            float(old_qty),
+                            float(real_amt),
+                            float(pos.get("entry_price", 0) or self.watched_entry or 0),
+                            float(curr_px_chg),
+                        )
                         self.watched_qty = real_amt
-                        self.watched_entry = pos['entry_price']
-                        pct = abs(real_amt - old_qty) / old_qty if old_qty > 0 else 1.0
-                        action_msg = (
-                            "手动加仓" if real_amt > old_qty
-                            else "部分止盈吃单 / 手动减仓"
-                        )
+                        self.watched_entry = pos["entry_price"]
+                        change_type = orch.get("change_type", "manual_reduce")
+                        result = orch.get("defense") or {}
+                        action_msg = orch.get("action_msg", change_type)
                         logger.info(
-                            f"🔄 [智慧大脑] 仓位变化 {old_qty} ➔ {real_amt} ({pct:.1%})，智能重对齐"
-                        )
-                        sl_to_pass = self._radar_sl_to_pass()
-                        result = self._smart_realign_defenses(
-                            real_amt, self.watched_entry, dynamic_sl=sl_to_pass,
-                            reason=f"人工异动: {action_msg}",
+                            f"🔄 [智慧大脑] 仓位变化 [{change_type}] {old_qty} ➔ {real_amt}，智能重对齐"
                         )
                         self._save_state()
                         verified = self._verify_position(self.current_side)
@@ -1625,14 +1628,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin):
                         self.best_price = min(self.best_price, curr_px)
 
                     progress = self._radar_activation_progress(curr_px)
-                    adverse_pct = self._adverse_move_pct(curr_px)
-                    if self._is_radar_active() or progress >= 1.0:
-                        if self.adverse_sl_armed:
-                            self._disarm_adverse_staged_stops()
-                        self._process_radar_trailing(real_amt, curr_px)
-                    elif adverse_pct >= ADVERSE_ARM_PCT or self.adverse_sl_armed:
-                        self._process_adverse_radar_guard(real_amt, curr_px, adverse_pct)
-                    elif progress >= 0.5 and self._scan_ticks % 5 == 0:
+                    self._orchestrate_defense_monitoring(real_amt, curr_px)
+                    if (
+                        not self.adverse_sl_armed
+                        and not self.adverse_consumed_tiers
+                        and progress >= 0.5
+                        and not self._is_radar_active()
+                        and self._scan_ticks % 5 == 0
+                    ):
                         logger.info(
                             f"📡 雷达预热: 进度 {progress:.0%} | 现价 {curr_px:.2f} | "
                             f"轮询 {SENTINEL_POLL_ARMING}s"
@@ -1765,6 +1768,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin):
                     self.adverse_sl_armed = bool(s.get("adverse_sl_armed", False))
                     self.adverse_sl_prices = [
                         float(x) for x in (s.get("adverse_sl_prices") or [])
+                    ]
+                    self.adverse_consumed_tiers = [
+                        float(x) for x in (s.get("adverse_consumed_tiers") or [])
                     ]
 
             if self._scan_and_sweep_dust_on_startup():

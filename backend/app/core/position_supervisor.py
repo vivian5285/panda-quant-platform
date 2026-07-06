@@ -146,6 +146,7 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
                     "consumed_tp_levels": self.consumed_tp_levels,
                     "adverse_sl_armed": self.adverse_sl_armed,
                     "adverse_sl_prices": self.adverse_sl_prices,
+                    "adverse_consumed_tiers": list(self.adverse_consumed_tiers),
                 }, f)
         except Exception as e:
             logger.error(f"[User {self.user_id}] save state failed: {e}")
@@ -172,6 +173,9 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
                     self.adverse_sl_armed = bool(s.get("adverse_sl_armed", False))
                     self.adverse_sl_prices = [
                         float(x) for x in (s.get("adverse_sl_prices") or [])
+                    ]
+                    self.adverse_consumed_tiers = [
+                        float(x) for x in (s.get("adverse_consumed_tiers") or [])
                     ]
         except Exception as e:
             logger.error(f"[User {self.user_id}] load state failed: {e}")
@@ -1713,29 +1717,17 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
                     qty_changed = abs(actual_qty - self.watched_qty) > 0.001
                     if qty_changed:
                         old_qty = self.watched_qty
-                        change_type = self._classify_qty_change(old_qty, actual_qty)
+                        orch = self._orchestrate_qty_change(
+                            old_qty,
+                            actual_qty,
+                            float(pos.get("entryPrice", 0) or self.watched_entry or 0),
+                            curr_px or float(pos.get("entryPrice", 0) or 0),
+                        )
                         self.watched_qty = actual_qty
                         self.watched_entry = float(pos["entryPrice"])
-                        sl_to_pass = self._radar_sl_to_pass()
-
-                        action_labels = {
-                            "manual_add": "手动加仓",
-                            "manual_reduce": "手动减仓",
-                            "full_close": "人工全平",
-                        }
-                        action_msg = action_labels.get(
-                            change_type,
-                            f"部分止盈吃单 · {change_type}",
-                        )
-                        if change_type == "manual_add":
-                            self.consumed_tp_levels = []
-
-                        result = self._smart_realign_defenses(
-                            actual_qty,
-                            self.watched_entry,
-                            dynamic_sl=sl_to_pass,
-                            reason=f"人工异动: {action_msg}",
-                        )
+                        change_type = orch.get("change_type", "manual_reduce")
+                        result = orch.get("defense") or {}
+                        action_msg = orch.get("action_msg", change_type)
 
                         detail = {
                             "old_qty": old_qty,
@@ -1743,27 +1735,29 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
                             "entry": self.watched_entry,
                             "change_type": change_type,
                             "consumed_tp_levels": list(self.consumed_tp_levels),
+                            "adverse_consumed_tiers": list(self.adverse_consumed_tiers),
                             "action_msg": action_msg,
                             "defense": result,
+                            "orchestration": orch,
                         }
                         self._log(
                             "ADJUST",
                             f"🔄 智能感知仓位变化 [{change_type}]: {old_qty} ➔ {actual_qty} | "
-                            f"TP {result['matched']}/{result['expected']}",
+                            f"TP {result.get('matched', 0)}/{result.get('expected', 0)}",
                             detail,
                         )
                         self._alert(
                             "warning", "MANUAL_ADJUST",
                             f"阵地异动 · {action_msg}",
                             f"数量 {old_qty} → {actual_qty} @ {self.watched_entry} | "
-                            f"{self._format_audit_summary(result['audit'])}",
+                            f"{self._format_audit_summary((result.get('audit') or {}))}",
                             detail,
                         )
-                        if result["expected"] > 0 and result["matched"] < result["expected"]:
+                        if result.get("expected", 0) > 0 and result.get("matched", 0) < result.get("expected", 0):
                             self._alert(
                                 "warning", "DEFENSE",
-                                "人工异动后止盈未对齐",
-                                self._format_audit_summary(result["audit"]),
+                                "异动后止盈未对齐",
+                                self._format_audit_summary(result.get("audit") or {}),
                                 result,
                             )
                         self._save_state()
@@ -1790,14 +1784,14 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
                             else min(self.best_price, curr_px)
                         )
                         progress = self._radar_activation_progress(curr_px)
-                        adverse_pct = self._adverse_move_pct(curr_px)
-                        if self._is_radar_active() or progress >= 1.0:
-                            if self.adverse_sl_armed:
-                                self._disarm_adverse_staged_stops()
-                            self._process_radar_trailing(actual_qty, curr_px)
-                        elif adverse_pct >= ADVERSE_ARM_PCT or self.adverse_sl_armed:
-                            self._process_adverse_radar_guard(actual_qty, curr_px, adverse_pct)
-                        elif progress >= 0.5 and self._scan_ticks % 5 == 0:
+                        self._orchestrate_defense_monitoring(actual_qty, curr_px)
+                        if (
+                            not self.adverse_sl_armed
+                            and not self.adverse_consumed_tiers
+                            and progress >= 0.5
+                            and not self._is_radar_active()
+                            and self._scan_ticks % 5 == 0
+                        ):
                             logger.info(
                                 f"[User {self.user_id}] 📡 雷达预热: 进度 {progress:.0%} | "
                                 f"现价 {curr_px:.2f}"
