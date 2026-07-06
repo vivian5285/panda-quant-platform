@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.core.position_cap_guard import CAP_TOLERANCE_ETH, PositionCapGuardMixin
-from app.core.position_qty_tolerance import CAP_DRIFT_RATIO, qty_change_significant
+from app.core.position_qty_tolerance import CAP_EXCESS_RATIO, qty_change_significant
 from app.core.position_supervisor import PositionSupervisor
 
 
@@ -103,7 +103,33 @@ def test_cap_ignores_minor_price_drift():
         detail = probe._cap_oversize_detail(live_qty=1.365, price=1774.14)
     assert detail["oversized"] is False
     assert detail["trim_qty"] == 0.0
-    assert detail["tolerance"] >= 1.365 * CAP_DRIFT_RATIO * 0.9
+    assert detail["tolerance"] >= 1.365 * CAP_EXCESS_RATIO * 0.5
+
+
+def test_cap_ignores_small_account_three_pct_overshoot():
+    """Regression: 0.2010 vs 0.1950 (~3%) must NOT trigger CAP_ALIGN trim."""
+    probe = _CapProbe()
+    probe.initial_principal = 99.91
+    probe.client.get_futures_account_summary.return_value = {
+        "total_margin_balance": 97.89,
+        "available_balance": 50.0,
+    }
+    meta = {"regime": 3, "margin_pct": 0.35, "initial_principal": 99.91, "equity_balance": 97.89}
+    with patch.object(probe, "_compute_regime_cap_target", return_value=(0.1950, meta)):
+        detail = probe._cap_oversize_detail(live_qty=0.2010, price=1774.0)
+    assert detail["oversized"] is False
+    assert detail["trim_qty"] == 0.0
+    assert 0.2010 - 0.1950 < detail["tolerance"]
+
+
+def test_cap_triggers_on_material_overshoot():
+    """~50% over cap must still trigger trim."""
+    probe = _CapProbe()
+    meta = {"regime": 3, "margin_pct": 0.35, "initial_principal": 755.0}
+    with patch.object(probe, "_compute_regime_cap_target", return_value=(0.195, meta)):
+        detail = probe._cap_oversize_detail(live_qty=0.350, price=1774.0)
+    assert detail["oversized"] is True
+    assert detail["trim_qty"] > 0
 
 
 def test_cap_float_epsilon_not_oversized():

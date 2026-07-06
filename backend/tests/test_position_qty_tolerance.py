@@ -13,7 +13,7 @@ def test_large_drift_is_significant():
 
 
 def test_deepcoin_one_contract_within_small_book():
-    # 8 vs 9 张 on a small book — within ~2% + 1-contract floor
+    # 8 vs 9 张 — within 5% qty drift + 1-contract floor
     assert qty_change_significant(9, 8, is_contracts=True) is False
 
 

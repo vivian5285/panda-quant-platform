@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Any
 
-from app.core.position_qty_tolerance import qty_drift_tolerance
+from app.core.position_qty_tolerance import cap_excess_tolerance
 from app.core.position_sizing import (
     read_contract_equity,
     resolve_cap_sizing_base,
@@ -38,8 +38,8 @@ class PositionCapGuardMixin:
         return 0.0 if self._is_deepcoin_cap() else CAP_TOLERANCE_ETH
 
     def _cap_excess_tolerance(self, live_qty: float, target_qty: float) -> float:
-        """Ignore normal post-open drift; only trim when excess is materially large."""
-        drift = qty_drift_tolerance(
+        """Only trim when live exceeds regime cap by a large margin (default 10%)."""
+        drift = cap_excess_tolerance(
             live_qty,
             target_qty,
             is_contracts=self._is_deepcoin_cap(),
