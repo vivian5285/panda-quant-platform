@@ -394,6 +394,30 @@ class OkxClient:
             return rows[0] if rows else res
         return None
 
+    def place_stop_limit_order(
+        self, side, stop_price, limit_price, symbol: str | None = None, quantity=None, reduce_only=True,
+    ):
+        """Conditional stop-limit — trigger at stop_price, fill as limit at limit_price."""
+        inst = symbol or self.trading_symbol
+        okx_side = "buy" if str(side).upper() in ("BUY", "LONG") else "sell"
+        if quantity is None or float(quantity) <= 0:
+            return None
+        body = {
+            "instId": inst,
+            "tdMode": "cross",
+            "side": okx_side,
+            "ordType": "conditional",
+            "sz": self._eth_to_contracts(float(quantity)),
+            "reduceOnly": True,
+            "slTriggerPx": format_price(stop_price),
+            "slOrdPx": format_price(limit_price),
+        }
+        res = self._request("POST", "/trade/order-algo", body=body)
+        if isinstance(res, dict) and str(res.get("code", "")) == "0":
+            rows = self._data_list(res)
+            return rows[0] if rows else res
+        return None
+
     def cancel_order(self, symbol: str, order_id: int | str) -> bool:
         inst = symbol or self.trading_symbol
         oid = str(order_id)

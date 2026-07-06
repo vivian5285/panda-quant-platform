@@ -17,6 +17,7 @@ from app.core.position_supervisor import PositionSupervisor
 
 
 def test_adverse_move_pct_long_underwater():
+    assert adverse_move_pct(2000.0, 1940.0, "LONG") == pytest.approx(0.03, rel=0.01)
     assert adverse_move_pct(2000.0, 1960.0, "LONG") == pytest.approx(0.02, rel=0.01)
 
 
@@ -25,23 +26,35 @@ def test_is_floating_profit_long():
     assert is_floating_profit(2000.0, 1990.0, "LONG") is False
 
 
+def test_compute_adverse_stop_plan_tiers_from_entry():
+    plan = compute_adverse_stop_plan(
+        2000.0, "LONG", 0.6,
+        round_qty_fn=lambda x: round(x, 3),
+    )
+    assert len(plan) == 3
+    assert [p["tier_pct"] for p in plan] == [0.03, 0.04, 0.05]
+    assert plan[0]["stop_price"] == pytest.approx(1940.0, rel=0.001)
+    assert plan[1]["stop_price"] == pytest.approx(1920.0, rel=0.001)
+    assert plan[2]["stop_price"] == pytest.approx(1900.0, rel=0.001)
+
+
 def test_compute_adverse_stop_plan_skips_consumed_tiers():
     plan = compute_adverse_stop_plan(
         2000.0, "LONG", 0.6,
         round_qty_fn=lambda x: round(x, 3),
-        consumed_tiers={0.02, 0.03},
+        consumed_tiers={0.03, 0.04},
     )
     assert len(plan) == 1
     assert plan[0]["tier_pct"] == 0.05
     assert plan[0]["qty"] == pytest.approx(0.6, rel=0.01)
 
 
-def test_match_adverse_tier_fill_detects_2pct_slice():
+def test_match_adverse_tier_fill_detects_3pct_slice():
     tier = match_adverse_tier_fill(
         2000.0, "LONG", 0.9, 0.297,
         round_qty_fn=lambda x: round(x, 3),
     )
-    assert tier == pytest.approx(0.02, rel=0.01)
+    assert tier == pytest.approx(0.03, rel=0.01)
 
 
 class _AdverseProbe(AdverseRadarMixin):
@@ -66,7 +79,7 @@ class _AdverseProbe(AdverseRadarMixin):
     def __init__(self):
         self.client = MagicMock()
         self.client.get_open_orders.return_value = []
-        self.client.place_stop_market_order.return_value = {"orderId": 1}
+        self.client.place_stop_limit_order.return_value = {"orderId": 1}
         self.on_log = MagicMock()
         self.on_alert = MagicMock()
 
@@ -114,6 +127,22 @@ def test_disarm_only_on_floating_profit():
     assert probe._should_disarm_adverse_for_recovery(2010.0) is True
 
 
+def test_arm_adverse_uses_stop_limit_orders():
+    probe = _AdverseProbe()
+    with patch.object(probe, "_cancel_adverse_stop_orders", return_value=0):
+        result = probe._arm_adverse_staged_stops(0.6, 0.03)
+    assert result["armed"] is True
+    assert probe.client.place_stop_limit_order.call_count == 3
+
+
+def test_process_adverse_guard_waits_until_3pct():
+    probe = _AdverseProbe()
+    assert probe._process_adverse_radar_guard(0.6, 1960.0, 0.02) is False
+    with patch.object(probe, "_arm_adverse_staged_stops", return_value={"armed": True}) as arm:
+        assert probe._process_adverse_radar_guard(0.6, 1940.0, 0.03) is True
+    arm.assert_called_once()
+
+
 def test_orchestrate_qty_change_tp_fill_boosts_radar():
     probe = _AdverseProbe()
     with patch.object(probe, "_boost_radar_after_tp_fill") as boost:
@@ -127,15 +156,15 @@ def test_orchestrate_qty_change_adverse_hit_repairs_remaining():
     probe.adverse_sl_armed = True
 
     def classify(old, new):
-        return "adverse_sl_2pct"
+        return "adverse_sl_3pct"
 
     with patch.object(probe, "_classify_reduction_cause", side_effect=classify), patch.object(
         probe, "_repair_adverse_stops_remaining", return_value={"armed": True},
     ) as repair:
-        orch = probe._orchestrate_qty_change(0.9, 0.603, 2000.0, 1960.0)
+        orch = probe._orchestrate_qty_change(0.9, 0.603, 2000.0, 1940.0)
 
-    assert orch["change_type"] == "adverse_sl_2pct"
-    assert 0.02 in probe._adverse_consumed_set()
+    assert orch["change_type"] == "adverse_sl_3pct"
+    assert 0.03 in probe._adverse_consumed_set()
     repair.assert_called_once()
 
 
@@ -144,7 +173,7 @@ def test_orchestrate_defense_monitoring_keeps_adverse_while_underwater():
     with patch.object(probe, "_process_adverse_radar_guard", return_value=True) as guard, patch.object(
         probe, "_process_radar_trailing",
     ) as trail:
-        probe._orchestrate_defense_monitoring(0.6, 1960.0)
+        probe._orchestrate_defense_monitoring(0.6, 1940.0)
     guard.assert_called_once()
     trail.assert_not_called()
 
@@ -152,7 +181,7 @@ def test_orchestrate_defense_monitoring_keeps_adverse_while_underwater():
 def test_orchestrate_defense_disarms_on_profit_recovery():
     probe = _AdverseProbe()
     probe.adverse_sl_armed = True
-    probe.adverse_sl_prices = [1960.0]
+    probe.adverse_sl_prices = [1940.0]
     with patch.object(probe, "_disarm_adverse_staged_stops") as disarm, patch.object(
         probe, "_process_radar_trailing",
     ):
@@ -164,5 +193,5 @@ def test_binance_supervisor_has_orchestration():
     sup = PositionSupervisor(user_id=1, client=MagicMock())
     assert hasattr(sup, "_orchestrate_qty_change")
     assert hasattr(sup, "_orchestrate_defense_monitoring")
-    assert ADVERSE_ARM_PCT == 0.02
-    assert ADVERSE_SL_TIERS == (0.02, 0.03, 0.05)
+    assert ADVERSE_ARM_PCT == 0.03
+    assert ADVERSE_SL_TIERS == (0.03, 0.04, 0.05)

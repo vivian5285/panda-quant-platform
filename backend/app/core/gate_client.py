@@ -371,6 +371,30 @@ class GateClient:
         }
         return self._request("POST", "/futures/usdt/price_orders", body=body)
 
+    def place_stop_limit_order(
+        self, side, stop_price, limit_price, symbol: str | None = None, quantity=None, reduce_only=True,
+    ):
+        """Price-triggered stop-limit from entry-based adverse tier."""
+        contract = symbol or self.trading_symbol
+        close_side = str(side).upper()
+        if quantity is None or float(quantity) <= 0:
+            return None
+        size = self._eth_to_contracts(float(quantity))
+        if close_side in ("SELL", "SHORT"):
+            size = -abs(size)
+        else:
+            size = abs(size)
+        body = {
+            "contract": contract,
+            "size": size,
+            "price": format_price(limit_price),
+            "tif": "gtc",
+            "reduce_only": True,
+            "stop_price": format_price(stop_price),
+            "price_type": 1,
+        }
+        return self._request("POST", "/futures/usdt/price_orders", body=body)
+
     def cancel_order(self, symbol: str, order_id: int | str) -> bool:
         contract = symbol or self.trading_symbol
         res = self._request("DELETE", f"/futures/usdt/orders/{order_id}", {"contract": contract})

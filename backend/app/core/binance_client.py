@@ -319,6 +319,52 @@ class BinanceClient:
             logger.error(f"[User {self.user_id}] stop order failed: {e} stop={stop_price}")
             return None
 
+    def place_stop_limit_order(
+        self,
+        side,
+        stop_price,
+        limit_price,
+        symbol="ETHUSDT",
+        quantity=None,
+        reduce_only=True,
+    ):
+        """STOP limit — trigger at stop_price, execute as limit at limit_price."""
+        try:
+            binance_side = "BUY" if side.upper() in ["BUY", "LONG"] else "SELL"
+            stop_str = format_price(stop_price)
+            limit_str = format_price(limit_price)
+            if float(stop_str) <= 0 or float(limit_str) <= 0:
+                logger.error(
+                    f"[User {self.user_id}] stop-limit invalid stop={stop_price} limit={limit_price}"
+                )
+                return None
+            if quantity is None or float(format_quantity(quantity)) <= 0:
+                logger.error(f"[User {self.user_id}] stop-limit requires quantity")
+                return None
+            params: dict = {
+                "symbol": symbol,
+                "side": binance_side,
+                "type": "STOP",
+                "stopPrice": stop_str,
+                "price": limit_str,
+                "timeInForce": "GTC",
+                "quantity": format_quantity(quantity),
+                "workingType": "CONTRACT_PRICE",
+            }
+            if reduce_only:
+                params["reduceOnly"] = "true"
+            order = self.client.futures_create_order(**params)
+            logger.info(
+                f"[User {self.user_id}] stop-limit {side} qty={params['quantity']} "
+                f"trigger={stop_str} limit={limit_str}"
+            )
+            return order
+        except Exception as e:
+            logger.error(
+                f"[User {self.user_id}] stop-limit failed: {e} stop={stop_price} limit={limit_price}"
+            )
+            return None
+
     def cancel_order(self, symbol: str, order_id: int) -> bool:
         try:
             self.client.futures_cancel_order(symbol=symbol, orderId=int(order_id))

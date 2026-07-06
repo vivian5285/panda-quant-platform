@@ -10,9 +10,9 @@ from app.core.symbol_precision import round_price, round_quantity
 
 logger = logging.getLogger(__name__)
 
-# Arm staged stops when adverse price move reaches 2%; tiers at 2% / 3% / 5% from entry.
-ADVERSE_ARM_PCT = 0.02
-ADVERSE_SL_TIERS = (0.02, 0.03, 0.05)
+# Arm staged stops when adverse move reaches 3%; limit SL tiers at 3% / 4% / 5% from entry.
+ADVERSE_ARM_PCT = 0.03
+ADVERSE_SL_TIERS = (0.03, 0.04, 0.05)
 ADVERSE_SL_SLICE_RATIOS = (0.33, 0.33, 0.34)
 ADVERSE_STOP_TOLERANCE = 2.0
 QTY_MATCH_TOL_ETH = 0.005  # legacy alias; prefer qty_drift_tolerance()
@@ -107,7 +107,7 @@ def match_adverse_tier_fill(
     round_qty_fn,
     qty_tol: float = QTY_MATCH_TOL_ETH,
 ) -> float | None:
-    """If reduction matches an adverse tier slice, return that tier pct (0.02/0.03/0.05)."""
+    """If reduction matches an adverse tier slice, return that tier pct (0.03/0.04/0.05)."""
     if old_qty <= 0 or reduced_qty <= 0:
         return None
     plan = compute_adverse_stop_plan(entry, side, old_qty, round_qty_fn=round_qty_fn)
@@ -121,7 +121,7 @@ class AdverseRadarMixin:
     """
     Dual-track VPS defense:
     - 浮盈: radar breakeven trail toward TP3 after TP fills
-    - 浮亏: staged 2/3/5% stops; partial hits keep deeper tiers; disarm only on 浮盈 recovery
+    - 浮亏: staged 3/4/5% limit stops from entry; partial hits keep deeper tiers
     """
 
     adverse_sl_armed: bool
@@ -267,12 +267,19 @@ class AdverseRadarMixin:
             sz = int(self._safe_qty(qty))
             if sz <= 0:
                 return False
+            limit_px = round_price(stop_price)
             order = client.place_trigger_order(
-                symbol, close_side, pos_side, sz, stop_price,
-                order_type="market", td_mode="cross", mrg_position="merge",
+                symbol, close_side, pos_side, sz, limit_px,
+                order_type="limit", price=limit_px, td_mode="cross", mrg_position="merge",
             )
             return order is not None
 
+        limit_px = round_price(stop_price)
+        if hasattr(client, "place_stop_limit_order"):
+            order = client.place_stop_limit_order(
+                close_side, stop_price, limit_px, symbol, quantity=qty, reduce_only=True,
+            )
+            return order is not None
         if hasattr(client, "place_stop_market_order"):
             order = client.place_stop_market_order(
                 close_side, stop_price, symbol, quantity=qty, reduce_only=True,
@@ -514,7 +521,7 @@ class AdverseRadarMixin:
         """
         Sentinel price-defense branch:
         - 浮盈 / 雷达激活 → trailing radar; disarm adverse only on 浮盈 recovery
-        - 浮亏 >= 2% → staged adverse stops (keep 5% if 2/3 hit)
+        - 浮亏 >= 3% → staged 3/4/5% limit stops from entry (keep deeper tiers on partial hits)
         """
         if curr_px <= 0:
             return
@@ -552,7 +559,7 @@ class AdverseRadarMixin:
         """
         Classify reduction cause and apply correct defense response.
         TP fill → realign TP + radar toward TP3
-        Adverse SL fill → repair remaining 3/5% tiers only
+        Adverse SL fill → repair remaining 4/5% tiers only
         """
         cause = self._classify_reduction_cause(old_qty, new_qty)
         result: dict[str, Any] = {"change_type": cause, "old_qty": old_qty, "new_qty": new_qty}
@@ -562,7 +569,7 @@ class AdverseRadarMixin:
             try:
                 tier_pct = int(tier_key) / 100.0
             except ValueError:
-                tier_pct = 0.02
+                tier_pct = 0.03
             self._mark_adverse_tier_consumed(tier_pct)
             adverse_pct = self._adverse_move_pct(curr_px)
             repair = self._repair_adverse_stops_remaining(new_qty, adverse_pct)
