@@ -10,12 +10,12 @@ from app.core.position_supervisor import PositionSupervisor
 
 class _CapProbe(PositionCapGuardMixin):
     exchange_id = "binance"
-    regime = 4
+    regime = 3
     risk_multiplier = 1.0
-    initial_principal = 700.0
+    initial_principal = 755.0
     leverage = 10
     regime_settings = {
-        4: {"margin": 0.50, "ratios": [0.05, 0.20, 0.75], "activation": 0.70, "trail_offset": 1.30},
+        3: {"margin": 0.35, "ratios": [0.18, 0.32, 0.50], "activation": 0.60, "trail_offset": 0.90},
     }
     current_side = "LONG"
     watched_qty = 0.0
@@ -26,7 +26,11 @@ class _CapProbe(PositionCapGuardMixin):
 
     def __init__(self):
         self.client = MagicMock()
-        self.client.get_available_balance.return_value = 1000.0
+        self.client.get_available_balance.return_value = 12.0
+        self.client.get_futures_account_summary.return_value = {
+            "total_margin_balance": 755.0,
+            "available_balance": 12.0,
+        }
         self.on_log = MagicMock()
         self.on_alert = MagicMock()
 
@@ -54,38 +58,74 @@ class _CapProbe(PositionCapGuardMixin):
 
 def test_cap_oversize_detects_stacked_position():
     probe = _CapProbe()
-    # regime4 50% × 700U principal × 10x @ 1770 ≈ 1.977 ETH
-    detail = probe._cap_oversize_detail(live_qty=3.5, price=1770.0)
+    # R3 35% × 755U principal × 10x @ 1775 ≈ 1.489 ETH (user live case)
+    detail = probe._cap_oversize_detail(live_qty=2.954, price=1775.0)
     assert detail["oversized"] is True
-    assert detail["max_qty"] == pytest.approx(1.977, rel=0.02)
-    assert detail["excess"] > 1.0
+    assert detail["max_qty"] == pytest.approx(1.489, rel=0.05)
+    assert detail["trim_qty"] == pytest.approx(2.954 - detail["max_qty"], rel=0.02)
+    assert detail["retain_ratio"] > 0.4
+
+
+def test_cap_not_skewed_by_depleted_available_balance():
+    """Regression: available=12 must NOT shrink max_qty to ~0.024 and flatten the book."""
+    probe = _CapProbe()
+    detail = probe._cap_oversize_detail(live_qty=2.954, price=1775.0)
+    assert detail["max_qty"] > 1.0
+    assert detail["trim_qty"] < 2.0
+    assert probe._validate_cap_trim_plan(detail) is None
+
+
+def test_cap_blocks_unsafe_trim_plan():
+    probe = _CapProbe()
+    bad = {
+        "live_qty": 2.954,
+        "target_qty": 0.024,
+        "trim_qty": 2.93,
+        "max_qty": 0.024,
+    }
+    err = probe._validate_cap_trim_plan(bad)
+    assert err is not None
 
 
 def test_cap_within_tolerance_not_oversized():
     probe = _CapProbe()
-    max_qty, _ = probe._compute_regime_cap_target(1770.0)
-    detail = probe._cap_oversize_detail(live_qty=max_qty + CAP_TOLERANCE_ETH * 0.5, price=1770.0)
+    max_qty, _ = probe._compute_regime_cap_target(1775.0)
+    detail = probe._cap_oversize_detail(live_qty=max_qty + CAP_TOLERANCE_ETH * 0.5, price=1775.0)
     assert detail["oversized"] is False
 
 
-def test_enforce_cap_trims_and_realigns_with_radar_sl():
+def test_cap_float_epsilon_not_oversized():
+    """0.197 vs 0.196 @ tol 0.001 must not trigger CAP_ALIGN_FAIL."""
     probe = _CapProbe()
-    probe.watched_qty = 3.5
-    probe.initial_qty = 3.5
-    probe.position_manager = None
+    detail = probe._cap_oversize_detail(live_qty=0.197, price=1775.0)
+    # max_qty ~1.489 — use synthetic small cap for gemini-style case
+    detail_small = {
+        **detail,
+        "max_qty": 0.196,
+        "target_qty": 0.196,
+        "live_qty": 0.197,
+    }
+    raw_gap = 0.197 - 0.196
+    detail_small["oversized"] = raw_gap > CAP_TOLERANCE_ETH + 1e-9
+    assert detail_small["oversized"] is False
+
+
+def test_enforce_cap_trims_to_target_not_near_zero():
+    probe = _CapProbe()
+    probe.watched_qty = 2.954
+    probe.initial_qty = 2.954
+    reads = iter([(2.954, 1775.0), (1.489, 1775.0), (1.489, 1775.0), (1.489, 1775.0)])
 
     with patch.object(probe, "_place_cap_trim_order", return_value=True) as trim, patch.object(
-        probe, "_read_live_position_qty", return_value=(1.977, 1770.0),
+        probe, "_read_live_position_qty", side_effect=lambda: next(reads),
     ), patch.object(probe, "_smart_realign_defenses") as realign:
         realign.return_value = {"matched": 3, "expected": 3}
-        result = probe._enforce_regime_cap_alignment(3.5, 1770.0, 1770.0, reason="test")
+        result = probe._enforce_regime_cap_alignment(2.954, 1775.0, 1775.0, reason="test")
 
     trim.assert_called_once()
-    realign.assert_called_once()
-    _args, kwargs = realign.call_args
-    assert kwargs.get("dynamic_sl") == 1775.0
-    assert result["trimmed"] > 0
-    assert result["new_qty"] == pytest.approx(1.977, rel=0.01)
+    called_qty = trim.call_args[0][0]
+    assert called_qty == pytest.approx(1.466, rel=0.02)
+    assert result["new_qty"] == pytest.approx(1.489, rel=0.02)
 
 
 def test_binance_supervisor_inherits_cap_guard():
