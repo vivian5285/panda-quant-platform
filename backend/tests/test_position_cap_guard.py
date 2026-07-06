@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.core.position_cap_guard import CAP_TOLERANCE_ETH, PositionCapGuardMixin
+from app.core.position_qty_tolerance import CAP_DRIFT_RATIO, qty_change_significant
 from app.core.position_supervisor import PositionSupervisor
 
 
@@ -94,20 +95,24 @@ def test_cap_within_tolerance_not_oversized():
     assert detail["oversized"] is False
 
 
+def test_cap_ignores_minor_price_drift():
+    """Regression: 1.365 vs 1.363 ETH (~0.15%) must not trigger cap trim / TP realign."""
+    probe = _CapProbe()
+    meta = {"regime": 3, "margin_pct": 0.35, "initial_principal": 755.0}
+    with patch.object(probe, "_compute_regime_cap_target", return_value=(1.363, meta)):
+        detail = probe._cap_oversize_detail(live_qty=1.365, price=1774.14)
+    assert detail["oversized"] is False
+    assert detail["trim_qty"] == 0.0
+    assert detail["tolerance"] >= 1.365 * CAP_DRIFT_RATIO * 0.9
+
+
 def test_cap_float_epsilon_not_oversized():
-    """0.197 vs 0.196 @ tol 0.001 must not trigger CAP_ALIGN_FAIL."""
+    """0.197 vs 0.196 within drift band must not trigger CAP_ALIGN."""
     probe = _CapProbe()
     detail = probe._cap_oversize_detail(live_qty=0.197, price=1775.0)
-    # max_qty ~1.489 — use synthetic small cap for gemini-style case
-    detail_small = {
-        **detail,
-        "max_qty": 0.196,
-        "target_qty": 0.196,
-        "live_qty": 0.197,
-    }
-    raw_gap = 0.197 - 0.196
-    detail_small["oversized"] = raw_gap > CAP_TOLERANCE_ETH + 1e-9
-    assert detail_small["oversized"] is False
+    tol = probe._cap_excess_tolerance(0.197, 0.196)
+    assert 0.197 - 0.196 <= tol
+    assert detail["oversized"] is False or (0.197 - detail["max_qty"]) <= tol
 
 
 def test_enforce_cap_trims_to_target_not_near_zero():

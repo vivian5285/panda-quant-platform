@@ -5,6 +5,7 @@ import logging
 import time
 from typing import Any
 
+from app.core.position_qty_tolerance import qty_drift_tolerance
 from app.core.position_sizing import (
     read_contract_equity,
     resolve_cap_sizing_base,
@@ -12,7 +13,7 @@ from app.core.position_sizing import (
 
 logger = logging.getLogger(__name__)
 
-CAP_TOLERANCE_ETH = 0.001
+CAP_TOLERANCE_ETH = 0.001  # float/rounding floor on top of CAP_DRIFT_RATIO
 CAP_TRIM_MAX_ROUNDS = 4
 CAP_TRIM_VERIFY_DELAY = 0.8
 # Reject trim if computed target keeps less than this fraction of live qty (bad max_qty).
@@ -36,9 +37,19 @@ class PositionCapGuardMixin:
     def _cap_tolerance(self) -> float:
         return 0.0 if self._is_deepcoin_cap() else CAP_TOLERANCE_ETH
 
+    def _cap_excess_tolerance(self, live_qty: float, target_qty: float) -> float:
+        """Ignore normal post-open drift; only trim when excess is materially large."""
+        drift = qty_drift_tolerance(
+            live_qty,
+            target_qty,
+            is_contracts=self._is_deepcoin_cap(),
+        )
+        return max(drift, self._cap_tolerance())
+
     def _cap_qty_within_target(self, qty: float, target_qty: float) -> bool:
-        """True when live qty is at or below regime cap (float-safe)."""
-        return float(qty) <= float(target_qty) + self._cap_tolerance() + 1e-9
+        """True when live qty is at or below regime cap (float-safe + drift band)."""
+        tol = self._cap_excess_tolerance(qty, target_qty)
+        return float(qty) <= float(target_qty) + tol + 1e-9
 
     def _cap_qty_unit(self) -> str:
         return "张" if self._is_deepcoin_cap() else "ETH"
@@ -127,12 +138,12 @@ class PositionCapGuardMixin:
 
     def _cap_oversize_detail(self, live_qty: float, price: float) -> dict[str, Any]:
         max_qty, cap_meta = self._compute_regime_cap_target(price)
-        tol = self._cap_tolerance()
         target_qty = max(0.0, float(max_qty))
+        tol = self._cap_excess_tolerance(live_qty, target_qty)
         raw_gap = max(0.0, float(live_qty) - target_qty)
         oversized = raw_gap > tol + 1e-9
-        excess = max(0.0, raw_gap - tol) if oversized else 0.0
-        trim_qty = raw_gap if oversized else 0.0
+        excess = raw_gap if oversized else 0.0
+        trim_qty = excess
         retain_ratio = (target_qty / float(live_qty)) if live_qty > 0 else 0.0
         return {
             **cap_meta,
@@ -229,7 +240,7 @@ class PositionCapGuardMixin:
             return result
 
         target_qty = float(cap["target_qty"])
-        tol = self._cap_tolerance()
+        tol = float(cap.get("tolerance", 0) or 0)
         if float(cap.get("trim_qty", 0) or 0) <= tol + 1e-9:
             logger.info(
                 "[User %s] CAP_ALIGN within tolerance: live=%.4f target=%.4f tol=%.4f",

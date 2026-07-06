@@ -22,6 +22,7 @@ from app.core.same_direction_policy import (
 from app.core.close_attribution import diagnose_flat_close, format_close_reason
 from app.core.symbol_precision import normalize_tv_targets, round_price, round_quantity, PRICE_TICK
 from app.core.position_sizing import compute_eth_qty, read_contract_equity
+from app.core.position_qty_tolerance import qty_change_significant
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 
@@ -618,12 +619,13 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
         return self._infer_filled_tp_levels(qty, curr_px)
 
     def _classify_qty_change(self, old_qty: float, new_qty: float) -> str:
+        tol = self._qty_match_tol(old_qty, new_qty)
         if new_qty <= 0:
             return "full_close"
-        if new_qty > old_qty + 0.001:
+        if new_qty > old_qty + tol:
             return "manual_add"
         reduced = old_qty - new_qty
-        if reduced <= 0.001:
+        if reduced <= tol:
             return "unchanged"
         old_slices = self._compute_tp_slices(
             old_qty, exclude_levels=set(self.consumed_tp_levels)
@@ -1714,7 +1716,11 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
                         real_amt = actual_qty if actual_side == "LONG" else -actual_qty
                         self.watched_qty = actual_qty
 
-                    qty_changed = abs(actual_qty - self.watched_qty) > 0.001
+                    qty_changed = qty_change_significant(
+                        self.watched_qty,
+                        actual_qty,
+                        is_contracts=False,
+                    )
                     if qty_changed:
                         old_qty = self.watched_qty
                         orch = self._orchestrate_qty_change(

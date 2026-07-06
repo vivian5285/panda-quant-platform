@@ -17,6 +17,7 @@ from app.core.same_direction_policy import (
     format_reopen_reason,
 )
 from app.core.position_sizing import compute_deepcoin_contracts, read_contract_equity
+from app.core.position_qty_tolerance import qty_change_significant
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.adverse_radar_guard import ADVERSE_ARM_PCT, AdverseRadarMixin
 from app.config import get_settings
@@ -1561,7 +1562,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin):
                         real_amt = self._safe_qty(cap_result["new_qty"])
                         self.watched_qty = real_amt
 
-                    qty_changed = real_amt != self.watched_qty
+                    qty_changed = qty_change_significant(
+                        self.watched_qty,
+                        real_amt,
+                        is_contracts=True,
+                    )
                     if qty_changed:
                         old_qty = self.watched_qty
                         curr_px_chg = self.client.get_current_price(self.symbol) or float(

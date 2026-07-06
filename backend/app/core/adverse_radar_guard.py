@@ -5,6 +5,7 @@ import logging
 import time
 from typing import Any
 
+from app.core.position_qty_tolerance import qty_drift_tolerance
 from app.core.symbol_precision import round_price, round_quantity
 
 logger = logging.getLogger(__name__)
@@ -14,7 +15,7 @@ ADVERSE_ARM_PCT = 0.02
 ADVERSE_SL_TIERS = (0.02, 0.03, 0.05)
 ADVERSE_SL_SLICE_RATIOS = (0.33, 0.33, 0.34)
 ADVERSE_STOP_TOLERANCE = 2.0
-QTY_MATCH_TOL_ETH = 0.005
+QTY_MATCH_TOL_ETH = 0.005  # legacy alias; prefer qty_drift_tolerance()
 
 
 def adverse_move_pct(entry: float, price: float, side: str | None) -> float:
@@ -154,8 +155,12 @@ class AdverseRadarMixin:
             getattr(self, "current_side", None),
         )
 
-    def _qty_match_tol(self) -> float:
-        return 0.0 if getattr(self, "exchange_id", "") == "deepcoin" else QTY_MATCH_TOL_ETH
+    def _qty_match_tol(self, old_qty: float = 0, new_qty: float = 0) -> float:
+        return qty_drift_tolerance(
+            old_qty,
+            new_qty,
+            is_contracts=getattr(self, "exchange_id", "") == "deepcoin",
+        )
 
     def _adverse_round_qty(self, qty: float) -> float:
         if getattr(self, "exchange_id", "") == "deepcoin":
@@ -192,7 +197,7 @@ class AdverseRadarMixin:
         return False
 
     def _classify_tp_reduction(self, old_qty: float, new_qty: float) -> str | None:
-        if new_qty <= 0 or new_qty >= old_qty - self._qty_match_tol():
+        if new_qty <= 0 or new_qty >= old_qty - self._qty_match_tol(old_qty, new_qty):
             return None
         if hasattr(self, "_classify_qty_change"):
             cause = self._classify_qty_change(old_qty, new_qty)
@@ -210,7 +215,7 @@ class AdverseRadarMixin:
         else:
             return None
         reduced = old_qty - new_qty
-        tol = self._qty_match_tol()
+        tol = self._qty_match_tol(old_qty, new_qty)
         for level, slice_qty in slices:
             if slice_qty > 0 and abs(reduced - slice_qty) <= tol:
                 consumed = getattr(self, "consumed_tp_levels", None)
@@ -222,9 +227,9 @@ class AdverseRadarMixin:
     def _classify_reduction_cause(self, old_qty: float, new_qty: float) -> str:
         if new_qty <= 0:
             return "full_close"
-        if new_qty > old_qty + self._qty_match_tol():
+        if new_qty > old_qty + self._qty_match_tol(old_qty, new_qty):
             return "manual_add"
-        if abs(new_qty - old_qty) <= self._qty_match_tol():
+        if abs(new_qty - old_qty) <= self._qty_match_tol(old_qty, new_qty):
             return "unchanged"
 
         tp_cause = self._classify_tp_reduction(old_qty, new_qty)
@@ -238,7 +243,7 @@ class AdverseRadarMixin:
                 float(old_qty),
                 float(old_qty - new_qty),
                 round_qty_fn=self._adverse_round_qty,
-                qty_tol=max(self._qty_match_tol(), 0.001),
+                qty_tol=self._qty_match_tol(old_qty, new_qty),
             )
             if tier is not None:
                 return f"adverse_sl_{int(round(tier * 100))}pct"
