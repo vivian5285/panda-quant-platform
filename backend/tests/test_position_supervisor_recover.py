@@ -48,6 +48,9 @@ def test_recover_restores_radar_and_rebuilds_defenses(supervisor, monkeypatch):
     supervisor._save_state()
 
     supervisor.client.get_current_price.return_value = 3660.0
+    supervisor.leverage = 10
+    supervisor.initial_principal = 7000.0
+    supervisor.client.get_available_balance.return_value = 10000.0
 
     with patch.object(
         supervisor.position_manager,
@@ -78,6 +81,9 @@ def test_recover_restores_radar_and_rebuilds_defenses(supervisor, monkeypatch):
 
 def test_recover_falls_back_to_db_trade_context(supervisor):
     supervisor.client.get_current_price.return_value = 3580.0
+    supervisor.leverage = 10
+    supervisor.initial_principal = 7000.0
+    supervisor.client.get_available_balance.return_value = 10000.0
 
     with patch.object(
         supervisor.position_manager,

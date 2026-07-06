@@ -9,6 +9,7 @@ from typing import Callable, Optional
 
 from app.core.binance_client import BinanceClient
 from app.core.binance_smart_defense import BinanceSmartDefenseMixin
+from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.position_manager import PositionManager
 from app.core.regime_utils import clamp_regime
 from app.core.same_direction_policy import (
@@ -52,7 +53,7 @@ class _QueuedSignal:
     result: dict = field(default_factory=dict)
 
 
-class PositionSupervisor(BinanceSmartDefenseMixin):
+class PositionSupervisor(PositionCapGuardMixin, BinanceSmartDefenseMixin):
     """
     多用户版 position_supervisor_binance.py
     TV 军师指挥价格/regime → VPS 自主执行仓位管理、止盈网格、雷达锁润、先平后开、单向持仓。
@@ -500,6 +501,12 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
             self.current_side = action
             real_qty = abs(float(pos["positionAmt"]))
             entry_price = float(pos["entryPrice"])
+            cap_px = self.client.get_current_price(self.symbol) or curr_px
+            cap_result = self._enforce_regime_cap_alignment(
+                real_qty, entry_price, cap_px, reason="开仓后叠仓核验",
+            )
+            if cap_result.get("new_qty"):
+                real_qty = float(cap_result["new_qty"])
             self.initial_qty = real_qty
             self.consumed_tp_levels = []
             self.current_trade_id = self.on_trade_open(
@@ -1682,6 +1689,18 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
                     else:
                         last_px = curr_px
 
+                    entry_px = float(pos.get("entryPrice", 0) or self.watched_entry or 0)
+                    cap_result = self._enforce_regime_cap_alignment(
+                        actual_qty,
+                        entry_px,
+                        curr_px or entry_px,
+                        reason="哨兵巡检",
+                    )
+                    if cap_result.get("trimmed", 0) > 0 and cap_result.get("new_qty"):
+                        actual_qty = float(cap_result["new_qty"])
+                        real_amt = actual_qty if actual_side == "LONG" else -actual_qty
+                        self.watched_qty = actual_qty
+
                     qty_changed = abs(actual_qty - self.watched_qty) > 0.001
                     if qty_changed:
                         old_qty = self.watched_qty
@@ -1974,6 +1993,17 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
             curr_px = self.client.get_current_price(self.symbol)
             self._refresh_radar_state_on_recover(curr_px, self.watched_entry)
 
+            cap_result = self._enforce_regime_cap_alignment(
+                self.watched_qty,
+                self.watched_entry,
+                curr_px or self.watched_entry,
+                reason="重启恢复",
+            )
+            if cap_result.get("new_qty"):
+                self.watched_qty = float(cap_result["new_qty"])
+                if float(self.initial_qty or 0) > self.watched_qty:
+                    self.initial_qty = self.watched_qty
+
             audit["direction_aligned"] = (
                 self.current_side == self.last_tv_side if self.last_tv_side else True
             )
@@ -1984,12 +2014,15 @@ class PositionSupervisor(BinanceSmartDefenseMixin):
             self._ensure_price_ws()
 
             sl_to_pass = self._radar_sl_to_pass()
-            defense = self._smart_realign_defenses(
-                self.watched_qty,
-                self.watched_entry,
-                dynamic_sl=sl_to_pass,
-                reason="重启闪电接管",
-            )
+            if cap_result.get("trimmed", 0) > 0 and cap_result.get("defense"):
+                defense = cap_result["defense"]
+            else:
+                defense = self._smart_realign_defenses(
+                    self.watched_qty,
+                    self.watched_entry,
+                    dynamic_sl=sl_to_pass,
+                    reason="重启闪电接管",
+                )
 
             audit.update({
                 "has_position": True,

@@ -17,6 +17,7 @@ from app.core.same_direction_policy import (
     format_reopen_reason,
 )
 from app.core.position_sizing import compute_deepcoin_contracts
+from app.core.position_cap_guard import PositionCapGuardMixin
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 
@@ -54,7 +55,7 @@ class _DingtalkBridge:
 
         return _call
 
-class DeepcoinPositionSupervisor:
+class DeepcoinPositionSupervisor(PositionCapGuardMixin):
     def __init__(
         self,
         user_id: int,
@@ -1385,8 +1386,15 @@ class DeepcoinPositionSupervisor:
         if pos and pos.get('size', 0) > 0:
             self.current_side = action
             real_qty = self._safe_qty(pos['size'])
+            entry_price = float(pos.get('entry_price', 0) or 0)
+            cap_px = self.client.get_current_price(self.symbol) or curr_px
+            cap_result = self._enforce_regime_cap_alignment(
+                real_qty, entry_price, cap_px, reason="开仓后叠仓核验",
+            )
+            if cap_result.get("new_qty"):
+                real_qty = self._safe_qty(cap_result["new_qty"])
             self.initial_qty = real_qty
-            self._protect_and_monitor(real_qty, pos['entry_price'])
+            self._protect_and_monitor(real_qty, entry_price or pos['entry_price'])
 
     def _protect_and_monitor(self, qty, entry_price):
         tp_pxs = self.tv_tps
@@ -1534,6 +1542,15 @@ class DeepcoinPositionSupervisor:
                         reason = f"致命方向背离：实盘({actual_side}) vs TV({self.last_tv_side})"
                         self._close_all(reason, force_align=(actual_side, self.last_tv_side))
                         break
+
+                    entry_px = float(pos.get("entry_price", 0) or self.watched_entry or 0) if pos else 0.0
+                    cap_px = self.client.get_current_price(self.symbol) or entry_px
+                    cap_result = self._enforce_regime_cap_alignment(
+                        real_amt, entry_px, cap_px or entry_px, reason="哨兵巡检",
+                    )
+                    if cap_result.get("trimmed", 0) > 0 and cap_result.get("new_qty"):
+                        real_amt = self._safe_qty(cap_result["new_qty"])
+                        self.watched_qty = real_amt
 
                     qty_changed = real_amt != self.watched_qty
                     if qty_changed:
@@ -1774,6 +1791,18 @@ class DeepcoinPositionSupervisor:
                 curr_px = self.client.get_current_price(self.symbol)
                 self._refresh_radar_state_on_recover(curr_px, self.watched_entry)
 
+                cap_result = self._enforce_regime_cap_alignment(
+                    real_amt,
+                    self.watched_entry,
+                    curr_px or self.watched_entry,
+                    reason="重启恢复",
+                )
+                if cap_result.get("new_qty"):
+                    real_amt = self._safe_qty(cap_result["new_qty"])
+                    self.watched_qty = real_amt
+                    if self._safe_qty(self.initial_qty) > real_amt:
+                        self.initial_qty = real_amt
+
                 radar_active = self._is_radar_active()
                 sl_to_pass = self.current_sl if radar_active else None
 
@@ -1783,12 +1812,15 @@ class DeepcoinPositionSupervisor:
                     f"TV对齐 {self.last_tv_side} | 对账 {len(reconcile_notes)} 项"
                 )
 
-                result = self._smart_realign_defenses(
-                    real_amt, self.watched_entry, dynamic_sl=sl_to_pass,
-                    reason="重启闪电接管" + (
-                        f" | {qty_change[2]}" if qty_change else ""
-                    ),
-                )
+                if cap_result.get("trimmed", 0) > 0 and cap_result.get("defense"):
+                    result = cap_result["defense"]
+                else:
+                    result = self._smart_realign_defenses(
+                        real_amt, self.watched_entry, dynamic_sl=sl_to_pass,
+                        reason="重启闪电接管" + (
+                            f" | {qty_change[2]}" if qty_change else ""
+                        ),
+                    )
                 matched = result["matched"]
                 expected = result["expected"]
                 _rebuilt = result["rebuilt"]
