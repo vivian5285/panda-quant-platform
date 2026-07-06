@@ -153,8 +153,20 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "Invalid referrer UID or invite code",
     },
     "api.credit_default_bind_blocked": {
-        "zh": "您有未缴纳的绩效服务费，暂不可绑定 API，缴清后自动恢复",
-        "en": "Unpaid performance fee — API binding is blocked until payment is cleared",
+        "zh": "您有未缴纳的绩效服务费，暂不可绑定/换绑/解绑 API，缴清并确认到账后自动恢复",
+        "en": "Unpaid performance fee — API bind/rebind/unbind blocked until payment is cleared",
+    },
+    "api.downline_credit_bind_blocked": {
+        "zh": "您的下级存在未缴绩效费（失信连坐），暂不可绑定/换绑 API，待下级结清后恢复",
+        "en": "A downline has unpaid performance fees — API binding blocked until they settle",
+    },
+    "api.family_credit_bind_blocked": {
+        "zh": "该主账户 UID 家族存在失信未结绩效费，暂不可绑定此 API",
+        "en": "This master UID family has unpaid performance fees — binding blocked",
+    },
+    "api.single_exchange_hint": {
+        "zh": "同一时期仅支持绑定一个交易所 API 实盘；换绑须先结清绩效费",
+        "en": "Only one exchange API may be active; rebind requires cleared performance fees",
     },
 
     # Wallet

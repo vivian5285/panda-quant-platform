@@ -150,13 +150,19 @@ def is_user_paused(db: Session, user_id: int) -> bool:
 
 def build_trading_control_response(db: Session, user) -> dict:
     from app.services.settlement import get_pending_settlement
-    from app.services.credit_control import user_trading_blocked_by_credit, user_is_credit_default, referral_block_reason
+    from app.services.credit_control import (
+        user_trading_blocked_by_credit,
+        user_is_credit_default,
+        referral_block_reason,
+        user_api_operations_blocked,
+    )
 
     ctrl = get_user_control(db, user.id)
     pending = get_pending_settlement(db, user.id)
     settlement_blocked = pending is not None
     settlement_fee_deferred = bool(ctrl.get("settlement_fee_deferred")) and settlement_blocked
     credit_blocked, credit_reason = user_trading_blocked_by_credit(db, user.id)
+    api_bind_blocked, api_bind_block_reason = user_api_operations_blocked(db, user.id)
     awaiting_flat = bool(ctrl.get("settlement_awaiting_flat"))
     pending_out = None
     if pending:
@@ -180,6 +186,8 @@ def build_trading_control_response(db: Session, user) -> dict:
         "referral_blocked": bool(referral_block_reason(db, user.id)),
         "referral_block_reason": referral_block_reason(db, user.id),
         "referral_invite_override": bool(ctrl.get("referral_invite_override")),
+        "api_bind_blocked": api_bind_blocked,
+        "api_bind_block_reason": api_bind_block_reason,
         "effective_paused": ctrl["trading_paused"] or settlement_pause or global_paused or awaiting_flat,
         "pending_settlement": pending_out,
         "api_status": user.api_status,

@@ -101,6 +101,10 @@ def _assert_exchange_open(ex: str) -> None:
 @router.post("/bind-api/verify", response_model=ApiVerifyResponse)
 def verify_bind_api(req: ApiBindRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """绑定前校验：主账户或子账户模式。"""
+    from app.services.api_bind_policy import assert_api_gate_allowed, validate_bind_target_family
+
+    assert_api_gate_allowed(db, user.id)
+
     ex = parse_exchange(req.exchange)
     if ex is None:
         raise_i18n(400, "api.unsupported_exchange")
@@ -135,12 +139,18 @@ def verify_bind_api(req: ApiBindRequest, user: User = Depends(get_current_user),
             req.passphrase or "",
             req.exchange_uid or req.master_exchange_uid,
         )
+    master_uid = result.get("master_exchange_uid") or req.master_exchange_uid or req.exchange_uid
+    validate_bind_target_family(db, exchange=ex, master_exchange_uid=master_uid)
     return _verify_response(result)
 
 
 @router.post("/bind-api/discover-subs", response_model=DiscoverSubsResponse)
-def discover_sub_accounts(req: DiscoverSubsRequest, user: User = Depends(get_current_user)):
+def discover_sub_accounts(req: DiscoverSubsRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """子账户模式：用主账户 API 查询 UID 与子账户列表。"""
+    from app.services.api_bind_policy import assert_api_gate_allowed
+
+    assert_api_gate_allowed(db, user.id)
+
     ex = parse_exchange(req.exchange)
     if ex is None:
         raise_i18n(400, "api.unsupported_exchange")
@@ -207,10 +217,14 @@ def bind_api(
             raise_i18n(400, "api.security_codes_required")
         verify_security_dual(db, user, req.email_code, req.phone_code)
 
-    from app.services.credit_control import user_api_bind_blocked
-    bind_blocked, bind_reason = user_api_bind_blocked(db, user.id)
-    if bind_blocked:
-        raise_i18n(403, "api.credit_default_bind_blocked")
+    from app.services.api_bind_policy import (
+        assert_api_gate_allowed,
+        bind_identity_changed,
+        describe_bind_action,
+        validate_bind_target_family,
+    )
+
+    assert_api_gate_allowed(db, user.id)
 
     ex = parse_exchange(req.exchange)
     if ex is None:
@@ -253,6 +267,21 @@ def bind_api(
         localized = translate_api_message(result, get_locale())
         raise HTTPException(400, localized.get("message") or t("api.verify_fail", get_locale()))
 
+    validate_bind_target_family(
+        db,
+        exchange=ex,
+        master_exchange_uid=result.get("master_exchange_uid") or req.master_exchange_uid,
+    )
+
+    bind_action = describe_bind_action(user, exchange=ex, account_mode=mode)
+    identity_changed = bind_identity_changed(
+        user,
+        exchange=ex,
+        account_mode=mode,
+        exchange_uid=result.get("exchange_uid"),
+        master_exchange_uid=result.get("master_exchange_uid"),
+    )
+
     equity = float(result.get("total_balance", 0))
     user.exchange = ex
     user.api_key_enc = encrypt_text(req.api_key)
@@ -293,12 +322,20 @@ def bind_api(
         result.get("discovered_sub_accounts") or [],
     )
 
-    start_new_profit_cycle(
-        db, user,
-        snapshot_type="api_bind",
-        equity=equity,
-        note="首次绑定 API，记载初始本金",
-    )
+    if identity_changed:
+        note = {
+            "first_bind": "首次绑定 API，记载初始本金",
+            "rebind": "换绑 API（同交易所/UID），结清绩效费后重置本金周期",
+            "exchange_switch": "换绑不同交易所 API，结清绩效费后重置本金周期",
+            "mode_switch": "主/子账户模式切换，重置本金周期",
+        }.get(bind_action, "API 绑定")
+        start_new_profit_cycle(
+            db, user,
+            snapshot_type="api_bind" if bind_action == "first_bind" else "api_rebind",
+            equity=equity,
+            note=note,
+        )
+
     log_audit(
         db,
         "api.bind",
@@ -311,6 +348,8 @@ def bind_api(
             "exchange_uid": user.exchange_uid,
             "master_exchange_uid": user.master_exchange_uid,
             "filed_sub_count": filed_count,
+            "bind_action": bind_action,
+            "identity_changed": identity_changed,
         },
         request=request,
     )
@@ -345,6 +384,10 @@ def unbind_api(
         raise HTTPException(400, "No API bound")
     if user.email and user.phone:
         verify_security_dual(db, user, email_code, phone_code)
+
+    from app.services.api_bind_policy import assert_api_gate_allowed
+
+    assert_api_gate_allowed(db, user.id)
 
     supervisor_pool.remove_user(user.id)
     prev_exchange = user.exchange

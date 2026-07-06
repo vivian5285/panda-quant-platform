@@ -23,6 +23,7 @@ type TradeRow = {
   realized_pnl?: number
   regime: number
   status: string
+  display_status?: string
   created_at: string
   closed_at?: string
   slippage?: number | null
@@ -62,8 +63,15 @@ function resolveRange(timeFilter: TimeRange, dateFrom: string, dateTo: string): 
 }
 
 function tradeStatus(tr: TradeRow, logs: LogRow[]) {
+  if (tr.display_status) return tr.display_status
+  if (tr.status === 'open') return 'open'
   const related = logs.filter(l => l.trade_id === tr.id)
-  if (related.some(l => l.event_type === 'ERROR')) return 'error'
+  const fatalError = related.some(l => {
+    if (l.event_type !== 'ERROR') return false
+    const msg = l.message || ''
+    return !msg.includes('档位纠偏中止') && !msg.includes('档位额度超标但减仓失败')
+  })
+  if (fatalError) return 'error'
   if (related.some(l => l.event_type === 'ADJUST' || l.message?.includes('风控'))) return 'risk'
   if (tr.status === 'open') return 'open'
   return 'closed'

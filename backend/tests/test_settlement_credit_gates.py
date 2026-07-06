@@ -84,3 +84,14 @@ def test_api_bind_blocked_for_credit_default(mock_default, mock_ctrl, db):
     blocked, reason = user_api_bind_blocked(db, user.id)
     assert blocked is True
     assert reason == "own_credit_default"
+
+
+@patch("app.services.api_bind_policy.referral_block_reason", return_value="downline_credit_default")
+@patch("app.services.api_bind_policy.user_api_bind_blocked", return_value=(False, None))
+def test_api_operations_blocked_for_downline(_own, _ref, db):
+    from app.services.credit_control import user_api_operations_blocked
+
+    user = _user(db, "U014")
+    blocked, reason = user_api_operations_blocked(db, user.id)
+    assert blocked is True
+    assert reason == "downline_credit_default"

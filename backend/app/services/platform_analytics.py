@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.models import Trade, TradeLog, User
 from app.models.platform import SignalDispatchLog
 from app.schemas import TradeOut
+from app.services.trade_display_status import resolve_trade_display_status
 
 
 def build_platform_analytics(db: Session, days: int = 14) -> dict:
@@ -109,7 +110,14 @@ def enrich_trades(db: Session, trades: list[Trade]) -> list[dict]:
         .filter(TradeLog.trade_id.in_(ids), TradeLog.event_type == "OPEN")
         .all()
     )
+    trade_logs = (
+        db.query(TradeLog)
+        .filter(TradeLog.trade_id.in_(ids))
+        .order_by(TradeLog.created_at.asc())
+        .all()
+    )
     slip: dict[int, float] = {}
+    logs_by_trade: dict[int, list[dict]] = defaultdict(list)
     for log in open_logs:
         if not log.trade_id or not log.detail_json:
             continue
@@ -119,10 +127,20 @@ def enrich_trades(db: Session, trades: list[Trade]) -> list[dict]:
                 slip[log.trade_id] = float(detail["slippage"])
         except json.JSONDecodeError:
             pass
+    for log in trade_logs:
+        if not log.trade_id:
+            continue
+        logs_by_trade[log.trade_id].append({
+            "event_type": log.event_type,
+            "message": log.message,
+        })
     out = []
     for t in trades:
         row = TradeOut.model_validate(t).model_dump(mode="json")
         row["slippage"] = slip.get(t.id)
         row["funding_fee"] = float(getattr(t, "funding_fee", 0) or 0)
+        row["display_status"] = resolve_trade_display_status(
+            t.status, logs_by_trade.get(t.id, [])
+        )
         out.append(row)
     return out

@@ -118,8 +118,14 @@ export default function ApiManage() {
   const [devPhone, setDevPhone] = useState('')
   const [enabledExchanges, setEnabledExchanges] = useState<ExchangeId[]>(['binance'])
   const [supportTelegram, setSupportTelegram] = useState('')
+  const [tradingCtrl, setTradingCtrl] = useState<{
+    api_bind_blocked?: boolean
+    api_bind_block_reason?: string | null
+    pending_settlement?: { user_payable: number } | null
+  } | null>(null)
 
   const needsDualVerify = profile?.has_email && profile?.has_phone
+  const apiBindBlocked = !!tradingCtrl?.api_bind_blocked
 
   const isExchangeSelectable = (id: ExchangeId) => enabledExchanges.includes(id)
 
@@ -207,6 +213,7 @@ export default function ApiManage() {
   const bindReady = isBindReady(verify)
   const dualCodesOk = !needsDualVerify || (secEmailCode.length > 0 && secPhoneCode.length > 0)
   const canBind =
+    !apiBindBlocked &&
     bindReady &&
     dualCodesOk &&
     !!apiKey &&
@@ -269,6 +276,7 @@ export default function ApiManage() {
       if (p.exchange) setExchange(normalizeExchangeFromApi(p.exchange))
       if (p.api_account_mode === 'sub') setAccountMode('sub')
     }).catch(() => {})
+    userApi.tradingControl().then(setTradingCtrl).catch(() => {})
     settingsApi.get().then(p => setTotpEnabled(!!p.totp_enabled)).catch(() => {})
     return () => {
       clearInterval(timer)
@@ -488,6 +496,27 @@ export default function ApiManage() {
           <p>{t('api.sec1Highlight')}{t('api.sec1Detail')} · {t('api.sec2Warn')}{t('api.sec2Detail')}</p>
         </div>
       </div>
+
+      {apiBindBlocked && (
+        <div className="api-danger-banner">
+          <ShieldAlert size={20} />
+          <div>
+            <strong>{t('api.creditGateTitle')}</strong>
+            <p>
+              {tradingCtrl?.api_bind_block_reason === 'downline_credit_default'
+                ? t('api.creditGateDownlineBody')
+                : t('api.creditGateOwnBody')}
+              {' '}
+              {t('api.singleExchangePolicy')}
+              {tradingCtrl?.pending_settlement?.user_payable != null && (
+                <> · {t('api.creditGateAmount', { amount: tradingCtrl.pending_settlement.user_payable.toFixed(2) })}</>
+              )}
+              {' '}
+              <Link to="/settlements">{t('api.creditGateSettleLink')}</Link>
+            </p>
+          </div>
+        </div>
+      )}
 
       {totpEnabled === false && (
         <div className="api-welcome-banner">
@@ -858,7 +887,7 @@ export default function ApiManage() {
               onDevCodes={(e, p) => { setDevEmail(e || ''); setDevPhone(p || '') }}
             />
           )}
-          <button className="btn btn-danger section-mt-sm" type="button" disabled={loading || (needsDualVerify && (!secEmailCode || !secPhoneCode))}
+          <button className="btn btn-danger section-mt-sm" type="button" disabled={loading || apiBindBlocked || (needsDualVerify && (!secEmailCode || !secPhoneCode))}
             onClick={async () => {
               setLoading(true)
               try {

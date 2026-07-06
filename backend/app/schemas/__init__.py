@@ -310,6 +310,7 @@ class TradeOut(BaseModel):
     slippage: Optional[float] = None
     regime: int
     status: str
+    display_status: Optional[str] = None
     created_at: datetime
     closed_at: Optional[datetime]
 

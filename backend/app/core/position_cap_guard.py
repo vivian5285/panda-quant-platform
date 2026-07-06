@@ -244,7 +244,7 @@ class PositionCapGuardMixin:
                 "[User %s] CAP_ALIGN blocked unsafe trim: %s | cap=%s",
                 self.user_id, trim_plan_err, cap,
             )
-            self._log("ERROR", f"档位纠偏中止(安全校验): {trim_plan_err}", cap)
+            self._log("CAP_ALIGN_BLOCKED", f"档位纠偏中止(安全校验): {trim_plan_err}", cap)
             err_detail = self._cap_alert_detail(cap, error=trim_plan_err)
             self._alert(
                 "critical",
@@ -281,7 +281,7 @@ class PositionCapGuardMixin:
 
             if not self._place_cap_trim_order(slice_trim):
                 self._log(
-                    "ERROR",
+                    "CAP_ALIGN_FAIL",
                     f"档位额度超标但减仓失败: 实盘 {current_qty:.4f} > 目标 {target_qty:.4f}",
                     cap,
                 )

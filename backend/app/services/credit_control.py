@@ -175,12 +175,19 @@ def user_entry_blocked_by_settlement(db: Session, user_id: int) -> tuple[bool, s
 
 
 def user_api_bind_blocked(db: Session, user_id: int) -> tuple[bool, str | None]:
-    """失信用户禁止绑定/重绑 API。"""
+    """失信用户禁止绑定/重绑/解绑 API（本人未缴绩效费）。"""
     if user_is_credit_default(db, user_id):
         ctrl = get_user_control(db, user_id)
         if not ctrl.get("settlement_fee_deferred"):
             return True, "own_credit_default"
     return False, None
+
+
+def user_api_operations_blocked(db: Session, user_id: int) -> tuple[bool, str | None]:
+    """Alias — includes downline 失信连坐（推广人下线未缴费亦封 API 门禁）。"""
+    from app.services.api_bind_policy import api_gate_blocked
+
+    return api_gate_blocked(db, user_id)
 
 
 def user_trading_blocked_by_credit(db: Session, user_id: int) -> tuple[bool, str | None]:
