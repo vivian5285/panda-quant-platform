@@ -135,8 +135,125 @@ def test_binance_supervisor_inherits_cap_guard():
     assert hasattr(sup, "_compute_regime_cap_target")
 
 
+class _DeepcoinCapProbe(PositionCapGuardMixin):
+    exchange_id = "deepcoin"
+    regime = 3
+    risk_multiplier = 1.0
+    initial_principal = 700.0
+    leverage = 10
+    face_value = 0.1
+    regime_settings = {
+        3: {"margin": 0.35, "ratios": [0.18, 0.32, 0.50], "activation": 0.60, "trail_offset": 0.90},
+    }
+    current_side = "LONG"
+    watched_qty = 0
+    watched_entry = 3000.0
+    initial_qty = 0
+    current_sl = 3000.0
+    user_id = 1
+    symbol = "ETH-USDT-SWAP"
+
+    def __init__(self):
+        self.client = MagicMock()
+        self.client.get_futures_account_summary.return_value = {
+            "total_margin_balance": 700.0,
+            "available_balance": 15.0,
+        }
+        self.on_log = MagicMock()
+        self.on_alert = MagicMock()
+
+    def _close_order_side(self):
+        return "sell"
+
+    def _safe_qty(self, v):
+        return int(v)
+
+    def _get_active_position(self):
+        return {"size": 15, "entry_price": 3000.0, "posSide": "long"}
+
+    def _radar_sl_to_pass(self):
+        return 3000.0
+
+    def _smart_realign_defenses(self, *a, **k):
+        return {"matched": 3, "expected": 3, "audit": {}, "aligned": True}
+
+    def _log(self, *a, **k):
+        pass
+
+    def _alert(self, *a, **k):
+        pass
+
+    def _save_state(self):
+        pass
+
+
+def test_deepcoin_cap_oversize_uses_principal_not_available():
+    """Regression: avail=15 must NOT shrink max contracts when equity=700."""
+    probe = _DeepcoinCapProbe()
+    detail = probe._cap_oversize_detail(live_qty=15, price=3000.0)
+    # 700 × 35% × 10 / (3000 × 0.1) ≈ 8 张
+    assert detail["oversized"] is True
+    assert detail["max_qty"] == 8
+    assert detail["trim_qty"] == 7
+    assert probe._validate_cap_trim_plan(detail) is None
+
+
+def test_deepcoin_enforce_cap_trims_to_target_not_near_zero():
+    probe = _DeepcoinCapProbe()
+    probe.watched_qty = 15
+    probe.initial_qty = 15
+    reads = iter([(15, 3000.0), (8, 3000.0), (8, 3000.0), (8, 3000.0)])
+
+    with patch.object(probe, "_place_cap_trim_order", return_value=True) as trim, patch.object(
+        probe, "_read_live_position_qty", side_effect=lambda: next(reads),
+    ), patch.object(probe, "_smart_realign_defenses") as realign:
+        realign.return_value = {"matched": 3, "expected": 3}
+        result = probe._enforce_regime_cap_alignment(15, 3000.0, 3000.0, reason="test")
+
+    trim.assert_called_once()
+    assert trim.call_args[0][0] == 7
+    assert result["new_qty"] == 8
+
+
+def test_deepcoin_supervisor_inherits_cap_guard():
+    from app.core.position_supervisor_deepcoin import DeepcoinPositionSupervisor
+
+    client = MagicMock()
+    sup = DeepcoinPositionSupervisor(user_id=1, client=client)
+    assert hasattr(sup, "_enforce_regime_cap_alignment")
+    assert hasattr(sup, "_compute_regime_cap_target")
+    assert sup.exchange_id == "deepcoin"
+
+
+def test_okx_cap_uses_principal_not_available():
+    probe = _CapProbe()
+    probe.exchange_id = "okx"
+    probe.client.get_futures_account_summary.return_value = {
+        "total_margin_balance": 755.0,
+        "available_balance": 12.0,
+    }
+    detail = probe._cap_oversize_detail(live_qty=2.954, price=1775.0)
+    assert detail["oversized"] is True
+    assert detail["max_qty"] > 1.0
+    assert detail["sizing_base"] == 755.0
+
+
+def test_gate_cap_uses_principal_not_available():
+    probe = _CapProbe()
+    probe.exchange_id = "gate"
+    probe.initial_principal = 700.0
+    probe.client.get_futures_account_summary.return_value = {
+        "total_margin_balance": 700.0,
+        "available_balance": 12.0,
+    }
+    detail = probe._cap_oversize_detail(live_qty=2.954, price=1775.0)
+    assert detail["max_qty"] == pytest.approx(1.385, rel=0.05)
+    assert probe._validate_cap_trim_plan(detail) is None
+
+
 def test_open_position_trims_oversize_after_fill():
     client = MagicMock()
+    client.get_futures_account_summary.return_value = {"total_margin_balance": 1000.0}
     client.get_available_balance.return_value = 1000.0
     client.get_current_price.return_value = 1770.0
     client.set_leverage.return_value = None

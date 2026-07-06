@@ -21,7 +21,7 @@ from app.core.same_direction_policy import (
 )
 from app.core.close_attribution import diagnose_flat_close, format_close_reason
 from app.core.symbol_precision import normalize_tv_targets, round_price, round_quantity, PRICE_TICK
-from app.core.position_sizing import compute_eth_qty
+from app.core.position_sizing import compute_eth_qty, read_contract_equity
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 
@@ -481,13 +481,13 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
         }
 
     def _open_position(self, action: str, curr_px: float) -> dict:
-        balance = self.client.get_available_balance()
+        equity = read_contract_equity(self.client)
         margin_pct = self.regime_settings[self.regime]["margin"] * self.risk_multiplier
         self.client.set_leverage(self.symbol, leverage=self.leverage)
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.4)
         qty, sizing_meta = compute_eth_qty(
-            live_balance=balance,
+            live_balance=equity,
             initial_principal=self.initial_principal,
             margin_pct=margin_pct,
             leverage=self.leverage,

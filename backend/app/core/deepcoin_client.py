@@ -144,14 +144,28 @@ class DeepcoinClient:
 
     # ── 账户与行情 ──────────────────────────────────────────────
 
-    def get_available_balance(self, ccy="USDT"):
+    def _get_swap_usdt_balance(self, ccy: str = "USDT") -> tuple[float, float]:
+        """Return (equity, available) from swap account — eq is total contract equity."""
         res = self._request("GET", "/account/balances", {"instType": "SWAP"})
         if isinstance(res, dict) and "data" in res:
             for item in res["data"]:
                 if item.get("ccy") == ccy:
-                    eq = float(item.get("eq", 0))
-                    return eq if eq > 0 else float(item.get("availBal", 0))
-        return 0.0
+                    eq = float(item.get("eq", 0) or 0)
+                    avail = float(item.get("availBal", 0) or 0)
+                    return eq, avail
+        return 0.0, 0.0
+
+    def get_available_balance(self, ccy="USDT"):
+        """Available margin only — do NOT use for regime sizing / cap alignment."""
+        _eq, avail = self._get_swap_usdt_balance(ccy)
+        if avail > 0:
+            return avail
+        return _eq
+
+    def get_contract_equity(self, ccy: str = "USDT") -> float:
+        """Total U-margined swap equity (eq) — same anchor as Binance total_margin_balance."""
+        eq, avail = self._get_swap_usdt_balance(ccy)
+        return eq if eq > 0 else avail
 
     def inst_id_to_ws_symbol(self, symbol="ETH-USDT-SWAP"):
         """ETH-USDT-SWAP → ETHUSDT（深币 WS v2 合约格式）"""
@@ -709,12 +723,13 @@ class DeepcoinClient:
             return False
 
     def get_futures_account_summary(self) -> dict:
-        """Binance-compatible shape for bind validation / profit cycle."""
-        bal = float(self.get_available_balance("USDT") or 0)
+        """Binance-compatible shape: total_margin_balance=eq, available_balance=availBal."""
+        eq, avail = self._get_swap_usdt_balance("USDT")
+        total = eq if eq > 0 else avail
         return {
-            "total_margin_balance": bal,
-            "available_balance": bal,
-            "total_wallet_balance": bal,
+            "total_margin_balance": round(total, 2),
+            "available_balance": round(avail if avail > 0 else total, 2),
+            "total_wallet_balance": round(total, 2),
             "unrealized_pnl": 0.0,
             "can_trade": True,
         }

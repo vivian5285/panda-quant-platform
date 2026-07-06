@@ -43,6 +43,7 @@ def test_deepcoin_open_position_applies_risk_multiplier():
     from app.core.position_sizing import compute_deepcoin_contracts
 
     client = MagicMock()
+    client.get_futures_account_summary.return_value = {"total_margin_balance": 1000.0}
     client.get_available_balance.return_value = 1000.0
     client.get_current_price.return_value = 3000.0
     client.place_market_order.return_value = {}

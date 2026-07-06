@@ -16,7 +16,7 @@ from app.core.same_direction_policy import (
     format_refresh_reason,
     format_reopen_reason,
 )
-from app.core.position_sizing import compute_deepcoin_contracts
+from app.core.position_sizing import compute_deepcoin_contracts, read_contract_equity
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.adverse_radar_guard import ADVERSE_ARM_PCT, AdverseRadarMixin
 from app.config import get_settings
@@ -1366,14 +1366,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin):
         self._save_state()
 
     def _open_position(self, action, curr_px):
-        balance = self.client.get_available_balance()
+        equity = read_contract_equity(self.client)
         margin_pct = self.regime_settings[self.regime]["margin"] * self.risk_multiplier
 
         self.client.set_leverage(self.symbol, leverage=self.leverage)
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.4)
         qty, sizing_meta = compute_deepcoin_contracts(
-            live_balance=balance,
+            live_balance=equity,
             initial_principal=self.initial_principal,
             margin_pct=margin_pct,
             leverage=self.leverage,

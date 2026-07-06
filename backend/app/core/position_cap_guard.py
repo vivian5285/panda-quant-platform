@@ -6,8 +6,6 @@ import time
 from typing import Any
 
 from app.core.position_sizing import (
-    compute_deepcoin_contracts,
-    compute_eth_qty,
     read_contract_equity,
     resolve_cap_sizing_base,
 )
@@ -42,6 +40,40 @@ class PositionCapGuardMixin:
         """True when live qty is at or below regime cap (float-safe)."""
         return float(qty) <= float(target_qty) + self._cap_tolerance() + 1e-9
 
+    def _cap_qty_unit(self) -> str:
+        return "张" if self._is_deepcoin_cap() else "ETH"
+
+    def _cap_alert_detail(self, cap: dict[str, Any], **extra: Any) -> dict[str, Any]:
+        """Enrich cap alerts for admin DingTalk (exchange + side + unit)."""
+        return {
+            **cap,
+            "exchange": getattr(self, "exchange_id", "binance"),
+            "side": getattr(self, "current_side", None),
+            "qty_unit": self._cap_qty_unit(),
+            **extra,
+        }
+
+    def _cap_admin_summary(
+        self,
+        *,
+        live_qty: float,
+        target_qty: float,
+        trimmed: float = 0,
+        new_qty: float | None = None,
+        err: str | None = None,
+    ) -> str:
+        unit = self._cap_qty_unit()
+        regime = f"R{self.regime}"
+        base = f"【{regime}档位】实盘 {live_qty:.4f}{unit} 超过本金比例上限 {target_qty:.4f}{unit}"
+        if err:
+            return f"{base}，纠偏已中止：{err}"
+        if new_qty is not None and trimmed > 0:
+            return (
+                f"{base}，已减仓 {trimmed:.4f}{unit}，"
+                f"现仓 {new_qty:.4f}{unit}（{live_qty:.4f} → {new_qty:.4f}）"
+            )
+        return base
+
     def _cap_equity_balance(self) -> float:
         """Total contract equity for cap math — same anchor as open-order sizing."""
         return read_contract_equity(self.client)
@@ -53,24 +85,25 @@ class PositionCapGuardMixin:
         margin_pct = self._regime_margin_pct()
         px = float(price or 0)
         if self._is_deepcoin_cap():
-            # Reuse deepcoin helper but override sizing base in meta.
-            _contracts, meta = compute_deepcoin_contracts(
-                live_balance=sizing_base,
-                initial_principal=principal,
-                margin_pct=margin_pct,
-                leverage=int(getattr(self, "leverage", 10) or 10),
-                price=px,
-                face_value=float(getattr(self, "face_value", 0.1) or 0.1),
-            )
-            # compute with forced principal anchor
+            face_value = float(getattr(self, "face_value", 0.1) or 0.1)
+            leverage = int(getattr(self, "leverage", 10) or 10)
             margin_usd = sizing_base * margin_pct
-            notional = margin_usd * int(getattr(self, "leverage", 10) or 10)
-            denom = px * float(getattr(self, "face_value", 0.1) or 0.1)
+            notional = margin_usd * leverage
+            denom = px * face_value
             contracts = max(int(notional / denom), 1) if denom > 0 else 1
-            meta["sizing_base"] = round(sizing_base, 2)
-            meta["sizing_source"] = sizing_source
-            meta["equity_balance"] = round(equity, 2)
-            meta["regime"] = self.regime
+            meta = {
+                "sizing_base": round(sizing_base, 2),
+                "sizing_source": sizing_source,
+                "equity_balance": round(equity, 2),
+                "margin_pct": round(margin_pct, 4),
+                "margin_usd": round(margin_usd, 2),
+                "notional_usd": round(notional, 2),
+                "initial_principal": round(principal, 2),
+                "leverage": leverage,
+                "price": round(px, 2),
+                "face_value": face_value,
+                "regime": self.regime,
+            }
             return float(contracts), meta
 
         from app.core.symbol_precision import round_quantity
@@ -212,12 +245,15 @@ class PositionCapGuardMixin:
                 self.user_id, trim_plan_err, cap,
             )
             self._log("ERROR", f"档位纠偏中止(安全校验): {trim_plan_err}", cap)
+            err_detail = self._cap_alert_detail(cap, error=trim_plan_err)
             self._alert(
                 "critical",
                 "CAP_ALIGN_BLOCKED",
                 "叠仓超标 · 纠偏中止",
-                f"实盘 {live_qty:.4f} 超上限 {target_qty:.4f}，但减仓计划异常已中止: {trim_plan_err}",
-                {**cap, "error": trim_plan_err},
+                self._cap_admin_summary(
+                    live_qty=live_qty, target_qty=target_qty, err=trim_plan_err,
+                ),
+                err_detail,
             )
             result["error"] = trim_plan_err
             return result
@@ -253,8 +289,8 @@ class PositionCapGuardMixin:
                     "critical",
                     "CAP_ALIGN_FAIL",
                     "叠仓超标 · 减仓失败",
-                    f"实盘 {current_qty:.4f} 超档位{self.regime}上限 {target_qty:.4f}，请人工处理",
-                    cap,
+                    self._cap_admin_summary(live_qty=current_qty, target_qty=target_qty),
+                    self._cap_alert_detail(cap),
                 )
                 result["error"] = "trim_failed"
                 return result
@@ -277,13 +313,16 @@ class PositionCapGuardMixin:
             result["error"] = "trim_zero_position"
             return result
 
+        unit = self._cap_qty_unit()
         if new_qty < target_qty * 0.5 and live_qty > target_qty * 1.5:
             self._alert(
                 "critical",
                 "CAP_ALIGN_OVERTRIM",
                 "叠仓纠偏 · 过度减仓",
-                f"目标保留 {target_qty:.4f} ETH，实盘仅剩 {new_qty:.4f} ETH，请人工核查",
-                {**cap, "new_qty": new_qty},
+                self._cap_admin_summary(
+                    live_qty=live_qty, target_qty=target_qty, new_qty=new_qty,
+                ) + "，请立即人工核查",
+                self._cap_alert_detail(cap, new_qty=new_qty),
             )
             result["error"] = "over_trim"
             result["new_qty"] = new_qty
@@ -302,20 +341,22 @@ class PositionCapGuardMixin:
             reason=f"雷达强制减仓对齐档位额度 ({reason})",
         )
 
-        detail = {
-            **cap,
-            "trimmed": trimmed,
-            "new_qty": new_qty,
-            "entry": entry,
-            "regime": self.regime,
-            "radar_sl_preserved": sl_to_pass,
-            "defense": defense,
-            "trigger": reason,
-        }
-        msg = (
-            f"雷达强制减仓 {trimmed:.4f} ETH · 对齐档位{self.regime}目标 {target_qty:.4f} "
-            f"(原 {live_qty:.4f} → 现 {new_qty:.4f}) | TP {defense.get('matched')}/{defense.get('expected')}"
+        detail = self._cap_alert_detail(
+            cap,
+            trimmed=trimmed,
+            new_qty=new_qty,
+            entry=entry,
+            regime=self.regime,
+            radar_sl_preserved=sl_to_pass,
+            defense=defense,
+            trigger=reason,
         )
+        msg = self._cap_admin_summary(
+            live_qty=live_qty,
+            target_qty=target_qty,
+            trimmed=trimmed,
+            new_qty=new_qty,
+        ) + f" | 止盈 {defense.get('matched')}/{defense.get('expected')} 档"
         self._log("CAP_ALIGN", msg, detail)
         self._alert(
             "critical",

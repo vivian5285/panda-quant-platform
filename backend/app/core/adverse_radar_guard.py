@@ -413,6 +413,7 @@ class AdverseRadarMixin:
             "adverse_pct": round(adverse_pct * 100, 2),
             "entry": self.watched_entry,
             "side": self.current_side,
+            "exchange": getattr(self, "exchange_id", "binance"),
             "live_qty": live_qty,
             "plan": plan,
             "placed": placed,
