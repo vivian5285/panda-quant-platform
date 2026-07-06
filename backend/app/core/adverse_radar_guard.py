@@ -15,7 +15,48 @@ ADVERSE_ARM_PCT = 0.03
 ADVERSE_SL_TIERS = (0.03, 0.04, 0.05)
 ADVERSE_SL_SLICE_RATIOS = (0.33, 0.33, 0.34)
 ADVERSE_STOP_TOLERANCE = 2.0
+ADVERSE_REPAIR_COOLDOWN_SEC = 20.0
+ADVERSE_MAX_TIER_ORDERS = len(ADVERSE_SL_TIERS)
 QTY_MATCH_TOL_ETH = 0.005  # legacy alias; prefer qty_drift_tolerance()
+
+
+def adverse_tier_stop_prices(entry: float, side: str) -> set[float]:
+    """Entry-anchored 3/4/5% stop trigger prices for the active side."""
+    if entry <= 0 or side not in ("LONG", "SHORT"):
+        return set()
+    prices: set[float] = set()
+    for tier in ADVERSE_SL_TIERS:
+        if side == "LONG":
+            prices.add(round_price(entry * (1.0 - tier)))
+        else:
+            prices.add(round_price(entry * (1.0 + tier)))
+    return prices
+
+
+def _order_stop_price(o: dict) -> float:
+    for key in ("stopPrice", "triggerPrice", "activatePrice"):
+        val = o.get(key)
+        if val is not None and str(val).strip() not in ("", "0"):
+            try:
+                px = round(float(val), 2)
+                if px > 0:
+                    return px
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
+def _order_qty_value(o: dict) -> float:
+    for key in ("origQty", "quantity", "sz", "size"):
+        val = o.get(key)
+        if val is not None and str(val).strip() not in ("", "0"):
+            try:
+                q = abs(float(val))
+                if q > 0:
+                    return q
+            except (TypeError, ValueError):
+                continue
+    return 0.0
 
 
 def adverse_move_pct(entry: float, price: float, side: str | None) -> float:
@@ -135,11 +176,42 @@ class AdverseRadarMixin:
             self.adverse_sl_prices = []
         if not hasattr(self, "adverse_consumed_tiers"):
             self.adverse_consumed_tiers = []
+        if not hasattr(self, "_adverse_last_repair_ts"):
+            self._adverse_last_repair_ts = 0.0
 
     def _reset_adverse_radar(self) -> None:
         self.adverse_sl_armed = False
         self.adverse_sl_prices = []
         self.adverse_consumed_tiers = []
+        self._adverse_last_repair_ts = 0.0
+
+    def _adverse_tier_stop_prices(self) -> set[float]:
+        return adverse_tier_stop_prices(
+            float(self.watched_entry or 0),
+            str(self.current_side or "LONG"),
+        )
+
+    def _resolve_adverse_live_qty(self, fallback_qty: float) -> float:
+        """Always anchor adverse slices to exchange live position, not stale watched_qty."""
+        if hasattr(self, "_resolve_live_qty"):
+            try:
+                return float(self._resolve_live_qty(fallback_qty))
+            except TypeError:
+                pass
+        if hasattr(self, "_read_live_position_qty"):
+            live, _ = self._read_live_position_qty()
+            if live > 0:
+                return float(live)
+        pos = self._get_active_position() if hasattr(self, "_get_active_position") else None
+        if pos:
+            if getattr(self, "exchange_id", "") == "deepcoin":
+                safe = getattr(self, "_safe_qty", lambda x: int(x))
+                live = float(safe(pos.get("size", 0)))
+            else:
+                live = abs(float(pos.get("size", pos.get("positionAmt", 0)) or 0))
+            if live > 0:
+                return live
+        return float(fallback_qty or 0)
 
     def _adverse_move_pct(self, curr_px: float) -> float:
         return adverse_move_pct(
@@ -287,61 +359,49 @@ class AdverseRadarMixin:
             return order is not None
         return False
 
+    def _is_adverse_stop_order(self, o: dict, tier_prices: set[float]) -> bool:
+        stop_px = _order_stop_price(o)
+        if stop_px <= 0:
+            return False
+        if not any(abs(stop_px - t) <= ADVERSE_STOP_TOLERANCE for t in tier_prices):
+            return False
+        if getattr(self, "exchange_id", "") == "deepcoin":
+            return True
+        otype = str(o.get("type", "")).upper()
+        if otype in ("STOP", "STOP_MARKET"):
+            return True
+        return False
+
     def _collect_adverse_stop_orders(self) -> list[dict]:
         orders: list[dict] = []
         symbol = getattr(self, "symbol", None)
-        targets = set(round(float(p), 2) for p in (self.adverse_sl_prices or []))
-        entry = float(self.watched_entry or 0)
-        side = self.current_side
+        tier_prices = self._adverse_tier_stop_prices()
 
         if getattr(self, "exchange_id", "") == "deepcoin":
             try:
                 pending = self.client.get_trigger_orders_pending(symbol) or []
                 for o in pending:
                     px = float(o.get("triggerPrice", 0) or 0)
-                    if targets and not any(abs(px - t) <= ADVERSE_STOP_TOLERANCE for t in targets):
-                        if side == "LONG" and px < entry:
-                            pass
-                        elif side == "SHORT" and px > entry:
-                            pass
-                        else:
-                            continue
-                    orders.append(o)
+                    if tier_prices and any(abs(px - t) <= ADVERSE_STOP_TOLERANCE for t in tier_prices):
+                        orders.append(o)
             except Exception:
                 pass
             return orders
 
         for o in self.client.get_open_orders(symbol) or []:
-            if o.get("type") not in ("STOP_MARKET", "STOP"):
-                continue
-            stop_px = 0.0
-            for key in ("stopPrice", "triggerPrice", "activatePrice"):
-                val = o.get(key)
-                if val is not None and str(val).strip() not in ("", "0"):
-                    try:
-                        stop_px = round(float(val), 2)
-                        break
-                    except (TypeError, ValueError):
-                        continue
-            if targets and not any(abs(stop_px - t) <= ADVERSE_STOP_TOLERANCE for t in targets):
-                if self.adverse_sl_armed and stop_px > 0:
-                    if side == "LONG" and stop_px < entry:
-                        pass
-                    elif side == "SHORT" and stop_px > entry:
-                        pass
-                    else:
-                        continue
-                else:
-                    continue
-            orders.append(o)
+            if self._is_adverse_stop_order(o, tier_prices):
+                orders.append(o)
         return orders
 
     def _cancel_adverse_stop_orders(self) -> int:
         cancelled = 0
         symbol = getattr(self, "symbol", None)
+        orders = self._collect_adverse_stop_orders()
+        if not orders:
+            return 0
 
         if getattr(self, "exchange_id", "") == "deepcoin":
-            for o in self._collect_adverse_stop_orders():
+            for o in orders:
                 oid = o.get("ordId") or o.get("orderId")
                 if oid:
                     self.client.cancel_trigger_order(symbol, oid)
@@ -349,13 +409,102 @@ class AdverseRadarMixin:
                     time.sleep(0.2)
             return cancelled
 
-        for o in self._collect_adverse_stop_orders():
+        for o in orders:
             oid = o.get("orderId")
             if oid:
                 self.client.cancel_order(symbol, int(oid))
                 cancelled += 1
                 time.sleep(0.2)
         return cancelled
+
+    def _purge_excess_adverse_stops(self, plan: list[dict]) -> int:
+        """Keep at most one adverse stop per tier price; cancel duplicates."""
+        if not plan:
+            return 0
+        open_stops = self._collect_adverse_stop_orders()
+        if len(open_stops) <= len(plan):
+            return 0
+
+        wanted: dict[float, float] = {
+            round(float(t["stop_price"]), 2): float(t["qty"]) for t in plan
+        }
+        by_price: dict[float, list[dict]] = {}
+        for o in open_stops:
+            px = _order_stop_price(o)
+            if px <= 0:
+                continue
+            bucket = next(
+                (k for k in wanted if abs(px - k) <= ADVERSE_STOP_TOLERANCE),
+                None,
+            )
+            if bucket is None:
+                continue
+            by_price.setdefault(bucket, []).append(o)
+
+        symbol = getattr(self, "symbol", None)
+        cancelled = 0
+        qty_tol = self._qty_match_tol(
+            float(plan[0].get("qty", 0) or 0) if plan else 0,
+            float(plan[-1].get("qty", 0) or 0) if plan else 0,
+        )
+        for px, orders_at_px in by_price.items():
+            if len(orders_at_px) <= 1:
+                continue
+            target_qty = wanted.get(px, 0)
+            orders_at_px.sort(
+                key=lambda o: abs(_order_qty_value(o) - target_qty),
+            )
+            for extra in orders_at_px[1:]:
+                oid = extra.get("orderId") or extra.get("ordId")
+                if not oid:
+                    continue
+                if getattr(self, "exchange_id", "") == "deepcoin":
+                    self.client.cancel_trigger_order(symbol, oid)
+                else:
+                    self.client.cancel_order(symbol, int(oid))
+                cancelled += 1
+                time.sleep(0.15)
+        return cancelled
+
+    def _verify_adverse_stops(self, plan: list[dict]) -> int:
+        if not plan:
+            return 0
+        matched = 0
+        open_stops = self._collect_adverse_stop_orders()
+        used_ids: set[str | int] = set()
+        for tier in plan:
+            target_px = round(float(tier["stop_price"]), 2)
+            target_qty = float(tier["qty"])
+            qty_tol = self._qty_match_tol(target_qty, target_qty)
+            for o in open_stops:
+                oid = o.get("orderId") or o.get("ordId")
+                if oid in used_ids:
+                    continue
+                stop_px = _order_stop_price(o)
+                if abs(stop_px - target_px) > ADVERSE_STOP_TOLERANCE:
+                    continue
+                live_q = _order_qty_value(o)
+                if abs(live_q - target_qty) > qty_tol:
+                    continue
+                matched += 1
+                if oid is not None:
+                    used_ids.add(oid)
+                break
+        return matched
+
+    def _adverse_stops_need_repair(self, plan: list[dict]) -> bool:
+        if not plan:
+            return False
+        open_count = len(self._collect_adverse_stop_orders())
+        verified = self._verify_adverse_stops(plan)
+        if verified >= len(plan):
+            return False
+        if open_count > ADVERSE_MAX_TIER_ORDERS:
+            return True
+        return verified < len(plan)
+
+    def _can_repair_adverse_stops(self) -> bool:
+        return (time.time() - float(getattr(self, "_adverse_last_repair_ts", 0) or 0)) >= ADVERSE_REPAIR_COOLDOWN_SEC
 
     def _disarm_adverse_staged_stops(self, *, reason: str = "recovery") -> None:
         if not self.adverse_sl_armed and not self.adverse_consumed_tiers:
@@ -364,6 +513,7 @@ class AdverseRadarMixin:
         self.adverse_sl_armed = False
         self.adverse_sl_prices = []
         self.adverse_consumed_tiers = []
+        self._adverse_last_repair_ts = 0.0
         if n > 0:
             logger.info(
                 "[User %s] adverse SL disarmed (%s), cancelled %s stops",
@@ -372,41 +522,36 @@ class AdverseRadarMixin:
         if hasattr(self, "_save_state"):
             self._save_state()
 
-    def _verify_adverse_stops(self, plan: list[dict]) -> int:
-        if not plan:
-            return 0
-        matched = 0
-        open_stops = self._collect_adverse_stop_orders()
-        for tier in plan:
-            target = round(float(tier["stop_price"]), 2)
-            for o in open_stops:
-                for key in ("stopPrice", "triggerPrice", "activatePrice"):
-                    val = o.get(key)
-                    if val is None:
-                        continue
-                    try:
-                        if abs(round(float(val), 2) - target) <= ADVERSE_STOP_TOLERANCE:
-                            matched += 1
-                            break
-                    except (TypeError, ValueError):
-                        continue
-        return matched
-
     def _arm_adverse_staged_stops(
         self, live_qty: float, adverse_pct: float, *, repair: bool = False,
     ) -> dict[str, Any]:
+        live_qty = self._resolve_adverse_live_qty(live_qty)
+        if live_qty <= 0:
+            return {"armed": False, "reason": "no_live_position", "live_qty": 0}
+
         plan = self._compute_adverse_stop_plan(live_qty)
         if not plan:
             if self.adverse_consumed_tiers:
                 self.adverse_sl_armed = True
             return {"armed": False, "reason": "all_tiers_consumed", "consumed": list(self.adverse_consumed_tiers)}
 
-        if repair:
-            self._cancel_adverse_stop_orders()
+        verified_before = self._verify_adverse_stops(plan)
+        if not repair and self.adverse_sl_armed and verified_before >= len(plan):
+            return {
+                "armed": True,
+                "placed": 0,
+                "verified": verified_before,
+                "plan": plan,
+                "skipped": "already_aligned",
+            }
+
+        cancelled = self._cancel_adverse_stop_orders()
+        if cancelled:
+            time.sleep(0.35)
+        elif repair:
             time.sleep(0.25)
         else:
-            self._cancel_adverse_stop_orders()
-            time.sleep(0.35)
+            time.sleep(0.15)
 
         placed = 0
         prices: list[float] = []
@@ -417,9 +562,14 @@ class AdverseRadarMixin:
                 prices.append(float(tier["stop_price"]))
             time.sleep(0.4)
 
-        self.adverse_sl_armed = placed > 0 or bool(self.adverse_consumed_tiers)
-        self.adverse_sl_prices = prices
+        time.sleep(0.5)
+        purged = self._purge_excess_adverse_stops(plan)
         verified = self._verify_adverse_stops(plan)
+        open_count = len(self._collect_adverse_stop_orders())
+
+        self.adverse_sl_armed = placed > 0 or bool(self.adverse_consumed_tiers) or verified > 0
+        self.adverse_sl_prices = prices or [float(t["stop_price"]) for t in plan]
+        self._adverse_last_repair_ts = time.time()
 
         detail = {
             "adverse_pct": round(adverse_pct * 100, 2),
@@ -430,6 +580,9 @@ class AdverseRadarMixin:
             "plan": plan,
             "placed": placed,
             "verified": verified,
+            "open_adverse_stops": open_count,
+            "cancelled_before_place": cancelled,
+            "purged_duplicates": purged,
             "consumed_tiers": list(self.adverse_consumed_tiers),
             "tiers": list(ADVERSE_SL_TIERS),
             "repair": repair,
@@ -461,16 +614,28 @@ class AdverseRadarMixin:
         if adverse_pct is None:
             adverse_pct = self._adverse_move_pct(curr_px)
 
+        live_qty = self._resolve_adverse_live_qty(live_qty)
+        if live_qty <= 0:
+            return False
+
         if adverse_pct < ADVERSE_ARM_PCT and not self.adverse_sl_armed and not self.adverse_consumed_tiers:
             return False
 
         plan = self._compute_adverse_stop_plan(live_qty)
         if self.adverse_sl_armed or self.adverse_consumed_tiers:
-            verified = self._verify_adverse_stops(plan)
-            if plan and verified < len(plan):
+            if plan and not self._adverse_stops_need_repair(plan):
+                return False
+            if plan and self._can_repair_adverse_stops():
                 return bool(
                     self._repair_adverse_stops_remaining(live_qty, adverse_pct).get("armed")
                 )
+            if len(self._collect_adverse_stop_orders()) > ADVERSE_MAX_TIER_ORDERS and self._can_repair_adverse_stops():
+                purged = self._purge_excess_adverse_stops(plan)
+                if purged:
+                    logger.warning(
+                        "[User %s] adverse SL purged %s duplicate stops (open>%s)",
+                        self.user_id, purged, ADVERSE_MAX_TIER_ORDERS,
+                    )
             return False
 
         if adverse_pct >= ADVERSE_ARM_PCT:

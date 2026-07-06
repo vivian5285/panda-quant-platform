@@ -7,8 +7,10 @@ import pytest
 from app.core.adverse_radar_guard import (
     ADVERSE_ARM_PCT,
     ADVERSE_SL_TIERS,
+    ADVERSE_REPAIR_COOLDOWN_SEC,
     AdverseRadarMixin,
     adverse_move_pct,
+    adverse_tier_stop_prices,
     compute_adverse_stop_plan,
     is_floating_profit,
     match_adverse_tier_fill,
@@ -89,6 +91,9 @@ class _AdverseProbe(AdverseRadarMixin):
     def _get_active_position(self):
         return {"size": 0.6, "entry_price": 2000.0, "side": "LONG"}
 
+    def _resolve_live_qty(self, fallback_qty):
+        return 0.6
+
     def _classify_qty_change(self, old_qty, new_qty):
         return "tp1_filled"
 
@@ -127,12 +132,68 @@ def test_disarm_only_on_floating_profit():
     assert probe._should_disarm_adverse_for_recovery(2010.0) is True
 
 
+def test_adverse_tier_prices_from_entry():
+    prices = adverse_tier_stop_prices(2000.0, "LONG")
+    assert len(prices) == 3
+    assert 1940.0 in prices
+    assert 1920.0 in prices
+    assert 1900.0 in prices
+
+
 def test_arm_adverse_uses_stop_limit_orders():
     probe = _AdverseProbe()
     with patch.object(probe, "_cancel_adverse_stop_orders", return_value=0):
         result = probe._arm_adverse_staged_stops(0.6, 0.03)
     assert result["armed"] is True
     assert probe.client.place_stop_limit_order.call_count == 3
+
+
+def test_arm_skips_when_already_aligned():
+    probe = _AdverseProbe()
+    probe.adverse_sl_armed = True
+    plan = probe._compute_adverse_stop_plan(0.6)
+    probe.client.get_open_orders.return_value = [
+        {
+            "type": "STOP",
+            "orderId": i + 1,
+            "stopPrice": str(t["stop_price"]),
+            "origQty": str(t["qty"]),
+            "side": "SELL",
+        }
+        for i, t in enumerate(plan)
+    ]
+    with patch.object(probe, "_cancel_adverse_stop_orders", return_value=0) as cancel:
+        result = probe._arm_adverse_staged_stops(0.6, 0.03)
+    assert result.get("skipped") == "already_aligned"
+    assert result["placed"] == 0
+    cancel.assert_not_called()
+    probe.client.place_stop_limit_order.assert_not_called()
+
+
+def test_repair_cooldown_blocks_rapid_rearm():
+    probe = _AdverseProbe()
+    probe.adverse_sl_armed = True
+    probe._adverse_last_repair_ts = __import__("time").time()
+    probe.client.get_open_orders.return_value = []
+    with patch.object(probe, "_repair_adverse_stops_remaining") as repair:
+        assert probe._process_adverse_radar_guard(0.6, 1940.0, 0.03) is False
+    repair.assert_not_called()
+
+
+def test_purge_excess_adverse_stops():
+    probe = _AdverseProbe()
+    plan = probe._compute_adverse_stop_plan(0.6)
+    tier_px = plan[0]["stop_price"]
+    probe.client.get_open_orders.return_value = [
+        {"type": "STOP", "orderId": i, "stopPrice": str(tier_px), "origQty": "0.198", "side": "SELL"}
+        for i in range(1, 6)
+    ] + [
+        {"type": "STOP", "orderId": 10, "stopPrice": str(plan[1]["stop_price"]), "origQty": "0.198", "side": "SELL"},
+        {"type": "STOP", "orderId": 11, "stopPrice": str(plan[2]["stop_price"]), "origQty": "0.204", "side": "SELL"},
+    ]
+    purged = probe._purge_excess_adverse_stops(plan)
+    assert purged == 4
+    assert probe.client.cancel_order.call_count == 4
 
 
 def test_process_adverse_guard_waits_until_3pct():
@@ -195,3 +256,4 @@ def test_binance_supervisor_has_orchestration():
     assert hasattr(sup, "_orchestrate_defense_monitoring")
     assert ADVERSE_ARM_PCT == 0.03
     assert ADVERSE_SL_TIERS == (0.03, 0.04, 0.05)
+    assert ADVERSE_REPAIR_COOLDOWN_SEC >= 15
