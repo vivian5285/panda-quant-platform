@@ -429,11 +429,11 @@ export default {
     readMore: '了解更多',
     items: {
       binance: { name: 'Binance 币安', status: '已上线 · U本位', desc: 'U 本位合约全量执行 · 仅交易 API · 零托管 · 默认 ETHUSDT。' },
-      okx: { name: 'OKX 欧易', status: '已上线 · SWAP', desc: 'OKX USDT 永续 · 统一 PositionSupervisor 执行 · 仅交易 API · ETH-USDT-SWAP 10×。' },
+      okx: { name: 'OKX 欧易', status: '已上线 · SWAP', desc: 'OKX USDT 永续 · 统一 PositionSupervisor 执行 · 仅交易 API · ETH-USDT-SWAP 15×。' },
       deepcoin: { name: 'DeepCoin 深币', status: '内测 · SWAP', desc: '深币内测通道 · 独立 Supervisor · ETH-USDT-SWAP · 须 Passphrase。' },
       bybit: { name: 'Bybit', status: '二期适配', desc: 'Bybit 线性合约 —— 同一概率引擎，每用户独立 API 执行。' },
       bitget: { name: 'Bitget', status: '路线图', desc: 'Bitget 合约集成规划中 —— 一个 AI 控制台多交易所组合视图。' },
-      gate: { name: 'Gate.io', status: '已上线 · USDT 永续', desc: 'Gate.io USDT 永续 · 共享执行引擎 · ETH_USDT 10× · 仅需 Key + Secret。' },
+      gate: { name: 'Gate.io', status: '已上线 · USDT 永续', desc: 'Gate.io USDT 永续 · 共享执行引擎 · ETH_USDT 15× · 仅需 Key + Secret。' },
     },
   },
   faq: {

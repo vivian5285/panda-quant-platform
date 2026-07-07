@@ -98,7 +98,7 @@ export default function DashboardPreview({ slide, live = false }: Props) {
           {[
             { l: t('dashboard.balance'), v: '$12,480.52' },
             { l: t('dashboard.unrealized'), v: '+$86.20' },
-            { l: t('trading.leverage'), v: '10x' },
+            { l: t('trading.leverage'), v: '15x' },
           ].map(s => (
             <div key={s.l} className="preview-stat glass"><small>{s.l}</small><strong>{s.v}</strong></div>
           ))}

@@ -5,6 +5,7 @@ import logging
 import time
 from typing import Any
 
+from app.config import get_settings
 from app.core.position_qty_tolerance import cap_excess_tolerance
 from app.core.position_sizing import (
     read_contract_equity,
@@ -12,6 +13,7 @@ from app.core.position_sizing import (
 )
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 CAP_TOLERANCE_ETH = 0.001  # float/rounding floor on top of CAP_DRIFT_RATIO
 CAP_TRIM_MAX_ROUNDS = 4
@@ -97,7 +99,7 @@ class PositionCapGuardMixin:
         px = float(price or 0)
         if self._is_deepcoin_cap():
             face_value = float(getattr(self, "face_value", 0.1) or 0.1)
-            leverage = int(getattr(self, "leverage", 10) or 10)
+            leverage = int(getattr(self, "leverage", settings.LEVERAGE) or settings.LEVERAGE)
             margin_usd = sizing_base * margin_pct
             notional = margin_usd * leverage
             denom = px * face_value
@@ -120,7 +122,7 @@ class PositionCapGuardMixin:
         from app.core.symbol_precision import round_quantity
 
         margin_usd = sizing_base * margin_pct
-        notional = margin_usd * int(getattr(self, "leverage", 10) or 10)
+        notional = margin_usd * int(getattr(self, "leverage", settings.LEVERAGE) or settings.LEVERAGE)
         qty = round_quantity(notional / px) if px > 0 else 0.0
         meta = {
             "sizing_base": round(sizing_base, 2),
@@ -130,7 +132,7 @@ class PositionCapGuardMixin:
             "margin_usd": round(margin_usd, 2),
             "notional_usd": round(notional, 2),
             "initial_principal": round(principal, 2),
-            "leverage": int(getattr(self, "leverage", 10) or 10),
+            "leverage": int(getattr(self, "leverage", settings.LEVERAGE) or settings.LEVERAGE),
             "price": round(px, 2),
             "regime": self.regime,
         }

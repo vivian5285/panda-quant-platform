@@ -5,9 +5,11 @@ import time
 
 from binance.client import Client
 
+from app.config import get_settings
 from app.core.symbol_precision import format_price, format_quantity
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 WS_MARKET_BASE = "wss://fstream.binance.com/market/ws"
 CLIENT_VERSION = "v13.4.6-flat-reconcile"
 
@@ -33,6 +35,8 @@ class BinanceClient:
         self.user_id = user_id
         self.api_key = api_key
         self.api_secret = api_secret
+        self.trading_symbol = settings.SYMBOL
+        self.trading_leverage = settings.LEVERAGE
         self.client = Client(api_key, api_secret)
         self._one_way_checked = False
         self._price_cache: dict[str, float] = {}
@@ -85,7 +89,9 @@ class BinanceClient:
             logger.warning(f"[User {self.user_id}] one-way mode check: {e}")
             return False
 
-    def set_leverage(self, symbol="ETHUSDT", leverage=10):
+    def set_leverage(self, symbol=None, leverage=None):
+        symbol = symbol or self.trading_symbol
+        leverage = int(leverage or self.trading_leverage)
         try:
             return self.client.futures_change_leverage(symbol=symbol, leverage=leverage)
         except Exception as e:

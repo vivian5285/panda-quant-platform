@@ -236,7 +236,7 @@ class ApiVerifyResponse(BaseModel):
     enable_futures: Optional[bool] = None
     symbol: str = "ETHUSDT"
     symbol_price: float = 0.0
-    leverage: int = 10
+    leverage: int = 15
     initial_principal: float = 0.0
     detail: Optional[str] = None
     checks: list[ApiVerifyCheckItem] = Field(default_factory=list)

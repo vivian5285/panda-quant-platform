@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+from app.config import exchange_leverage, get_settings
 from app.services.dingtalk_notify import push_dingtalk
 
-# GEMINI 量化：各交易所独立 UI 主题
+settings = get_settings()
+
+# GEMINI 量化：各交易所独立 UI 主题（leverage/tag 由 resolve_exchange_theme 从配置注入）
 EXCHANGE_THEMES: dict[str, dict] = {
     "binance": {
         "label": "币安",
         "symbol": "ETHUSDT",
-        "leverage": 10,
+        "leverage": settings.LEVERAGE,
         "brand": "GEMINI量化 · 币安合约实盘引擎",
-        "tag": "#币安10x",
+        "tag": f"#币安{settings.LEVERAGE}x",
         "accent": "🔷",
         "palette": "靛蓝",
         "header": "━━ 🔷 GEMINI量化 · 币安 ━━",
@@ -20,9 +23,9 @@ EXCHANGE_THEMES: dict[str, dict] = {
     "deepcoin": {
         "label": "深币",
         "symbol": "ETH-USDT-SWAP",
-        "leverage": 10,
+        "leverage": settings.DEEPCOIN_LEVERAGE,
         "brand": "GEMINI量化 · 深币 SWAP 实盘引擎",
-        "tag": "#深币10x",
+        "tag": f"#深币{settings.DEEPCOIN_LEVERAGE}x",
         "accent": "🟢",
         "palette": "翡翠绿",
         "header": "━━ 🟢 GEMINI量化 · 深币 ━━",
@@ -31,9 +34,9 @@ EXCHANGE_THEMES: dict[str, dict] = {
     "okx": {
         "label": "OKX",
         "symbol": "ETH-USDT-SWAP",
-        "leverage": 10,
+        "leverage": settings.OKX_LEVERAGE,
         "brand": "GEMINI量化 · OKX 合约实盘引擎",
-        "tag": "#OKX10x",
+        "tag": f"#OKX{settings.OKX_LEVERAGE}x",
         "accent": "🟣",
         "palette": "紫罗兰",
         "header": "━━ 🟣 GEMINI量化 · OKX ━━",
@@ -42,14 +45,21 @@ EXCHANGE_THEMES: dict[str, dict] = {
     "gate": {
         "label": "Gate.io",
         "symbol": "ETH_USDT",
-        "leverage": 10,
+        "leverage": settings.GATE_LEVERAGE,
         "brand": "GEMINI量化 · Gate 合约实盘引擎",
-        "tag": "#Gate10x",
+        "tag": f"#Gate{settings.GATE_LEVERAGE}x",
         "accent": "🟠",
         "palette": "琥珀橙",
         "header": "━━ 🟠 GEMINI量化 · Gate.io ━━",
         "qty_unit": "ETH",
     },
+}
+
+_EXCHANGE_TAG_PREFIX = {
+    "binance": "币安",
+    "deepcoin": "深币",
+    "okx": "OKX",
+    "gate": "Gate",
 }
 
 DEFAULT_THEME = EXCHANGE_THEMES["binance"]
@@ -138,7 +148,12 @@ def resolve_exchange_theme(exchange: str | None = None) -> dict:
     key = (exchange or "binance").strip().lower()
     if key == "gateio":
         key = "gate"
-    return EXCHANGE_THEMES.get(key, DEFAULT_THEME)
+    base = dict(EXCHANGE_THEMES.get(key, DEFAULT_THEME))
+    lev = exchange_leverage(key)
+    prefix = _EXCHANGE_TAG_PREFIX.get(key, "币安")
+    base["leverage"] = lev
+    base["tag"] = f"#{prefix}{lev}x" if prefix != "OKX" else f"#OKX{lev}x"
+    return base
 
 
 def qty_unit_for_exchange(exchange: str | None) -> str:

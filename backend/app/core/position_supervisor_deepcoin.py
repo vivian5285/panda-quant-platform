@@ -102,7 +102,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin):
             3: {"margin": 0.35, "ratios": [0.18, 0.32, 0.50], "activation": 0.60, "trail_offset": 0.90},
             4: {"margin": 0.50, "ratios": [0.05, 0.20, 0.75], "activation": 0.70, "trail_offset": 1.30},
         }
-        self.leverage = settings.DEEPCOIN_LEVERAGE
+        self.leverage = int(getattr(client, "trading_leverage", settings.DEEPCOIN_LEVERAGE))
         self.face_value = 0.1
 
         self.regime = 3

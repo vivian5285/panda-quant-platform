@@ -13,7 +13,10 @@ from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from urllib.parse import urlencode
 
+from app.config import get_settings
+
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 WS_PUBLIC_SWAP = "wss://stream.deepcoin.com/streamlet/trade/public/swap?platform=api&version=v2"
 WS_PRIVATE = "wss://stream.deepcoin.com/v1/private"
@@ -32,6 +35,8 @@ class DeepcoinClient:
         self.secret_key = api_secret or ""
         self.passphrase = passphrase or ""
         self.user_id = user_id
+        self.trading_symbol = settings.DEEPCOIN_SYMBOL
+        self.trading_leverage = settings.DEEPCOIN_LEVERAGE
         self.base_url = "https://api.deepcoin.com"
         self._price_cache = {}
         self._price_cache_ts = {}
@@ -387,8 +392,10 @@ class DeepcoinClient:
     def get_position_info(self, symbol="ETH-USDT-SWAP"):
         return self._request("GET", "/account/positions", {"instType": "SWAP", "instId": symbol})
 
-    def set_leverage(self, symbol="ETH-USDT-SWAP", leverage=10, mgn_mode="cross", mrg_position="merge"):
+    def set_leverage(self, symbol=None, leverage=None, mgn_mode="cross", mrg_position="merge"):
         """POST /deepcoin/account/set-leverage"""
+        symbol = symbol or self.trading_symbol
+        leverage = int(leverage or self.trading_leverage)
         res = self._request("POST", "/account/set-leverage", {
             "instId": symbol,
             "lever": str(int(leverage)),

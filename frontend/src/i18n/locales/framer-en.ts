@@ -429,11 +429,11 @@ export default {
     readMore: 'Learn more',
     items: {
       binance: { name: 'Binance', status: 'Live · USDT-M', desc: 'Full U-margined futures execution · trade-only API · zero custody · ETHUSDT default pair.' },
-      okx: { name: 'OKX', status: 'Live · SWAP', desc: 'OKX USDT-margined perpetual · unified PositionSupervisor · trade-only API · ETH-USDT-SWAP 10×.' },
+      okx: { name: 'OKX', status: 'Live · SWAP', desc: 'OKX USDT-margined perpetual · unified PositionSupervisor · trade-only API · ETH-USDT-SWAP 15×.' },
       deepcoin: { name: 'DeepCoin', status: 'Beta · SWAP', desc: 'DeepCoin internal beta · dedicated supervisor · ETH-USDT-SWAP with Passphrase.' },
       bybit: { name: 'Bybit', status: 'Phase II', desc: 'Bybit linear contracts — same probability engine, independent API execution per user.' },
       bitget: { name: 'Bitget', status: 'Roadmap', desc: 'Bitget futures integration planned — multi-exchange portfolio view from one AI console.' },
-      gate: { name: 'Gate.io', status: 'Live · USDT Perp', desc: 'Gate.io USDT perpetual · shared execution engine · ETH_USDT 10× · Key + Secret only.' },
+      gate: { name: 'Gate.io', status: 'Live · USDT Perp', desc: 'Gate.io USDT perpetual · shared execution engine · ETH_USDT 15× · Key + Secret only.' },
     },
   },
   faq: {

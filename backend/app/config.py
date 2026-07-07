@@ -28,15 +28,15 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
     SYMBOL: str = "ETHUSDT"
-    LEVERAGE: int = 10
+    LEVERAGE: int = 15
     DEEPCOIN_SYMBOL: str = "ETH-USDT-SWAP"
-    DEEPCOIN_LEVERAGE: int = 10
+    DEEPCOIN_LEVERAGE: int = 15
     OKX_SYMBOL: str = "ETH-USDT-SWAP"
-    OKX_LEVERAGE: int = 10
+    OKX_LEVERAGE: int = 15
     OKX_CONTRACT_VALUE: float = 0.1
     OKX_LOT_SIZE: float = 0.01
     GATE_SYMBOL: str = "ETH_USDT"
-    GATE_LEVERAGE: int = 10
+    GATE_LEVERAGE: int = 15
     GATE_QUANTO_MULTIPLIER: float = 0.01
 
     # Same-direction TV entry: skip re-open when |TV价−持仓价|/现价 below this % (regime unchanged)
@@ -101,3 +101,17 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def exchange_leverage(exchange: str | None) -> int:
+    """Per-exchange trading leverage from env (factory / DingTalk / sizing)."""
+    s = get_settings()
+    key = (exchange or "binance").strip().lower()
+    if key == "gateio":
+        key = "gate"
+    return {
+        "binance": s.LEVERAGE,
+        "deepcoin": s.DEEPCOIN_LEVERAGE,
+        "okx": s.OKX_LEVERAGE,
+        "gate": s.GATE_LEVERAGE,
+    }.get(key, s.LEVERAGE)

@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Callable, Optional, Union
 
-from app.config import get_settings
+from app.config import exchange_leverage, get_settings
 from app.core.binance_client import BinanceClient
 from app.core.deepcoin_client import DeepcoinClient
 from app.core.gate_client import GateClient
@@ -78,12 +78,20 @@ def create_exchange_client(
     if not is_exchange_enabled(ex):
         raise ExchangeNotEnabledError(ex)
     if ex == ExchangeType.DEEPCOIN.value:
-        return DeepcoinClient(api_key, api_secret, passphrase, user.id)
-    if ex == ExchangeType.OKX.value:
-        return OkxClient(api_key, api_secret, passphrase, user.id)
-    if ex == ExchangeType.GATE.value:
-        return GateClient(api_key, api_secret, user.id)
-    return BinanceClient(api_key, api_secret, user.id)
+        client = DeepcoinClient(api_key, api_secret, passphrase, user.id)
+    elif ex == ExchangeType.OKX.value:
+        client = OkxClient(api_key, api_secret, passphrase, user.id)
+    elif ex == ExchangeType.GATE.value:
+        client = GateClient(api_key, api_secret, user.id)
+    else:
+        client = BinanceClient(api_key, api_secret, user.id)
+    lev = exchange_leverage(ex)
+    sym = getattr(client, "trading_symbol", settings.SYMBOL)
+    logger.info(
+        "[User %s] exchange client ready: %s %s @ %sx",
+        user.id, ex, sym, lev,
+    )
+    return client
 
 
 def create_supervisor(
