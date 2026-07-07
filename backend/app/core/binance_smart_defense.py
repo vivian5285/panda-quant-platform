@@ -3,6 +3,18 @@
 import logging
 import time
 
+from app.core.symbol_precision import round_price
+from app.core.tp_defense_reconcile import (
+    STARTUP_ORDER_FETCH_DELAY,
+    STARTUP_ORDER_FETCH_RETRIES,
+    TP_PRICE_MATCH_TOL,
+    dedupe_orders_by_id,
+    pick_best_tp_order,
+    tp_price_matches,
+    tp_qty_matches,
+    tp_qty_tolerance,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,7 +68,18 @@ class BinanceSmartDefenseMixin:
         if not self.current_side:
             return False
         close_side = "BUY" if self.current_side == "SHORT" else "SELL"
-        return o.get("side") == close_side
+        if o.get("side") != close_side:
+            return False
+        px = float(o.get("price", 0) or 0)
+        if px <= 0:
+            return False
+        return any(tp_price_matches(px, t) for t in self.tv_tps if t > 0)
+
+    def _tp_price_tol(self) -> float:
+        return TP_PRICE_MATCH_TOL
+
+    def _tp_qty_tol(self, expected: float, anchor: float) -> float:
+        return tp_qty_tolerance(expected, anchor, is_contracts=False)
 
     def _collect_limit_tp_prices(self) -> list[float]:
         prices: list[float] = []
@@ -78,10 +101,10 @@ class BinanceSmartDefenseMixin:
                 continue
             orders.append({
                 "orderId": o.get("orderId"),
-                "price": round(px, 2),
+                "price": round_price(px),
                 "qty": round(float(o.get("origQty", o.get("quantity", 0)) or 0), 3),
             })
-        return orders
+        return dedupe_orders_by_id(orders)
 
     def _expected_tp_count(self, tp_pxs=None) -> int:
         tp_pxs = tp_pxs if tp_pxs is not None else self.tv_tps
@@ -96,8 +119,14 @@ class BinanceSmartDefenseMixin:
             {"level": 3, "qty": q3, "price": self.tv_tps[2]},
         ]
 
-    def _audit_tp_levels(self, live_qty: float, tolerance: float = 1.0, qty_tol: float = 0.005) -> dict:
+    def _audit_tp_levels(
+        self,
+        live_qty: float,
+        tolerance: float | None = None,
+        qty_tol: float | None = None,
+    ) -> dict:
         live_qty = self._resolve_live_qty(live_qty)
+        price_tol = self._tp_price_tol() if tolerance is None else float(tolerance)
         orders = self._collect_tp_limit_orders()
         levels = []
         matched_full = 0
@@ -106,7 +135,12 @@ class BinanceSmartDefenseMixin:
         for lv in self._expected_tp_levels(live_qty):
             if lv["qty"] <= 0 or lv["price"] <= 0:
                 continue
-            at_px = [o for o in orders if abs(o["price"] - lv["price"]) <= tolerance]
+            at_px = [o for o in orders if tp_price_matches(o["price"], lv["price"], price_tol)]
+            q_tol = (
+                self._tp_qty_tol(lv["qty"], live_qty)
+                if qty_tol is None
+                else float(qty_tol)
+            )
             status = "ok"
             actual_qty = 0.0
             if len(at_px) == 0:
@@ -116,12 +150,12 @@ class BinanceSmartDefenseMixin:
                 status = "duplicate"
                 actual_qty = sum(o["qty"] for o in at_px)
                 issues.append(f"TP{lv['level']} @{lv['price']:.2f} 重复 {len(at_px)} 张")
-            elif abs(at_px[0]["qty"] - lv["qty"]) > qty_tol:
+            elif not tp_qty_matches(lv["qty"], at_px[0]["qty"], live_qty):
                 status = "qty_mismatch"
                 actual_qty = at_px[0]["qty"]
                 issues.append(
                     f"TP{lv['level']} 数量 {actual_qty} ≠ 期望 {lv['qty']} "
-                    f"({self.regime_settings[self.regime]['ratios']})"
+                    f"(容差 {q_tol:.4f}, {self.regime_settings[self.regime]['ratios']})"
                 )
             else:
                 matched_full += 1
@@ -131,7 +165,7 @@ class BinanceSmartDefenseMixin:
         expected_prices = [lv["price"] for lv in levels]
         orphans = [
             o for o in orders
-            if not any(abs(o["price"] - p) <= tolerance for p in expected_prices)
+            if not any(tp_price_matches(o["price"], p, price_tol) for p in expected_prices)
         ]
         for o in orphans:
             issues.append(f"孤儿止盈 @{o['price']:.2f} qty={o['qty']}")
@@ -162,21 +196,23 @@ class BinanceSmartDefenseMixin:
             parts.append("问题:" + "; ".join(audit["issues"][:3]))
         return " | ".join(parts) if parts else "无有效 TP"
 
-    def _count_matched_tp_orders(self, tp_pxs, tolerance: float = 1.0, live_qty=None):
+    def _count_matched_tp_orders(self, tp_pxs, tolerance: float | None = None, live_qty=None):
+        tol = self._tp_price_tol() if tolerance is None else float(tolerance)
         if live_qty is not None and live_qty > 0:
-            audit = self._audit_tp_levels(live_qty, tolerance)
+            audit = self._audit_tp_levels(live_qty, tolerance=tol)
             return audit["matched_full"], audit["pending_prices"]
         pending_prices = self._collect_limit_tp_prices()
         matched = 0
         for tp in tp_pxs:
             if tp <= 0:
                 continue
-            if any(abs(p - tp) <= tolerance for p in pending_prices):
+            if any(tp_price_matches(p, tp, tol) for p in pending_prices):
                 matched += 1
         return matched, pending_prices
 
-    def _cancel_orphan_tp_orders(self, live_qty: float, tolerance: float = 1.0) -> int:
-        audit = self._audit_tp_levels(live_qty, tolerance)
+    def _cancel_orphan_tp_orders(self, live_qty: float, tolerance: float | None = None) -> int:
+        tol = self._tp_price_tol() if tolerance is None else float(tolerance)
+        audit = self._audit_tp_levels(live_qty, tolerance=tol)
         cancelled = 0
         for o in audit["orphans"]:
             oid = o.get("orderId")
@@ -228,7 +264,8 @@ class BinanceSmartDefenseMixin:
                     continue
         return False
 
-    def _has_duplicate_tp_orders(self, tolerance: float = 1.0) -> bool:
+    def _has_duplicate_tp_orders(self, tolerance: float | None = None) -> bool:
+        tol = self._tp_price_tol() if tolerance is None else float(tolerance)
         orders = self._collect_tp_limit_orders()
         expected = self._expected_tp_count()
         if expected <= 0:
@@ -238,18 +275,23 @@ class BinanceSmartDefenseMixin:
         for tp in self.tv_tps:
             if tp <= 0:
                 continue
-            at_px = [o for o in orders if abs(o["price"] - tp) <= tolerance]
+            at_px = [o for o in orders if tp_price_matches(o["price"], tp, tol)]
             if len(at_px) > 1:
                 return True
         return False
 
     def _defenses_fully_ok(
-        self, live_qty: float, dynamic_sl=None, tolerance: float = 1.0, qty_tol: float = 0.005
+        self,
+        live_qty: float,
+        dynamic_sl=None,
+        tolerance: float | None = None,
+        qty_tol: float | None = None,
     ) -> bool:
+        price_tol = self._tp_price_tol() if tolerance is None else float(tolerance)
         tp_pxs = self.tv_tps
         expected = self._expected_tp_count(tp_pxs)
         if expected == 0:
-            return dynamic_sl is None or self._has_stop_sl_near(dynamic_sl, tolerance)
+            return dynamic_sl is None or self._has_stop_sl_near(dynamic_sl, price_tol)
 
         orders = self._collect_tp_limit_orders()
         ratios = self.regime_settings[self.regime]["ratios"]
@@ -262,10 +304,11 @@ class BinanceSmartDefenseMixin:
             if q <= 0 or px <= 0:
                 continue
             expected_prices.append(px)
-            at_px = [o for o in orders if abs(o["price"] - px) <= tolerance]
+            at_px = [o for o in orders if tp_price_matches(o["price"], px, price_tol)]
             if len(at_px) != 1:
                 return False
-            if abs(at_px[0]["qty"] - q) > qty_tol:
+            q_tol = self._tp_qty_tol(q, live_qty) if qty_tol is None else float(qty_tol)
+            if not tp_qty_matches(q, at_px[0]["qty"], live_qty):
                 return False
             matched_levels += 1
 
@@ -273,14 +316,41 @@ class BinanceSmartDefenseMixin:
             return False
 
         for o in orders:
-            if not any(abs(o["price"] - p) <= tolerance for p in expected_prices):
+            if not any(tp_price_matches(o["price"], p, price_tol) for p in expected_prices):
                 return False
 
-        if dynamic_sl and not self._has_stop_sl_near(dynamic_sl, tolerance):
+        if dynamic_sl and not self._has_stop_sl_near(dynamic_sl, price_tol):
             return False
         return True
 
-    def _patch_missing_tp_levels(self, live_qty: float, tolerance: float = 1.0, qty_tol: float = 0.005) -> int:
+    def _purge_duplicate_tp_orders(self, live_qty: float) -> int:
+        """Cancel extra TP at same tier; keep best qty match (exchange-first)."""
+        live_qty = self._resolve_live_qty(live_qty)
+        cancelled = 0
+        for lv in self._expected_tp_levels(live_qty):
+            if lv["qty"] <= 0 or lv["price"] <= 0:
+                continue
+            orders = self._collect_tp_limit_orders()
+            at_px = [o for o in orders if tp_price_matches(o["price"], lv["price"])]
+            if len(at_px) <= 1:
+                continue
+            keep = pick_best_tp_order(at_px, lv["qty"])
+            keep_id = keep.get("orderId") if keep else None
+            for o in at_px:
+                oid = o.get("orderId")
+                if oid is None or oid == keep_id:
+                    continue
+                self.client.cancel_order(self.symbol, int(oid))
+                cancelled += 1
+                time.sleep(0.2)
+        if cancelled:
+            self._def_log(f"🧹 去重撤销多余止盈 {cancelled} 张（保留最优张数）")
+        return cancelled
+
+    def _patch_missing_tp_levels(
+        self, live_qty: float, tolerance: float | None = None, qty_tol: float | None = None
+    ) -> int:
+        price_tol = self._tp_price_tol() if tolerance is None else float(tolerance)
         close_side = "SHORT" if self.current_side == "LONG" else "LONG"
         live_qty = self._resolve_live_qty(live_qty)
         ratios = self.regime_settings[self.regime]["ratios"]
@@ -292,10 +362,16 @@ class BinanceSmartDefenseMixin:
             if q <= 0 or px <= 0:
                 continue
             orders = self._collect_tp_limit_orders()
-            at_px = [o for o in orders if abs(o["price"] - px) <= tolerance]
-            if len(at_px) == 1 and abs(at_px[0]["qty"] - q) <= qty_tol:
+            at_px = [o for o in orders if tp_price_matches(o["price"], px, price_tol)]
+            if len(at_px) == 1 and tp_qty_matches(q, at_px[0]["qty"], live_qty):
                 self._def_log(f"  ✓ TP @ {px:.2f} 已存在 {at_px[0]['qty']} ETH，跳过")
                 continue
+            if len(at_px) > 1:
+                self._purge_duplicate_tp_orders(live_qty)
+                orders = self._collect_tp_limit_orders()
+                at_px = [o for o in orders if tp_price_matches(o["price"], px, price_tol)]
+                if len(at_px) == 1 and tp_qty_matches(q, at_px[0]["qty"], live_qty):
+                    continue
             for o in at_px:
                 oid = o.get("orderId")
                 if oid:
@@ -313,23 +389,118 @@ class BinanceSmartDefenseMixin:
             return False
         if audit.get("matched_full", 0) >= expected and not audit.get("orphans"):
             return False
+        if any(lv.get("status") == "duplicate" for lv in audit.get("levels", [])):
+            return False
         orders = self._collect_tp_limit_orders()
-        if len(orders) > expected:
+        if len(orders) > expected * 2:
             return True
         if audit.get("matched_full", 0) == 0 and audit.get("issues"):
-            return True
-        bad = [
+            missing = sum(1 for lv in audit.get("levels", []) if lv.get("status") == "missing")
+            if missing >= expected:
+                return True
+        qty_bad = [
             lv for lv in audit.get("levels", [])
-            if lv.get("status") in ("duplicate", "qty_mismatch")
+            if lv.get("status") == "qty_mismatch"
         ]
-        if bad:
+        if len(qty_bad) >= 2:
             return True
         missing = sum(1 for lv in audit.get("levels", []) if lv.get("status") == "missing")
         if missing >= 2:
             return True
-        if audit.get("orphans"):
+        if audit.get("orphans") and audit.get("matched_full", 0) == 0:
             return True
         return False
+
+    def _defense_result_from_audit(
+        self,
+        audit: dict,
+        *,
+        skipped: bool = False,
+        rebuilt: bool = False,
+        nuclear: bool = False,
+    ) -> dict:
+        summary = self._format_audit_summary(audit)
+        expected = audit.get("expected", 0)
+        matched = audit.get("matched_full", 0)
+        return {
+            "matched": matched,
+            "expected": expected,
+            "pending_prices": audit.get("pending_prices", []),
+            "rebuilt": rebuilt,
+            "audit": audit,
+            "nuclear": nuclear,
+            "skipped": skipped,
+            "aligned": matched >= expected and expected > 0,
+            "healed": rebuilt or nuclear,
+            "summary": summary,
+            "after_summary": summary,
+        }
+
+    def _reconcile_tp_defenses_on_startup(
+        self, live_qty: float, entry: float, dynamic_sl=None
+    ) -> dict:
+        """VPS reboot: trust exchange book — retry fetch, dedupe, patch gaps only."""
+        self._def_log("🔄 重启接管：交易所优先对账止盈（不盲目清场）")
+        live_qty = self._resolve_live_qty(live_qty)
+        rebuilt = False
+
+        for attempt in range(STARTUP_ORDER_FETCH_RETRIES):
+            audit = self._audit_tp_levels(live_qty)
+            if self._defenses_fully_ok(live_qty, dynamic_sl):
+                self._def_log(
+                    f"✅ 重启对账：盘口已齐，跳过补挂 | {self._format_audit_summary(audit)}"
+                )
+                if dynamic_sl and not self._has_stop_sl_near(dynamic_sl):
+                    self._ensure_radar_sl(dynamic_sl, live_qty)
+                return self._defense_result_from_audit(audit, skipped=True)
+
+            if self._has_duplicate_tp_orders() or any(
+                lv.get("status") == "duplicate" for lv in audit.get("levels", [])
+            ):
+                if self._purge_duplicate_tp_orders(live_qty):
+                    time.sleep(0.5)
+                    continue
+
+            if audit.get("orphans"):
+                self._cancel_orphan_tp_orders(live_qty)
+                time.sleep(0.4)
+                continue
+
+            has_gap = any(
+                lv.get("status") in ("missing", "qty_mismatch")
+                for lv in audit.get("levels", [])
+            )
+            if has_gap:
+                break
+
+            if attempt < STARTUP_ORDER_FETCH_RETRIES - 1:
+                self._def_log(
+                    f"⏳ 重启对账：挂单列表未稳，重试 {attempt + 1}/{STARTUP_ORDER_FETCH_RETRIES}"
+                )
+                time.sleep(STARTUP_ORDER_FETCH_DELAY)
+
+        self._cancel_orphan_tp_orders(live_qty)
+        placed = self._patch_missing_tp_levels(live_qty)
+        if placed:
+            rebuilt = True
+        time.sleep(0.6)
+        if dynamic_sl and not self._has_stop_sl_near(dynamic_sl):
+            self._ensure_radar_sl(dynamic_sl, live_qty)
+
+        audit = self._audit_tp_levels(live_qty)
+        if self._defenses_fully_ok(live_qty, dynamic_sl):
+            self._def_log(
+                f"✅ 重启增量纠偏完成 | {self._format_audit_summary(audit)}"
+            )
+            return self._defense_result_from_audit(audit, skipped=not rebuilt, rebuilt=rebuilt)
+
+        self._def_log(
+            f"⚠️ 重启对账后仍不齐，升级智能对齐 | {self._format_audit_summary(audit)}",
+            logging.WARNING,
+        )
+        return self._smart_realign_defenses(
+            live_qty, entry, dynamic_sl=dynamic_sl, reason="重启纠偏升级",
+        )
 
     def _cancel_all_tp_limit_orders(self) -> int:
         cancelled = 0
@@ -448,7 +619,14 @@ class BinanceSmartDefenseMixin:
             f"{self._format_audit_summary(audit)}"
         )
 
-        if self._audit_requires_nuclear(audit) or self._has_duplicate_tp_orders():
+        if self._has_duplicate_tp_orders():
+            self._purge_duplicate_tp_orders(live_qty)
+            time.sleep(0.4)
+            audit = self._audit_tp_levels(live_qty)
+            matched = audit["matched_full"]
+            pending_prices = audit["pending_prices"]
+
+        if self._audit_requires_nuclear(audit):
             self._def_log(
                 f"☢️ 审计触发核武级重挂: {len(self._collect_tp_limit_orders())} 张止盈 | "
                 f"{self._format_audit_summary(audit)}",
@@ -509,8 +687,16 @@ class BinanceSmartDefenseMixin:
                 "summary": self._format_audit_summary(initial),
             }
 
-        if self._has_duplicate_tp_orders() or self._audit_requires_nuclear(initial):
-            self._def_log("🧹 检测到重复/错位止盈，先清场再重挂", logging.WARNING)
+        if self._has_duplicate_tp_orders():
+            self._def_log("🧹 检测到重复止盈，去重保留最优单（不清场）", logging.WARNING)
+            self._purge_duplicate_tp_orders(live_qty)
+            time.sleep(0.5)
+            initial = self._audit_tp_levels(live_qty)
+            if self._defenses_fully_ok(live_qty, dynamic_sl):
+                return self._defense_result_from_audit(initial, skipped=True)
+
+        if self._audit_requires_nuclear(initial):
+            self._def_log("🧹 检测到严重错位，清场后重挂", logging.WARNING)
             self._cancel_all_tp_limit_orders()
             time.sleep(0.5)
             initial = self._audit_tp_levels(live_qty)

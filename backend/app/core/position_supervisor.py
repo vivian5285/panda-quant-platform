@@ -22,7 +22,8 @@ from app.core.same_direction_policy import (
 from app.core.close_attribution import diagnose_flat_close, format_close_reason
 from app.core.symbol_precision import normalize_tv_targets, round_price, round_quantity, PRICE_TICK
 from app.core.position_sizing import compute_eth_qty, read_contract_equity
-from app.core.position_qty_tolerance import qty_change_significant
+from app.core.position_qty_tolerance import qty_change_significant, qty_drift_tolerance
+from app.core.tp_defense_reconcile import tp_price_matches
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 
@@ -698,8 +699,23 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
     def _price_matches(self, a: float, b: float) -> bool:
         return abs(round_price(a) - round_price(b)) < MIN_SL_MOVE
 
-    def _qty_matches(self, a: float, b: float) -> bool:
-        return abs(round_quantity(a) - round_quantity(b)) < 0.0005
+    def _qty_matches(self, a: float, b: float, anchor: float | None = None) -> bool:
+        anchor = anchor if anchor is not None else max(abs(float(a)), abs(float(b)), 1e-9)
+        tol = qty_drift_tolerance(a, b)
+        return abs(round_quantity(a) - round_quantity(b)) <= tol + 1e-9
+
+    def _is_reduce_only_tp_limit(self, order: dict, close_side: str) -> bool:
+        if (order.get("type") or "").upper() != "LIMIT":
+            return False
+        if order.get("side") != close_side:
+            return False
+        val = order.get("reduceOnly")
+        if val is True or str(val).lower() in ("true", "1"):
+            return True
+        px = round_price(order.get("price", 0))
+        if px <= 0:
+            return False
+        return any(tp_price_matches(px, t) for t in self.tv_tps if t > 0)
 
     def _place_limit_with_retry(
         self, close_side: str, qty: float, price: float, label: str
@@ -769,7 +785,7 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
         live_stops = []
         for o in open_orders:
             otype = (o.get("type") or "").upper()
-            if otype == "LIMIT" and o.get("side") == close_side:
+            if otype == "LIMIT" and self._is_reduce_only_tp_limit(o, close_side):
                 live_limits.append({
                     "order_id": o.get("orderId"),
                     "price": round_price(o.get("price", 0)),
@@ -801,7 +817,7 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
                 })
             elif len(at_price) == 1:
                 live = at_price[0]
-                if self._qty_matches(live["qty"], qty):
+                if self._qty_matches(live["qty"], qty, anchor=qty):
                     matched_tps.append({"level": level, **live})
                 else:
                     qty_mismatch_tps.append({
@@ -1103,6 +1119,12 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
         exclude = self._active_tp_exclude_levels(qty, curr_px)
         slices = self._compute_tp_slices(qty, exclude_levels=exclude)
         scan = self._scan_open_defenses(slices, dynamic_sl)
+
+        if scan.get("duplicate_tps"):
+            purged = self._purge_duplicate_tp_orders(qty)
+            if purged:
+                time.sleep(0.4)
+                scan = self._scan_open_defenses(slices, dynamic_sl)
 
         if scan["aligned"] and not force_rebuild:
             detail = {
@@ -2043,11 +2065,10 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
             if cap_result.get("trimmed", 0) > 0 and cap_result.get("defense"):
                 defense = cap_result["defense"]
             else:
-                defense = self._smart_realign_defenses(
+                defense = self._reconcile_tp_defenses_on_startup(
                     self.watched_qty,
                     self.watched_entry,
                     dynamic_sl=sl_to_pass,
-                    reason="重启闪电接管",
                 )
 
             audit.update({

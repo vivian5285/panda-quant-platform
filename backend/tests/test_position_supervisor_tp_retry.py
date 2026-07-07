@@ -101,13 +101,7 @@ def test_ensure_defenses_skips_when_already_aligned(supervisor, monkeypatch):
     for level, qty, price in slices:
         if qty <= 0 or price <= 0:
             continue
-        orders.append({
-            "orderId": level,
-            "type": "LIMIT",
-            "side": "SELL",
-            "price": f"{price:.2f}",
-            "origQty": f"{qty:.3f}",
-        })
+        orders.append(_tp_limit(level, price, qty, reduce_only=True))
     supervisor.client.get_open_orders.return_value = orders
     monkeypatch.setattr("app.core.position_supervisor.time.sleep", lambda *_: None)
 
@@ -136,14 +130,34 @@ def test_ensure_defenses_only_places_missing(supervisor, monkeypatch):
     assert supervisor.client.place_limit_order.call_count >= 2
 
 
+def _tp_limit(oid, price, qty, reduce_only=True):
+    return {
+        "orderId": oid,
+        "type": "LIMIT",
+        "side": "SELL",
+        "price": f"{price:.2f}",
+        "origQty": f"{qty:.3f}",
+        "reduceOnly": reduce_only,
+    }
+
+
 def test_aggressive_heal_on_duplicate_tp(supervisor, monkeypatch):
     dup_orders = [
-        {"orderId": i, "type": "LIMIT", "side": "SELL", "price": "3600.00", "origQty": "0.073"}
-        for i in range(1, 7)
+        _tp_limit(i, 3600.0, 0.073) for i in range(1, 7)
     ]
-    supervisor.client.get_open_orders.side_effect = _open_orders_side_effect(
-        [], dup_orders, dup_orders, [],
-    )
+    live: list = []
+
+    def _get_orders(_symbol):
+        return list(live)
+
+    def _cancel(_symbol, oid):
+        nonlocal live
+        live = [o for o in live if o["orderId"] != oid]
+        return True
+
+    live[:] = dup_orders
+    supervisor.client.get_open_orders.side_effect = _get_orders
+    supervisor.client.cancel_order.side_effect = _cancel
     supervisor.client.place_limit_order.return_value = {"orderId": 100}
     monkeypatch.setattr("app.core.position_supervisor.time.sleep", lambda *_: None)
     alerts = []
@@ -152,7 +166,7 @@ def test_aggressive_heal_on_duplicate_tp(supervisor, monkeypatch):
     result = supervisor._ensure_defenses(0.406, 1562.01, force_rebuild=False)
 
     assert result.get("healed") is True
-    assert supervisor.client.cancel_all_open_orders.called
+    assert supervisor.client.cancel_order.call_count >= 5
     assert any("DEFENSE_HEAL" in str(a) for a in alerts)
 
 
@@ -175,8 +189,8 @@ def test_rebuild_defenses_force_cancels_then_places(supervisor, monkeypatch):
 
 def test_scan_detects_duplicate_tp(supervisor):
     supervisor.client.get_open_orders.return_value = [
-        {"orderId": 1, "type": "LIMIT", "side": "SELL", "price": "3600.00", "origQty": "0.180"},
-        {"orderId": 2, "type": "LIMIT", "side": "SELL", "price": "3600.00", "origQty": "0.180"},
+        _tp_limit(1, 3600.0, 0.180),
+        _tp_limit(2, 3600.0, 0.180),
     ]
     slices = supervisor._compute_tp_slices(1.0)
     scan = supervisor._scan_open_defenses(slices)

@@ -56,7 +56,7 @@ def test_recover_restores_radar_and_rebuilds_defenses(supervisor, monkeypatch):
         supervisor.position_manager,
         "get_position",
         return_value={"positionAmt": "1.5", "entryPrice": "3500.0"},
-    ), patch.object(supervisor, "_smart_realign_defenses") as ensure:
+    ), patch.object(supervisor, "_reconcile_tp_defenses_on_startup") as ensure:
         ensure.return_value = {"skipped": True, "aligned": True, "matched": 3, "expected": 3, "audit": {}}
         audit = supervisor.recover_on_startup(
             open_trade_id=99,
@@ -75,7 +75,7 @@ def test_recover_restores_radar_and_rebuilds_defenses(supervisor, monkeypatch):
     assert audit["current_sl"] > supervisor.watched_entry
     ensure.assert_called_once()
     call_kw = ensure.call_args[1]
-    assert call_kw.get("reason") == "重启闪电接管"
+    assert "dynamic_sl" in call_kw
     supervisor.client.cancel_all_open_orders.assert_not_called()
 
 
@@ -89,7 +89,7 @@ def test_recover_falls_back_to_db_trade_context(supervisor):
         supervisor.position_manager,
         "get_position",
         return_value={"positionAmt": "-0.8", "entryPrice": "3600.0"},
-    ), patch.object(supervisor, "_smart_realign_defenses") as ensure:
+    ), patch.object(supervisor, "_reconcile_tp_defenses_on_startup") as ensure:
         ensure.return_value = {"skipped": True, "aligned": True, "matched": 3, "expected": 3, "audit": {}}
         audit = supervisor.recover_on_startup(
             open_trade_id=7,
