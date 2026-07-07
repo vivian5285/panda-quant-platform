@@ -32,14 +32,24 @@ def test_compute_tp_slices_excludes_filled_level(supervisor):
 def test_classify_qty_change_detects_tp1_fill(supervisor):
     supervisor.consumed_tp_levels = []
     supervisor.regime = 3
-    old_slices = supervisor._compute_tp_slices(1.0)
+    supervisor.tv_tps = [1810.27, 1829.88, 1847.32]
+    supervisor.initial_qty = 1.234
+    old_slices = supervisor._compute_tp_slices(1.234)
     tp1_qty = old_slices[0][1]
-    new_qty = round(1.0 - tp1_qty, 3)
+    new_qty = round(1.234 - tp1_qty, 3)
 
-    change = supervisor._classify_qty_change(1.0, new_qty)
+    change = supervisor._classify_qty_change(1.234, new_qty, curr_px=1815.0)
 
     assert change == "tp1_filled"
     assert 1 in supervisor.consumed_tp_levels
+
+
+def test_after_tp1_only_tp23_slices(supervisor):
+    supervisor.consumed_tp_levels = [1]
+    slices = supervisor._compute_tp_slices(0.987, exclude_levels={1})
+    assert len(slices) == 2
+    assert all(level in (2, 3) for level, _, _ in slices)
+    assert abs(sum(q for _, q, _ in slices) - 0.987) < 0.002
 
 
 def test_reconcile_radar_context_merges_tv_and_open_log(supervisor):

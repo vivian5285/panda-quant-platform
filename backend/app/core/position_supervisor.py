@@ -25,6 +25,7 @@ from app.core.symbol_precision import normalize_tv_targets, round_price, round_q
 from app.core.position_sizing import compute_eth_qty, read_contract_equity
 from app.core.position_qty_tolerance import qty_change_significant, qty_drift_tolerance
 from app.core.tp_defense_reconcile import tp_price_matches
+from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 
@@ -577,56 +578,80 @@ class PositionSupervisor(
         self, qty: float, exclude_levels: set[int] | None = None
     ) -> list[tuple[int, float, float]]:
         """按 regime 比例为当前头寸切 TP 份；已成交档位跳过并重归一化剩余比例。"""
-        exclude_levels = exclude_levels or set()
-        ratios = self.regime_settings[self.regime]["ratios"]
-        active: list[tuple[int, float, float]] = []
-        for i, ratio in enumerate(ratios):
-            level = i + 1
-            price = self.tv_tps[i]
-            if level in exclude_levels or price <= 0:
-                continue
-            active.append((level, ratio, price))
-        if not active or qty <= 0:
-            return []
+        return compute_tp_slices(
+            qty,
+            self.regime,
+            self.tv_tps,
+            self.regime_settings,
+            exclude_levels=exclude_levels or set(),
+            round_qty_fn=round_quantity,
+        )
 
-        total_ratio = sum(r for _, r, _ in active)
-        slices: list[tuple[int, float, float]] = []
-        allocated = 0.0
-        for idx, (level, ratio, price) in enumerate(active):
-            if idx == len(active) - 1:
-                part_qty = round_quantity(qty - allocated)
-            else:
-                part_qty = round_quantity(qty * (ratio / total_ratio))
-                allocated += part_qty
-            if part_qty > 0:
-                slices.append((level, part_qty, price))
-        return slices
+    def _open_tp_prices_on_book(self) -> list[float]:
+        prices: list[float] = []
+        if hasattr(self, "_collect_tp_limit_orders"):
+            for o in self._collect_tp_limit_orders():
+                px = float(o.get("price", 0) or 0)
+                if px > 0:
+                    prices.append(round_price(px))
+        elif hasattr(self.client, "get_open_orders"):
+            for o in self.client.get_open_orders(self.symbol) or []:
+                if str(o.get("type", "")).upper() != "LIMIT":
+                    continue
+                px = float(o.get("price", 0) or 0)
+                if px > 0:
+                    prices.append(round_price(px))
+        return prices
+
+    def _sync_consumed_tp_levels(self, live_qty: float, curr_px: float) -> list[int]:
+        """Exchange-first: merge persisted + initial-qty + price-cross inference."""
+        tol = self._qty_match_tol(
+            float(self.initial_qty or live_qty),
+            live_qty,
+        )
+        inferred = infer_filled_tp_levels(
+            live_qty,
+            curr_px,
+            self.current_side,
+            initial_qty=float(self.initial_qty or live_qty),
+            consumed_tp_levels=self.consumed_tp_levels,
+            regime=self.regime,
+            tv_tps=self.tv_tps,
+            regime_settings=self.regime_settings,
+            open_tp_prices=self._open_tp_prices_on_book(),
+            qty_tol=tol,
+        )
+        merged = sorted({int(x) for x in (self.consumed_tp_levels or [])} | inferred)
+        if merged != sorted(self.consumed_tp_levels or []):
+            logger.info(
+                "[User %s] TP 已成交档位更新: %s → %s | 实盘 %s",
+                self.user_id, self.consumed_tp_levels, merged, live_qty,
+            )
+        self.consumed_tp_levels = merged
+        if hasattr(self, "_save_state"):
+            self._save_state()
+        return merged
 
     def _infer_filled_tp_levels(self, qty: float, curr_px: float) -> set[int]:
-        """推断已成交 TP 档位（state 记录 + 价格越过且无挂单）。"""
-        filled = set(self.consumed_tp_levels or [])
-        if curr_px <= 0:
-            return filled
-
-        probe = self._compute_tp_slices(qty, exclude_levels=set())
-        scan = self._scan_open_defenses(probe, None)
-        open_levels = {m["level"] for m in scan.get("matched_tps", [])}
-
-        for level, _slice_qty, price in probe:
-            if level in filled or level in open_levels or price <= 0:
-                continue
-            crossed = (
-                (self.current_side == "LONG" and curr_px >= price)
-                or (self.current_side == "SHORT" and curr_px <= price)
-            )
-            if crossed:
-                filled.add(level)
-        return filled
+        """推断已成交 TP 档位（state 记录 + 开仓量对比 + 价格越过且无挂单）。"""
+        tol = self._qty_match_tol(float(self.initial_qty or qty), qty)
+        return infer_filled_tp_levels(
+            qty,
+            curr_px,
+            self.current_side,
+            initial_qty=float(self.initial_qty or qty),
+            consumed_tp_levels=self.consumed_tp_levels,
+            regime=self.regime,
+            tv_tps=self.tv_tps,
+            regime_settings=self.regime_settings,
+            open_tp_prices=self._open_tp_prices_on_book(),
+            qty_tol=tol,
+        )
 
     def _active_tp_exclude_levels(self, qty: float, curr_px: float) -> set[int]:
         return self._infer_filled_tp_levels(qty, curr_px)
 
-    def _classify_qty_change(self, old_qty: float, new_qty: float) -> str:
+    def _classify_qty_change(self, old_qty: float, new_qty: float, curr_px: float | None = None) -> str:
         tol = self._qty_match_tol(old_qty, new_qty)
         if new_qty <= 0:
             return "full_close"
@@ -635,15 +660,28 @@ class PositionSupervisor(
         reduced = old_qty - new_qty
         if reduced <= tol:
             return "unchanged"
-        old_slices = self._compute_tp_slices(
-            old_qty, exclude_levels=set(self.consumed_tp_levels)
-        )
-        for level, slice_qty, _ in old_slices:
-            if self._qty_matches(reduced, slice_qty):
-                if level not in self.consumed_tp_levels:
-                    self.consumed_tp_levels.append(level)
-                return f"tp{level}_filled"
-        return "manual_reduce"
+        anchors = []
+        initial = float(self.initial_qty or 0)
+        if initial > 0:
+            anchors.append(initial)
+        if old_qty > 0 and old_qty not in anchors:
+            anchors.append(old_qty)
+        result = "manual_reduce"
+        for anchor in anchors:
+            old_slices = self._compute_tp_slices(
+                anchor, exclude_levels=set(self.consumed_tp_levels)
+            )
+            for level, slice_qty, _ in old_slices:
+                if self._qty_matches(reduced, slice_qty):
+                    if level not in self.consumed_tp_levels:
+                        self.consumed_tp_levels.append(level)
+                    result = f"tp{level}_filled"
+                    break
+            if result.startswith("tp"):
+                break
+        if curr_px is not None and curr_px > 0:
+            self._sync_consumed_tp_levels(new_qty, curr_px)
+        return result
 
     def _reconcile_radar_context(self, recovery: dict | None) -> dict:
         """重启：开仓日志 + 最新 TV + DB 交易 三方核实雷达参数。"""
@@ -2056,6 +2094,7 @@ class PositionSupervisor(
                 self.current_sl = self.watched_entry
 
             curr_px = self.client.get_current_price(self.symbol)
+            self._sync_consumed_tp_levels(self.watched_qty, curr_px or self.watched_entry)
             self._refresh_radar_state_on_recover(curr_px, self.watched_entry)
 
             cap_result = self._enforce_regime_cap_alignment(
@@ -2066,7 +2105,7 @@ class PositionSupervisor(
             )
             if cap_result.get("new_qty"):
                 self.watched_qty = float(cap_result["new_qty"])
-                if float(self.initial_qty or 0) > self.watched_qty:
+                if cap_result.get("trimmed", 0) > 0 and float(self.initial_qty or 0) > self.watched_qty:
                     self.initial_qty = self.watched_qty
 
             unified = self._unified_startup_defense_reconcile(

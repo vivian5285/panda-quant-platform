@@ -358,7 +358,9 @@ class AdverseRadarMixin:
                 return f"tp{level}_filled"
         return None
 
-    def _classify_reduction_cause(self, old_qty: float, new_qty: float) -> str:
+    def _classify_reduction_cause(
+        self, old_qty: float, new_qty: float, curr_px: float | None = None,
+    ) -> str:
         if new_qty <= 0:
             return "full_close"
         if new_qty > old_qty + self._qty_match_tol(old_qty, new_qty):
@@ -383,7 +385,7 @@ class AdverseRadarMixin:
                 return f"adverse_sl_{int(round(tier * 100))}pct"
 
         if hasattr(self, "_classify_qty_change"):
-            return self._classify_qty_change(old_qty, new_qty)
+            return self._classify_qty_change(old_qty, new_qty, curr_px=curr_px)
         return "manual_reduce"
 
     def _adverse_close_side(self) -> str:
@@ -1077,7 +1079,7 @@ class AdverseRadarMixin:
         TP fill → realign TP + radar toward TP3
         Adverse SL fill → repair remaining 4/5% tiers only
         """
-        cause = self._classify_reduction_cause(old_qty, new_qty)
+        cause = self._classify_reduction_cause(old_qty, new_qty, curr_px=curr_px)
         result: dict[str, Any] = {"change_type": cause, "old_qty": old_qty, "new_qty": new_qty}
 
         if cause.startswith("adverse_sl_"):

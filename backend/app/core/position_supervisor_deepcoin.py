@@ -28,6 +28,7 @@ from app.core.tp_defense_reconcile import (
     tp_qty_matches,
     tp_qty_tolerance,
 )
+from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.adverse_radar_guard import AdverseRadarMixin
 from app.core.startup_reconcile import StartupReconcileMixin, format_startup_defense_summary
@@ -115,6 +116,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.tv_tps = [0.0, 0.0, 0.0]
 
         self.initial_qty = 0
+        self.consumed_tp_levels: list[int] = []
         self.watched_qty = 0
         self.watched_entry = 0.0
         self.current_side = None
@@ -402,6 +404,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "tv_price": self.tv_price,
                     "best_price": self.best_price,
                     "initial_qty": self.initial_qty,
+                    "consumed_tp_levels": list(self.consumed_tp_levels),
                     "last_tv_signal": self.last_tv_signal,
                     "adverse_sl_armed": self.adverse_sl_armed,
                     "adverse_sl_prices": self.adverse_sl_prices,
@@ -645,18 +648,51 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             })
         return dedupe_orders_by_id(orders)
 
-    def _expected_tp_count(self, tp_pxs=None):
-        tp_pxs = tp_pxs if tp_pxs is not None else self.tv_tps
-        return sum(1 for t in tp_pxs if t > 0)
+    def _compute_tp_slices(self, qty, exclude_levels=None):
+        return compute_tp_slices(
+            float(qty),
+            self.regime,
+            self.tv_tps,
+            self.regime_settings,
+            exclude_levels=exclude_levels or set(),
+            round_qty_fn=lambda x: float(max(self._safe_qty(x), 1)),
+        )
 
-    def _expected_tp_levels(self, live_qty):
-        ratios = self.regime_settings[self.regime]["ratios"]
-        q1, q2, q3 = self._calculate_tp_quantities(live_qty, ratios)
-        return [
-            {"level": 1, "qty": q1, "price": self.tv_tps[0]},
-            {"level": 2, "qty": q2, "price": self.tv_tps[1]},
-            {"level": 3, "qty": q3, "price": self.tv_tps[2]},
-        ]
+    def _sync_consumed_tp_levels(self, live_qty, curr_px):
+        tol = max(1.0, float(self._safe_qty(self.initial_qty or live_qty)) * 0.05)
+        open_prices = [float(o.get("price", 0)) for o in self._collect_tp_limit_orders()]
+        inferred = infer_filled_tp_levels(
+            float(live_qty),
+            float(curr_px or 0),
+            self.current_side,
+            initial_qty=float(self.initial_qty or live_qty),
+            consumed_tp_levels=self.consumed_tp_levels,
+            regime=self.regime,
+            tv_tps=self.tv_tps,
+            regime_settings=self.regime_settings,
+            open_tp_prices=open_prices,
+            qty_tol=tol,
+        )
+        merged = sorted({int(x) for x in (self.consumed_tp_levels or [])} | inferred)
+        self.consumed_tp_levels = merged
+        return merged
+
+    def _expected_tp_count(self, tp_pxs=None):
+        live_qty = float(self._safe_qty(self.watched_qty))
+        if live_qty <= 0:
+            tp_pxs = tp_pxs if tp_pxs is not None else self.tv_tps
+            return sum(1 for t in tp_pxs if t > 0)
+        exclude = set(self.consumed_tp_levels or [])
+        return len(self._compute_tp_slices(live_qty, exclude_levels=exclude))
+
+    def _expected_tp_levels(self, live_qty, curr_px=None):
+        live_qty = float(self._resolve_live_qty(live_qty))
+        exclude = set(self.consumed_tp_levels or [])
+        if curr_px and curr_px > 0:
+            self._sync_consumed_tp_levels(live_qty, curr_px)
+            exclude = set(self.consumed_tp_levels or [])
+        slices = self._compute_tp_slices(live_qty, exclude_levels=exclude)
+        return [{"level": lvl, "qty": self._safe_qty(q), "price": px} for lvl, q, px in slices]
 
     def _audit_tp_levels(self, live_qty, tolerance=None):
         """严格审计：每档价位唯一 + 张数符合 regime 比例 + 无孤儿单"""
@@ -1951,6 +1987,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.watched_qty = s.get("watched_qty", 0)
                     self.watched_entry = s.get("watched_entry", 0.0)
                     self.initial_qty = s.get("initial_qty", 0)
+                    self.consumed_tp_levels = [
+                        int(x) for x in (s.get("consumed_tp_levels") or []) if int(x) in (1, 2, 3)
+                    ]
                     self.last_tv_signal = s.get("last_tv_signal")
                     self.adverse_sl_armed = bool(s.get("adverse_sl_armed", False))
                     self.adverse_sl_prices = [
@@ -2013,8 +2052,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 if cap_result.get("new_qty"):
                     real_amt = self._safe_qty(cap_result["new_qty"])
                     self.watched_qty = real_amt
-                    if self._safe_qty(self.initial_qty) > real_amt:
+                    if cap_result.get("trimmed", 0) > 0 and self._safe_qty(self.initial_qty) > real_amt:
                         self.initial_qty = real_amt
+
+                curr_px = self.client.get_current_price(self.symbol) if hasattr(self.client, "get_current_price") else 0
+                self._sync_consumed_tp_levels(real_amt, curr_px or self.watched_entry)
 
                 unified = self._unified_startup_defense_reconcile(
                     real_amt,

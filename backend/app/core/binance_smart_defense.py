@@ -4,6 +4,7 @@ import logging
 import time
 
 from app.core.symbol_precision import round_price
+from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, slices_to_level_dicts
 from app.core.tp_defense_reconcile import (
     STARTUP_ORDER_FETCH_DELAY,
     STARTUP_ORDER_FETCH_RETRIES,
@@ -41,6 +42,66 @@ class BinanceSmartDefenseMixin:
         qty2 = round(qty * ratios[1], 3)
         qty3 = round(qty - qty1 - qty2, 3)
         return qty1, qty2, qty3
+
+    def _consumed_tp_level_set(self) -> set[int]:
+        return {int(x) for x in (getattr(self, "consumed_tp_levels", []) or []) if int(x) in (1, 2, 3)}
+
+    def _current_tp_price(self) -> float:
+        if hasattr(self.client, "get_current_price"):
+            try:
+                return float(self.client.get_current_price(self.symbol) or 0)
+            except Exception:
+                return 0.0
+        return 0.0
+
+    def _tp_exclude_levels(self, live_qty: float, curr_px: float | None = None) -> set[int]:
+        px = float(curr_px or 0) if curr_px else self._current_tp_price()
+        if hasattr(self, "_sync_consumed_tp_levels"):
+            self._sync_consumed_tp_levels(live_qty, px)
+        exclude = self._consumed_tp_level_set()
+        if hasattr(self, "_active_tp_exclude_levels") and px > 0:
+            exclude |= self._active_tp_exclude_levels(live_qty, px)
+        return exclude
+
+    def _active_tp_level_dicts(self, live_qty: float, curr_px: float | None = None) -> list[dict]:
+        live_qty = self._resolve_live_qty(live_qty)
+        exclude = self._tp_exclude_levels(live_qty, curr_px)
+        if hasattr(self, "_compute_tp_slices"):
+            slices = self._compute_tp_slices(live_qty, exclude_levels=exclude)
+        else:
+            slices = compute_tp_slices(
+                live_qty,
+                self.regime,
+                self.tv_tps,
+                self.regime_settings,
+                exclude_levels=exclude,
+            )
+        return slices_to_level_dicts(slices)
+
+    def _cancel_tp_orders_for_consumed_levels(self) -> int:
+        """Remove stale TP orders at tiers already eaten (e.g. TP1 after partial fill)."""
+        consumed = self._consumed_tp_level_set()
+        if not consumed:
+            return 0
+        cancelled = 0
+        for level in sorted(consumed):
+            idx = level - 1
+            if idx < 0 or idx >= len(self.tv_tps):
+                continue
+            px = float(self.tv_tps[idx])
+            if px <= 0:
+                continue
+            for o in self._collect_tp_limit_orders():
+                if not tp_price_matches(o["price"], px):
+                    continue
+                oid = o.get("orderId")
+                if oid:
+                    self.client.cancel_order(self.symbol, int(oid))
+                    cancelled += 1
+                    time.sleep(0.2)
+        if cancelled:
+            self._def_log(f"🧹 已撤销已成交档位多余止盈 {cancelled} 张 (consumed={sorted(consumed)})")
+        return cancelled
 
     def _resolve_live_qty(self, fallback_qty: float) -> float:
         pos = self._get_active_position()
@@ -107,23 +168,21 @@ class BinanceSmartDefenseMixin:
         return dedupe_orders_by_id(orders)
 
     def _expected_tp_count(self, tp_pxs=None) -> int:
-        tp_pxs = tp_pxs if tp_pxs is not None else self.tv_tps
-        return sum(1 for t in tp_pxs if t > 0)
+        live_qty = float(getattr(self, "watched_qty", 0) or 0)
+        if live_qty <= 0:
+            tp_pxs = tp_pxs if tp_pxs is not None else self.tv_tps
+            return sum(1 for t in tp_pxs if t > 0)
+        return len(self._active_tp_level_dicts(live_qty))
 
-    def _expected_tp_levels(self, live_qty: float) -> list[dict]:
-        ratios = self.regime_settings[self.regime]["ratios"]
-        q1, q2, q3 = self._split_tp_quantities(live_qty, ratios)
-        return [
-            {"level": 1, "qty": q1, "price": self.tv_tps[0]},
-            {"level": 2, "qty": q2, "price": self.tv_tps[1]},
-            {"level": 3, "qty": q3, "price": self.tv_tps[2]},
-        ]
+    def _expected_tp_levels(self, live_qty: float, curr_px: float | None = None) -> list[dict]:
+        return self._active_tp_level_dicts(live_qty, curr_px)
 
     def _audit_tp_levels(
         self,
         live_qty: float,
         tolerance: float | None = None,
         qty_tol: float | None = None,
+        curr_px: float | None = None,
     ) -> dict:
         live_qty = self._resolve_live_qty(live_qty)
         price_tol = self._tp_price_tol() if tolerance is None else float(tolerance)
@@ -131,8 +190,9 @@ class BinanceSmartDefenseMixin:
         levels = []
         matched_full = 0
         issues = []
+        consumed = sorted(self._consumed_tp_level_set())
 
-        for lv in self._expected_tp_levels(live_qty):
+        for lv in self._expected_tp_levels(live_qty, curr_px):
             if lv["qty"] <= 0 or lv["price"] <= 0:
                 continue
             at_px = [o for o in orders if tp_price_matches(o["price"], lv["price"], price_tol)]
@@ -170,7 +230,7 @@ class BinanceSmartDefenseMixin:
         for o in orphans:
             issues.append(f"孤儿止盈 @{o['price']:.2f} qty={o['qty']}")
 
-        expected = self._expected_tp_count()
+        expected = len(levels)
         pending_prices = sorted({o["price"] for o in orders})
         return {
             "matched_full": matched_full,
@@ -180,10 +240,14 @@ class BinanceSmartDefenseMixin:
             "orphans": orphans,
             "pending_prices": pending_prices,
             "live_qty": live_qty,
+            "consumed_tp_levels": consumed,
         }
 
     def _format_audit_summary(self, audit: dict) -> str:
         parts = []
+        consumed = audit.get("consumed_tp_levels") or []
+        if consumed:
+            parts.append(f"已成交TP{''.join(str(x) for x in consumed)}")
         for lv in audit.get("levels", []):
             if lv["price"] <= 0:
                 continue
@@ -286,21 +350,20 @@ class BinanceSmartDefenseMixin:
         dynamic_sl=None,
         tolerance: float | None = None,
         qty_tol: float | None = None,
+        curr_px: float | None = None,
     ) -> bool:
         price_tol = self._tp_price_tol() if tolerance is None else float(tolerance)
-        tp_pxs = self.tv_tps
-        expected = self._expected_tp_count(tp_pxs)
-        if expected == 0:
+        if dynamic_sl is None and hasattr(self, "_radar_sl_to_pass"):
+            dynamic_sl = self._radar_sl_to_pass()
+        expected_levels = self._expected_tp_levels(live_qty, curr_px)
+        if not expected_levels:
             return dynamic_sl is None or self._has_stop_sl_near(dynamic_sl, price_tol)
 
         orders = self._collect_tp_limit_orders()
-        ratios = self.regime_settings[self.regime]["ratios"]
-        qty1, qty2, qty3 = self._split_tp_quantities(live_qty, ratios)
-        levels = [(qty1, tp_pxs[0]), (qty2, tp_pxs[1]), (qty3, tp_pxs[2])]
-
         matched_levels = 0
         expected_prices = []
-        for q, px in levels:
+        for lv in expected_levels:
+            q, px = lv["qty"], lv["price"]
             if q <= 0 or px <= 0:
                 continue
             expected_prices.append(px)
@@ -312,7 +375,7 @@ class BinanceSmartDefenseMixin:
                 return False
             matched_levels += 1
 
-        if matched_levels < expected:
+        if matched_levels < len(expected_levels):
             return False
 
         for o in orders:
@@ -348,17 +411,18 @@ class BinanceSmartDefenseMixin:
         return cancelled
 
     def _patch_missing_tp_levels(
-        self, live_qty: float, tolerance: float | None = None, qty_tol: float | None = None
+        self, live_qty: float, tolerance: float | None = None, qty_tol: float | None = None,
+        curr_px: float | None = None,
     ) -> int:
         price_tol = self._tp_price_tol() if tolerance is None else float(tolerance)
         close_side = "SHORT" if self.current_side == "LONG" else "LONG"
         live_qty = self._resolve_live_qty(live_qty)
-        ratios = self.regime_settings[self.regime]["ratios"]
-        qty1, qty2, qty3 = self._split_tp_quantities(live_qty, ratios)
-        levels = [(qty1, self.tv_tps[0]), (qty2, self.tv_tps[1]), (qty3, self.tv_tps[2])]
+        self._cancel_tp_orders_for_consumed_levels()
+        levels = self._expected_tp_levels(live_qty, curr_px)
         placed = 0
 
-        for q, px in levels:
+        for lv in levels:
+            q, px = lv["qty"], lv["price"]
             if q <= 0 or px <= 0:
                 continue
             orders = self._collect_tp_limit_orders()
@@ -442,11 +506,15 @@ class BinanceSmartDefenseMixin:
         """VPS reboot: trust exchange book — retry fetch, dedupe, patch gaps only."""
         self._def_log("🔄 重启接管：交易所优先对账止盈（不盲目清场）")
         live_qty = self._resolve_live_qty(live_qty)
+        curr_px = self._current_tp_price()
+        if hasattr(self, "_sync_consumed_tp_levels"):
+            self._sync_consumed_tp_levels(live_qty, curr_px)
+        self._cancel_tp_orders_for_consumed_levels()
         rebuilt = False
 
         for attempt in range(STARTUP_ORDER_FETCH_RETRIES):
-            audit = self._audit_tp_levels(live_qty)
-            if self._defenses_fully_ok(live_qty, dynamic_sl):
+            audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
+            if self._defenses_fully_ok(live_qty, dynamic_sl, curr_px=curr_px):
                 self._def_log(
                     f"✅ 重启对账：盘口已齐，跳过补挂 | {self._format_audit_summary(audit)}"
                 )
@@ -480,15 +548,15 @@ class BinanceSmartDefenseMixin:
                 time.sleep(STARTUP_ORDER_FETCH_DELAY)
 
         self._cancel_orphan_tp_orders(live_qty)
-        placed = self._patch_missing_tp_levels(live_qty)
+        placed = self._patch_missing_tp_levels(live_qty, curr_px=curr_px)
         if placed:
             rebuilt = True
         time.sleep(0.6)
         if dynamic_sl and not self._has_stop_sl_near(dynamic_sl):
             self._ensure_radar_sl(dynamic_sl, live_qty)
 
-        audit = self._audit_tp_levels(live_qty)
-        if self._defenses_fully_ok(live_qty, dynamic_sl):
+        audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
+        if self._defenses_fully_ok(live_qty, dynamic_sl, curr_px=curr_px):
             self._def_log(
                 f"✅ 重启增量纠偏完成 | {self._format_audit_summary(audit)}"
             )
@@ -680,8 +748,12 @@ class BinanceSmartDefenseMixin:
         """统一智能防线对齐：审计 → 增量或核武 → 仍未达标则强制核武"""
         if reason:
             self._def_log(f"🧠 智能防线对齐: {reason}")
-        initial = self._audit_tp_levels(live_qty)
-        if self._defenses_fully_ok(live_qty, dynamic_sl):
+        curr_px = self._current_tp_price()
+        if hasattr(self, "_sync_consumed_tp_levels"):
+            self._sync_consumed_tp_levels(live_qty, curr_px)
+        self._cancel_tp_orders_for_consumed_levels()
+        initial = self._audit_tp_levels(live_qty, curr_px=curr_px)
+        if self._defenses_fully_ok(live_qty, dynamic_sl, curr_px=curr_px):
             self._def_log(f"✅ 防线已齐，跳过: {self._format_audit_summary(initial)}")
             return {
                 "matched": initial["matched_full"],

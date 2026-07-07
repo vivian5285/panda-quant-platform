@@ -48,6 +48,9 @@ def format_startup_defense_summary(audit: dict) -> str:
     tp_m = audit.get("tp_matched")
     tp_e = audit.get("tp_expected")
     if tp_e:
+        consumed = audit.get("consumed_tp_levels") or []
+        if consumed:
+            parts.append(f"已成交TP{''.join(str(x) for x in consumed)}")
         parts.append(f"TP{tp_m}/{tp_e}")
     shield = audit.get("shield")
     if isinstance(shield, dict):
@@ -197,6 +200,7 @@ class StartupReconcileMixin:
             "radar_handoff": radar_handoff,
             "shield": shield_audit,
             "shield_stop_price": stop_px,
+            "consumed_tp_levels": list(getattr(self, "consumed_tp_levels", []) or []),
             "tp_matched": tp_result.get("matched"),
             "tp_expected": tp_result.get("expected"),
             "defenses_skipped": bool(tp_result.get("skipped")),
