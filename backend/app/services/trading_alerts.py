@@ -90,9 +90,9 @@ ALERT_TYPE_TAGS = {
     "CAP_ALIGN_BLOCKED": "叠仓纠偏中止",
     "CAP_ALIGN_FAIL": "叠仓减仓失败",
     "CAP_ALIGN_OVERTRIM": "叠仓过度减仓",
-    "ADVERSE_SL": "逆势分批止损",
-    "ADVERSE_SL_DISARM": "防护盾撤销",
-    "ADVERSE_SL_HIT": "防护盾触发",
+    "ADVERSE_SL": "10%硬止损",
+    "ADVERSE_SL_DISARM": "防护盾撤销·雷达接管",
+    "ADVERSE_SL_HIT": "10%硬止损触发",
     "ADVERSE_SL_REPAIR": "逆势止损补挂",
     "FALSE_FLAT": "误报空仓",
     "CLOSE_ATTRIBUTION": "平仓归因",
@@ -226,20 +226,16 @@ def format_adverse_sl_detail_cn(detail: dict, exchange: str | None = None) -> st
     theme = resolve_exchange_theme(exchange or detail.get("exchange"))
     unit = qty_unit_for_exchange(exchange or detail.get("exchange"))
     side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(detail.get("side", "")).upper(), "—")
+    hard_pct = detail.get("hard_stop_pct", 10)
     lines = [
         _line("交易所", theme["label"]),
         _line("方向", side_txt),
-        _line("浮亏幅度", f"{detail.get('adverse_pct', 0):.1f}%"),
-        _line("挂出止损", f"{detail.get('placed', 0)}/{len(detail.get('plan') or [])} 档"),
+        _line("硬止损", f"开仓价 {hard_pct:.0f}% 全平"),
+        _line("止损价", f"{detail.get('stop_price', '—')}"),
         _line("持仓数量", f"{detail.get('live_qty', 0)} {unit}"),
     ]
-    plan = detail.get("plan") or []
-    if plan:
-        tier_txt = " · ".join(
-            f"{p.get('tier_pct', 0)*100:.0f}% @{p.get('stop_price', 0):.2f} ×{p.get('qty', 0)}"
-            for p in plan[:3]
-        )
-        lines.append(_line("分批档位", tier_txt))
+    if detail.get("entry"):
+        lines.insert(3, _line("开仓价", f"{float(detail['entry']):.2f}"))
     return "\n".join(lines)
 
 

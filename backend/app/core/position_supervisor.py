@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from app.core.binance_client import BinanceClient
-from app.core.adverse_radar_guard import ADVERSE_ARM_PCT, AdverseRadarMixin
+from app.core.adverse_radar_guard import AdverseRadarMixin
 from app.core.binance_smart_defense import BinanceSmartDefenseMixin
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.position_manager import PositionManager
@@ -1196,6 +1196,13 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
                     f"{self.current_side} {pos['size']} ETH | 仅 {result['matched']}/{result['expected']} 档 | {summary}",
                     result,
                 )
+            shield = self._arm_adverse_shield_at_open(pos["size"])
+            if shield.get("placed", 0) > 0:
+                self._log(
+                    "ADVERSE_SL",
+                    f"🛡️ 开仓 10% 硬止损已挂 @{shield.get('stop_price', 0):.2f}",
+                    shield,
+                )
         self._save_state()
         threading.Thread(target=self._sentinel_loop, daemon=True).start()
 
@@ -2034,12 +2041,14 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
             curr_px = self.client.get_current_price(self.symbol)
             self._refresh_radar_state_on_recover(curr_px, self.watched_entry)
 
-            if self._adverse_move_pct(curr_px or self.watched_entry) >= ADVERSE_ARM_PCT:
+            if self._is_radar_active() or self._radar_activation_progress(curr_px or self.watched_entry) >= 1.0:
+                adverse_startup = self._disarm_adverse_staged_stops(reason="restart_radar_active", notify=False)
+            else:
                 adverse_startup = self._on_adverse_startup_reconcile(
                     self.watched_qty, curr_px or self.watched_entry,
                 )
-            else:
-                adverse_startup = self._sync_adverse_shield_from_exchange(self.watched_qty)
+                if not adverse_startup.get("aligned"):
+                    self._arm_adverse_shield_at_open(self.watched_qty)
 
             cap_result = self._enforce_regime_cap_alignment(
                 self.watched_qty,

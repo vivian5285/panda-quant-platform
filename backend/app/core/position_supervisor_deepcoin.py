@@ -29,7 +29,7 @@ from app.core.tp_defense_reconcile import (
     tp_qty_tolerance,
 )
 from app.core.position_cap_guard import PositionCapGuardMixin
-from app.core.adverse_radar_guard import ADVERSE_ARM_PCT, AdverseRadarMixin
+from app.core.adverse_radar_guard import AdverseRadarMixin
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 
@@ -1589,6 +1589,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin):
                     f"{self.current_side} {verified['size']}张 | 仅 {matched}/{expected} 档 | "
                     f"{self._format_audit_summary(audit)}",
                 )
+            shield = self._arm_adverse_shield_at_open(self._safe_qty(verified["size"]))
+            if shield.get("placed", 0) > 0:
+                logger.info(
+                    f"🛡️ 开仓 10% 硬止损已挂 @{shield.get('stop_price', 0):.2f} | "
+                    f"{verified['size']}张"
+                )
         else:
             logger.warning("开仓钉钉跳过：实盘持仓核查未通过")
         threading.Thread(target=self._sentinel_loop, daemon=True).start()
@@ -1969,10 +1975,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin):
                 curr_px = self.client.get_current_price(self.symbol)
                 self._refresh_radar_state_on_recover(curr_px, self.watched_entry)
 
-                if self._adverse_move_pct(curr_px or self.watched_entry) >= ADVERSE_ARM_PCT:
-                    self._on_adverse_startup_reconcile(real_amt, curr_px or self.watched_entry)
+                if self._is_radar_active() or self._radar_activation_progress(curr_px or self.watched_entry) >= 1.0:
+                    self._disarm_adverse_staged_stops(reason="restart_radar_active", notify=False)
                 else:
-                    self._sync_adverse_shield_from_exchange(real_amt)
+                    startup = self._on_adverse_startup_reconcile(real_amt, curr_px or self.watched_entry)
+                    if not startup.get("aligned"):
+                        self._arm_adverse_shield_at_open(real_amt)
 
                 cap_result = self._enforce_regime_cap_alignment(
                     real_amt,
