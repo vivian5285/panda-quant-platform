@@ -93,6 +93,7 @@ ALERT_TYPE_TAGS = {
     "ADVERSE_SL": "10%硬止损",
     "ADVERSE_SL_DISARM": "防护盾撤销·雷达接管",
     "ADVERSE_SL_HIT": "10%硬止损触发",
+    "ADVERSE_SL_MISALIGN": "10%硬止损未对齐",
     "ADVERSE_SL_REPAIR": "逆势止损补挂",
     "FALSE_FLAT": "误报空仓",
     "CLOSE_ATTRIBUTION": "平仓归因",
@@ -126,6 +127,7 @@ ADMIN_DINGTALK_KEY_TYPES = frozenset({
     "ADVERSE_SL",
     "ADVERSE_SL_DISARM",
     "ADVERSE_SL_HIT",
+    "ADVERSE_SL_MISALIGN",
     "FALSE_FLAT",
     "CLOSE_ATTRIBUTION",
 })

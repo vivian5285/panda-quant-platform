@@ -21,6 +21,10 @@ def test_classify_profit_radar_when_progress_full():
     assert classify_startup_pnl_track(2000.0, 2010.0, "LONG", radar_progress=1.0) == "profit_radar"
 
 
+def test_classify_loss_shield_when_profit_but_radar_not_active():
+    assert classify_startup_pnl_track(2000.0, 2010.0, "LONG", radar_progress=0.66) == "loss_shield"
+
+
 def test_format_startup_summary():
     s = format_startup_defense_summary({
         "pnl_track": "loss_shield",
@@ -94,7 +98,28 @@ class _StartupProbe(StartupReconcileMixin, AdverseRadarMixin, BinanceSmartDefens
 
 def test_unified_startup_loss_track_arms_shield():
     probe = _StartupProbe()
-    with patch.object(probe, "_startup_wait_live_book", lambda: None):
+    plan = probe._compute_adverse_stop_plan(0.6)
+    stop_order = {
+        "type": "STOP_MARKET",
+        "orderId": 1,
+        "stopPrice": str(plan[0]["stop_price"]),
+        "closePosition": True,
+        "side": "SELL",
+    }
+    placed = {"done": False}
+
+    def _open_orders(_symbol):
+        return [stop_order] if placed["done"] else []
+
+    def _place_stop(*_args, **_kwargs):
+        placed["done"] = True
+        return {"orderId": 1}
+
+    probe.client.get_open_orders.side_effect = _open_orders
+    probe.client.place_stop_market_order.side_effect = _place_stop
+    with patch.object(probe, "_startup_wait_live_book", lambda: None), patch(
+        "app.core.adverse_radar_guard.time.sleep", lambda *_: None,
+    ), patch("app.core.binance_smart_defense.time.sleep", lambda *_: None):
         result = probe._unified_startup_defense_reconcile(0.6, 2000.0, 1900.0)
     assert result["pnl_track"] == "loss_shield"
     assert result["tp_expected"] == 3

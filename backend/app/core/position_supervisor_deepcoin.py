@@ -985,6 +985,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
     def _ensure_radar_sl(self, live_qty, sl_price):
         if not sl_price:
             return False
+        curr_px = 0.0
+        if hasattr(self.client, "get_current_price"):
+            try:
+                curr_px = float(self.client.get_current_price(self.symbol) or 0)
+            except Exception:
+                curr_px = 0.0
+        if hasattr(self, "_disarm_shield_before_radar"):
+            self._disarm_shield_before_radar(curr_px or float(sl_price), notify=False)
         if self._has_trigger_sl_near(sl_price):
             return True
         self._place_radar_sl(live_qty, sl_price)
@@ -1176,6 +1184,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         )
 
     def _realign_radar_defenses(self, live_qty, entry, new_sl):
+        curr_px = 0.0
+        if hasattr(self.client, "get_current_price"):
+            try:
+                curr_px = float(self.client.get_current_price(self.symbol) or 0)
+            except Exception:
+                curr_px = 0.0
+        if hasattr(self, "_disarm_shield_before_radar"):
+            self._disarm_shield_before_radar(curr_px or float(new_sl), notify=False)
         self._cancel_stop_orders()
         time.sleep(0.35)
         if not self._defenses_fully_ok(live_qty, dynamic_sl=None):
@@ -1628,6 +1644,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return SENTINEL_POLL_NORMAL
 
     def _process_radar_trailing(self, real_amt, curr_px):
+        self._disarm_shield_before_radar(curr_px, reason="pre_radar_sl", notify=False)
+
         tp1_dist = abs(self.tv_tps[0] - self.watched_entry) if self.tv_tps[0] > 0 else self.current_atr * 1.5
         cfg = self.regime_settings[self.regime]
         activation_ratio = cfg["activation"]
@@ -1648,7 +1666,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if self.current_side == "LONG":
             breakeven_floor = self.watched_entry + fee_buffer
             new_sl = max(round(self.best_price - trail_offset, 2), breakeven_floor)
-            if new_sl > self.current_sl + 1.0:
+            on_book = self._has_trigger_sl_near(new_sl)
+            should_trail = new_sl > self.current_sl + 1.0
+            should_arm = self._radar_activation_reached(curr_px) and not on_book
+            if should_trail or should_arm:
                 self.current_sl = new_sl
                 self._save_state()
                 self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
@@ -1663,7 +1684,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         else:
             breakeven_floor = self.watched_entry - fee_buffer
             new_sl = min(round(self.best_price + trail_offset, 2), breakeven_floor)
-            if self.current_sl >= self.watched_entry or new_sl < self.current_sl - 1.0:
+            on_book = self._has_trigger_sl_near(new_sl)
+            should_trail = (
+                self.current_sl <= 0
+                or self.current_sl >= self.watched_entry
+                or new_sl < self.current_sl - 1.0
+            )
+            should_arm = self._radar_activation_reached(curr_px) and not on_book
+            if should_trail or should_arm:
                 self.current_sl = new_sl
                 self._save_state()
                 self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)

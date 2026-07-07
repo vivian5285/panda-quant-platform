@@ -124,12 +124,74 @@ def test_disarm_when_radar_activation_reached():
     assert probe._should_disarm_adverse_for_recovery(2045.0) is True
 
 
+def test_disarm_when_live_stop_even_if_flag_false():
+    probe = _AdverseProbe()
+    plan = probe._compute_adverse_stop_plan(0.6)
+    probe.adverse_sl_armed = False
+    probe.client.get_open_orders.return_value = [
+        {
+            "type": "STOP_MARKET",
+            "orderId": 1,
+            "stopPrice": str(plan[0]["stop_price"]),
+            "closePosition": True,
+            "side": "SELL",
+        }
+    ]
+    assert probe._should_disarm_adverse_for_recovery(2045.0) is True
+
+
 def test_arm_at_open_places_single_stop_market():
     probe = _AdverseProbe()
-    result = probe._arm_adverse_shield_at_open(0.6)
+    with patch("app.core.adverse_radar_guard.time.sleep", lambda *_: None):
+        result = probe._arm_adverse_shield_at_open(0.6)
     assert result["armed"] is True
     assert result["placed"] == 1
     probe.client.place_stop_market_order.assert_called_once()
+    _, kwargs = probe.client.place_stop_market_order.call_args
+    assert kwargs.get("quantity") is None
+
+
+def test_arm_aligned_with_close_position_stop():
+    probe = _AdverseProbe()
+    plan = probe._compute_adverse_stop_plan(0.6)
+    probe.client.get_open_orders.return_value = [
+        {
+            "type": "STOP_MARKET",
+            "orderId": 1,
+            "stopPrice": str(plan[0]["stop_price"]),
+            "origQty": "0",
+            "closePosition": True,
+            "side": "SELL",
+        }
+    ]
+    result = probe._arm_adverse_shield_at_open(0.6)
+    assert result.get("skipped") == "live_already_aligned"
+    probe.client.place_stop_market_order.assert_not_called()
+
+
+def test_verify_retries_finds_delayed_stop():
+    probe = _AdverseProbe()
+    plan = probe._compute_adverse_stop_plan(0.6)
+    stop_order = {
+        "type": "STOP_MARKET",
+        "orderId": 1,
+        "stopPrice": str(plan[0]["stop_price"]),
+        "closePosition": True,
+        "side": "SELL",
+    }
+    responses = [[], [], [stop_order]]
+
+    def _open_orders(_symbol):
+        if responses:
+            return responses.pop(0)
+        return [stop_order]
+
+    probe.client.get_open_orders.side_effect = _open_orders
+    with patch("app.core.adverse_radar_guard.time.sleep", lambda *_: None):
+        audit = probe._refresh_adverse_shield_audit(
+            plan, retries=3, delay=0.01,
+        )
+    assert audit["aligned"] is True
 
 
 def test_arm_skips_when_already_aligned():
@@ -152,11 +214,12 @@ def test_arm_skips_when_already_aligned():
 def test_orchestrate_disarms_on_radar_activation():
     probe = _AdverseProbe()
     probe.adverse_sl_armed = True
-    with patch.object(probe, "_disarm_adverse_staged_stops") as disarm, patch.object(
-        probe, "_handoff_shield_to_radar", return_value=True,
-    ):
+    with patch.object(probe, "_disarm_adverse_staged_stops", return_value={"cancelled": 1}) as disarm, patch.object(
+        probe, "_process_radar_trailing", return_value=True,
+    ) as trail:
         probe._orchestrate_defense_monitoring(0.6, 2045.0)
     disarm.assert_called_once()
+    trail.assert_called_once()
 
 
 def test_orchestrate_maintains_hard_stop_before_radar():

@@ -15,6 +15,8 @@ ADVERSE_HARD_STOP_PCT = 0.10
 ADVERSE_STOP_TOLERANCE = 2.0
 ADVERSE_REPAIR_COOLDOWN_SEC = 20.0
 ADVERSE_MAX_STOP_ORDERS = 1
+ADVERSE_VERIFY_RETRIES = 4
+ADVERSE_VERIFY_RETRY_DELAY_SEC = 0.35
 # Legacy aliases (tests / imports)
 ADVERSE_ARM_PCT = ADVERSE_HARD_STOP_PCT
 ADVERSE_SL_TIERS = (ADVERSE_HARD_STOP_PCT,)
@@ -64,6 +66,25 @@ def _order_qty_value(o: dict) -> float:
             except (TypeError, ValueError):
                 continue
     return 0.0
+
+
+def _order_is_close_position(o: dict) -> bool:
+    val = o.get("closePosition")
+    if val is None:
+        return False
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "1")
+    return bool(val)
+
+
+def order_qty_covers_tier(o: dict, target_qty: float, qty_tol: float) -> bool:
+    """Full-position stop: closePosition or STOP_MARKET without origQty still counts."""
+    if _order_is_close_position(o):
+        return True
+    live_q = _order_qty_value(o)
+    if live_q <= 0 and str(o.get("type", "")).upper() in ("STOP_MARKET", "STOP"):
+        return True
+    return abs(live_q - target_qty) <= qty_tol
 
 
 def adverse_move_pct(entry: float, price: float, side: str | None) -> float:
@@ -247,15 +268,8 @@ class AdverseRadarMixin:
             self.adverse_consumed_tiers.append(t)
         self.adverse_sl_armed = True
 
-    def _should_disarm_adverse_for_recovery(self, curr_px: float) -> bool:
-        """
-        Cancel 10% hard stop when radar should take over:
-        - TP1 activation distance reached (progress 100%)
-        - radar breakeven already active (SL past entry)
-        """
-        open_stops = self._collect_adverse_stop_orders()
-        if not self.adverse_sl_armed and not open_stops:
-            return False
+    def _radar_activation_reached(self, curr_px: float) -> bool:
+        """True when price has reached the TP1-distance radar activation threshold."""
         progress = (
             self._radar_activation_progress(curr_px)
             if hasattr(self, "_radar_activation_progress")
@@ -266,6 +280,37 @@ class AdverseRadarMixin:
         if hasattr(self, "_is_radar_active") and self._is_radar_active():
             return True
         return False
+
+    def _has_live_adverse_shield(self) -> bool:
+        """Exchange-first: any 10% hard stop still on book or marked armed."""
+        self._init_adverse_radar_fields()
+        if self._collect_adverse_stop_orders():
+            return True
+        return bool(self.adverse_sl_armed or self.adverse_sl_prices)
+
+    def _should_disarm_adverse_for_recovery(self, curr_px: float) -> bool:
+        """
+        Cancel 10% hard stop when radar should take over:
+        - TP1 activation distance reached (progress 100%)
+        - radar breakeven already active (SL past entry)
+        """
+        if not self._radar_activation_reached(curr_px):
+            return False
+        return self._has_live_adverse_shield()
+
+    def _disarm_shield_before_radar(
+        self,
+        curr_px: float,
+        *,
+        reason: str = "radar_tp1_activation",
+        notify: bool = False,
+    ) -> dict[str, Any]:
+        """Mandatory pre-radar step: cancel 10% hard stop (never touches TP123)."""
+        if not self._radar_activation_reached(curr_px):
+            return {"cancelled": 0, "skipped": "radar_not_active", "reason": reason}
+        if not self._has_live_adverse_shield():
+            return {"cancelled": 0, "skipped": "no_shield", "reason": reason}
+        return self._disarm_adverse_staged_stops(reason=reason, notify=notify)
 
     def _handoff_shield_to_radar(self, live_qty: float, curr_px: float) -> bool:
         """After shield disarm: activate radar breakeven trail when TP1 distance is met."""
@@ -365,8 +410,9 @@ class AdverseRadarMixin:
             return order is not None
 
         if hasattr(client, "place_stop_market_order"):
+            # Full-position 10% hard stop — closePosition avoids origQty=0 verify false negatives.
             order = client.place_stop_market_order(
-                close_side, stop_price, symbol, quantity=qty, reduce_only=True,
+                close_side, stop_price, symbol, quantity=None,
             )
             if order:
                 return True
@@ -506,7 +552,7 @@ class AdverseRadarMixin:
         for o in open_stops:
             if abs(_order_stop_price(o) - target_px) > ADVERSE_STOP_TOLERANCE:
                 continue
-            if abs(_order_qty_value(o) - target_qty) <= qty_tol:
+            if order_qty_covers_tier(o, target_qty, qty_tol):
                 return True
         return False
 
@@ -516,6 +562,85 @@ class AdverseRadarMixin:
             return []
         open_stops = self._collect_adverse_stop_orders()
         return [t for t in plan if not self._tier_has_live_stop(t, open_stops)]
+
+    def _refresh_adverse_shield_audit(
+        self,
+        plan: list[dict],
+        *,
+        retries: int = 1,
+        delay: float = 0.0,
+    ) -> dict[str, Any]:
+        """Re-read open orders; retry when book lags after place/cancel."""
+        audit = self._audit_adverse_shield_live(plan)
+        attempts = max(1, int(retries))
+        for _ in range(attempts - 1):
+            if audit.get("aligned"):
+                break
+            if delay > 0:
+                time.sleep(delay)
+            audit = self._audit_adverse_shield_live(plan)
+        return audit
+
+    def _shield_misalign_code(self, audit: dict[str, Any]) -> str | None:
+        missing = audit.get("missing_tiers") or []
+        if missing:
+            level = int(missing[0].get("level", 1))
+            return f"tier{level}_missing"
+        if audit.get("open_count", 0) > ADVERSE_MAX_STOP_ORDERS:
+            return "duplicate_stops"
+        expected = int(audit.get("expected") or 0)
+        if expected > 0 and int(audit.get("price_present") or 0) < expected:
+            return "tier1_missing"
+        return None
+
+    def _maybe_alert_shield_misalign(
+        self,
+        audit: dict[str, Any],
+        detail: dict[str, Any],
+        *,
+        context: str = "repair",
+    ) -> None:
+        if audit.get("aligned"):
+            return
+        code = self._shield_misalign_code(audit)
+        if not code:
+            return
+        placed = int(detail.get("placed", 0) or 0)
+        if placed <= 0 and not detail.get("force_alert"):
+            return
+        unit = "张" if getattr(self, "exchange_id", "") == "deepcoin" else "ETH"
+        msg = (
+            f"已撤旧单 {detail.get('purged_duplicates', 0)} 笔、新挂 {placed} 笔，但核实未通过 | "
+            f"实盘 {detail.get('live_qty', '—')} {unit} | {code}"
+        )
+        payload = {
+            **detail,
+            "misalign_code": code,
+            "audit": audit,
+            "context": context,
+            "exchange": getattr(self, "exchange_id", "binance"),
+            "side": getattr(self, "current_side", None),
+            "entry": getattr(self, "watched_entry", 0),
+        }
+        self._log("ADVERSE_SL_MISALIGN", msg, payload)
+        self._alert(
+            "critical",
+            "ADVERSE_SL_MISALIGN",
+            "10%硬止损未对齐",
+            msg + " | 系统已退避冷却，下轮自动重试；请勿手动重复挂单",
+            payload,
+        )
+
+    def _sync_adverse_shield_with_retry(self, live_qty: float) -> dict[str, Any]:
+        """Exchange-first shield audit with settle retries (post place/cancel)."""
+        live_qty = self._resolve_adverse_live_qty(live_qty)
+        plan = self._compute_adverse_stop_plan(live_qty)
+        self._refresh_adverse_shield_audit(
+            plan,
+            retries=ADVERSE_VERIFY_RETRIES,
+            delay=ADVERSE_VERIFY_RETRY_DELAY_SEC,
+        )
+        return self._sync_adverse_shield_from_exchange(live_qty)
 
     def _audit_adverse_shield_live(self, plan: list[dict]) -> dict[str, Any]:
         open_stops = self._collect_adverse_stop_orders()
@@ -611,8 +736,7 @@ class AdverseRadarMixin:
                 stop_px = _order_stop_price(o)
                 if abs(stop_px - target_px) > ADVERSE_STOP_TOLERANCE:
                     continue
-                live_q = _order_qty_value(o)
-                if abs(live_q - target_qty) > qty_tol:
+                if not order_qty_covers_tier(o, target_qty, qty_tol):
                     continue
                 matched += 1
                 if oid is not None:
@@ -748,12 +872,15 @@ class AdverseRadarMixin:
                     prices.append(px)
             time.sleep(0.4)
 
-        if placed:
-            time.sleep(0.5)
         purged += self._purge_excess_adverse_stops(plan)
-        audit = self._sync_adverse_shield_from_exchange(live_qty)
+        if placed:
+            audit = self._sync_adverse_shield_with_retry(live_qty)
+        else:
+            audit = self._sync_adverse_shield_from_exchange(live_qty)
+        plan = audit.get("plan") or plan
         verified = audit["verified_strict"]
         open_count = audit["open_count"]
+        aligned = audit.get("aligned", False)
 
         self.adverse_sl_armed = audit["synced_armed"] or placed > 0 or bool(self.adverse_consumed_tiers)
         self.adverse_sl_prices = prices or [float(t["stop_price"]) for t in plan]
@@ -780,7 +907,10 @@ class AdverseRadarMixin:
             "repair": repair,
             "at_open": at_open,
             "synced_from_exchange": True,
+            "aligned": aligned,
         }
+        if placed > 0 and not aligned:
+            self._maybe_alert_shield_misalign(audit, detail, context="arm" if at_open else "repair")
         if placed == 0 and not repair:
             if hasattr(self, "_save_state"):
                 self._save_state()
@@ -792,7 +922,7 @@ class AdverseRadarMixin:
                 "skipped": "no_placement_needed",
                 **detail,
             }
-        if not repair and placed > 0 and not self.adverse_arm_dingtalk_sent:
+        if not repair and placed > 0 and aligned and not self.adverse_arm_dingtalk_sent:
             stop_px = detail["stop_price"]
             msg = (
                 f"10% 硬止损已挂 | 开仓价 {detail['entry']:.2f} → 止损 @{stop_px:.2f} | "
@@ -806,7 +936,14 @@ class AdverseRadarMixin:
             self._log("ADVERSE_SL_REPAIR", msg, detail)
         if hasattr(self, "_save_state"):
             self._save_state()
-        return {"armed": self.adverse_sl_armed, "placed": placed, "verified": verified, "plan": plan}
+        return {
+            "armed": self.adverse_sl_armed,
+            "placed": placed,
+            "verified": verified,
+            "aligned": aligned,
+            "plan": plan,
+            **detail,
+        }
 
     def _repair_adverse_stops_remaining(self, live_qty: float, adverse_pct: float) -> dict[str, Any]:
         return self._arm_adverse_staged_stops(live_qty, adverse_pct, repair=True)
@@ -889,7 +1026,7 @@ class AdverseRadarMixin:
     def _orchestrate_defense_monitoring(self, live_qty: float, curr_px: float) -> None:
         """
         Dual-track defense (exchange-first):
-        - 朝 TP1 达雷达激活 → 撤 10% 硬止损 + 雷达保本移动止损
+        - 朝 TP1 达雷达激活 → 先撤 10% 硬止损，再挂雷达保本移动止损
         - 雷达未激活 → 静默维护 10% 硬止损（缺失才补挂）
         """
         if curr_px <= 0:
@@ -897,23 +1034,27 @@ class AdverseRadarMixin:
 
         live_qty = self._resolve_adverse_live_qty(live_qty)
         progress = self._radar_activation_progress(curr_px) if hasattr(self, "_radar_activation_progress") else 0.0
-        radar_active = hasattr(self, "_is_radar_active") and self._is_radar_active()
 
-        if self._should_disarm_adverse_for_recovery(curr_px):
-            self._disarm_adverse_staged_stops(reason="radar_tp1_activation", notify=True)
-            if self._handoff_shield_to_radar(live_qty, curr_px):
+        if self._radar_activation_reached(curr_px):
+            disarm = self._disarm_shield_before_radar(
+                curr_px, reason="radar_tp1_activation", notify=True,
+            )
+            if disarm.get("cancelled", 0) > 0:
                 self._log(
                     "RECOVERY",
                     f"雷达激活 · 10%硬止损已撤，保本移动止损启动 | 现价 {curr_px:.2f} | 进度 {progress:.0%}",
-                    {"entry": self.watched_entry, "price": curr_px, "side": self.current_side, "progress": progress},
+                    {
+                        "entry": self.watched_entry,
+                        "price": curr_px,
+                        "side": self.current_side,
+                        "progress": progress,
+                        "disarm": disarm,
+                    },
                 )
-            elif hasattr(self, "_process_radar_trailing"):
-                self._process_radar_trailing(live_qty, curr_px)
-            return
-
-        if radar_active or progress >= 1.0:
             if hasattr(self, "_process_radar_trailing"):
                 self._process_radar_trailing(live_qty, curr_px)
+            elif self._handoff_shield_to_radar(live_qty, curr_px):
+                pass
             return
 
         self._process_adverse_radar_guard(live_qty, curr_px)

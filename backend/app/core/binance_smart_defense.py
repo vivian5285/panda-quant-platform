@@ -519,6 +519,14 @@ class BinanceSmartDefenseMixin:
     def _ensure_radar_sl(self, dynamic_sl, live_qty=None) -> bool:
         if not dynamic_sl:
             return False
+        curr_px = 0.0
+        if hasattr(self.client, "get_current_price"):
+            try:
+                curr_px = float(self.client.get_current_price(self.symbol) or 0)
+            except Exception:
+                curr_px = 0.0
+        if hasattr(self, "_disarm_shield_before_radar"):
+            self._disarm_shield_before_radar(curr_px or float(dynamic_sl), notify=False)
         if self._has_stop_sl_near(dynamic_sl):
             return True
         close_side = "SHORT" if self.current_side == "LONG" else "LONG"
@@ -734,7 +742,15 @@ class BinanceSmartDefenseMixin:
         }
 
     def _realign_radar_defenses(self, live_qty: float, entry: float, new_sl: float) -> bool:
-        """雷达推升：只撤旧止损，TP 增量补挂保留正确单。返回止损是否已成功提交。"""
+        """雷达推升：先撤 10% 硬止损，再撤旧雷达止损，TP 增量补挂保留正确单。"""
+        curr_px = 0.0
+        if hasattr(self.client, "get_current_price"):
+            try:
+                curr_px = float(self.client.get_current_price(self.symbol) or 0)
+            except Exception:
+                curr_px = 0.0
+        if hasattr(self, "_disarm_shield_before_radar"):
+            self._disarm_shield_before_radar(curr_px or new_sl, notify=False)
         close_side = "SHORT" if self.current_side == "LONG" else "LONG"
         self._cancel_stop_orders()
         time.sleep(0.35)

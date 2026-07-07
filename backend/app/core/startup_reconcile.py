@@ -7,6 +7,8 @@ import time
 from typing import Any
 
 from app.core.adverse_radar_guard import (
+    ADVERSE_VERIFY_RETRIES,
+    ADVERSE_VERIFY_RETRY_DELAY_SEC,
     adverse_hard_stop_price,
     adverse_move_pct,
     is_floating_profit,
@@ -30,9 +32,6 @@ def classify_startup_pnl_track(
     """
     if radar_active or radar_progress >= 1.0:
         return "profit_radar"
-    if entry > 0 and curr_px > 0 and is_floating_profit(entry, curr_px, side):
-        if radar_progress >= 0.85:
-            return "profit_radar"
     return "loss_shield"
 
 
@@ -58,6 +57,8 @@ def format_startup_defense_summary(audit: dict) -> str:
             parts.append("10%硬止损补挂")
         elif audit.get("pnl_track") == "profit_radar":
             parts.append("硬止损已撤")
+        elif audit.get("pnl_track") == "loss_shield":
+            parts.append("硬止损待补挂")
     prog = audit.get("radar_progress")
     if prog is not None:
         parts.append(f"雷达进度{prog:.0%}")
@@ -163,10 +164,27 @@ class StartupReconcileMixin:
             tp_result = {"matched": 0, "expected": 0, "skipped": True, "audit": {}}
 
         if pnl_track == "loss_shield" and live_qty > 0:
-            post = self._sync_adverse_shield_from_exchange(live_qty)
-            if not post.get("aligned"):
+            plan = shield_audit.get("plan") or self._compute_adverse_stop_plan(live_qty)
+            post = self._sync_adverse_shield_with_retry(live_qty)
+            shield_audit = {**shield_audit, **post}
+            if not post.get("aligned") and self._can_repair_adverse_stops():
                 repair = self._arm_adverse_shield_at_open(live_qty)
-                shield_audit = {**shield_audit, "post_tp_repair": repair}
+                shield_audit["post_tp_repair"] = repair
+                shield_audit = {**shield_audit, **repair}
+                if not repair.get("aligned") and repair.get("placed", 0) > 0:
+                    post2 = self._sync_adverse_shield_with_retry(live_qty)
+                    shield_audit = {**shield_audit, **post2}
+            elif not post.get("aligned"):
+                self._maybe_alert_shield_misalign(
+                    post,
+                    {
+                        "live_qty": live_qty,
+                        "placed": shield_audit.get("placed", 0),
+                        "purged_duplicates": shield_audit.get("startup_purged", 0),
+                        "force_alert": True,
+                    },
+                    context="startup",
+                )
 
         stop_px = adverse_hard_stop_price(entry, str(side or "LONG"))
 

@@ -1645,6 +1645,8 @@ class PositionSupervisor(
         return SENTINEL_POLL_NORMAL
 
     def _process_radar_trailing(self, real_amt: float, curr_px: float) -> bool:
+        self._disarm_shield_before_radar(curr_px, reason="pre_radar_sl", notify=False)
+
         tp1_dist = (
             abs(self.tv_tps[0] - self.watched_entry)
             if self.tv_tps[0] > 0
@@ -1668,7 +1670,10 @@ class PositionSupervisor(
         if self.current_side == "LONG":
             breakeven_floor = round_price(self.watched_entry + fee_buffer)
             new_sl = round_price(max(self.best_price - trail_offset, breakeven_floor))
-            if new_sl > self.current_sl + RADAR_SL_MIN_MOVE:
+            on_book = self._has_stop_sl_near(new_sl)
+            should_trail = new_sl > self.current_sl + RADAR_SL_MIN_MOVE
+            should_arm = self._radar_activation_reached(curr_px) and not on_book
+            if should_trail or should_arm:
                 self.current_sl = new_sl
                 self._save_state()
                 sl_placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
@@ -1677,6 +1682,7 @@ class PositionSupervisor(
                     "new_sl": new_sl,
                     "best_price": self.best_price,
                     "sl_placed": sl_placed,
+                    "first_arm": should_arm and not should_trail,
                 }
                 self._log("TRAIL", f"雷达推升 SL → {new_sl}", trail_detail)
                 self._alert("info", "TRAIL", "追踪雷达锁润", f"SL {new_sl}", trail_detail)
@@ -1684,7 +1690,14 @@ class PositionSupervisor(
         else:
             breakeven_floor = round_price(self.watched_entry - fee_buffer)
             new_sl = round_price(min(self.best_price + trail_offset, breakeven_floor))
-            if self.current_sl >= self.watched_entry or new_sl < self.current_sl - RADAR_SL_MIN_MOVE:
+            on_book = self._has_stop_sl_near(new_sl)
+            should_trail = (
+                self.current_sl <= 0
+                or self.current_sl >= self.watched_entry
+                or new_sl < self.current_sl - RADAR_SL_MIN_MOVE
+            )
+            should_arm = self._radar_activation_reached(curr_px) and not on_book
+            if should_trail or should_arm:
                 self.current_sl = new_sl
                 self._save_state()
                 sl_placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
@@ -1693,6 +1706,7 @@ class PositionSupervisor(
                     "new_sl": new_sl,
                     "best_price": self.best_price,
                     "sl_placed": sl_placed,
+                    "first_arm": should_arm and not should_trail,
                 }
                 self._log("TRAIL", f"雷达下压 SL → {new_sl}", trail_detail)
                 self._alert("info", "TRAIL", "追踪雷达锁润", f"SL {new_sl}", trail_detail)
