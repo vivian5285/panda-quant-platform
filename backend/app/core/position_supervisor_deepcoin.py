@@ -828,7 +828,19 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         slices = self._compute_tp_slices(live_qty, exclude_levels=exclude)
         return [{"level": lvl, "qty": self._safe_qty(q), "price": px} for lvl, q, px in slices]
 
-    def _audit_tp_levels(self, live_qty, tolerance=None):
+    def _current_tp_price(self) -> float:
+        if hasattr(self.client, "get_current_price"):
+            try:
+                return float(self.client.get_current_price(self.symbol) or 0)
+            except Exception:
+                return 0.0
+        return 0.0
+
+    def _has_stop_sl_near(self, sl_price: float, tolerance: float = 2.0) -> bool:
+        """Alias for StartupReconcileMixin / AdverseRadarMixin (Binance API parity)."""
+        return self._has_trigger_sl_near(sl_price, tolerance)
+
+    def _audit_tp_levels(self, live_qty, tolerance=None, curr_px=None):
         """严格审计：每档价位唯一 + 张数符合 regime 比例 + 无孤儿单"""
         live_qty = self._resolve_live_qty(live_qty)
         price_tol = TP_PRICE_MATCH_TOL if tolerance is None else float(tolerance)
@@ -837,7 +849,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         matched_full = 0
         issues = []
 
-        for lv in self._expected_tp_levels(live_qty):
+        for lv in self._expected_tp_levels(live_qty, curr_px):
             if lv["qty"] <= 0 or lv["price"] <= 0:
                 continue
             at_px = [o for o in orders if tp_price_matches(o["price"], lv["price"], price_tol)]
@@ -939,19 +951,19 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 return True
         return False
 
-    def _defenses_fully_ok(self, live_qty, dynamic_sl=None, tolerance=None):
+    def _defenses_fully_ok(self, live_qty, dynamic_sl=None, tolerance=None, curr_px=None, *, require_sl=True):
         tol = TP_PRICE_MATCH_TOL if tolerance is None else float(tolerance)
-        tp_pxs = self.tv_tps
-        expected = self._expected_tp_count(tp_pxs)
+        audit = self._audit_tp_levels(live_qty, tolerance=tol, curr_px=curr_px)
+        expected = audit.get("expected", 0)
         if expected == 0:
+            if not require_sl:
+                return True
             return dynamic_sl is None or self._has_trigger_sl_near(dynamic_sl, tol)
-
-        audit = self._audit_tp_levels(live_qty, tolerance=tol)
         if audit["matched_full"] < expected:
             return False
         if audit["orphans"]:
             return False
-        if dynamic_sl and not self._has_trigger_sl_near(dynamic_sl, tol):
+        if require_sl and dynamic_sl and not self._has_trigger_sl_near(dynamic_sl, tol):
             return False
         return True
 
@@ -1111,13 +1123,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         rebuilt = False
 
         for attempt in range(STARTUP_ORDER_FETCH_RETRIES):
-            audit = self._audit_tp_levels(live_qty)
-            if self._defenses_fully_ok(live_qty, dynamic_sl):
+            audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
+            if self._defenses_fully_ok(
+                live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
+            ):
                 logger.info(
                     f"✅ 重启对账：盘口已齐，跳过补挂 | {self._format_audit_summary(audit)}"
                 )
-                if dynamic_sl and not self._has_trigger_sl_near(dynamic_sl):
-                    self._ensure_radar_sl(live_qty, dynamic_sl)
                 return self._defense_result_from_audit(audit, skipped=True)
 
             if self._has_duplicate_tp_orders() or any(
@@ -1150,11 +1162,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if placed:
             rebuilt = True
         time.sleep(0.6)
-        if dynamic_sl and not self._has_trigger_sl_near(dynamic_sl):
-            self._ensure_radar_sl(live_qty, dynamic_sl)
 
-        audit = self._audit_tp_levels(live_qty)
-        if self._defenses_fully_ok(live_qty, dynamic_sl):
+        audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
+        if self._defenses_fully_ok(
+            live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
+        ):
             logger.info(f"✅ 重启增量纠偏完成 | {self._format_audit_summary(audit)}")
             return self._defense_result_from_audit(audit, skipped=not rebuilt, rebuilt=rebuilt)
 
@@ -1162,7 +1174,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             f"⚠️ 重启对账后仍不齐，升级智能对齐 | {self._format_audit_summary(audit)}"
         )
         return self._smart_realign_defenses(
-            live_qty, entry, dynamic_sl=dynamic_sl, reason="重启纠偏升级",
+            live_qty, entry, dynamic_sl=None, reason="重启纠偏升级",
         )
 
     def _cancel_all_tp_limit_orders(self):
@@ -1192,9 +1204,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self._disarm_shield_before_radar(curr_px or float(sl_price), notify=False)
         if self._has_trigger_sl_near(sl_price):
             return True
+        self._cancel_stop_orders()
+        time.sleep(0.25)
         self._place_radar_sl(live_qty, sl_price)
         time.sleep(0.35)
-        return self._has_trigger_sl_near(sl_price)
+        on_book = self._has_trigger_sl_near(sl_price)
+        if not on_book:
+            logger.warning(f"⚠️ 雷达 STOP 已提交但盘口未核实 @ {sl_price:.2f}")
+        return on_book
 
     def _refresh_radar_state_on_recover(self, curr_px, entry):
         """重启：按现价恢复 best_price / 雷达激活 / 追踪止损位"""
@@ -1231,7 +1248,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
     def _nuclear_realign_tp(self, live_qty, entry, dynamic_sl=None, rounds=3):
         sl_preserve = dynamic_sl is not None
-        last_audit = self._audit_tp_levels(live_qty)
+        curr_px = self._current_tp_price()
+        last_audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
         for r in range(rounds):
             logger.warning(
                 f"☢️ 核武级止盈清场重挂 {r + 1}/{rounds} | 持仓 {live_qty}张 | "
@@ -1250,8 +1268,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 time.sleep(0.6)
                 self._ensure_radar_sl(live_qty, dynamic_sl)
             time.sleep(1.0)
-            last_audit = self._audit_tp_levels(live_qty)
-            if self._defenses_fully_ok(live_qty, dynamic_sl):
+            last_audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
+            if self._defenses_fully_ok(live_qty, dynamic_sl, curr_px=curr_px):
                 logger.info(f"☢️ 核武重挂成功: {self._format_audit_summary(last_audit)}")
                 return last_audit
             logger.warning(
@@ -1265,7 +1283,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return audit["matched_full"], audit["pending_prices"], audit["expected"]
 
     def _ensure_defenses_on_recover(self, live_qty, entry, dynamic_sl=None):
-        audit = self._audit_tp_levels(live_qty)
+        curr_px = self._current_tp_price()
+        audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
         expected = audit["expected"]
         matched = audit["matched_full"]
         pending_prices = audit["pending_prices"]
@@ -1277,7 +1296,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if self._has_duplicate_tp_orders():
             self._purge_duplicate_tp_orders(live_qty)
             time.sleep(0.4)
-            audit = self._audit_tp_levels(live_qty)
+            audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
             matched = audit["matched_full"]
             pending_prices = audit["pending_prices"]
 
@@ -1289,25 +1308,25 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             audit = self._nuclear_realign_tp(live_qty, entry, dynamic_sl=dynamic_sl, rounds=3)
             return audit["matched_full"], audit["pending_prices"], audit["expected"], True
 
-        if self._defenses_fully_ok(live_qty, dynamic_sl):
+        if self._defenses_fully_ok(live_qty, dynamic_sl, require_sl=False):
             logger.info(
                 f"✅ TP123 比例齐全 ({matched}/{expected}) @ {pending_prices}，跳过补挂"
             )
-            if dynamic_sl and not self._has_trigger_sl_near(dynamic_sl):
-                self._place_radar_sl(live_qty, dynamic_sl)
+            if dynamic_sl:
+                self._ensure_radar_sl(live_qty, dynamic_sl)
             return matched, pending_prices, expected, False
 
         self._cancel_orphan_tp_orders(live_qty)
         logger.info(f"📋 止盈未齐 ({matched}/{expected})，增量补挂缺失档（保留已有正确单）")
-        self._patch_missing_tp_levels(live_qty)
+        self._patch_missing_tp_levels(live_qty, curr_px=curr_px)
         time.sleep(0.8)
-        audit = self._audit_tp_levels(live_qty)
+        audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
         matched = audit["matched_full"]
 
-        if self._defenses_fully_ok(live_qty, dynamic_sl):
+        if self._defenses_fully_ok(live_qty, dynamic_sl, require_sl=False):
             logger.info(f"✅ 增量补挂成功 ({matched}/{expected}) @ {audit['pending_prices']}")
-            if dynamic_sl and not self._has_trigger_sl_near(dynamic_sl):
-                self._place_radar_sl(live_qty, dynamic_sl)
+            if dynamic_sl:
+                self._ensure_radar_sl(live_qty, dynamic_sl)
             return matched, audit["pending_prices"], expected, True
 
         logger.warning(
@@ -1319,16 +1338,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
     def _smart_realign_defenses(self, live_qty, entry, dynamic_sl=None, reason=""):
         if reason:
             logger.info(f"🧠 智能防线对齐: {reason}")
-        curr_px = 0.0
-        if hasattr(self.client, "get_current_price"):
-            try:
-                curr_px = float(self.client.get_current_price(self.symbol) or 0)
-            except Exception:
-                curr_px = 0.0
+        curr_px = self._current_tp_price()
         self._sync_consumed_tp_levels(live_qty, curr_px)
         self._cancel_tp_orders_for_consumed_levels()
-        initial = self._audit_tp_levels(live_qty)
-        if self._defenses_fully_ok(live_qty, dynamic_sl):
+        initial = self._audit_tp_levels(live_qty, curr_px=curr_px)
+        if self._defenses_fully_ok(
+            live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
+        ):
             logger.info(f"✅ 防线已齐，跳过: {self._format_audit_summary(initial)}")
             return {
                 "matched": initial["matched_full"],
@@ -1343,21 +1359,23 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             logger.warning("🧹 检测到重复止盈，去重保留最优单（不清场）")
             self._purge_duplicate_tp_orders(live_qty)
             time.sleep(0.5)
-            initial = self._audit_tp_levels(live_qty)
-            if self._defenses_fully_ok(live_qty, dynamic_sl):
+            initial = self._audit_tp_levels(live_qty, curr_px=curr_px)
+            if self._defenses_fully_ok(
+                live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
+            ):
                 return self._defense_result_from_audit(initial, skipped=True)
 
         if self._audit_requires_nuclear(initial):
             logger.warning("🧹 检测到严重错位，清场后重挂")
             self._cancel_all_tp_limit_orders()
             time.sleep(0.5)
-            initial = self._audit_tp_levels(live_qty)
+            initial = self._audit_tp_levels(live_qty, curr_px=curr_px)
 
         self._cancel_orphan_tp_orders(live_qty)
         matched, pending_prices, expected, rebuilt = self._ensure_defenses_on_recover(
-            live_qty, entry, dynamic_sl=dynamic_sl,
+            live_qty, entry, dynamic_sl=None,
         )
-        audit = self._audit_tp_levels(live_qty)
+        audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
         nuclear = False
 
         if expected > 0 and audit["matched_full"] < expected:
@@ -1389,27 +1407,19 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         )
 
     def _realign_radar_defenses(self, live_qty, entry, new_sl):
-        curr_px = 0.0
-        if hasattr(self.client, "get_current_price"):
-            try:
-                curr_px = float(self.client.get_current_price(self.symbol) or 0)
-            except Exception:
-                curr_px = 0.0
+        curr_px = self._current_tp_price()
         if hasattr(self, "_disarm_shield_before_radar"):
             self._disarm_shield_before_radar(curr_px or float(new_sl), notify=False)
-        self._cancel_stop_orders()
-        time.sleep(0.35)
-        if not self._defenses_fully_ok(live_qty, dynamic_sl=None):
-            if self._audit_requires_nuclear(self._audit_tp_levels(live_qty)):
+        if not self._defenses_fully_ok(
+            live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
+        ):
+            if self._audit_requires_nuclear(self._audit_tp_levels(live_qty, curr_px=curr_px)):
                 self._nuclear_realign_tp(live_qty, entry, dynamic_sl=new_sl, rounds=2)
             else:
                 self._cancel_orphan_tp_orders(live_qty)
-                self._patch_missing_tp_levels(live_qty)
+                self._patch_missing_tp_levels(live_qty, curr_px=curr_px)
                 time.sleep(0.6)
-                self._ensure_radar_sl(live_qty, new_sl)
-        else:
-            self._place_radar_sl(live_qty, new_sl)
-        time.sleep(0.4)
+        return self._ensure_radar_sl(live_qty, new_sl)
 
     def _wait_tp_hung(self, tp_pxs, live_qty=None, retries=5, delay=0.8):
         expected = self._expected_tp_count(tp_pxs)
@@ -1872,13 +1882,30 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             breakeven_floor = self.watched_entry + fee_buffer
             new_sl = max(round(self.best_price - trail_offset, 2), breakeven_floor)
             on_book = self._has_trigger_sl_near(new_sl)
+            if self._radar_activation_reached(curr_px) and not on_book:
+                self.current_sl = new_sl
+                self._save_state()
+                placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
+                if not placed:
+                    placed = bool(self._ensure_radar_sl(real_amt, new_sl))
+                if placed or self._has_trigger_sl_near(new_sl):
+                    self._dt.report_intervention(
+                        real_amt, self.watched_entry, new_sl,
+                        f"🚀 档位{self.regime} 雷达补挂保本盾 @ {new_sl:.2f}",
+                        verify_note=f"条件止损 @ {new_sl:.2f} | 持仓 {real_amt}张",
+                    )
+                    return True
+                logger.warning(f"雷达补挂失败：条件止损 @{new_sl} 实盘核查未通过")
+                return False
             should_trail = new_sl > self.current_sl + 1.0
             should_arm = self._radar_activation_reached(curr_px) and not on_book
             if should_trail or should_arm:
                 self.current_sl = new_sl
                 self._save_state()
-                self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
-                if self._has_trigger_sl_near(new_sl):
+                placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
+                if not placed and not on_book:
+                    placed = bool(self._ensure_radar_sl(real_amt, new_sl))
+                if placed or self._has_trigger_sl_near(new_sl):
                     self._dt.report_intervention(
                         real_amt, self.watched_entry, new_sl,
                         f"🚀 档位{self.regime} 雷达实时跟踪：保本盾推升至 {new_sl:.2f}",
@@ -1890,6 +1917,21 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             breakeven_floor = self.watched_entry - fee_buffer
             new_sl = min(round(self.best_price + trail_offset, 2), breakeven_floor)
             on_book = self._has_trigger_sl_near(new_sl)
+            if self._radar_activation_reached(curr_px) and not on_book:
+                self.current_sl = new_sl
+                self._save_state()
+                placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
+                if not placed:
+                    placed = bool(self._ensure_radar_sl(real_amt, new_sl))
+                if placed or self._has_trigger_sl_near(new_sl):
+                    self._dt.report_intervention(
+                        real_amt, self.watched_entry, new_sl,
+                        f"🚀 档位{self.regime} 雷达补挂保本顶线 @ {new_sl:.2f}",
+                        verify_note=f"条件止损 @ {new_sl:.2f} | 持仓 {real_amt}张",
+                    )
+                    return True
+                logger.warning(f"雷达补挂失败：条件止损 @{new_sl} 实盘核查未通过")
+                return False
             should_trail = (
                 self.current_sl <= 0
                 or self.current_sl >= self.watched_entry
@@ -1899,8 +1941,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             if should_trail or should_arm:
                 self.current_sl = new_sl
                 self._save_state()
-                self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
-                if self._has_trigger_sl_near(new_sl):
+                placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
+                if not placed and not on_book:
+                    placed = bool(self._ensure_radar_sl(real_amt, new_sl))
+                if placed or self._has_trigger_sl_near(new_sl):
                     self._dt.report_intervention(
                         real_amt, self.watched_entry, new_sl,
                         f"🚀 档位{self.regime} 雷达实时跟踪：保本顶线下压至 {new_sl:.2f}",
@@ -2264,8 +2308,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 expected = unified.get("tp_expected", result.get("expected", 0))
                 _rebuilt = unified.get("defenses_rebuilt", False)
                 audit = result.get("audit") or {}
+                self._last_startup_unified = unified
 
-                radar_active = self._is_radar_active()
+                radar_active = bool(unified.get("breakeven_active"))
+                radar_sl = unified.get("radar_sl") or {}
 
                 logger.info(
                     f"🔄 [系统重启点火] 检测到实盘持仓 {self.current_side} {real_amt}张 @ "
@@ -2280,12 +2326,15 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.current_side, real_amt, self.watched_entry, source="recover",
                 )
 
-                sl_ok = True
-                if radar_active:
-                    sl_ok = self._ensure_radar_sl(real_amt, self.current_sl)
+                sl_ok = bool(radar_sl.get("live"))
+                if not sl_ok and radar_active and self.current_sl > 0:
+                    sl_ok = bool(self._ensure_radar_sl(real_amt, self.current_sl))
+                    if sl_ok:
+                        sl_ok = self._has_trigger_sl_near(self.current_sl)
+                if radar_active or sl_ok:
                     logger.info(
                         f"📡 [重启] 雷达哨兵已点火 | SL={self.current_sl:.2f} | "
-                        f"止损={'已挂/已确认' if sl_ok else '待哨兵补挂'}"
+                        f"止损={'实盘✓' if sl_ok else '待哨兵补挂'}"
                     )
 
                 threading.Thread(target=self._sentinel_loop, daemon=True).start()
@@ -2402,7 +2451,21 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 "tv_tps": list(self.tv_tps),
                 "current_sl": self.current_sl,
                 "best_price": self.best_price,
+                "consumed_tp_levels": list(self.consumed_tp_levels or []),
+                "initial_qty": float(self.initial_qty or 0),
             })
+            unified = getattr(self, "_last_startup_unified", None) or {}
+            if unified:
+                audit.update({
+                    "pnl_track": unified.get("pnl_track"),
+                    "startup_summary": unified.get("startup_summary"),
+                    "breakeven_active": unified.get("breakeven_active"),
+                    "radar_sl": unified.get("radar_sl"),
+                    "radar_progress": unified.get("radar_progress"),
+                    "tp_matched": unified.get("tp_matched"),
+                    "tp_expected": unified.get("tp_expected"),
+                    "defenses_aligned": unified.get("defenses_aligned"),
+                })
         except Exception as e:
             logger.error("[User %s] deepcoin recover failed: %s", self.user_id, e)
             audit["error"] = str(e)

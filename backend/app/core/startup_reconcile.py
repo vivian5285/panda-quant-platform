@@ -217,38 +217,26 @@ class StartupReconcileMixin:
         floating_profit = is_floating_profit(entry, curr_px, side)
 
         shield_audit: dict[str, Any] = {}
-        sl_to_pass = None
         radar_handoff = False
 
         if pnl_track == "profit_radar":
             shield_audit = self._disarm_adverse_staged_stops(
                 reason="startup_radar_track", notify=False,
             )
-            sl_to_pass = (
-                self._radar_sl_to_pass()
-                if hasattr(self, "_radar_sl_to_pass")
-                else (float(getattr(self, "current_sl", 0) or 0) or None)
-            )
-            if progress >= 1.0 or radar_active:
+            if progress >= 1.0 or radar_active or consumed:
                 radar_handoff = bool(self._handoff_shield_to_radar(live_qty, curr_px))
-                if radar_handoff:
-                    sl_to_pass = (
-                        self._radar_sl_to_pass()
-                        if hasattr(self, "_radar_sl_to_pass")
-                        else sl_to_pass
-                    )
         else:
             shield_audit = self._on_adverse_startup_reconcile(live_qty, curr_px)
             if not shield_audit.get("aligned"):
                 arm = self._arm_adverse_shield_at_open(live_qty)
                 shield_audit = {**shield_audit, **(arm or {})}
-            sl_to_pass = None
 
         if cap_result and cap_result.get("trimmed", 0) > 0 and cap_result.get("defense"):
             tp_result = cap_result["defense"]
         elif hasattr(self, "_reconcile_tp_defenses_on_startup"):
+            # TP123 与雷达保本 STOP 分轨：止盈对账不携带 dynamic_sl，避免与 reduceOnly 份额冲突
             tp_result = self._reconcile_tp_defenses_on_startup(
-                live_qty, entry, dynamic_sl=sl_to_pass,
+                live_qty, entry, dynamic_sl=None,
             )
         else:
             tp_result = {"matched": 0, "expected": 0, "skipped": True, "audit": {}}

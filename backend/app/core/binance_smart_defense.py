@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class BinanceSmartDefenseMixin:
-    """Port of eth-webhook-server position_supervisor_binance defense audit / realign logic."""
+    """Gemini shared TP/radar defense stack — Binance, OKX, Gate via PositionSupervisor."""
 
     user_id: int
     client: object
@@ -360,12 +360,16 @@ class BinanceSmartDefenseMixin:
         tolerance: float | None = None,
         qty_tol: float | None = None,
         curr_px: float | None = None,
+        *,
+        require_sl: bool = True,
     ) -> bool:
         price_tol = self._tp_price_tol() if tolerance is None else float(tolerance)
-        if dynamic_sl is None and hasattr(self, "_radar_sl_to_pass"):
+        if require_sl and dynamic_sl is None and hasattr(self, "_radar_sl_to_pass"):
             dynamic_sl = self._radar_sl_to_pass()
         expected_levels = self._expected_tp_levels(live_qty, curr_px)
         if not expected_levels:
+            if not require_sl:
+                return True
             return dynamic_sl is None or self._has_stop_sl_near(dynamic_sl, price_tol)
 
         orders = self._collect_tp_limit_orders()
@@ -391,9 +395,42 @@ class BinanceSmartDefenseMixin:
             if not any(tp_price_matches(o["price"], p, price_tol) for p in expected_prices):
                 return False
 
-        if dynamic_sl and not self._has_stop_sl_near(dynamic_sl, price_tol):
+        if require_sl and dynamic_sl and not self._has_stop_sl_near(dynamic_sl, price_tol):
             return False
         return True
+
+    def _order_stop_price(self, o: dict) -> float:
+        for key in ("stopPrice", "triggerPrice", "activatePrice"):
+            val = o.get(key)
+            if val is None or str(val).strip() in ("", "0"):
+                continue
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                continue
+        return 0.0
+
+    def _cancel_radar_stop_orders(self, tolerance: float = 2.0) -> int:
+        """Cancel breakeven/radar STOP orders only — never touch TP limits or 10% adverse shield."""
+        adverse_prices: set[float] = set()
+        if hasattr(self, "_adverse_tier_stop_prices"):
+            try:
+                adverse_prices = set(self._adverse_tier_stop_prices())
+            except Exception:
+                adverse_prices = set()
+        cancelled = 0
+        for o in self.client.get_open_orders(self.symbol) or []:
+            if o.get("type") not in ("STOP_MARKET", "STOP"):
+                continue
+            stop_px = self._order_stop_price(o)
+            if adverse_prices and any(abs(stop_px - t) <= tolerance for t in adverse_prices):
+                continue
+            oid = o.get("orderId")
+            if oid:
+                self.client.cancel_order(self.symbol, int(oid))
+                cancelled += 1
+                time.sleep(0.2)
+        return cancelled
 
     def _purge_duplicate_tp_orders(self, live_qty: float) -> int:
         """Cancel extra TP at same tier; keep best qty match (exchange-first)."""
@@ -523,12 +560,12 @@ class BinanceSmartDefenseMixin:
 
         for attempt in range(STARTUP_ORDER_FETCH_RETRIES):
             audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
-            if self._defenses_fully_ok(live_qty, dynamic_sl, curr_px=curr_px):
+            if self._defenses_fully_ok(
+                live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
+            ):
                 self._def_log(
                     f"✅ 重启对账：盘口已齐，跳过补挂 | {self._format_audit_summary(audit)}"
                 )
-                if dynamic_sl and not self._has_stop_sl_near(dynamic_sl):
-                    self._ensure_radar_sl(dynamic_sl, live_qty)
                 return self._defense_result_from_audit(audit, skipped=True)
 
             if self._has_duplicate_tp_orders() or any(
@@ -561,11 +598,11 @@ class BinanceSmartDefenseMixin:
         if placed:
             rebuilt = True
         time.sleep(0.6)
-        if dynamic_sl and not self._has_stop_sl_near(dynamic_sl):
-            self._ensure_radar_sl(dynamic_sl, live_qty)
 
         audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
-        if self._defenses_fully_ok(live_qty, dynamic_sl, curr_px=curr_px):
+        if self._defenses_fully_ok(
+            live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
+        ):
             self._def_log(
                 f"✅ 重启增量纠偏完成 | {self._format_audit_summary(audit)}"
             )
@@ -576,7 +613,7 @@ class BinanceSmartDefenseMixin:
             logging.WARNING,
         )
         return self._smart_realign_defenses(
-            live_qty, entry, dynamic_sl=dynamic_sl, reason="重启纠偏升级",
+            live_qty, entry, dynamic_sl=None, reason="重启纠偏升级",
         )
 
     def _cancel_all_tp_limit_orders(self) -> int:
@@ -594,6 +631,7 @@ class BinanceSmartDefenseMixin:
         return cancelled
 
     def _ensure_radar_sl(self, dynamic_sl, live_qty=None) -> bool:
+        """Place radar breakeven STOP as closePosition — independent of TP123 reduceOnly slices."""
         if not dynamic_sl:
             return False
         curr_px = 0.0
@@ -606,10 +644,27 @@ class BinanceSmartDefenseMixin:
             self._disarm_shield_before_radar(curr_px or float(dynamic_sl), notify=False)
         if self._has_stop_sl_near(dynamic_sl):
             return True
+        self._cancel_radar_stop_orders()
+        time.sleep(0.25)
         close_side = "SHORT" if self.current_side == "LONG" else "LONG"
-        res = self.client.place_stop_market_order(close_side, dynamic_sl)
+        symbol = getattr(self, "symbol", "ETHUSDT")
+        res = self.client.place_stop_market_order(
+            close_side, dynamic_sl, symbol, quantity=None,
+        )
+        if not res:
+            self._def_log(
+                f"⚠️ 雷达保本 STOP 下单失败 @ {dynamic_sl:.2f}（closePosition，不与 TP 抢份额）",
+                logging.WARNING,
+            )
+            return False
         time.sleep(0.35)
-        return res is not None
+        on_book = self._has_stop_sl_near(dynamic_sl)
+        if not on_book:
+            self._def_log(
+                f"⚠️ 雷达 STOP 已提交但盘口未核实 @ {dynamic_sl:.2f}",
+                logging.WARNING,
+            )
+        return on_book
 
     def _rebuild_tp_limit_orders(self, qty: float, entry: float, dynamic_sl=None) -> int:
         """Place remaining TP tiers for live qty; skip consumed levels (e.g. TP1 already eaten)."""
@@ -648,8 +703,6 @@ class BinanceSmartDefenseMixin:
                     placed += 1
                 time.sleep(0.35)
 
-        if dynamic_sl:
-            self.client.place_stop_market_order(close_side, dynamic_sl)
         return placed
 
     def _nuclear_realign_tp(self, live_qty: float, entry: float, dynamic_sl=None, rounds: int = 3) -> dict:
@@ -727,11 +780,10 @@ class BinanceSmartDefenseMixin:
             audit = self._nuclear_realign_tp(live_qty, entry, dynamic_sl=dynamic_sl, rounds=3)
             return audit["matched_full"], audit["pending_prices"], audit["expected"], True
 
-        if self._defenses_fully_ok(live_qty, dynamic_sl):
+        if self._defenses_fully_ok(live_qty, dynamic_sl, require_sl=False):
             self._def_log(f"✅ TP123 比例齐全 ({matched}/{expected}) @ {pending_prices}，跳过补挂")
-            if dynamic_sl and not self._has_stop_sl_near(dynamic_sl):
-                close_side = "SHORT" if self.current_side == "LONG" else "LONG"
-                self.client.place_stop_market_order(close_side, dynamic_sl)
+            if dynamic_sl:
+                self._ensure_radar_sl(dynamic_sl, live_qty)
             return matched, pending_prices, expected, False
 
         self._cancel_orphan_tp_orders(live_qty)
@@ -744,11 +796,10 @@ class BinanceSmartDefenseMixin:
         audit = self._audit_tp_levels(live_qty)
         matched = audit["matched_full"]
 
-        if self._defenses_fully_ok(live_qty, dynamic_sl):
+        if self._defenses_fully_ok(live_qty, dynamic_sl, require_sl=False):
             self._def_log(f"✅ 增量补挂成功 ({matched}/{expected}) @ {audit['pending_prices']}")
-            if dynamic_sl and not self._has_stop_sl_near(dynamic_sl):
-                close_side = "SHORT" if self.current_side == "LONG" else "LONG"
-                self.client.place_stop_market_order(close_side, dynamic_sl)
+            if dynamic_sl:
+                self._ensure_radar_sl(dynamic_sl, live_qty)
             return matched, audit["pending_prices"], expected, True
 
         self._def_log(
@@ -769,7 +820,9 @@ class BinanceSmartDefenseMixin:
             self._sync_consumed_tp_levels(live_qty, curr_px)
         self._cancel_tp_orders_for_consumed_levels()
         initial = self._audit_tp_levels(live_qty, curr_px=curr_px)
-        if self._defenses_fully_ok(live_qty, dynamic_sl, curr_px=curr_px):
+        if self._defenses_fully_ok(
+            live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
+        ):
             self._def_log(f"✅ 防线已齐，跳过: {self._format_audit_summary(initial)}")
             return {
                 "matched": initial["matched_full"],
@@ -787,8 +840,10 @@ class BinanceSmartDefenseMixin:
             self._def_log("🧹 检测到重复止盈，去重保留最优单（不清场）", logging.WARNING)
             self._purge_duplicate_tp_orders(live_qty)
             time.sleep(0.5)
-            initial = self._audit_tp_levels(live_qty)
-            if self._defenses_fully_ok(live_qty, dynamic_sl):
+            initial = self._audit_tp_levels(live_qty, curr_px=curr_px)
+            if self._defenses_fully_ok(
+                live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
+            ):
                 return self._defense_result_from_audit(initial, skipped=True)
 
         if self._audit_requires_nuclear(initial):
@@ -799,7 +854,7 @@ class BinanceSmartDefenseMixin:
 
         self._cancel_orphan_tp_orders(live_qty)
         matched, pending_prices, expected, rebuilt = self._ensure_defenses_on_recover(
-            live_qty, entry, dynamic_sl=dynamic_sl,
+            live_qty, entry, dynamic_sl=None,
         )
         audit = self._audit_tp_levels(live_qty)
         nuclear = False
@@ -830,29 +885,20 @@ class BinanceSmartDefenseMixin:
         }
 
     def _realign_radar_defenses(self, live_qty: float, entry: float, new_sl: float) -> bool:
-        """雷达推升：先撤 10% 硬止损，再撤旧雷达止损，TP 增量补挂保留正确单。"""
-        curr_px = 0.0
-        if hasattr(self.client, "get_current_price"):
-            try:
-                curr_px = float(self.client.get_current_price(self.symbol) or 0)
-            except Exception:
-                curr_px = 0.0
+        """雷达推升：只动 STOP（closePosition），TP123 增量补挂与雷达分轨，不抢 reduceOnly 份额。"""
+        curr_px = self._current_tp_price()
         if hasattr(self, "_disarm_shield_before_radar"):
             self._disarm_shield_before_radar(curr_px or new_sl, notify=False)
-        close_side = "SHORT" if self.current_side == "LONG" else "LONG"
-        self._cancel_stop_orders()
-        time.sleep(0.35)
-        sl_placed = False
-        if not self._defenses_fully_ok(live_qty, dynamic_sl=None):
-            if self._audit_requires_nuclear(self._audit_tp_levels(live_qty)):
+        if not self._defenses_fully_ok(
+            live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
+        ):
+            if self._audit_requires_nuclear(self._audit_tp_levels(live_qty, curr_px=curr_px)):
                 self._nuclear_realign_tp(live_qty, entry, dynamic_sl=new_sl, rounds=2)
-                sl_placed = self._has_stop_sl_near(new_sl) or self._ensure_radar_sl(new_sl, live_qty)
             else:
                 self._cancel_orphan_tp_orders(live_qty)
-                self._patch_missing_tp_levels(live_qty)
+                self._patch_missing_tp_levels(live_qty, curr_px=curr_px)
                 time.sleep(0.6)
-                sl_placed = self._ensure_radar_sl(new_sl, live_qty)
-        else:
-            sl_placed = self.client.place_stop_market_order(close_side, new_sl) is not None
-        time.sleep(0.4)
-        return sl_placed
+        return self._ensure_radar_sl(new_sl, live_qty)
+
+
+SmartDefenseMixin = BinanceSmartDefenseMixin
