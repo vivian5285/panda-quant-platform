@@ -1,4 +1,4 @@
-"""Legacy Binance smart defense stack (_smart_realign_defenses et al.) for multi-user Gemini."""
+"""Legacy Binance smart defense stack — shared Gemini TP/radar reconcile for all USDT-M supervisors."""
 
 import logging
 import time

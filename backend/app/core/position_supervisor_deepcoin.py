@@ -680,7 +680,136 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         )
         merged = sorted({int(x) for x in (self.consumed_tp_levels or [])} | inferred)
         self.consumed_tp_levels = merged
+        if hasattr(self, "_save_state"):
+            self._save_state()
         return merged
+
+    def _consumed_tp_level_set(self) -> set[int]:
+        return {int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3)}
+
+    def _cancel_tp_orders_for_consumed_levels(self) -> int:
+        """Remove stale TP orders at tiers already eaten (e.g. TP1 after partial fill)."""
+        consumed = self._consumed_tp_level_set()
+        if not consumed:
+            return 0
+        cancelled = 0
+        for level in sorted(consumed):
+            idx = level - 1
+            if idx < 0 or idx >= len(self.tv_tps):
+                continue
+            px = float(self.tv_tps[idx])
+            if px <= 0:
+                continue
+            for o in self._collect_tp_limit_orders():
+                if not tp_price_matches(o["price"], px):
+                    continue
+                oid = o.get("orderId")
+                if oid:
+                    self.client.cancel_order(self.symbol, ord_id=oid)
+                    cancelled += 1
+                    time.sleep(0.2)
+        if cancelled:
+            logger.info(
+                f"[User {self.user_id}] 🧹 已撤销已成交档位多余止盈 {cancelled} 张 "
+                f"(consumed={sorted(consumed)})"
+            )
+        return cancelled
+
+    def _classify_qty_change(self, old_qty, new_qty, curr_px=None):
+        """与币安 PositionSupervisor 一致：按 initial_qty 识别 TP 吃单 vs 手动减仓。"""
+        old_qty = float(self._safe_qty(old_qty))
+        new_qty = float(self._safe_qty(new_qty))
+        tol = self._qty_match_tol(old_qty, new_qty)
+        if new_qty <= 0:
+            return "full_close"
+        if new_qty > old_qty + tol:
+            return "manual_add"
+        reduced = old_qty - new_qty
+        if reduced <= tol:
+            return "unchanged"
+
+        anchor = float(self._safe_qty(self.initial_qty or old_qty))
+        if anchor > 0:
+            slice_tol = tp_slice_qty_tolerance(anchor, is_contracts=True)
+            level = match_qty_reduction_to_tp_level(
+                reduced,
+                anchor,
+                self.regime,
+                self.tv_tps,
+                self.regime_settings,
+                consumed_levels=set(self.consumed_tp_levels),
+                qty_tol=slice_tol,
+            )
+            if level is not None:
+                if level not in self.consumed_tp_levels:
+                    self.consumed_tp_levels.append(level)
+                if curr_px is not None and float(curr_px) > 0:
+                    self._sync_consumed_tp_levels(new_qty, float(curr_px))
+                return f"tp{level}_filled"
+
+        if curr_px is not None and float(curr_px) > 0:
+            self._sync_consumed_tp_levels(new_qty, float(curr_px))
+        return "manual_reduce"
+
+    def _reconcile_radar_context(self, recovery: dict | None) -> dict:
+        """Gemini 重启：OPEN 日志 + DB 交易 + 最新 TV 三方核实（与币安对齐）。"""
+        report: dict = {"sources": [], "warnings": list(recovery.get("checks") or []) if recovery else []}
+        if not recovery:
+            return report
+
+        trade = recovery.get("trade") or {}
+        open_log = recovery.get("open_log") or {}
+        latest_tv = recovery.get("latest_tv") or {}
+
+        if trade:
+            report["sources"].append("db_trade")
+            trade_qty = float(trade.get("quantity") or 0)
+            if trade_qty > 0:
+                self.initial_qty = max(int(self._safe_qty(self.initial_qty)), int(trade_qty))
+            if not any(self.tv_tps) and trade.get("tv_tps"):
+                self.tv_tps = [float(x) for x in trade["tv_tps"][:3]]
+            if trade.get("regime"):
+                self.regime = clamp_regime(trade["regime"])
+            if trade.get("side") and not self.last_tv_side:
+                self.last_tv_side = trade["side"]
+
+        if open_log:
+            report["sources"].append("open_log")
+            report["open_log_side"] = open_log.get("side")
+            report["open_log_qty"] = open_log.get("qty")
+            report["open_log_entry"] = open_log.get("entry")
+            open_qty = float(open_log.get("qty") or 0)
+            if open_qty > 0:
+                self.initial_qty = max(int(self._safe_qty(self.initial_qty)), int(open_qty))
+            if open_log.get("tv_tps"):
+                self.tv_tps = [float(x) for x in open_log["tv_tps"][:3]]
+            if open_log.get("regime"):
+                self.regime = clamp_regime(open_log["regime"])
+            if open_log.get("side"):
+                self.last_tv_side = open_log["side"]
+            if open_log.get("atr"):
+                self.current_atr = float(open_log["atr"])
+
+        if latest_tv:
+            report["sources"].append("latest_tv")
+            report["latest_tv_action"] = latest_tv.get("action")
+            report["latest_tv_at"] = latest_tv.get("created_at")
+            tv_action = (latest_tv.get("action") or "").upper()
+            if tv_action in ("LONG", "SHORT"):
+                self.last_tv_side = tv_action
+                if any(latest_tv.get("tv_tps") or []):
+                    self.tv_tps = [float(x) for x in latest_tv["tv_tps"][:3]]
+                if latest_tv.get("regime"):
+                    self.regime = clamp_regime(latest_tv["regime"])
+                if latest_tv.get("atr"):
+                    self.current_atr = float(latest_tv["atr"])
+            elif tv_action.startswith("CLOSE"):
+                report["warnings"].append("tv_close_while_position")
+
+        report["last_tv_side"] = self.last_tv_side
+        report["tv_tps"] = list(self.tv_tps)
+        report["regime"] = self.regime
+        return report
 
     def _expected_tp_count(self, tp_pxs=None):
         live_qty = float(self._safe_qty(self.watched_qty))
@@ -741,7 +870,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         for o in orphans:
             issues.append(f"孤儿止盈 @{o['price']:.2f} {o['qty']}张")
 
-        expected = self._expected_tp_count()
+        expected = len(levels)
         pending_prices = sorted({o["price"] for o in orders})
         return {
             "matched_full": matched_full,
@@ -751,10 +880,23 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             "orphans": orphans,
             "pending_prices": pending_prices,
             "live_qty": live_qty,
+            "consumed_tp_levels": sorted(self._consumed_tp_level_set()),
         }
 
     def _format_audit_summary(self, audit):
         parts = []
+        consumed = audit.get("consumed_tp_levels") or []
+        live_qty = float(audit.get("live_qty") or self._safe_qty(self.watched_qty))
+        if consumed:
+            pending = [lv for lv in audit.get("levels", []) if lv.get("level") not in consumed]
+            rem_qty = sum(int(lv.get("qty") or 0) for lv in pending)
+            parts.append(
+                f"已成交TP{''.join(str(x) for x in consumed)}"
+                f" → 挂剩余{len(pending)}档/{rem_qty}张"
+            )
+        initial = int(self._safe_qty(self.initial_qty))
+        if initial > live_qty > 0:
+            parts.append(f"初始{initial}张→现仓{int(live_qty)}张")
         for lv in audit.get("levels", []):
             if lv["price"] <= 0:
                 continue
@@ -836,17 +978,23 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             logger.info(f"🧹 去重撤销多余止盈 {cancelled} 张（保留最优张数）")
         return cancelled
 
-    def _patch_missing_tp_levels(self, live_qty, tolerance=None):
+    def _patch_missing_tp_levels(self, live_qty, tolerance=None, curr_px=None):
         price_tol = TP_PRICE_MATCH_TOL if tolerance is None else float(tolerance)
         close_side = "sell" if self.current_side == "LONG" else "buy"
         pos_side = "long" if self.current_side == "LONG" else "short"
         live_qty = self._resolve_live_qty(live_qty)
-        ratios = self.regime_settings[self.regime]["ratios"]
-        qty1, qty2, qty3 = self._calculate_tp_quantities(live_qty, ratios)
-        levels = [(qty1, self.tv_tps[0]), (qty2, self.tv_tps[1]), (qty3, self.tv_tps[2])]
+        if curr_px is None and hasattr(self.client, "get_current_price"):
+            try:
+                curr_px = float(self.client.get_current_price(self.symbol) or 0)
+            except Exception:
+                curr_px = 0.0
+        self._sync_consumed_tp_levels(live_qty, float(curr_px or 0))
+        self._cancel_tp_orders_for_consumed_levels()
+        levels = self._expected_tp_levels(live_qty, curr_px)
         placed = 0
 
-        for q, px in levels:
+        for lv in levels:
+            q, px = int(lv["qty"]), float(lv["price"])
             if q <= 0 or px <= 0:
                 continue
             orders = self._collect_tp_limit_orders()
@@ -864,7 +1012,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 if o.get("orderId"):
                     self.client.cancel_order(self.symbol, ord_id=o["orderId"])
                     time.sleep(0.25)
-            logger.info(f"  + 补挂 TP @ {px:.2f} qty={q}张")
+            logger.info(f"  + 补挂 TP{lv['level']} @ {px:.2f} qty={q}张")
             res = self.client.place_limit_order(
                 self.symbol, close_side, pos_side, px, q, reduce_only=True,
             )
@@ -952,6 +1100,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
     def _reconcile_tp_defenses_on_startup(self, live_qty, entry, dynamic_sl=None):
         logger.info("🔄 重启接管：交易所优先对账止盈（不盲目清场）")
         live_qty = self._resolve_live_qty(live_qty)
+        curr_px = 0.0
+        if hasattr(self.client, "get_current_price"):
+            try:
+                curr_px = float(self.client.get_current_price(self.symbol) or 0)
+            except Exception:
+                curr_px = 0.0
+        self._sync_consumed_tp_levels(live_qty, curr_px)
+        self._cancel_tp_orders_for_consumed_levels()
         rebuilt = False
 
         for attempt in range(STARTUP_ORDER_FETCH_RETRIES):
@@ -990,7 +1146,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 time.sleep(STARTUP_ORDER_FETCH_DELAY)
 
         self._cancel_orphan_tp_orders(live_qty)
-        placed = self._patch_missing_tp_levels(live_qty)
+        placed = self._patch_missing_tp_levels(live_qty, curr_px=curr_px)
         if placed:
             rebuilt = True
         time.sleep(0.6)
@@ -1163,6 +1319,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
     def _smart_realign_defenses(self, live_qty, entry, dynamic_sl=None, reason=""):
         if reason:
             logger.info(f"🧠 智能防线对齐: {reason}")
+        curr_px = 0.0
+        if hasattr(self.client, "get_current_price"):
+            try:
+                curr_px = float(self.client.get_current_price(self.symbol) or 0)
+            except Exception:
+                curr_px = 0.0
+        self._sync_consumed_tp_levels(live_qty, curr_px)
+        self._cancel_tp_orders_for_consumed_levels()
         initial = self._audit_tp_levels(live_qty)
         if self._defenses_fully_ok(live_qty, dynamic_sl):
             logger.info(f"✅ 防线已齐，跳过: {self._format_audit_summary(initial)}")
@@ -1812,16 +1976,26 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         self._save_state()
                         verified = self._verify_position(self.current_side)
                         if verified and self._safe_qty(verified['size']) == real_amt:
+                            audit_summary = self._format_audit_summary(result.get("audit") or {})
                             verify_note = (
                                 f"核实 {real_amt}张 @ {verified['entry_price']:.2f} | "
-                                f"止盈 {result['matched']}/{result['expected']} 档 | "
-                                f"{self._format_audit_summary(result['audit'])}"
+                                f"初始{int(self._safe_qty(self.initial_qty))} | "
+                                f"止盈 {result.get('matched', 0)}/{result.get('expected', 0)} 档 | "
+                                f"{audit_summary}"
                             )
-                            self._dt.report_manual_position_change(
-                                action_msg, old_qty, real_amt, verified['entry_price'],
-                                verify_note=verify_note,
-                                tp_audit=result["audit"],
-                            )
+                            if change_type.startswith("tp"):
+                                self._alert(
+                                    "info", "TP_FILL",
+                                    f"部分止盈吃单 · {change_type.upper()}",
+                                    verify_note,
+                                    orch,
+                                )
+                            else:
+                                self._dt.report_manual_position_change(
+                                    action_msg, old_qty, real_amt, verified['entry_price'],
+                                    verify_note=verify_note,
+                                    tp_audit=result.get("audit"),
+                                )
                             if result["expected"] > 0 and result["matched"] < result["expected"]:
                                 self._dt.report_system_alert(
                                     "人工异动后止盈未对齐",
@@ -1876,9 +2050,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 time.sleep(self._sentinel_poll_sec(last_px))
 
     def _rebuild_defenses(self, qty, entry, dynamic_sl=None):
+        """仅挂剩余 TP 档（已成交档位跳过），与币安 _rebuild_tp_limit_orders 对齐。"""
         close_side = "sell" if self.current_side == "LONG" else "buy"
         pos_side = "long" if self.current_side == "LONG" else "short"
-        ratios = self.regime_settings[self.regime]["ratios"]
 
         live_qty = self._resolve_live_qty(qty)
         if live_qty <= 0:
@@ -1888,16 +2062,28 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self.watched_qty = live_qty
             self._save_state()
 
-        qty1, qty2, qty3 = self._calculate_tp_quantities(live_qty, ratios)
-        tp_pxs = self.tv_tps
+        curr_px = 0.0
+        if hasattr(self.client, "get_current_price"):
+            try:
+                curr_px = float(self.client.get_current_price(self.symbol) or 0)
+            except Exception:
+                curr_px = 0.0
+        self._sync_consumed_tp_levels(live_qty, curr_px)
+        self._cancel_tp_orders_for_consumed_levels()
+        levels = self._expected_tp_levels(live_qty, curr_px)
         placed = 0
-
+        consumed = sorted(self._consumed_tp_level_set())
+        level_desc = " ".join(
+            f"TP{lv['level']}={lv['qty']}@{lv['price']:.2f}" for lv in levels if lv["qty"] > 0
+        )
         logger.info(
-            f"🕸️ 补挂 TP123: 总 {live_qty}张 → TP1={qty1} TP2={qty2} TP3={qty3} "
-            f"(合计 {qty1 + qty2 + qty3})"
+            f"🕸️ 补挂剩余止盈: 持仓 {live_qty} 张"
+            + (f" | 已成交TP{''.join(str(x) for x in consumed)}" if consumed else "")
+            + f" → {level_desc or '无剩余档'}"
         )
 
-        for q, px in ((qty1, tp_pxs[0]), (qty2, tp_pxs[1]), (qty3, tp_pxs[2])):
+        for lv in levels:
+            q, px = int(lv["qty"]), float(lv["price"])
             if q > 0 and px > 0:
                 res = self.client.place_limit_order(
                     self.symbol, close_side, pos_side, px, q, reduce_only=True,
@@ -2189,6 +2375,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             trade = recovery_context.get("trade") or {}
             open_log = recovery_context.get("open_log") or {}
             latest_tv = recovery_context.get("latest_tv") or {}
+            reconcile = self._reconcile_radar_context(recovery_context)
+            audit.update(reconcile)
             open_qty = float(open_log.get("qty") or trade.get("quantity") or 0)
             if open_qty > 0:
                 self.initial_qty = max(float(self.initial_qty or 0), open_qty)

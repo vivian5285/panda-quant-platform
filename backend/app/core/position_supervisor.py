@@ -64,6 +64,7 @@ class PositionSupervisor(
     """
     多用户版 position_supervisor_binance.py
     TV 军师指挥价格/regime → VPS 自主执行仓位管理、止盈网格、雷达锁润、先平后开、单向持仓。
+    Binance / OKX / Gate 共用本类；Deepcoin 通过 parallel 适配层保持相同 TP/雷达语义。
     """
 
     def __init__(
