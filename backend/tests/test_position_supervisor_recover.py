@@ -56,8 +56,19 @@ def test_recover_restores_radar_and_rebuilds_defenses(supervisor, monkeypatch):
         supervisor.position_manager,
         "get_position",
         return_value={"positionAmt": "1.5", "entryPrice": "3500.0"},
-    ), patch.object(supervisor, "_reconcile_tp_defenses_on_startup") as ensure:
-        ensure.return_value = {"skipped": True, "aligned": True, "matched": 3, "expected": 3, "audit": {}}
+    ), patch.object(supervisor, "_unified_startup_defense_reconcile") as ensure:
+        ensure.return_value = {
+            "tp_defense": {"skipped": True, "aligned": True, "matched": 3, "expected": 3, "audit": {}},
+            "defenses_skipped": True,
+            "defenses_rebuilt": False,
+            "defenses_aligned": True,
+            "tp_matched": 3,
+            "tp_expected": 3,
+            "shield": {},
+            "startup_summary": "浮亏/防护轨 | TP3/3",
+            "breakeven_active": True,
+            "pnl_track": "loss_shield",
+        }
         audit = supervisor.recover_on_startup(
             open_trade_id=99,
             recovery_context={
@@ -75,7 +86,8 @@ def test_recover_restores_radar_and_rebuilds_defenses(supervisor, monkeypatch):
     assert audit["current_sl"] > supervisor.watched_entry
     ensure.assert_called_once()
     call_kw = ensure.call_args[1]
-    assert "dynamic_sl" in call_kw
+    assert call_kw.get("reason") == "VPS/部署重启"
+    assert "cap_result" in call_kw
     supervisor.client.cancel_all_open_orders.assert_not_called()
 
 
@@ -89,8 +101,19 @@ def test_recover_falls_back_to_db_trade_context(supervisor):
         supervisor.position_manager,
         "get_position",
         return_value={"positionAmt": "-0.8", "entryPrice": "3600.0"},
-    ), patch.object(supervisor, "_reconcile_tp_defenses_on_startup") as ensure:
-        ensure.return_value = {"skipped": True, "aligned": True, "matched": 3, "expected": 3, "audit": {}}
+    ), patch.object(supervisor, "_unified_startup_defense_reconcile") as ensure:
+        ensure.return_value = {
+            "tp_defense": {"skipped": True, "aligned": True, "matched": 3, "expected": 3, "audit": {}},
+            "defenses_skipped": True,
+            "defenses_rebuilt": False,
+            "defenses_aligned": True,
+            "tp_matched": 3,
+            "tp_expected": 3,
+            "shield": {},
+            "startup_summary": "浮亏/防护轨 | TP3/3",
+            "breakeven_active": True,
+            "pnl_track": "loss_shield",
+        }
         audit = supervisor.recover_on_startup(
             open_trade_id=7,
             recovery_context={

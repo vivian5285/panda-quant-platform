@@ -151,18 +151,24 @@ def format_takeover_banner(user: User, audit: dict) -> str:
         lines.append("  哨兵监控: 未启动")
     else:
         aligned = "一致" if audit.get("direction_aligned") else "背离（哨兵将强制对齐）"
+        pnl = audit.get("pnl_track", "—")
+        pnl_txt = {"profit_radar": "浮盈·雷达轨", "loss_shield": "浮亏·防护轨"}.get(pnl, pnl)
         lines.extend([
             f"  实盘持仓: {audit.get('side')} {audit.get('qty')} @ {audit.get('entry')}",
             f"  TV最新: {audit.get('latest_tv_action', '—')} ({audit.get('latest_tv_at', '—')})",
             f"  开仓日志: {audit.get('open_log_side', '—')} {audit.get('open_log_qty', '—')} @ {audit.get('open_log_entry', '—')}",
             f"  TV方向: {audit.get('last_tv_side')} | 方向校验: {aligned}",
+            f"  盈亏轨道: {pnl_txt} | 浮亏 {audit.get('adverse_pct', '—')}% | 雷达进度 {audit.get('radar_progress', '—')}",
+            f"  止盈对齐: TP {audit.get('tp_matched', '—')}/{audit.get('tp_expected', '—')} | "
+            f"10%硬止损 @{audit.get('shield_stop_price', '—')}",
             f"  恢复止盈: TP1={audit.get('tv_tps', [0, 0, 0])[0]} "
             f"TP2={audit.get('tv_tps', [0, 0, 0])[1]} "
             f"TP3={audit.get('tv_tps', [0, 0, 0])[2]}",
             f"  恢复止损参考: SL={audit.get('current_sl')} | 极值={audit.get('best_price')}",
             f"  保本雷达: {'已激活' if audit.get('breakeven_active') else '待激活'}",
             f"  哨兵监控: {'已启动' if audit.get('monitoring') else '未启动'}",
-            f"  防线重构: {'已完成' if audit.get('defenses_rebuilt') else '跳过(实盘已对齐)'}",
+            f"  防线: {'跳过(实盘已对齐)' if audit.get('defenses_skipped') else '已补挂' if audit.get('defenses_rebuilt') else '核实完成'}",
+            f"  摘要: {audit.get('startup_summary', '—')}",
         ])
         if audit.get("open_trade_id"):
             lines.append(f"  关联 open trade_id: {audit['open_trade_id']}")
@@ -187,11 +193,18 @@ def broadcast_startup_summary(audits: list[dict], failed_users: list[dict]) -> N
     errors = [a for a in audits if a.get("error")]
     rebuilt = sum(1 for a in audits if a.get("defenses_rebuilt"))
 
+    skipped_def = sum(1 for a in audits if a.get("defenses_skipped"))
+    loss_track = sum(1 for a in audits if a.get("pnl_track") == "loss_shield" and a.get("has_position"))
+    radar_track = sum(1 for a in audits if a.get("pnl_track") == "profit_radar" and a.get("has_position"))
+
     detail = {
         "supervisors_loaded": len(audits),
         "users_with_position": with_pos,
         "sentinel_monitoring": monitoring,
         "defenses_rebuilt": rebuilt,
+        "defenses_skipped": skipped_def,
+        "loss_shield_track": loss_track,
+        "profit_radar_track": radar_track,
         "direction_mismatch": len(mismatches),
         "recover_errors": len(errors),
         "failed_users": failed_users,
@@ -204,6 +217,9 @@ def broadcast_startup_summary(audits: list[dict], failed_users: list[dict]) -> N
                 "entry": a.get("entry"),
                 "monitoring": a.get("monitoring"),
                 "aligned": a.get("direction_aligned"),
+                "pnl_track": a.get("pnl_track"),
+                "tp": f"{a.get('tp_matched')}/{a.get('tp_expected')}",
+                "summary": a.get("startup_summary"),
             }
             for a in audits if a.get("has_position")
         ],
@@ -234,6 +250,8 @@ def broadcast_startup_summary(audits: list[dict], failed_users: list[dict]) -> N
         "info", "SYSTEM_RESTART",
         "平台重启 · 账户接管完成",
         f"已加载 {len(audits)} 个 Supervisor，{with_pos} 个有持仓，"
-        f"雷达哨兵 {monitoring} 个运行中，防线重构 {rebuilt} 个",
+        f"雷达哨兵 {monitoring} 个运行中，"
+        f"防护轨 {loss_track} / 雷达轨 {radar_track}，"
+        f"防线跳过 {skipped_def} / 补挂 {rebuilt}",
         detail,
     )

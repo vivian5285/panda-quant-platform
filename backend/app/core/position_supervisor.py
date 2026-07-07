@@ -9,6 +9,7 @@ from typing import Callable, Optional
 
 from app.core.binance_client import BinanceClient
 from app.core.adverse_radar_guard import AdverseRadarMixin
+from app.core.startup_reconcile import StartupReconcileMixin, format_startup_defense_summary
 from app.core.binance_smart_defense import BinanceSmartDefenseMixin
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.position_manager import PositionManager
@@ -56,7 +57,9 @@ class _QueuedSignal:
     result: dict = field(default_factory=dict)
 
 
-class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartDefenseMixin):
+class PositionSupervisor(
+    PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartDefenseMixin, StartupReconcileMixin,
+):
     """
     多用户版 position_supervisor_binance.py
     TV 军师指挥价格/regime → VPS 自主执行仓位管理、止盈网格、雷达锁润、先平后开、单向持仓。
@@ -2041,15 +2044,6 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
             curr_px = self.client.get_current_price(self.symbol)
             self._refresh_radar_state_on_recover(curr_px, self.watched_entry)
 
-            if self._is_radar_active() or self._radar_activation_progress(curr_px or self.watched_entry) >= 1.0:
-                adverse_startup = self._disarm_adverse_staged_stops(reason="restart_radar_active", notify=False)
-            else:
-                adverse_startup = self._on_adverse_startup_reconcile(
-                    self.watched_qty, curr_px or self.watched_entry,
-                )
-                if not adverse_startup.get("aligned"):
-                    self._arm_adverse_shield_at_open(self.watched_qty)
-
             cap_result = self._enforce_regime_cap_alignment(
                 self.watched_qty,
                 self.watched_entry,
@@ -2061,6 +2055,16 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
                 if float(self.initial_qty or 0) > self.watched_qty:
                     self.initial_qty = self.watched_qty
 
+            unified = self._unified_startup_defense_reconcile(
+                self.watched_qty,
+                self.watched_entry,
+                curr_px or self.watched_entry,
+                cap_result=cap_result,
+                reason="VPS/部署重启",
+            )
+            defense = unified.get("tp_defense") or {}
+            adverse_startup = unified.get("shield") or {}
+
             audit["direction_aligned"] = (
                 self.current_side == self.last_tv_side if self.last_tv_side else True
             )
@@ -2070,36 +2074,37 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
             self.monitoring = True
             self._ensure_price_ws()
 
-            sl_to_pass = self._radar_sl_to_pass()
-            if cap_result.get("trimmed", 0) > 0 and cap_result.get("defense"):
-                defense = cap_result["defense"]
-            else:
-                defense = self._reconcile_tp_defenses_on_startup(
-                    self.watched_qty,
-                    self.watched_entry,
-                    dynamic_sl=sl_to_pass,
-                )
-
             audit.update({
                 "has_position": True,
                 "side": self.current_side,
                 "qty": self.watched_qty,
                 "entry": self.watched_entry,
                 "last_tv_side": self.last_tv_side,
+                "latest_tv_action": reconcile.get("latest_tv_action"),
+                "latest_tv_at": reconcile.get("latest_tv_at"),
+                "open_log_side": reconcile.get("open_log_side"),
+                "open_log_qty": reconcile.get("open_log_qty"),
+                "open_log_entry": reconcile.get("open_log_entry"),
                 "tv_tps": list(self.tv_tps),
                 "current_sl": self.current_sl,
                 "best_price": self.best_price,
-                "breakeven_active": self._is_radar_active(),
+                "breakeven_active": unified.get("breakeven_active", self._is_radar_active()),
                 "consumed_tp_levels": list(self.consumed_tp_levels),
                 "monitoring": True,
-                "defenses_rebuilt": defense.get("rebuilt", False) or defense.get("healed", False),
-                "defenses_skipped": defense.get("skipped", False),
-                "defenses_aligned": defense.get("aligned", False),
-                "defenses_healed": defense.get("healed", False) or defense.get("nuclear", False),
-                "defense_summary": defense.get("after_summary") or defense.get("summary"),
-                "tp_matched": defense.get("matched"),
-                "tp_expected": defense.get("expected"),
+                "pnl_track": unified.get("pnl_track"),
+                "floating_profit": unified.get("floating_profit"),
+                "adverse_pct": unified.get("adverse_pct"),
+                "radar_progress": unified.get("radar_progress"),
+                "startup_summary": unified.get("startup_summary"),
+                "defenses_rebuilt": unified.get("defenses_rebuilt", False),
+                "defenses_skipped": unified.get("defenses_skipped", False),
+                "defenses_aligned": unified.get("defenses_aligned", False),
+                "defense_summary": unified.get("defense_summary"),
+                "tp_matched": unified.get("tp_matched"),
+                "tp_expected": unified.get("tp_expected"),
                 "adverse_startup": adverse_startup,
+                "shield_stop_price": unified.get("shield_stop_price"),
+                "radar_handoff": unified.get("radar_handoff"),
             })
             self._save_state()
             threading.Thread(target=self._sentinel_loop, daemon=True).start()
@@ -2110,11 +2115,11 @@ class PositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartD
                 f"TV={self.last_tv_side} TP={self.tv_tps}",
                 audit,
             )
+            summary = audit.get("startup_summary") or format_startup_defense_summary(audit)
             self._alert(
                 "info", "STARTUP",
                 "VPS 雷达智能接管完成",
-                f"{self.current_side} {self.watched_qty} @ {self.watched_entry} | "
-                f"{'防线就绪·未重复挂单' if defense.get('skipped') else '防线已智能补挂'}",
+                f"{self.current_side} {self.watched_qty} @ {self.watched_entry} | {summary}",
                 audit,
             )
         except Exception as e:

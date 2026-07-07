@@ -30,6 +30,7 @@ from app.core.tp_defense_reconcile import (
 )
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.adverse_radar_guard import AdverseRadarMixin
+from app.core.startup_reconcile import StartupReconcileMixin, format_startup_defense_summary
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 
@@ -67,7 +68,7 @@ class _DingtalkBridge:
 
         return _call
 
-class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin):
+class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, StartupReconcileMixin):
     def __init__(
         self,
         user_id: int,
@@ -1975,13 +1976,6 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin):
                 curr_px = self.client.get_current_price(self.symbol)
                 self._refresh_radar_state_on_recover(curr_px, self.watched_entry)
 
-                if self._is_radar_active() or self._radar_activation_progress(curr_px or self.watched_entry) >= 1.0:
-                    self._disarm_adverse_staged_stops(reason="restart_radar_active", notify=False)
-                else:
-                    startup = self._on_adverse_startup_reconcile(real_amt, curr_px or self.watched_entry)
-                    if not startup.get("aligned"):
-                        self._arm_adverse_shield_at_open(real_amt)
-
                 cap_result = self._enforce_regime_cap_alignment(
                     real_amt,
                     self.watched_entry,
@@ -1994,25 +1988,26 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin):
                     if self._safe_qty(self.initial_qty) > real_amt:
                         self.initial_qty = real_amt
 
+                unified = self._unified_startup_defense_reconcile(
+                    real_amt,
+                    self.watched_entry,
+                    curr_px or self.watched_entry,
+                    cap_result=cap_result,
+                    reason="VPS/部署重启",
+                )
+                result = unified.get("tp_defense") or {}
+                matched = unified.get("tp_matched", result.get("matched", 0))
+                expected = unified.get("tp_expected", result.get("expected", 0))
+                _rebuilt = unified.get("defenses_rebuilt", False)
+                audit = result.get("audit") or {}
+
                 radar_active = self._is_radar_active()
-                sl_to_pass = self.current_sl if radar_active else None
 
                 logger.info(
                     f"🔄 [系统重启点火] 检测到实盘持仓 {self.current_side} {real_amt}张 @ "
-                    f"{self.watched_entry:.2f} | 雷达={'已激活' if radar_active else '待命'} | "
+                    f"{self.watched_entry:.2f} | {unified.get('startup_summary', '')} | "
                     f"TV对齐 {self.last_tv_side} | 对账 {len(reconcile_notes)} 项"
                 )
-
-                if cap_result.get("trimmed", 0) > 0 and cap_result.get("defense"):
-                    result = cap_result["defense"]
-                else:
-                    result = self._reconcile_tp_defenses_on_startup(
-                        real_amt, self.watched_entry, dynamic_sl=sl_to_pass,
-                    )
-                matched = result["matched"]
-                expected = result["expected"]
-                _rebuilt = result.get("rebuilt", False)
-                audit = result["audit"]
 
                 self.monitoring = True
                 self._save_state()
@@ -2040,12 +2035,17 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin):
                             f"@{self.last_tv_signal.get('ts', '')}"
                         )
                     reconcile_txt = (" | " + " ; ".join(reconcile_notes)) if reconcile_notes else ""
-                    skip_note = " | 盘口已齐全，未重复补挂" if result.get("skipped") or not _rebuilt else ""
+                    skip_note = (
+                        " | 盘口已齐全，未重复补挂"
+                        if unified.get("defenses_skipped") or not _rebuilt
+                        else ""
+                    )
+                    startup_note = f" | {unified.get('startup_summary', '')}" if unified.get("startup_summary") else ""
                     verify_note = (
                         f"接管 {real_amt}张 @ {verified['entry_price']:.2f} | "
                         f"TV方向 {self.last_tv_side} | "
                         f"止盈 {matched}/{expected} 档 | "
-                        f"{self._format_audit_summary(audit)}{skip_note}{tv_note}{reconcile_txt}"
+                        f"{self._format_audit_summary(audit)}{startup_note}{skip_note}{tv_note}{reconcile_txt}"
                     )
                     self._dt.report_recover_takeover(
                         self.current_side, real_amt, verified['entry_price'],
