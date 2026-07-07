@@ -36,6 +36,66 @@ def supervisor(tmp_path, monkeypatch):
     return sup
 
 
+def test_diagnose_consumed_tp1_does_not_fake_tp_on_stop_exit():
+    """Remaining leg closed below entry must not be labeled TP[1] from consumed_tp_levels."""
+    attr = diagnose_flat_close(
+        client=MagicMock(get_account_trades=MagicMock(return_value=[
+            {
+                "side": "SELL",
+                "price": "1779.33",
+                "qty": "0.046",
+                "maker": False,
+                "time": int(datetime.now(timezone.utc).timestamp() * 1000),
+                "realizedPnl": "-0.31",
+            },
+        ])),
+        symbol="ETHUSDT",
+        side="LONG",
+        qty=0.046,
+        entry=1786.17,
+        trade_opened_at=datetime.now(timezone.utc).timestamp() - 3600,
+        consumed_tp_levels=[1],
+        tv_tps=[1810.0, 1830.0, 1850.0],
+        trigger="sentinel_zero",
+        had_position_before_close=False,
+        recent_tv_close=None,
+        radar_active=True,
+        current_sl=1796.43,
+    )
+    assert attr["close_origin"] == "exchange_stop"
+    assert "TP[1]" not in attr["human_reason"]
+    assert "TP1" not in attr["human_reason"]
+    assert attr["evidence"]["tp_price_matches"] == []
+
+
+def test_diagnose_tp_only_when_fill_price_matches():
+    attr = diagnose_flat_close(
+        client=MagicMock(get_account_trades=MagicMock(return_value=[
+            {
+                "side": "SELL",
+                "price": "1830.00",
+                "qty": "0.020",
+                "maker": True,
+                "time": int(datetime.now(timezone.utc).timestamp() * 1000),
+                "realizedPnl": "0.88",
+            },
+        ])),
+        symbol="ETHUSDT",
+        side="LONG",
+        qty=0.020,
+        entry=1786.17,
+        trade_opened_at=None,
+        consumed_tp_levels=[1],
+        tv_tps=[1810.0, 1830.0, 1850.0],
+        trigger="sentinel_zero",
+        had_position_before_close=False,
+        radar_active=True,
+        current_sl=1796.43,
+    )
+    assert attr["close_origin"] == "exchange_limit_tp"
+    assert "TP[2]" in attr["human_reason"] or "TP2" in str(attr["evidence"]["tp_price_matches"])
+
+
 def test_diagnose_near_entry_without_radar_is_manual_exchange():
     attr = diagnose_flat_close(
         client=MagicMock(get_account_trades=MagicMock(return_value=[

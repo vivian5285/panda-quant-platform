@@ -1363,6 +1363,7 @@ class PositionSupervisor(
             had_position_before_close=had_position,
             recent_tv_close=self._fetch_recent_tv_close(),
             radar_active=self._is_radar_active(),
+            current_sl=float(self.current_sl or 0),
             platform_initiated_market=platform_market,
         )
 

@@ -101,15 +101,47 @@ def _tv_close_recent(recent_tv: dict | None) -> bool:
         return True
 
 
-def _match_tp_prices(fills: list[dict], tv_tps: list, consumed: list) -> list[int]:
+def _closing_leg_fills(fills: list[dict], target_qty: float, qty_tol: float | None = None) -> list[dict]:
+    """Most recent closing fills that sum to ~target_qty (ignore earlier TP1 legs)."""
+    if not fills or target_qty <= 0:
+        return list(fills or [])
+    tol = qty_tol if qty_tol is not None else max(target_qty * 0.12, 0.001)
+    sorted_f = sorted(fills, key=lambda x: x.get("time_ms", 0), reverse=True)
+    picked: list[dict] = []
+    acc = 0.0
+    for f in sorted_f:
+        picked.append(f)
+        acc += f["qty"]
+        if acc >= target_qty - tol:
+            break
+    return picked
+
+
+def _match_tp_prices(fills: list[dict], tv_tps: list) -> list[int]:
+    """Match fill prices to TP tiers — only levels whose price actually printed."""
     matched: list[int] = []
     for level, tp in enumerate(tv_tps[:3], start=1):
-        if level in consumed and tp and tp > 0:
-            for f in fills:
-                if _near_price(f["price"], float(tp), pct=0.0015):
-                    matched.append(level)
-                    break
+        if not tp or float(tp) <= 0:
+            continue
+        for f in fills:
+            if _near_price(f["price"], float(tp), pct=0.0015):
+                matched.append(level)
+                break
     return matched
+
+
+def _near_stop_price(avg_px: float, stop_px: float, pct: float = 0.008) -> bool:
+    if avg_px <= 0 or stop_px <= 0:
+        return False
+    return abs(avg_px - stop_px) / stop_px <= pct
+
+
+def _is_loss_side_exit(side: str | None, entry: float, avg_px: float) -> bool:
+    if entry <= 0 or avg_px <= 0 or side not in ("LONG", "SHORT"):
+        return False
+    if side == "LONG":
+        return avg_px < entry * (1 - ENTRY_NEAR_PCT)
+    return avg_px > entry * (1 + ENTRY_NEAR_PCT)
 
 
 def diagnose_flat_close(
@@ -126,6 +158,7 @@ def diagnose_flat_close(
     had_position_before_close: bool,
     recent_tv_close: dict | None = None,
     radar_active: bool = False,
+    current_sl: float = 0.0,
     platform_initiated_market: bool = False,
 ) -> dict[str, Any]:
     """
@@ -137,18 +170,21 @@ def diagnose_flat_close(
         "had_position_before_close": had_position_before_close,
         "platform_initiated_market": platform_initiated_market,
         "radar_active": radar_active,
+        "current_sl": float(current_sl or 0),
         "consumed_tp_levels": list(consumed_tp_levels or []),
     }
 
     fills: list[dict] = []
+    leg_fills: list[dict] = []
     start_ms = int(trade_opened_at * 1000) if trade_opened_at else None
     if client and hasattr(client, "get_account_trades"):
         try:
             rows = client.get_account_trades(symbol, start_time_ms=start_ms, limit=200)
             fills = _parse_fill_rows(rows, side)
-            evidence["closing_fill_count"] = len(fills)
-            evidence["closing_fill_qty"] = _sum_fill_qty(fills)
-            evidence["closing_avg_price"] = _avg_fill_price(fills)
+            leg_fills = _closing_leg_fills(fills, float(qty or 0))
+            evidence["closing_fill_count"] = len(leg_fills)
+            evidence["closing_fill_qty"] = _sum_fill_qty(leg_fills)
+            evidence["closing_avg_price"] = _avg_fill_price(leg_fills)
         except Exception as e:
             logger.debug("fill fetch for attribution failed: %s", e)
             evidence["fill_fetch_error"] = str(e)
@@ -159,12 +195,16 @@ def diagnose_flat_close(
         evidence["latest_tv_action"] = recent_tv_close.get("action")
         evidence["latest_tv_at"] = recent_tv_close.get("created_at")
 
-    tp_matched = _match_tp_prices(fills, list(tv_tps or []), list(consumed_tp_levels or []))
+    tp_matched = _match_tp_prices(leg_fills, list(tv_tps or []))
     evidence["tp_price_matches"] = tp_matched
 
     avg_px = evidence.get("closing_avg_price") or 0.0
     near_entry = _near_price(avg_px, entry) if avg_px > 0 and entry > 0 else False
+    near_stop = _near_stop_price(avg_px, float(current_sl or 0))
+    loss_side = _is_loss_side_exit(side, entry, avg_px)
     evidence["exit_near_entry"] = near_entry
+    evidence["exit_near_stop"] = near_stop
+    evidence["exit_loss_side"] = loss_side
 
     origin = "unknown"
     actor = "unknown"
@@ -183,11 +223,15 @@ def diagnose_flat_close(
             origin = "tv_forced"
             actor = "tv_signal"
             human_reason = "盘口已平：近期有 TV 平仓信号，疑为 TV 驱动或跟随成交"
-        elif tp_matched or (fills and all(f["maker"] for f in fills) and consumed_tp_levels):
+        elif tp_matched:
             origin = "exchange_limit_tp"
             actor = "exchange_order"
-            levels = tp_matched or list(consumed_tp_levels or [])
-            human_reason = f"盘口已平：交易所限价止盈成交（TP{levels}）"
+            human_reason = f"盘口已平：交易所限价止盈成交（TP{tp_matched}）"
+        elif (radar_active or near_stop) and (loss_side or near_stop):
+            origin = "exchange_stop"
+            actor = "exchange_order"
+            sl_note = f"@{current_sl:.2f}" if current_sl else ""
+            human_reason = f"盘口已平：保本雷达/条件止损触发{sl_note}（均价 {avg_px:.2f}）"
         elif near_entry and not radar_active:
             origin = "manual_exchange"
             actor = "human"
@@ -195,11 +239,11 @@ def diagnose_flat_close(
                 "盘口已平：成交价接近开仓价且雷达未激活，"
                 "疑为交易所端人工平仓或手动市价/限价平仓"
             )
-        elif fills and any(not f["maker"] for f in fills):
+        elif leg_fills and any(not f["maker"] for f in leg_fills):
             origin = "manual_exchange"
             actor = "human"
             human_reason = "盘口已平：检测到市价吃单成交，疑为人工或外部市价平仓"
-        elif fills and all(f["maker"] for f in fills):
+        elif leg_fills and all(f["maker"] for f in leg_fills):
             origin = "exchange_limit_tp"
             actor = "exchange_order"
             human_reason = "盘口已平：检测到限价挂单成交"
