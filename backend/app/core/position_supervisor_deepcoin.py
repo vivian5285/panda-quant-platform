@@ -28,7 +28,8 @@ from app.core.tp_defense_reconcile import (
     tp_qty_matches,
     tp_qty_tolerance,
 )
-from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels
+from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, match_qty_reduction_to_tp_level
+from app.core.position_qty_tolerance import tp_slice_qty_tolerance
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.adverse_radar_guard import AdverseRadarMixin
 from app.core.startup_reconcile import StartupReconcileMixin, format_startup_defense_summary
@@ -348,6 +349,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         if last_open:
             open_side = last_open.get("side")
+            open_qty = self._safe_qty(last_open.get("qty") or 0)
+            if open_qty > 0:
+                reconcile["open_log_qty"] = open_qty
             if open_side and side != open_side:
                 notes.append(f"开仓日志方向 {open_side} ≠ 实盘 {side}")
             open_entry = float(last_open.get("entry", 0) or 0)
@@ -659,13 +663,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         )
 
     def _sync_consumed_tp_levels(self, live_qty, curr_px):
-        tol = max(1.0, float(self._safe_qty(self.initial_qty or live_qty)) * 0.05)
+        anchor = float(self._safe_qty(self.initial_qty or live_qty))
+        tol = tp_slice_qty_tolerance(anchor, is_contracts=True)
         open_prices = [float(o.get("price", 0)) for o in self._collect_tp_limit_orders()]
         inferred = infer_filled_tp_levels(
             float(live_qty),
             float(curr_px or 0),
             self.current_side,
-            initial_qty=float(self.initial_qty or live_qty),
+            initial_qty=anchor,
             consumed_tp_levels=self.consumed_tp_levels,
             regime=self.regime,
             tv_tps=self.tv_tps,
@@ -2033,10 +2038,15 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     return
 
                 saved_initial = self._safe_qty(self.initial_qty)
-                if saved_initial <= 0:
-                    saved_initial = real_amt
+                open_log_qty = self._safe_qty(reconcile.get("open_log_qty") or 0)
+                restored = max(saved_initial, open_log_qty, real_amt)
                 self.watched_qty = real_amt
-                self.initial_qty = saved_initial
+                if restored > real_amt:
+                    self.initial_qty = restored
+                elif saved_initial <= 0:
+                    self.initial_qty = real_amt
+                else:
+                    self.initial_qty = saved_initial
                 self.watched_entry = float(pos["entry_price"])
                 qty_change = reconcile.get("qty_manual_change")
 
@@ -2052,8 +2062,6 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 if cap_result.get("new_qty"):
                     real_amt = self._safe_qty(cap_result["new_qty"])
                     self.watched_qty = real_amt
-                    if cap_result.get("trimmed", 0) > 0 and self._safe_qty(self.initial_qty) > real_amt:
-                        self.initial_qty = real_amt
 
                 curr_px = self.client.get_current_price(self.symbol) if hasattr(self.client, "get_current_price") else 0
                 self._sync_consumed_tp_levels(real_amt, curr_px or self.watched_entry)
@@ -2181,6 +2189,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             trade = recovery_context.get("trade") or {}
             open_log = recovery_context.get("open_log") or {}
             latest_tv = recovery_context.get("latest_tv") or {}
+            open_qty = float(open_log.get("qty") or trade.get("quantity") or 0)
+            if open_qty > 0:
+                self.initial_qty = max(float(self.initial_qty or 0), open_qty)
             for src in (trade, open_log, latest_tv):
                 if src.get("tv_tps"):
                     self.tv_tps = [float(x) for x in src["tv_tps"][:3]]

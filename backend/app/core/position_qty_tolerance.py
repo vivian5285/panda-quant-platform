@@ -38,6 +38,18 @@ def cap_excess_tolerance(live_qty: float, target_qty: float, *, is_contracts: bo
     )
 
 
+def tp_slice_qty_tolerance(initial_qty: float, *, is_contracts: bool = False) -> float:
+    """Tolerance for matching a partial fill to a TP tier slice (anchor = initial open qty)."""
+    anchor = max(abs(float(initial_qty)), 1e-9)
+    return qty_drift_tolerance(
+        anchor,
+        anchor,
+        is_contracts=is_contracts,
+        ratio=0.08,
+        min_absolute=1.0 if is_contracts else 0.002,
+    )
+
+
 def qty_change_significant(
     old_qty: float,
     new_qty: float,

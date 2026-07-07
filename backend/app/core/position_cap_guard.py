@@ -343,8 +343,6 @@ class PositionCapGuardMixin:
 
         trimmed = max(0.0, float(live_qty) - new_qty) if trimmed_total <= 0 else trimmed_total
         self.watched_qty = new_qty
-        if float(getattr(self, "initial_qty", 0) or 0) > new_qty:
-            self.initial_qty = new_qty
 
         sl_to_pass = self._radar_sl_to_pass()
         defense = self._smart_realign_defenses(

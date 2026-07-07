@@ -23,9 +23,9 @@ from app.core.same_direction_policy import (
 from app.core.close_attribution import diagnose_flat_close, format_close_reason
 from app.core.symbol_precision import normalize_tv_targets, round_price, round_quantity, PRICE_TICK
 from app.core.position_sizing import compute_eth_qty, read_contract_equity
-from app.core.position_qty_tolerance import qty_change_significant, qty_drift_tolerance
+from app.core.position_qty_tolerance import qty_change_significant, qty_drift_tolerance, tp_slice_qty_tolerance
 from app.core.tp_defense_reconcile import tp_price_matches
-from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels
+from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, match_qty_reduction_to_tp_level
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 
@@ -605,15 +605,13 @@ class PositionSupervisor(
 
     def _sync_consumed_tp_levels(self, live_qty: float, curr_px: float) -> list[int]:
         """Exchange-first: merge persisted + initial-qty + price-cross inference."""
-        tol = self._qty_match_tol(
-            float(self.initial_qty or live_qty),
-            live_qty,
-        )
+        anchor = float(self.initial_qty or live_qty)
+        tol = tp_slice_qty_tolerance(anchor, is_contracts=self.exchange_id == "deepcoin")
         inferred = infer_filled_tp_levels(
             live_qty,
             curr_px,
             self.current_side,
-            initial_qty=float(self.initial_qty or live_qty),
+            initial_qty=anchor,
             consumed_tp_levels=self.consumed_tp_levels,
             regime=self.regime,
             tv_tps=self.tv_tps,
@@ -634,12 +632,13 @@ class PositionSupervisor(
 
     def _infer_filled_tp_levels(self, qty: float, curr_px: float) -> set[int]:
         """推断已成交 TP 档位（state 记录 + 开仓量对比 + 价格越过且无挂单）。"""
-        tol = self._qty_match_tol(float(self.initial_qty or qty), qty)
+        anchor = float(self.initial_qty or qty)
+        tol = tp_slice_qty_tolerance(anchor, is_contracts=self.exchange_id == "deepcoin")
         return infer_filled_tp_levels(
             qty,
             curr_px,
             self.current_side,
-            initial_qty=float(self.initial_qty or qty),
+            initial_qty=anchor,
             consumed_tp_levels=self.consumed_tp_levels,
             regime=self.regime,
             tv_tps=self.tv_tps,
@@ -660,25 +659,29 @@ class PositionSupervisor(
         reduced = old_qty - new_qty
         if reduced <= tol:
             return "unchanged"
-        anchors = []
-        initial = float(self.initial_qty or 0)
-        if initial > 0:
-            anchors.append(initial)
-        if old_qty > 0 and old_qty not in anchors:
-            anchors.append(old_qty)
-        result = "manual_reduce"
-        for anchor in anchors:
-            old_slices = self._compute_tp_slices(
-                anchor, exclude_levels=set(self.consumed_tp_levels)
+
+        anchor = float(self.initial_qty or old_qty or 0)
+        if anchor > 0:
+            slice_tol = tp_slice_qty_tolerance(
+                anchor, is_contracts=self.exchange_id == "deepcoin",
             )
-            for level, slice_qty, _ in old_slices:
-                if self._qty_matches(reduced, slice_qty):
-                    if level not in self.consumed_tp_levels:
-                        self.consumed_tp_levels.append(level)
-                    result = f"tp{level}_filled"
-                    break
-            if result.startswith("tp"):
-                break
+            level = match_qty_reduction_to_tp_level(
+                reduced,
+                anchor,
+                self.regime,
+                self.tv_tps,
+                self.regime_settings,
+                consumed_levels=set(self.consumed_tp_levels),
+                qty_tol=slice_tol,
+            )
+            if level is not None:
+                if level not in self.consumed_tp_levels:
+                    self.consumed_tp_levels.append(level)
+                if curr_px is not None and curr_px > 0:
+                    self._sync_consumed_tp_levels(new_qty, curr_px)
+                return f"tp{level}_filled"
+
+        result = "manual_reduce"
         if curr_px is not None and curr_px > 0:
             self._sync_consumed_tp_levels(new_qty, curr_px)
         return result
@@ -695,6 +698,9 @@ class PositionSupervisor(
 
         if trade:
             report["sources"].append("db_trade")
+            trade_qty = float(trade.get("quantity") or 0)
+            if trade_qty > 0:
+                self.initial_qty = max(float(self.initial_qty or 0), trade_qty)
             if not any(self.tv_tps) and trade.get("tv_tps"):
                 self.tv_tps = normalize_tv_targets(trade["tv_tps"])
             if trade.get("regime"):
@@ -707,6 +713,9 @@ class PositionSupervisor(
             report["open_log_side"] = open_log.get("side")
             report["open_log_qty"] = open_log.get("qty")
             report["open_log_entry"] = open_log.get("entry")
+            open_qty = float(open_log.get("qty") or 0)
+            if open_qty > 0:
+                self.initial_qty = max(float(self.initial_qty or 0), open_qty)
             if open_log.get("tv_tps"):
                 self.tv_tps = normalize_tv_targets(open_log["tv_tps"])
             if open_log.get("regime"):
@@ -910,6 +919,14 @@ class PositionSupervisor(
     ) -> str:
         """Human-readable TP alignment report (for logs / DingTalk)."""
         parts: list[str] = []
+        consumed = sorted(set(getattr(self, "consumed_tp_levels", []) or []))
+        if consumed:
+            remaining = [s for s in slices if s[0] not in consumed]
+            rem_qty = round_quantity(sum(q for _, q, _ in remaining))
+            parts.append(
+                f"已成交TP{''.join(str(x) for x in consumed)}"
+                f" → 剩余{len(remaining)}档/{rem_qty}ETH"
+            )
         matched = {m["level"]: m for m in scan.get("matched_tps", [])}
         missing = {m["level"]: m for m in scan.get("missing_tps", [])}
         dup_map = {d["level"]: d for d in scan.get("duplicate_tps", [])}
@@ -1120,7 +1137,9 @@ class PositionSupervisor(
                 )
 
         if slices is None:
-            slices = self._compute_tp_slices(qty)
+            curr_px = self.client.get_current_price(self.symbol)
+            exclude = self._active_tp_exclude_levels(qty, curr_px)
+            slices = self._compute_tp_slices(qty, exclude_levels=exclude)
         post = self._scan_open_defenses(slices, dynamic_sl)
         detail = {
             "entry": entry,
@@ -1827,6 +1846,7 @@ class PositionSupervisor(
                             "old_qty": old_qty,
                             "new_qty": actual_qty,
                             "entry": self.watched_entry,
+                            "initial_qty": float(self.initial_qty or 0),
                             "change_type": change_type,
                             "consumed_tp_levels": list(self.consumed_tp_levels),
                             "adverse_consumed_tiers": list(self.adverse_consumed_tiers),
@@ -1840,10 +1860,19 @@ class PositionSupervisor(
                             f"TP {result.get('matched', 0)}/{result.get('expected', 0)}",
                             detail,
                         )
+                        if change_type.startswith("tp"):
+                            alert_type = "TP_FILL"
+                            title = f"部分止盈吃单 · {change_type.upper()}"
+                            severity = "info"
+                        else:
+                            alert_type = "MANUAL_ADJUST"
+                            title = f"阵地异动 · {action_msg}"
+                            severity = "warning"
                         self._alert(
-                            "warning", "MANUAL_ADJUST",
-                            f"阵地异动 · {action_msg}",
+                            severity, alert_type,
+                            title,
                             f"数量 {old_qty} → {actual_qty} @ {self.watched_entry} | "
+                            f"初始{float(self.initial_qty or 0)} | "
                             f"{self._format_audit_summary((result.get('audit') or {}))}",
                             detail,
                         )
@@ -2083,8 +2112,14 @@ class PositionSupervisor(
                 self.last_tv_side = self.current_side
 
             self.watched_qty = abs(real_amt)
+            open_log_qty = float(reconcile.get("open_log_qty") or 0)
+            trade_qty = float((recovery_context or {}).get("trade", {}).get("quantity") or 0)
             saved_initial = float(self.initial_qty or 0)
-            self.initial_qty = saved_initial if saved_initial > 0 else self.watched_qty
+            restored = max(saved_initial, open_log_qty, trade_qty)
+            if restored > self.watched_qty:
+                self.initial_qty = restored
+            elif saved_initial <= 0:
+                self.initial_qty = self.watched_qty
             self.watched_entry = float(pos["entryPrice"])
             self.current_trade_id = open_trade_id
 
@@ -2105,8 +2140,6 @@ class PositionSupervisor(
             )
             if cap_result.get("new_qty"):
                 self.watched_qty = float(cap_result["new_qty"])
-                if cap_result.get("trimmed", 0) > 0 and float(self.initial_qty or 0) > self.watched_qty:
-                    self.initial_qty = self.watched_qty
 
             unified = self._unified_startup_defense_reconcile(
                 self.watched_qty,

@@ -246,8 +246,17 @@ class BinanceSmartDefenseMixin:
     def _format_audit_summary(self, audit: dict) -> str:
         parts = []
         consumed = audit.get("consumed_tp_levels") or []
+        live_qty = float(audit.get("live_qty") or getattr(self, "watched_qty", 0) or 0)
         if consumed:
-            parts.append(f"已成交TP{''.join(str(x) for x in consumed)}")
+            pending = [lv for lv in audit.get("levels", []) if lv.get("level") not in consumed]
+            rem_qty = round(sum(float(lv.get("qty") or 0) for lv in pending), 3)
+            parts.append(
+                f"已成交TP{''.join(str(x) for x in consumed)}"
+                f" → 挂剩余{len(pending)}档/{rem_qty}ETH"
+            )
+        initial = float(getattr(self, "initial_qty", 0) or 0)
+        if initial > live_qty > 0:
+            parts.append(f"初始{initial}→现仓{live_qty}")
         for lv in audit.get("levels", []):
             if lv["price"] <= 0:
                 continue
@@ -603,9 +612,8 @@ class BinanceSmartDefenseMixin:
         return res is not None
 
     def _rebuild_tp_limit_orders(self, qty: float, entry: float, dynamic_sl=None) -> int:
-        """Legacy _rebuild_defenses: place TP123 by regime ratios; optional SL. Returns placed count."""
+        """Place remaining TP tiers for live qty; skip consumed levels (e.g. TP1 already eaten)."""
         close_side = "SHORT" if self.current_side == "LONG" else "LONG"
-        ratios = self.regime_settings[self.regime]["ratios"]
 
         live_qty = self._resolve_live_qty(qty)
         if live_qty <= 0:
@@ -616,16 +624,24 @@ class BinanceSmartDefenseMixin:
             self.watched_qty = live_qty
             self._save_state()
 
-        qty1, qty2, qty3 = self._split_tp_quantities(live_qty, ratios)
-        tp_pxs = self.tv_tps
+        curr_px = self._current_tp_price()
+        if hasattr(self, "_sync_consumed_tp_levels"):
+            self._sync_consumed_tp_levels(live_qty, curr_px)
+        self._cancel_tp_orders_for_consumed_levels()
+        levels = self._expected_tp_levels(live_qty, curr_px)
         placed = 0
-
+        consumed = sorted(self._consumed_tp_level_set())
+        level_desc = " ".join(
+            f"TP{lv['level']}={lv['qty']}@{lv['price']:.2f}" for lv in levels if lv["qty"] > 0
+        )
         self._def_log(
-            f"🕸️ 补挂 TP123: 总 {live_qty} ETH → TP1={qty1} TP2={qty2} TP3={qty3} "
-            f"(合计 {round(qty1 + qty2 + qty3, 3)})"
+            f"🕸️ 补挂剩余止盈: 持仓 {live_qty} ETH"
+            + (f" | 已成交TP{''.join(str(x) for x in consumed)}" if consumed else "")
+            + f" → {level_desc or '无剩余档'}"
         )
 
-        for q, px in ((qty1, tp_pxs[0]), (qty2, tp_pxs[1]), (qty3, tp_pxs[2])):
+        for lv in levels:
+            q, px = lv["qty"], lv["price"]
             if q > 0 and px > 0:
                 res = self.client.place_limit_order(close_side, q, px, reduce_only=True)
                 if res:

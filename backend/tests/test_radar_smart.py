@@ -44,6 +44,17 @@ def test_classify_qty_change_detects_tp1_fill(supervisor):
     assert 1 in supervisor.consumed_tp_levels
 
 
+def test_classify_tp1_fill_real_scenario_1234_to_987(supervisor):
+    """Live case: 1.234 → 0.987 after TP1 hit must not be manual_reduce."""
+    supervisor.consumed_tp_levels = []
+    supervisor.regime = 3
+    supervisor.tv_tps = [1810.27, 1829.88, 1847.32]
+    supervisor.initial_qty = 1.234
+    change = supervisor._classify_qty_change(1.234, 0.987, curr_px=1815.0)
+    assert change == "tp1_filled"
+    assert 1 in supervisor.consumed_tp_levels
+
+
 def test_after_tp1_only_tp23_slices(supervisor):
     supervisor.consumed_tp_levels = [1]
     slices = supervisor._compute_tp_slices(0.987, exclude_levels={1})
@@ -79,5 +90,6 @@ def test_reconcile_radar_context_merges_tv_and_open_log(supervisor):
     assert supervisor.tv_tps == [3610.0, 3710.0, 3810.0]
     assert supervisor.regime == 2
     assert supervisor.current_atr == 28.0
+    assert supervisor.initial_qty == 1.0
     assert report["latest_tv_action"] == "LONG"
     assert "open_log" in report["sources"]

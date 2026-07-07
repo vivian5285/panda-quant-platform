@@ -1117,11 +1117,16 @@ class AdverseRadarMixin:
                 new_qty,
                 entry,
                 dynamic_sl=sl_to_pass,
-                reason=f"止盈吃单 · {cause}",
+                reason=f"止盈吃单 · {cause} · 仅挂剩余TP+雷达",
             )
+            consumed = sorted(getattr(self, "consumed_tp_levels", []) or [])
+            remaining = defense.get("expected", 0)
             result.update({
                 "defense": defense,
-                "action_msg": f"部分止盈吃单 · {cause}",
+                "action_msg": (
+                    f"TP{''.join(str(x) for x in consumed)}已成交"
+                    f" → 剩余{remaining}档止盈+雷达锁润"
+                ),
             })
             return result
 
