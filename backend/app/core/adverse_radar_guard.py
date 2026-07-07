@@ -321,14 +321,36 @@ class AdverseRadarMixin:
             if hasattr(self, "_radar_activation_progress")
             else 0.0
         )
-        if progress < 1.0 and not (hasattr(self, "_is_radar_active") and self._is_radar_active()):
+        consumed = list(getattr(self, "consumed_tp_levels", []) or [])
+        radar_mem = bool(hasattr(self, "_is_radar_active") and self._is_radar_active())
+        if progress < 1.0 and not radar_mem and not consumed:
             return False
         live_qty = self._resolve_adverse_live_qty(live_qty)
         if hasattr(self, "_refresh_radar_state_on_recover"):
             self._refresh_radar_state_on_recover(curr_px, float(self.watched_entry or 0))
+
+        placed = False
         if hasattr(self, "_process_radar_trailing"):
-            return bool(self._process_radar_trailing(live_qty, curr_px))
-        return False
+            placed = bool(self._process_radar_trailing(live_qty, curr_px))
+
+        sl_px = float(getattr(self, "current_sl", 0) or 0)
+        on_book = (
+            hasattr(self, "_has_stop_sl_near") and sl_px > 0 and self._has_stop_sl_near(sl_px)
+        ) or (
+            hasattr(self, "_has_trigger_sl_near") and sl_px > 0
+            and self._has_trigger_sl_near(sl_px)
+        )
+        if not on_book and sl_px > 0 and hasattr(self, "_ensure_radar_sl"):
+            if getattr(self, "exchange_id", "") == "deepcoin":
+                placed = bool(self._ensure_radar_sl(live_qty, sl_px)) or placed
+            else:
+                placed = bool(self._ensure_radar_sl(sl_px, live_qty)) or placed
+
+        if sl_px > 0 and hasattr(self, "_has_stop_sl_near"):
+            return bool(self._has_stop_sl_near(sl_px))
+        if sl_px > 0 and hasattr(self, "_has_trigger_sl_near"):
+            return bool(self._has_trigger_sl_near(sl_px))
+        return placed
 
     def _classify_tp_reduction(self, old_qty: float, new_qty: float) -> str | None:
         if new_qty <= 0 or new_qty >= old_qty - self._qty_match_tol(old_qty, new_qty):

@@ -25,11 +25,14 @@ def classify_startup_pnl_track(
     *,
     radar_progress: float = 0.0,
     radar_active: bool = False,
+    consumed_tp_levels: list | None = None,
 ) -> str:
     """
     loss_shield — 浮亏/雷达未激活：保 TP123 + 10% 硬止损
-    profit_radar — 朝 TP1 达激活比例或雷达已锁：撤硬止损，雷达接管
+    profit_radar — 朝 TP1 达激活比例或雷达已锁 / TP 已部分成交：撤硬止损，雷达接管
     """
+    if consumed_tp_levels:
+        return "profit_radar"
     if radar_active or radar_progress >= 1.0:
         return "profit_radar"
     return "loss_shield"
@@ -69,7 +72,13 @@ def format_startup_defense_summary(audit: dict) -> str:
     prog = audit.get("radar_progress")
     if prog is not None:
         parts.append(f"雷达进度{prog:.0%}")
-    if audit.get("breakeven_active"):
+    radar_sl = audit.get("radar_sl") or {}
+    if track == "profit_radar" and radar_sl.get("expected_sl"):
+        if radar_sl.get("live"):
+            parts.append(f"保本雷达ON@{radar_sl['expected_sl']:.2f}✓")
+        else:
+            parts.append(f"保本雷达缺失@{radar_sl['expected_sl']:.2f}")
+    elif audit.get("breakeven_active"):
         parts.append("保本雷达ON")
     if audit.get("defenses_skipped"):
         parts.append("未重复挂单")
@@ -89,6 +98,78 @@ class StartupReconcileMixin:
     def _startup_wait_live_book(self) -> None:
         """Brief settle after process restart before reading open orders."""
         time.sleep(STARTUP_LIVE_SETTLE_SEC)
+
+    def _startup_has_radar_sl_on_book(self, sl_price: float, tolerance: float = 2.0) -> bool:
+        if sl_price <= 0:
+            return False
+        if hasattr(self, "_has_stop_sl_near"):
+            return bool(self._has_stop_sl_near(sl_price, tolerance))
+        if hasattr(self, "_has_trigger_sl_near"):
+            return bool(self._has_trigger_sl_near(sl_price, tolerance))
+        return False
+
+    def _startup_ensure_radar_sl(self, sl_price: float, live_qty: float) -> bool:
+        if sl_price <= 0 or live_qty <= 0:
+            return False
+        if getattr(self, "exchange_id", "") == "deepcoin":
+            fn = getattr(self, "_ensure_radar_sl", None)
+            return bool(fn(live_qty, sl_price)) if fn else False
+        fn = getattr(self, "_ensure_radar_sl", None)
+        return bool(fn(sl_price, live_qty)) if fn else False
+
+    def _finalize_startup_radar_sl(
+        self,
+        live_qty: float,
+        entry: float,
+        curr_px: float,
+        pnl_track: str,
+    ) -> dict[str, Any]:
+        """
+        重启最后一关：内存 radar 状态必须对应交易所实盘 STOP。
+        TP1 已成交后只剩 TP23 时，仍须补挂移动保本止损。
+        """
+        audit: dict[str, Any] = {"expected_sl": 0.0, "live": False, "placed": False}
+        if pnl_track != "profit_radar" or live_qty <= 0:
+            return audit
+
+        if hasattr(self, "_refresh_radar_state_on_recover") and curr_px > 0 and entry > 0:
+            self._refresh_radar_state_on_recover(curr_px, entry)
+
+        sl_px = float(getattr(self, "current_sl", 0) or 0)
+        audit["expected_sl"] = sl_px
+        if sl_px <= 0:
+            return audit
+
+        if self._startup_has_radar_sl_on_book(sl_px):
+            audit["live"] = True
+            return audit
+
+        audit["placed"] = self._startup_ensure_radar_sl(sl_px, live_qty)
+        time.sleep(0.45)
+        audit["live"] = self._startup_has_radar_sl_on_book(sl_px)
+
+        if not audit["live"] and hasattr(self, "_realign_radar_defenses"):
+            audit["realign"] = bool(self._realign_radar_defenses(live_qty, entry, sl_px))
+            time.sleep(0.45)
+            audit["live"] = self._startup_has_radar_sl_on_book(sl_px)
+
+        uid = getattr(self, "user_id", "?")
+        if audit["live"]:
+            logger.info("[User %s] 重启雷达止损实盘核实 ✓ @ %.2f", uid, sl_px)
+        else:
+            logger.warning(
+                "[User %s] 重启雷达止损缺失，补挂仍失败 @ %.2f | placed=%s realign=%s",
+                uid, sl_px, audit.get("placed"), audit.get("realign"),
+            )
+            if hasattr(self, "_alert"):
+                self._alert(
+                    "warning",
+                    "STARTUP_RADAR_SL",
+                    "重启接管 · 雷达保本止损未挂上",
+                    f"期望 SL @ {sl_px:.2f}，实盘无 STOP 单，请人工核查",
+                    audit,
+                )
+        return audit
 
     def _unified_startup_defense_reconcile(
         self,
@@ -124,11 +205,13 @@ class StartupReconcileMixin:
             self._refresh_radar_state_on_recover(curr_px, entry)
 
         progress = self._startup_radar_progress(curr_px)
+        consumed = list(getattr(self, "consumed_tp_levels", []) or [])
         radar_active = bool(hasattr(self, "_is_radar_active") and self._is_radar_active())
         pnl_track = classify_startup_pnl_track(
             entry, curr_px, side,
             radar_progress=progress,
             radar_active=radar_active,
+            consumed_tp_levels=consumed,
         )
         adverse_pct = round(adverse_move_pct(entry, curr_px, side) * 100, 2)
         floating_profit = is_floating_profit(entry, curr_px, side)
@@ -195,12 +278,18 @@ class StartupReconcileMixin:
 
         stop_px = adverse_hard_stop_price(entry, str(side or "LONG"))
 
+        radar_sl_audit = self._finalize_startup_radar_sl(
+            live_qty, entry, curr_px, pnl_track,
+        )
+        breakeven_live = bool(radar_sl_audit.get("live"))
+
         result: dict[str, Any] = {
             "pnl_track": pnl_track,
             "floating_profit": floating_profit,
             "adverse_pct": adverse_pct,
             "radar_progress": round(progress, 3),
-            "breakeven_active": radar_active,
+            "breakeven_active": breakeven_live,
+            "radar_sl": radar_sl_audit,
             "radar_handoff": radar_handoff,
             "shield": shield_audit,
             "shield_stop_price": stop_px,
