@@ -1,0 +1,75 @@
+"""Binance conditional STOP orders use algo book after 2025-12 migration."""
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from app.core.binance_client import BinanceClient
+
+
+@pytest.fixture
+def client():
+    with patch("app.core.binance_client.Client") as mock_cls:
+        inner = MagicMock()
+        mock_cls.return_value = inner
+        bc = BinanceClient("k", "s", user_id=6)
+        bc.client = inner
+        yield bc
+
+
+def test_place_stop_market_uses_algo_close_position(client):
+    client.client._request_futures_api.return_value = {
+        "algoId": 9001,
+        "orderType": "STOP_MARKET",
+        "triggerPrice": "1796.43",
+        "closePosition": True,
+        "side": "SELL",
+    }
+
+    res = client.place_stop_market_order("SHORT", 1796.43, "ETHUSDT", quantity=None)
+
+    assert res is not None
+    assert res.get("algoId") == 9001
+    client.client._request_futures_api.assert_called_once()
+    args, kwargs = client.client._request_futures_api.call_args
+    assert args[0] == "post" and args[1] == "algoOrder"
+    data = kwargs.get("data") or {}
+    assert data["algoType"] == "CONDITIONAL"
+    assert data["type"] == "STOP_MARKET"
+    assert data["closePosition"] == "true"
+    assert "quantity" not in data
+    client.client.futures_create_order.assert_not_called()
+
+
+def test_get_open_orders_merges_algo_book(client):
+    client.client.futures_get_open_orders.return_value = [
+        {"orderId": 1, "type": "LIMIT", "price": "1830.00", "origQty": "0.020"},
+    ]
+    client.client._request_futures_api.return_value = [
+        {
+            "algoId": 9001,
+            "orderType": "STOP_MARKET",
+            "triggerPrice": "1796.43",
+            "closePosition": True,
+            "algoStatus": "NEW",
+            "side": "SELL",
+        }
+    ]
+
+    orders = client.get_open_orders("ETHUSDT")
+
+    assert len(orders) == 2
+    stop = next(o for o in orders if o.get("type") == "STOP_MARKET")
+    assert float(stop["triggerPrice"]) == pytest.approx(1796.43)
+    assert stop.get("isAlgoOrder") is True
+
+
+def test_cancel_order_falls_back_to_algo(client):
+    client.client.futures_cancel_order.side_effect = Exception("not found")
+    client.client._request_futures_api.return_value = {"algoId": 9001}
+
+    ok = client.cancel_order("ETHUSDT", 9001)
+
+    assert ok is True
+    client.client._request_futures_api.assert_called_once()
+    assert client.client._request_futures_api.call_args[0][:2] == ("delete", "algoOrder")

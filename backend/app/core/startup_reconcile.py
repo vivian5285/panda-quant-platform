@@ -144,13 +144,16 @@ class StartupReconcileMixin:
             audit["live"] = True
             return audit
 
-        audit["placed"] = self._startup_ensure_radar_sl(sl_px, live_qty)
-        time.sleep(0.45)
-        audit["live"] = self._startup_has_radar_sl_on_book(sl_px)
+        for attempt in range(3):
+            audit["placed"] = self._startup_ensure_radar_sl(sl_px, live_qty)
+            time.sleep(0.5 + attempt * 0.25)
+            audit["live"] = self._startup_has_radar_sl_on_book(sl_px)
+            if audit["live"]:
+                break
 
         if not audit["live"] and hasattr(self, "_realign_radar_defenses"):
             audit["realign"] = bool(self._realign_radar_defenses(live_qty, entry, sl_px))
-            time.sleep(0.45)
+            time.sleep(0.6)
             audit["live"] = self._startup_has_radar_sl_on_book(sl_px)
 
         uid = getattr(self, "user_id", "?")

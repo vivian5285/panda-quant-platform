@@ -233,12 +233,79 @@ class BinanceClient:
             logger.error(f"[User {self.user_id}] get position failed: {e}")
             return None
 
+    def _normalize_algo_order(self, row: dict) -> dict:
+        """Map Binance algo conditional order into futures_get_open_orders shape."""
+        trigger = row.get("triggerPrice") or row.get("stopPrice")
+        qty = row.get("quantity") or row.get("origQty") or row.get("qty")
+        otype = str(row.get("orderType") or row.get("type") or "").upper()
+        close_pos = row.get("closePosition")
+        if isinstance(close_pos, bool):
+            close_pos = "true" if close_pos else "false"
+        return {
+            "orderId": row.get("algoId") or row.get("orderId"),
+            "algoId": row.get("algoId"),
+            "clientOrderId": row.get("clientAlgoId") or row.get("clientOrderId"),
+            "type": otype,
+            "stopPrice": trigger,
+            "triggerPrice": trigger,
+            "price": row.get("price"),
+            "side": row.get("side"),
+            "origQty": qty,
+            "quantity": qty,
+            "closePosition": close_pos,
+            "reduceOnly": row.get("reduceOnly"),
+            "isAlgoOrder": True,
+            "algoStatus": row.get("algoStatus") or row.get("status"),
+        }
+
+    def get_open_algo_orders(self, symbol="ETHUSDT") -> list[dict]:
+        """Conditional STOP/TP orders live on the algo book after 2025-12 migration."""
+        try:
+            raw = self.client._request_futures_api(
+                "get", "openAlgoOrders", signed=True, data={"symbol": symbol},
+            )
+            rows = raw if isinstance(raw, list) else (raw or {}).get("orders", [])
+            out = []
+            for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
+                status = str(row.get("algoStatus") or row.get("status") or "").upper()
+                if status in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "FILLED"):
+                    continue
+                out.append(self._normalize_algo_order(row))
+            return out
+        except Exception as e:
+            logger.warning(f"[User {self.user_id}] get algo orders failed: {e}")
+            return []
+
     def get_open_orders(self, symbol="ETHUSDT"):
         try:
-            return self.client.futures_get_open_orders(symbol=symbol)
+            regular = self.client.futures_get_open_orders(symbol=symbol) or []
         except Exception as e:
             logger.error(f"[User {self.user_id}] get orders failed: {e}")
-            return []
+            regular = []
+        try:
+            algo = self.get_open_algo_orders(symbol=symbol)
+        except Exception:
+            algo = []
+        return list(regular) + list(algo)
+
+    def _place_algo_stop_market(self, params: dict) -> dict | None:
+        try:
+            res = self.client._request_futures_api(
+                "post", "algoOrder", signed=True, data=params,
+            )
+            if isinstance(res, dict):
+                logger.info(
+                    f"[User {self.user_id}] algo stop {params.get('side')} "
+                    f"trigger={params.get('triggerPrice')} "
+                    f"close={params.get('closePosition', 'false')}"
+                )
+                return self._normalize_algo_order(res)
+            return None
+        except Exception as e:
+            logger.error(f"[User {self.user_id}] algo stop order failed: {e} params={params}")
+            return None
 
     def place_market_order(self, side, quantity, symbol="ETHUSDT", reduce_only=False):
         try:
@@ -297,12 +364,32 @@ class BinanceClient:
         quantity=None,
         reduce_only=False,
     ):
+        binance_side = "BUY" if side.upper() in ["BUY", "LONG"] else "SELL"
+        stop_str = format_price(stop_price)
+        if float(stop_str) <= 0:
+            logger.error(f"[User {self.user_id}] stop order invalid price: {stop_price}")
+            return None
+
+        algo_params: dict = {
+            "algoType": "CONDITIONAL",
+            "symbol": symbol,
+            "side": binance_side,
+            "type": "STOP_MARKET",
+            "triggerPrice": stop_str,
+            "workingType": "CONTRACT_PRICE",
+        }
+        if quantity is not None and float(format_quantity(quantity)) > 0:
+            algo_params["quantity"] = format_quantity(quantity)
+            algo_params["reduceOnly"] = "true"
+        else:
+            algo_params["closePosition"] = "true"
+
+        res = self._place_algo_stop_market(algo_params)
+        if res:
+            return res
+
+        # Legacy book fallback (pre-migration exchanges / test mocks)
         try:
-            binance_side = "BUY" if side.upper() in ["BUY", "LONG"] else "SELL"
-            stop_str = format_price(stop_price)
-            if float(stop_str) <= 0:
-                logger.error(f"[User {self.user_id}] stop order invalid price: {stop_price}")
-                return None
             params: dict = {
                 "symbol": symbol,
                 "side": binance_side,
@@ -377,6 +464,15 @@ class BinanceClient:
             logger.info(f"[User {self.user_id}] cancel order {order_id}")
             return True
         except Exception as e:
+            logger.debug(f"[User {self.user_id}] regular cancel {order_id} failed: {e}")
+        try:
+            self.client._request_futures_api(
+                "delete", "algoOrder", signed=True,
+                data={"symbol": symbol, "algoId": int(order_id)},
+            )
+            logger.info(f"[User {self.user_id}] cancel algo order {order_id}")
+            return True
+        except Exception as e:
             logger.warning(f"[User {self.user_id}] cancel order {order_id} failed: {e}")
             return False
 
@@ -385,6 +481,12 @@ class BinanceClient:
             self.client.futures_cancel_all_open_orders(symbol=symbol)
         except Exception as e:
             logger.error(f"[User {self.user_id}] cancel orders failed: {e}")
+        try:
+            self.client._request_futures_api(
+                "delete", "algoOpenOrders", signed=True, data={"symbol": symbol},
+            )
+        except Exception as e:
+            logger.warning(f"[User {self.user_id}] cancel algo orders failed: {e}")
 
     def test_connection(self) -> bool:
         try:
