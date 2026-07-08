@@ -40,12 +40,50 @@ def test_close_stoploss_parsed():
     assert ok
 
 
-def test_supervisor_fallback_regime_atr():
-    payload = enrich_tv_signal(
-        {"action": "SHORT", "price": 3600.0},
-        fallback_regime=2,
-        fallback_atr=18.5,
+def test_v6975_full_entry_pine_webhook_preserved():
+    """Pine buildEntryWebhook — regime/atr/tv_tp* must not be overwritten by enrich."""
+    raw = (
+        '{"action":"LONG","secret":"528586","price":3500.0,"regime":3,'
+        '"atr":25.5,"tv_tp1":3533.15,"tv_tp2":3566.3,"tv_tp3":3596.9}'
     )
-    assert payload["regime"] == 2
-    assert payload["atr"] == 18.5
-    assert payload["tv_tp3"] < 3600
+    data, err = parse_webhook_payload(raw)
+    assert err is None
+    assert data["regime"] == 3
+    assert data["atr"] == 25.5
+    assert data["tv_tp1"] == 3533.15
+    assert data["tv_tp2"] == 3566.3
+    assert data["tv_tp3"] == 3596.9
+    assert not (data.get("_enriched_fields") or [])
+    ok, msg = validate_signal_payload(data)
+    assert ok, msg
+
+
+def test_v6975_full_close_protect_parsed():
+    raw = (
+        '{"action":"CLOSE_PROTECT","secret":"528586","regime":2,"price":1779.5,'
+        '"atr":18.2,"side":"LONG","reason":"动能衰竭","pnl_pct":-1.23}'
+    )
+    data, err = parse_webhook_payload(raw)
+    assert err is None
+    assert data["regime"] == 2
+    assert data["atr"] == 18.2
+    assert data["side"] == "LONG"
+    ok, _ = validate_signal_payload(data)
+    assert ok
+
+
+def test_format_enrich_note_empty_when_pine_sent_full():
+    from app.services.tv_signal_enrich import format_enrich_note
+
+    payload = enrich_tv_signal(
+        {
+            "action": "LONG",
+            "price": 3500.0,
+            "regime": 3,
+            "atr": 25.5,
+            "tv_tp1": 3533.15,
+            "tv_tp2": 3566.3,
+            "tv_tp3": 3596.9,
+        }
+    )
+    assert format_enrich_note(payload) == ""

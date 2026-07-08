@@ -269,6 +269,7 @@ class PositionSupervisor(
             atr=self.current_atr,
         )
         enrich_note = format_enrich_note(payload)
+        self._last_enrich_note = enrich_note
         raw_action = str(payload.get("action", "")).upper()
         held_regime = self.regime
         held_atr = self.current_atr
@@ -581,7 +582,10 @@ class PositionSupervisor(
                     f" | 实盘止盈 {detail.get('defense_matched')}/"
                     f"{detail.get('defense_expected')} 档"
                 )
-            enrich_suffix = f" | {enrich_note}" if enrich_note else ""
+            enrich_suffix = ""
+            enrich_note = getattr(self, "_last_enrich_note", "") or ""
+            if enrich_note:
+                enrich_suffix = f" | {enrich_note}"
             open_title = f"{theme['accent']} GEMINI开仓 · {theme['label']} 档位{self.regime}"
             self._log("OPEN", f"🔶 战神出击：{action} {real_qty} ETH @ {entry_price} | 滑点 {slip:+.2f}{verify_note}{enrich_suffix}", detail)
             self._alert(
@@ -1467,9 +1471,24 @@ class PositionSupervisor(
             ca = str(close_action).upper()
             if "CLOSE_TP3" in ca:
                 alert_type = "CLOSE_TP3"
+            elif "CLOSE_STOPLOSS" in ca:
+                alert_type = "CLOSE_STOPLOSS"
             elif "CLOSE_PROTECT" in ca:
                 alert_type = "CLOSE_PROTECT"
-        self._alert(alert_sev, alert_type, "全平完成", reason, close_detail)
+        verify_parts = ["盘口已归零"]
+        if exit_price:
+            verify_parts.append(f"平仓价 @{exit_price:.2f}")
+        if live_pnl_pct is not None:
+            verify_parts.append(f"实盘盈亏 {live_pnl_pct:+.2f}%")
+        if tv_pnl_pct is not None:
+            verify_parts.append(f"TV报 {float(tv_pnl_pct):+.2f}%")
+        if tv_pnl_pct is not None and live_pnl_pct is not None:
+            delta = round(live_pnl_pct - float(tv_pnl_pct), 2)
+            if abs(delta) > 0.15:
+                verify_parts.append(f"偏差 {delta:+.2f}%")
+        ding_msg = f"{reason} | {' | '.join(verify_parts)}"
+        close_detail["verify_note"] = " | ".join(verify_parts)
+        self._alert(alert_sev, alert_type, "全平完成", ding_msg, close_detail)
         if attribution and attribution.get("anomaly"):
             self._alert(
                 "warning",

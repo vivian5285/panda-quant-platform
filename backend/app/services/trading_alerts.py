@@ -256,6 +256,16 @@ def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
         lines.append(_line("平仓数量", f"{detail['qty']} {unit}"))
     if detail.get("close_reason") or detail.get("reason"):
         lines.append(_line("平仓原因", str(detail.get("close_reason") or detail.get("reason"))))
+    if detail.get("exit_price"):
+        lines.append(_line("平仓价", f"{float(detail['exit_price']):.2f}"))
+    if detail.get("live_pnl_pct") is not None:
+        lines.append(_line("实盘盈亏", f"{float(detail['live_pnl_pct']):+.2f}%"))
+    if detail.get("tv_pnl_pct") is not None:
+        lines.append(_line("TV盈亏", f"{float(detail['tv_pnl_pct']):+.2f}%"))
+    if detail.get("pnl_pct_delta") is not None:
+        lines.append(_line("盈亏偏差", f"{float(detail['pnl_pct_delta']):+.2f}%"))
+    if detail.get("verify_note"):
+        lines.append(_line("实盘核实", str(detail["verify_note"])))
     if detail.get("attribution"):
         lines.append(_line("归因", str(detail["attribution"])))
     return "\n".join(lines)
@@ -276,7 +286,7 @@ def format_admin_detail_lines(
         return format_cap_align_detail_cn(detail, ex)
     if alert_type.startswith("ADVERSE_SL"):
         return format_adverse_sl_detail_cn(detail, ex)
-    if alert_type in ("CLOSE", "CLOSE_TP3", "CLOSE_PROTECT", "CLOSE_ATTRIBUTION"):
+    if alert_type in ("CLOSE", "CLOSE_TP3", "CLOSE_PROTECT", "CLOSE_STOPLOSS", "CLOSE_ATTRIBUTION"):
         return format_close_detail_cn(detail, ex)
 
     theme = resolve_exchange_theme(ex)
