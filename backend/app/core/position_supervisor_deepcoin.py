@@ -35,6 +35,14 @@ from app.core.adverse_radar_guard import AdverseRadarMixin
 from app.core.startup_reconcile import StartupReconcileMixin, format_startup_defense_summary
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
+from app.services.close_alert_utils import (
+    build_close_detail,
+    build_verify_note,
+    extract_tv_close_fields,
+    format_close_dingtalk_message,
+    resolve_close_alert_title,
+    resolve_close_alert_type,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -481,31 +489,89 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 return True
         return False
 
-    def _report_flat_close(self, reason, swept_dust=False):
-        """平仓/止盈收网钉钉：REST 核查重试"""
+    def _report_flat_close(
+        self,
+        reason,
+        swept_dust=False,
+        *,
+        close_action: str | None = None,
+        tv_close_ctx: dict | None = None,
+        tv_side: str | None = None,
+        tv_pnl_pct: float | None = None,
+        tv_reason: str | None = None,
+        entry_snapshot: float = 0.0,
+        qty_snapshot: float = 0.0,
+        side_snapshot: str | None = None,
+        trade_id_snapshot: int | None = None,
+    ):
+        """平仓/止盈收网：REST 核查 → 实盘盈亏 → 钉钉全平警报（含 TV 明细字段）"""
         flat = self._wait_verify(self._verify_flat, retries=6, delay=0.5)
-        base_note = "盘口无持仓 | 挂单已清空 | 智慧大脑复位待命"
+        exit_price = self.client.get_current_price(self.symbol) or 0.0
+        display_reason = tv_reason or reason or "仓位归零 (人工全平 / 止盈吃满)"
+        live_pnl_pct = None
+        pnl = 0.0
+        entry = float(entry_snapshot or 0)
+        qty = float(qty_snapshot or 0)
+        side = side_snapshot or self.current_side
+        if entry > 0 and exit_price > 0:
+            diff = exit_price - entry
+            if side == "SHORT":
+                diff = -diff
+            pnl = diff * qty
+            live_pnl_pct = round(diff / entry * 100, 2)
+
+        verify_note = build_verify_note(
+            exit_price=exit_price if exit_price > 0 else None,
+            live_pnl_pct=live_pnl_pct,
+            tv_pnl_pct=tv_pnl_pct,
+            flat_confirmed=flat,
+        )
         if swept_dust:
-            base_note = f"蚂蚁仓已市价扫尾 | {base_note}"
-        if flat:
-            verify_note = base_note
-        else:
+            verify_note = f"蚂蚁仓已市价扫尾 | {verify_note}"
+        if not flat:
             pos = self._get_active_position()
             residual = self._safe_qty(pos["size"]) if pos else 0
             if residual > 0 and not self._is_dust_qty(residual):
                 logger.warning(
-                    f"平仓钉钉跳过：空仓核查未通过 | 残留 {residual}张 | reason={reason}"
+                    f"平仓钉钉跳过：空仓核查未通过 | 残留 {residual}张 | reason={display_reason}"
                 )
                 return
-            verify_note = f"{base_note} | REST 同步略延迟"
-            logger.info(f"平仓钉钉：REST 延迟，仍推送收网播报 | reason={reason}")
-        self._call_dingtalk(
-            self._dt.report_supervisor_close,
-            reason=reason or "仓位归零 (人工全平 / 止盈吃满)",
+            verify_note = f"{verify_note} | REST 同步略延迟"
+            logger.info(f"平仓钉钉：REST 延迟，仍推送收网播报 | reason={display_reason}")
+
+        close_detail = build_close_detail(
+            exchange_id=self.exchange_id,
+            side=side,
+            qty=qty,
+            entry=entry,
+            regime=self.regime,
+            atr=self.current_atr,
+            exit_price=exit_price if exit_price > 0 else None,
+            pnl=pnl,
+            funding_fee=0.0,
+            tv_fields=tv_close_ctx,
+            close_action=close_action,
+            tv_reason=display_reason,
+            live_pnl_pct=live_pnl_pct,
             verify_note=verify_note,
-            verified=flat,
-            swept_dust=swept_dust,
+            trade_id=trade_id_snapshot,
         )
+        if tv_side:
+            close_detail["tv_side"] = tv_side
+        if tv_pnl_pct is not None:
+            close_detail["tv_pnl_pct"] = round(float(tv_pnl_pct), 2)
+        if tv_side and side and tv_side != side:
+            close_detail["tv_side_mismatch"] = True
+
+        tid = trade_id_snapshot or self.current_trade_id
+        if tid and exit_price > 0:
+            self.on_trade_close(tid, exit_price, pnl, display_reason, 0.0)
+
+        alert_type = resolve_close_alert_type(close_action, display_reason)
+        alert_title = resolve_close_alert_title(close_action, display_reason)
+        ding_msg = format_close_dingtalk_message(display_reason, verify_note)
+        self._log("CLOSE", display_reason, close_detail, trade_id=tid)
+        self._alert("info", alert_type, alert_title, ding_msg, close_detail)
 
     def _sweep_dust_and_finalize(self, reason):
         """哨兵检测：止盈后蚂蚁仓/无 TP 残张 → 撤单 + reduceOnly 扫尾 + 收网钉钉"""
@@ -1539,8 +1605,19 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self._safe_float(payload.get("tv_tp3"), 0),
         ])
         close_reason = str(payload.get("reason") or "策略指标反转/波动率安全退出").strip()
-        close_side = str(payload.get("side") or "").strip().upper()
-        pnl_pct = payload.get("pnl_pct")
+        tv_close = extract_tv_close_fields(payload)
+        tv_reason = tv_close.get("tv_reason") or close_reason
+        tv_side = tv_close.get("tv_side") or str(payload.get("side") or "").strip().upper() or None
+        tv_pnl_pct = tv_close.get("tv_pnl_pct")
+
+        def _tv_close_kwargs() -> dict:
+            return {
+                "close_action": raw_action,
+                "tv_close_ctx": tv_close,
+                "tv_side": tv_side,
+                "tv_pnl_pct": tv_pnl_pct,
+                "tv_reason": tv_reason,
+            }
 
         if not raw_action:
             logger.warning("TV 信号缺少 action，已忽略")
@@ -1557,25 +1634,42 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         try:
             self.monitoring = False
             if raw_action == "CLOSE_PROTECT" or raw_action.startswith("CLOSE_PROTECT"):
-                extra = ""
-                if close_side:
-                    extra += f" | TV方向 {close_side}"
-                if pnl_pct is not None and pnl_pct != "":
-                    extra += f" | 近似盈亏 {pnl_pct}%"
                 pos = self._get_active_position()
                 if not pos or self._safe_qty(pos.get("size", 0)) <= 0:
-                    logger.info(f"🛡️ 保护性全平到达但盘口已空仓 → 撤单复位 | {close_reason}{extra}")
-                    self._handle_manual_flat_detected(
-                        f"🛡️ TV保护性全平（盘口已空）: {close_reason}{extra}"
+                    logger.info(f"🛡️ 保护性全平到达但盘口已空仓 → 撤单复位 | {tv_reason}")
+                    empty_detail: dict = {
+                        "close_action": raw_action,
+                        "tv_side": tv_side,
+                        "reason": tv_reason,
+                        "tv_reason": tv_reason,
+                        "action": "cancel_orders_reset",
+                        "exchange": self.exchange_id,
+                    }
+                    empty_detail.update({k: v for k, v in tv_close.items() if v is not None})
+                    if tv_pnl_pct is not None:
+                        empty_detail["tv_pnl_pct"] = round(float(tv_pnl_pct), 2)
+                    self.client.cancel_all_open_orders(self.symbol)
+                    self.monitoring = False
+                    self._save_state()
+                    self._log("CLOSE_PROTECT_EMPTY", f"🛡️ 空仓保护性全平：撤单复位 | {tv_reason}", empty_detail)
+                    self._alert(
+                        "info",
+                        "CLOSE_PROTECT_EMPTY",
+                        "空仓保护 · 撤单复位",
+                        f"Deepcoin 实盘无持仓，已撤单并复位 | {tv_reason}",
+                        empty_detail,
                     )
                 else:
-                    self._close_all(f"🛡️ 保护性全平：{close_reason}{extra}")
+                    self._close_all(f"🛡️ 保护性全平：{tv_reason}", **_tv_close_kwargs())
             elif raw_action == "CLOSE_TP3":
-                self._close_all("🎯 完美胜利：大趋势吃满，TP3 终极收网")
+                self._close_all(
+                    f"🎯 TP3完美收网：{tv_reason or '大趋势吃满'}",
+                    **_tv_close_kwargs(),
+                )
             elif raw_action == "CLOSE_STOPLOSS":
-                self._close_all(f"🛑 TV止损/保本：{close_reason}")
+                self._close_all(f"🛑 {tv_reason or '触碰硬止损或追踪保本线'}", **_tv_close_kwargs())
             elif raw_action == "CLOSE":
-                self._close_all(f"🧹 换防清场：{close_reason}")
+                self._close_all(f"🧹 换防清场：{tv_reason}", **_tv_close_kwargs())
             elif raw_action in ["LONG", "SHORT"]:
                 self.last_tv_side = raw_action
                 self._save_state()
@@ -2153,8 +2247,22 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             )
         return placed
 
-    def _close_all(self, reason="", force_align=None):
+    def _close_all(
+        self,
+        reason="",
+        force_align=None,
+        *,
+        close_action: str | None = None,
+        tv_close_ctx: dict | None = None,
+        tv_side: str | None = None,
+        tv_pnl_pct: float | None = None,
+        tv_reason: str | None = None,
+    ):
         """三重把关之二：TV 全平/保护性全平 → 先撤单释放冻结仓位，6 轮阶梯强平至归零"""
+        entry_snapshot = float(self.watched_entry or 0)
+        qty_snapshot = float(self.watched_qty or 0)
+        side_snapshot = self.current_side
+        trade_id_snapshot = self.current_trade_id
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.5)
         closed_successfully = False
@@ -2210,7 +2318,18 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     verify_note += " | REST 同步略延迟"
                 self._dt.report_force_align(real_side, expected_side, verify_note=verify_note)
             else:
-                self._report_flat_close(reason)
+                self._report_flat_close(
+                    reason,
+                    close_action=close_action,
+                    tv_close_ctx=tv_close_ctx,
+                    tv_side=tv_side,
+                    tv_pnl_pct=tv_pnl_pct,
+                    tv_reason=tv_reason,
+                    entry_snapshot=entry_snapshot,
+                    qty_snapshot=qty_snapshot,
+                    side_snapshot=side_snapshot,
+                    trade_id_snapshot=trade_id_snapshot,
+                )
 
     def recover_state_on_startup(self):
         """重启闪电接管：对账 TV/开仓日志 → 核实实盘 → 智能补挂 TP123 → 恢复雷达"""

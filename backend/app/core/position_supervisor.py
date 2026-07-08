@@ -27,6 +27,14 @@ from app.core.position_qty_tolerance import qty_change_significant, qty_drift_to
 from app.core.tp_defense_reconcile import tp_price_matches
 from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, match_qty_reduction_to_tp_level
 from app.services.tv_signal_enrich import format_enrich_note, merge_supervisor_fallbacks
+from app.services.close_alert_utils import (
+    build_close_detail,
+    build_verify_note,
+    extract_tv_close_fields,
+    format_close_dingtalk_message,
+    resolve_close_alert_title,
+    resolve_close_alert_type,
+)
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 
@@ -295,37 +303,44 @@ class PositionSupervisor(
                 tv_pnl_pct = None
 
         self.monitoring = False
+        tv_close = extract_tv_close_fields(payload)
+        tv_reason = tv_close.get("tv_reason") or close_reason
+
+        def _tv_close_kwargs() -> dict:
+            return {
+                "tv_side": tv_side or tv_close.get("tv_side"),
+                "tv_pnl_pct": tv_pnl_pct if tv_pnl_pct is not None else tv_close.get("tv_pnl_pct"),
+                "tv_close_ctx": tv_close,
+                "tv_reason": tv_reason,
+            }
+
         if raw_action == "CLOSE_PROTECT" or raw_action.startswith("CLOSE_PROTECT"):
             self._close_all(
-                f"🛡️ 保护性全平：{close_reason}",
-                tv_side=tv_side,
-                tv_pnl_pct=tv_pnl_pct,
+                f"🛡️ 保护性全平：{tv_reason}",
                 close_action=raw_action,
+                **_tv_close_kwargs(),
             )
             return {"status": "ok", "action": raw_action, "detail": {"type": "close_protect"}}
         if raw_action == "CLOSE_TP3":
             self._close_all(
-                "🎯 完美胜利：大趋势吃满，TP3 终极收网",
-                tv_side=tv_side,
-                tv_pnl_pct=tv_pnl_pct,
+                f"🎯 TP3完美收网：{tv_reason or '大趋势吃满'}",
                 close_action=raw_action,
+                **_tv_close_kwargs(),
             )
             return {"status": "ok", "action": raw_action, "detail": {"type": "close_tp3"}}
         if raw_action == "CLOSE_STOPLOSS":
-            sl_reason = close_reason or "触碰硬止损或追踪保本线"
+            sl_reason = tv_reason or "触碰硬止损或追踪保本线"
             self._close_all(
-                f"🛑 TV止损/保本：{sl_reason}",
-                tv_side=tv_side,
-                tv_pnl_pct=tv_pnl_pct,
+                f"🛑 {sl_reason}",
                 close_action=raw_action,
+                **_tv_close_kwargs(),
             )
             return {"status": "ok", "action": raw_action, "detail": {"type": "close_stoploss"}}
         if raw_action == "CLOSE":
             self._close_all(
-                f"🧹 换防清场：{close_reason}",
-                tv_side=tv_side,
-                tv_pnl_pct=tv_pnl_pct,
+                f"🧹 换防清场：{tv_reason}",
                 close_action=raw_action,
+                **_tv_close_kwargs(),
             )
             return {"status": "ok", "action": raw_action, "detail": {"type": "close"}}
         if raw_action in ["LONG", "SHORT"]:
@@ -1429,6 +1444,8 @@ class PositionSupervisor(
         close_action: str | None = None,
         tv_side: str | None = None,
         tv_pnl_pct: float | None = None,
+        tv_reason: str | None = None,
+        tv_close_ctx: dict | None = None,
         alert_sev: str = "info",
         extra_detail: dict | None = None,
     ) -> None:
@@ -1446,34 +1463,37 @@ class PositionSupervisor(
 
         start_ms = int(self.trade_opened_at * 1000) if self.trade_opened_at else None
         funding_fee = self.client.get_funding_fees(self.symbol, start_ms)
-        close_detail: dict = {
-            "exit_price": exit_price,
-            "pnl": round(pnl, 4),
-            "funding_fee": funding_fee,
-            "reason": reason,
-            "regime": self.regime,
-            "side": self.current_side,
-            "qty": self.watched_qty,
-            "entry": self.watched_entry,
-        }
+        display_reason = tv_reason or reason
+        verify_note = build_verify_note(
+            exit_price=exit_price,
+            live_pnl_pct=live_pnl_pct,
+            tv_pnl_pct=tv_pnl_pct,
+            flat_confirmed=True,
+        )
+        close_detail = build_close_detail(
+            exchange_id=self.exchange_id,
+            side=self.current_side,
+            qty=float(self.watched_qty or 0),
+            entry=float(self.watched_entry or 0),
+            regime=self.regime,
+            atr=self.current_atr,
+            exit_price=exit_price,
+            pnl=pnl,
+            funding_fee=funding_fee,
+            tv_fields=tv_close_ctx,
+            close_action=close_action,
+            tv_reason=display_reason,
+            live_pnl_pct=live_pnl_pct,
+            verify_note=verify_note,
+            attribution=attribution,
+            trade_id=self.current_trade_id,
+        )
         if extra_detail:
             close_detail.update(extra_detail)
-        if attribution:
-            close_detail["close_trigger"] = attribution.get("close_trigger")
-            close_detail["close_origin"] = attribution.get("close_origin")
-            close_detail["close_actor"] = attribution.get("close_actor")
-            close_detail["human_reason"] = attribution.get("human_reason")
-            close_detail["attribution"] = attribution
-        if close_action:
-            close_detail["close_action"] = close_action
         if tv_side:
             close_detail["tv_side"] = tv_side
         if tv_pnl_pct is not None:
             close_detail["tv_pnl_pct"] = round(float(tv_pnl_pct), 2)
-        if live_pnl_pct is not None:
-            close_detail["live_pnl_pct"] = live_pnl_pct
-        if tv_pnl_pct is not None and live_pnl_pct is not None:
-            close_detail["pnl_pct_delta"] = round(live_pnl_pct - float(tv_pnl_pct), 2)
         if tv_side and self.current_side and tv_side != self.current_side:
             close_detail["tv_side_mismatch"] = True
             self._log(
@@ -1482,38 +1502,18 @@ class PositionSupervisor(
                 {"tv_side": tv_side, "live_side": self.current_side, "close_action": close_action},
             )
 
-        self.on_trade_close(self.current_trade_id, exit_price, pnl, reason, funding_fee)
-        close_detail["trade_id"] = self.current_trade_id
-        self._log("CLOSE", reason, close_detail)
-        alert_type = "CLOSE"
-        if close_action:
-            ca = str(close_action).upper()
-            if "CLOSE_TP3" in ca:
-                alert_type = "CLOSE_TP3"
-            elif "CLOSE_STOPLOSS" in ca:
-                alert_type = "CLOSE_STOPLOSS"
-            elif "CLOSE_PROTECT" in ca:
-                alert_type = "CLOSE_PROTECT"
-        verify_parts = ["盘口已归零"]
-        if exit_price:
-            verify_parts.append(f"平仓价 @{exit_price:.2f}")
-        if live_pnl_pct is not None:
-            verify_parts.append(f"实盘盈亏 {live_pnl_pct:+.2f}%")
-        if tv_pnl_pct is not None:
-            verify_parts.append(f"TV报 {float(tv_pnl_pct):+.2f}%")
-        if tv_pnl_pct is not None and live_pnl_pct is not None:
-            delta = round(live_pnl_pct - float(tv_pnl_pct), 2)
-            if abs(delta) > 0.15:
-                verify_parts.append(f"偏差 {delta:+.2f}%")
-        ding_msg = f"{reason} | {' | '.join(verify_parts)}"
-        close_detail["verify_note"] = " | ".join(verify_parts)
-        self._alert(alert_sev, alert_type, "全平完成", ding_msg, close_detail)
+        self.on_trade_close(self.current_trade_id, exit_price, pnl, display_reason, funding_fee)
+        self._log("CLOSE", display_reason, close_detail)
+        alert_type = resolve_close_alert_type(close_action, display_reason)
+        alert_title = resolve_close_alert_title(close_action, display_reason)
+        ding_msg = format_close_dingtalk_message(display_reason, verify_note)
+        self._alert(alert_sev, alert_type, alert_title, ding_msg, close_detail)
         if attribution and attribution.get("anomaly"):
             self._alert(
                 "warning",
                 "CLOSE_ANOMALY",
                 "平仓原因待核实",
-                attribution.get("human_reason") or reason,
+                attribution.get("human_reason") or display_reason,
                 attribution,
             )
 
@@ -2037,6 +2037,8 @@ class PositionSupervisor(
         tv_side: str | None = None,
         tv_pnl_pct: float | None = None,
         close_action: str | None = None,
+        tv_reason: str | None = None,
+        tv_close_ctx: dict | None = None,
         attribution: dict | None = None,
         close_trigger: str | None = None,
     ):
@@ -2069,9 +2071,13 @@ class PositionSupervisor(
                 empty_detail: dict = {
                     "close_action": close_action,
                     "tv_side": tv_side,
-                    "reason": reason,
+                    "reason": tv_reason or reason,
+                    "tv_reason": tv_reason or reason,
                     "action": "cancel_orders_reset",
+                    "exchange": self.exchange_id,
                 }
+                if tv_close_ctx:
+                    empty_detail.update({k: v for k, v in tv_close_ctx.items() if v is not None})
                 if tv_pnl_pct is not None:
                     empty_detail["tv_pnl_pct"] = round(float(tv_pnl_pct), 2)
                 self._log(
@@ -2087,22 +2093,26 @@ class PositionSupervisor(
                     empty_detail,
                 )
             elif self.current_trade_id:
+                display_reason = tv_reason or reason
                 if attribution is None:
-                    trigger = close_trigger or "code_close_all"
+                    trigger = close_trigger or ("tv_signal" if close_action else "code_close_all")
                     attribution = self._diagnose_flat_close(
                         trigger,
                         had_position,
                         platform_market=had_position,
                     )
-                    reason = format_close_reason(attribution)
-                sev = "critical" if "背离" in reason else "info"
+                    if not close_action:
+                        display_reason = format_close_reason(attribution)
+                sev = "critical" if "背离" in display_reason else "info"
                 self._record_trade_close(
-                    reason,
+                    display_reason,
                     exit_price,
                     attribution=attribution,
                     close_action=close_action,
                     tv_side=tv_side,
                     tv_pnl_pct=tv_pnl_pct,
+                    tv_reason=tv_reason or display_reason,
+                    tv_close_ctx=tv_close_ctx,
                     alert_sev=sev,
                 )
 

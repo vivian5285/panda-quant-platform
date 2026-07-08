@@ -65,3 +65,40 @@ def test_empty_payload():
     data, err = parse_webhook_payload("")
     assert data is None
     assert err == "Empty payload"
+
+
+def test_v6975_close_stoploss_breakeven():
+    raw = (
+        '{"action":"CLOSE_STOPLOSS","secret":"528586","regime":2,'
+        '"price":3456.78,"atr":42.5,"side":"LONG",'
+        '"reason":"防回吐保本平仓","pnl_pct":0.05}'
+    )
+    data, err = parse_webhook_payload(raw)
+    assert err is None
+    assert data["action"] == "CLOSE_STOPLOSS"
+    assert data["reason"] == "防回吐保本平仓"
+    assert data["pnl_pct"] == 0.05
+
+
+def test_v6975_close_stoploss_hard():
+    raw = (
+        '{"action":"CLOSE_STOPLOSS","secret":"528586","regime":2,'
+        '"price":3200.0,"atr":40.0,"side":"SHORT",'
+        '"reason":"触碰硬止损平仓","pnl_pct":-10.02}'
+    )
+    data, err = parse_webhook_payload(raw)
+    assert err is None
+    assert data["action"] == "CLOSE_STOPLOSS"
+    assert "硬止损" in data["reason"]
+
+
+def test_v6975_close_tp3():
+    raw = (
+        '{"action":"CLOSE_TP3","secret":"528586","regime":3,'
+        '"price":3600.0,"atr":30.0,"side":"SHORT",'
+        '"reason":"TP3完美收网","pnl_pct":2.5}'
+    )
+    data, err = parse_webhook_payload(raw)
+    assert err is None
+    assert data["action"] == "CLOSE_TP3"
+    assert data["reason"] == "TP3完美收网"

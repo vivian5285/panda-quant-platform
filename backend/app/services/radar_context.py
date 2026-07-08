@@ -14,7 +14,7 @@ from app.models.platform import WebhookReceiveLog
 logger = logging.getLogger(__name__)
 
 TV_ACTIONS_POSITION = {"LONG", "SHORT"}
-TV_ACTIONS_CLOSE = {"CLOSE", "CLOSE_TP3", "CLOSE_PROTECT"}
+TV_ACTIONS_CLOSE = {"CLOSE", "CLOSE_TP3", "CLOSE_PROTECT", "CLOSE_STOPLOSS"}
 
 
 def get_latest_tv_signal(db: Session) -> dict | None:

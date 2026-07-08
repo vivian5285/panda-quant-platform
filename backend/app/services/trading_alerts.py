@@ -254,8 +254,30 @@ def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
         lines.append(_line("方向", side_txt))
     if detail.get("qty"):
         lines.append(_line("平仓数量", f"{detail['qty']} {unit}"))
-    if detail.get("close_reason") or detail.get("reason"):
-        lines.append(_line("平仓原因", str(detail.get("close_reason") or detail.get("reason"))))
+    if detail.get("close_reason") or detail.get("reason") or detail.get("tv_reason"):
+        lines.append(_line(
+            "平仓原因",
+            str(detail.get("tv_reason") or detail.get("close_reason") or detail.get("reason")),
+        ))
+    if detail.get("close_subtype"):
+        subtype_labels = {
+            "tp3": "TP3止盈",
+            "breakeven": "防回吐保本",
+            "hard_stop": "硬止损",
+            "risk_intercept": "风控拦截",
+            "protect": "保护性全平",
+            "stoploss": "TV止损",
+            "generic": "换防清场",
+        }
+        lines.append(_line("平仓类型", subtype_labels.get(detail["close_subtype"], detail["close_subtype"])))
+    if detail.get("regime") is not None:
+        lines.append(_line("档位", f"R{detail['regime']}"))
+    if detail.get("atr") is not None:
+        lines.append(_line("ATR", str(detail["atr"])))
+    if detail.get("tv_price"):
+        lines.append(_line("TV价格", f"{float(detail['tv_price']):.2f}"))
+    if detail.get("entry"):
+        lines.append(_line("开仓价", f"{float(detail['entry']):.2f}"))
     if detail.get("exit_price"):
         lines.append(_line("平仓价", f"{float(detail['exit_price']):.2f}"))
     if detail.get("live_pnl_pct") is not None:
