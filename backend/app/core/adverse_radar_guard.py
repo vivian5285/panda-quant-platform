@@ -15,8 +15,8 @@ ADVERSE_HARD_STOP_PCT = 0.10
 ADVERSE_STOP_TOLERANCE = 2.0
 ADVERSE_REPAIR_COOLDOWN_SEC = 20.0
 ADVERSE_MAX_STOP_ORDERS = 1
-ADVERSE_VERIFY_RETRIES = 4
-ADVERSE_VERIFY_RETRY_DELAY_SEC = 0.35
+ADVERSE_VERIFY_RETRIES = 6
+ADVERSE_VERIFY_RETRY_DELAY_SEC = 0.5
 # Legacy aliases (tests / imports)
 ADVERSE_ARM_PCT = ADVERSE_HARD_STOP_PCT
 ADVERSE_SL_TIERS = (ADVERSE_HARD_STOP_PCT,)
@@ -72,9 +72,22 @@ def _order_is_close_position(o: dict) -> bool:
     val = o.get("closePosition")
     if val is None:
         return False
+    if isinstance(val, bool):
+        return val
     if isinstance(val, str):
         return val.strip().lower() in ("true", "1")
     return bool(val)
+
+
+def _is_stop_market_like(o: dict) -> bool:
+    """Recognize STOP on regular book and Binance algo conditional book."""
+    otype = str(o.get("type") or o.get("orderType") or "").upper()
+    if otype in ("STOP_MARKET", "STOP"):
+        return True
+    if o.get("isAlgoOrder") and _order_stop_price(o) > 0:
+        if otype in ("", "CONDITIONAL") or otype.endswith("_MARKET"):
+            return True
+    return False
 
 
 def order_qty_covers_tier(o: dict, target_qty: float, qty_tol: float) -> bool:
@@ -187,6 +200,8 @@ class AdverseRadarMixin:
             self._adverse_last_repair_ts = 0.0
         if not hasattr(self, "adverse_arm_dingtalk_sent"):
             self.adverse_arm_dingtalk_sent = False
+        if not hasattr(self, "_pending_adverse_algo_ids"):
+            self._pending_adverse_algo_ids = []
 
     def _reset_adverse_radar(self) -> None:
         self.adverse_sl_armed = False
@@ -194,6 +209,7 @@ class AdverseRadarMixin:
         self.adverse_consumed_tiers = []
         self._adverse_last_repair_ts = 0.0
         self.adverse_arm_dingtalk_sent = False
+        self._pending_adverse_algo_ids = []
 
     def _adverse_tier_stop_prices(self) -> set[float]:
         return adverse_tier_stop_prices(
@@ -439,6 +455,13 @@ class AdverseRadarMixin:
                 close_side, stop_price, symbol, quantity=None,
             )
             if order:
+                aid = order.get("algoId") or order.get("orderId")
+                if aid:
+                    pending = list(getattr(self, "_pending_adverse_algo_ids", None) or [])
+                    aid_int = int(aid)
+                    if aid_int not in pending:
+                        pending.append(aid_int)
+                    self._pending_adverse_algo_ids = pending[-8:]
                 return True
         limit_px = round_price(stop_price)
         if hasattr(client, "place_stop_limit_order"):
@@ -456,10 +479,35 @@ class AdverseRadarMixin:
             return False
         if getattr(self, "exchange_id", "") == "deepcoin":
             return True
-        otype = str(o.get("type", "")).upper()
-        if otype in ("STOP", "STOP_MARKET"):
-            return True
-        return False
+        if not _is_stop_market_like(o):
+            return False
+        if _order_is_close_position(o):
+            close_side = str(self._adverse_close_side() or "").upper()
+            order_side = str(o.get("side", "")).upper()
+            if close_side and order_side and order_side != close_side:
+                return False
+        return True
+
+    def _collect_pending_adverse_algo_orders(self, tier_prices: set[float]) -> list[dict]:
+        """Fallback when openAlgoOrders lags — query algoId from recent placements."""
+        symbol = getattr(self, "symbol", None)
+        client = self.client
+        if not symbol or not hasattr(client, "get_algo_order"):
+            return []
+        found: list[dict] = []
+        seen: set[int] = set()
+        for aid in list(getattr(self, "_pending_adverse_algo_ids", None) or []):
+            try:
+                aid_int = int(aid)
+            except (TypeError, ValueError):
+                continue
+            if aid_int in seen:
+                continue
+            seen.add(aid_int)
+            o = client.get_algo_order(symbol, aid_int)
+            if o and self._is_adverse_stop_order(o, tier_prices):
+                found.append(o)
+        return found
 
     def _collect_adverse_stop_orders(self) -> list[dict]:
         orders: list[dict] = []
@@ -477,9 +525,20 @@ class AdverseRadarMixin:
                 pass
             return orders
 
+        seen_ids: set[str | int] = set()
         for o in self.client.get_open_orders(symbol) or []:
             if self._is_adverse_stop_order(o, tier_prices):
+                oid = o.get("algoId") or o.get("orderId")
+                if oid is not None:
+                    seen_ids.add(oid)
                 orders.append(o)
+        for o in self._collect_pending_adverse_algo_orders(tier_prices):
+            oid = o.get("algoId") or o.get("orderId")
+            if oid is not None and oid in seen_ids:
+                continue
+            if oid is not None:
+                seen_ids.add(oid)
+            orders.append(o)
         return orders
 
     def _cancel_adverse_stop_orders(self) -> int:
@@ -499,11 +558,13 @@ class AdverseRadarMixin:
             return cancelled
 
         for o in orders:
-            oid = o.get("orderId")
+            oid = o.get("algoId") or o.get("orderId")
             if oid:
                 self.client.cancel_order(symbol, int(oid))
                 cancelled += 1
                 time.sleep(0.2)
+        if cancelled:
+            self._pending_adverse_algo_ids = []
         return cancelled
 
     def _purge_excess_adverse_stops(self, plan: list[dict]) -> int:
@@ -711,6 +772,7 @@ class AdverseRadarMixin:
             if live_prices:
                 self.adverse_sl_prices = live_prices
                 self.adverse_sl_armed = True
+                self._pending_adverse_algo_ids = []
         elif audit["aligned"]:
             self.adverse_sl_prices = [float(t["stop_price"]) for t in plan]
             self.adverse_sl_armed = True
@@ -790,6 +852,7 @@ class AdverseRadarMixin:
         self.adverse_sl_armed = False
         self.adverse_sl_prices = []
         self.adverse_consumed_tiers = []
+        self._pending_adverse_algo_ids = []
         self._adverse_last_repair_ts = time.time()
         self.adverse_arm_dingtalk_sent = False
 

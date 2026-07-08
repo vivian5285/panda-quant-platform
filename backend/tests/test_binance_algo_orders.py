@@ -64,6 +64,41 @@ def test_get_open_orders_merges_algo_book(client):
     assert stop.get("isAlgoOrder") is True
 
 
+def test_get_algo_order_direct_lookup(client):
+    client.client._request_futures_api.return_value = {
+        "algoId": 9003,
+        "orderType": "STOP_MARKET",
+        "triggerPrice": "1904.46",
+        "closePosition": True,
+        "algoStatus": "NEW",
+        "side": "BUY",
+    }
+    row = client.get_algo_order("ETHUSDT", 9003)
+    assert row is not None
+    assert row["algoId"] == 9003
+    assert float(row["triggerPrice"]) == pytest.approx(1904.46)
+    assert row["closePosition"] == "true"
+
+
+def test_get_open_algo_orders_parses_orders_wrapper(client):
+    client.client.futures_get_open_orders.return_value = []
+    client.client._request_futures_api.return_value = {
+        "orders": [
+            {
+                "algoId": 9004,
+                "orderType": "STOP_MARKET",
+                "triggerPrice": "1904.46",
+                "closePosition": True,
+                "algoStatus": "NEW",
+                "side": "BUY",
+            }
+        ]
+    }
+    orders = client.get_open_algo_orders("ETHUSDT")
+    assert len(orders) == 1
+    assert orders[0]["algoId"] == 9004
+
+
 def test_cancel_order_falls_back_to_algo(client):
     client.client.futures_cancel_order.side_effect = Exception("not found")
     client.client._request_futures_api.return_value = {"algoId": 9001}

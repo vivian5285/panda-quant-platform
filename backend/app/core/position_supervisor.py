@@ -582,6 +582,13 @@ class PositionSupervisor(
                     f" | 实盘止盈 {detail.get('defense_matched')}/"
                     f"{detail.get('defense_expected')} 档"
                 )
+            shield = getattr(self, "_last_shield_result", None) or {}
+            if shield.get("aligned") or shield.get("skipped") == "live_already_aligned":
+                verify_note += f" | 10%硬止损已核实 @{shield.get('stop_price', 0):.2f}"
+            elif shield.get("armed") and shield.get("stop_price"):
+                verify_note += f" | 10%硬止损 @{shield.get('stop_price', 0):.2f}"
+            if shield:
+                detail["shield"] = shield
             enrich_suffix = ""
             enrich_note = getattr(self, "_last_enrich_note", "") or ""
             if enrich_note:
@@ -1292,10 +1299,22 @@ class PositionSupervisor(
                     result,
                 )
             shield = self._arm_adverse_shield_at_open(pos["size"])
+            self._last_shield_result = shield
+            shield_note = ""
+            if shield.get("aligned") or shield.get("skipped") == "live_already_aligned":
+                shield_note = f" | 10%硬止损已核实 @{shield.get('stop_price', 0):.2f}"
+            elif shield.get("armed"):
+                shield_note = f" | 10%硬止损 @{shield.get('stop_price', 0):.2f}"
             if shield.get("placed", 0) > 0:
                 self._log(
                     "ADVERSE_SL",
-                    f"🛡️ 开仓 10% 硬止损已挂 @{shield.get('stop_price', 0):.2f}",
+                    f"🛡️ 开仓 10% 硬止损已挂 @{shield.get('stop_price', 0):.2f}{shield_note}",
+                    shield,
+                )
+            elif shield.get("aligned") or shield.get("skipped") == "live_already_aligned":
+                self._log(
+                    "ADVERSE_SL",
+                    f"🛡️ 开仓 10% 硬止损实盘已存在 @{shield.get('stop_price', 0):.2f}",
                     shield,
                 )
         self._save_state()

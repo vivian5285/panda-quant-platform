@@ -324,7 +324,11 @@ class BinanceSmartDefenseMixin:
     def _has_stop_sl_near(self, sl_price: float, tolerance: float = 2.0) -> bool:
         target = round(float(sl_price), 2)
         for o in self.client.get_open_orders(self.symbol) or []:
-            if o.get("type") not in ("STOP_MARKET", "STOP"):
+            otype = str(o.get("type") or o.get("orderType") or "").upper()
+            is_stop = otype in ("STOP_MARKET", "STOP") or (
+                o.get("isAlgoOrder") and self._order_stop_price(o) > 0
+            )
+            if not is_stop:
                 continue
             for key in ("stopPrice", "triggerPrice", "activatePrice"):
                 val = o.get(key)

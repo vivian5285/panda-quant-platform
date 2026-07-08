@@ -194,6 +194,57 @@ def test_verify_retries_finds_delayed_stop():
     assert audit["aligned"] is True
 
 
+def test_arm_aligned_with_algo_trigger_price_only():
+    probe = _AdverseProbe()
+    plan = probe._compute_adverse_stop_plan(0.6)
+    probe.client.get_open_orders.return_value = [
+        {
+            "algoId": 9001,
+            "orderId": 9001,
+            "orderType": "STOP_MARKET",
+            "type": "",
+            "triggerPrice": str(plan[0]["stop_price"]),
+            "closePosition": True,
+            "side": "SELL",
+            "isAlgoOrder": True,
+        }
+    ]
+    result = probe._arm_adverse_shield_at_open(0.6)
+    assert result.get("skipped") == "live_already_aligned"
+    probe.client.place_stop_market_order.assert_not_called()
+
+
+def test_collect_pending_algo_id_when_open_list_empty():
+    probe = _AdverseProbe()
+    plan = probe._compute_adverse_stop_plan(0.6)
+    stop_px = plan[0]["stop_price"]
+    probe.client.get_open_orders.return_value = []
+    probe.client.get_algo_order.return_value = {
+        "algoId": 9002,
+        "orderId": 9002,
+        "orderType": "STOP_MARKET",
+        "type": "STOP_MARKET",
+        "triggerPrice": str(stop_px),
+        "closePosition": True,
+        "side": "SELL",
+        "isAlgoOrder": True,
+    }
+    probe._pending_adverse_algo_ids = [9002]
+    audit = probe._audit_adverse_shield_live(plan)
+    assert audit["aligned"] is True
+    probe.client.get_algo_order.assert_called_with("ETHUSDT", 9002)
+
+
+def test_disarm_clears_pending_algo_ids():
+    probe = _AdverseProbe()
+    probe.adverse_sl_armed = True
+    probe._pending_adverse_algo_ids = [9002]
+    with patch.object(probe, "_cancel_adverse_stop_orders", return_value=1) as cancel:
+        probe._disarm_adverse_staged_stops(reason="radar_test", notify=False)
+    cancel.assert_called_once()
+    assert probe._pending_adverse_algo_ids == []
+
+
 def test_arm_skips_when_already_aligned():
     probe = _AdverseProbe()
     plan = probe._compute_adverse_stop_plan(0.6)

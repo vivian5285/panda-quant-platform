@@ -263,14 +263,23 @@ class BinanceClient:
         trigger = row.get("triggerPrice") or row.get("stopPrice")
         qty = row.get("quantity") or row.get("origQty") or row.get("qty")
         otype = str(row.get("orderType") or row.get("type") or "").upper()
+        if otype == "CONDITIONAL":
+            otype = str(row.get("orderType") or "STOP_MARKET").upper()
         close_pos = row.get("closePosition")
         if isinstance(close_pos, bool):
             close_pos = "true" if close_pos else "false"
+        elif close_pos is not None:
+            close_pos = str(close_pos).strip().lower()
+            if close_pos in ("true", "1"):
+                close_pos = "true"
+            elif close_pos in ("false", "0", ""):
+                close_pos = "false"
         return {
             "orderId": row.get("algoId") or row.get("orderId"),
             "algoId": row.get("algoId"),
             "clientOrderId": row.get("clientAlgoId") or row.get("clientOrderId"),
             "type": otype,
+            "orderType": row.get("orderType") or otype,
             "stopPrice": trigger,
             "triggerPrice": trigger,
             "price": row.get("price"),
@@ -283,17 +292,44 @@ class BinanceClient:
             "algoStatus": row.get("algoStatus") or row.get("status"),
         }
 
+    def _parse_algo_order_rows(self, raw) -> list[dict]:
+        if isinstance(raw, list):
+            return [r for r in raw if isinstance(r, dict)]
+        if isinstance(raw, dict):
+            if raw.get("algoId"):
+                return [raw]
+            for key in ("orders", "data", "algoOrders", "rows"):
+                rows = raw.get(key)
+                if isinstance(rows, list):
+                    return [r for r in rows if isinstance(r, dict)]
+        return []
+
+    def get_algo_order(self, symbol: str, algo_id: int) -> dict | None:
+        """Direct lookup — openAlgoOrders can lag after place."""
+        try:
+            raw = self.client._request_futures_api(
+                "get", "algoOrder", signed=True,
+                data={"symbol": symbol, "algoId": int(algo_id)},
+            )
+            if not isinstance(raw, dict) or not raw.get("algoId"):
+                return None
+            status = str(raw.get("algoStatus") or raw.get("status") or "").upper()
+            if status in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "FILLED"):
+                return None
+            return self._normalize_algo_order(raw)
+        except Exception as e:
+            logger.debug(f"[User {self.user_id}] get algo order {algo_id} failed: {e}")
+            return None
+
     def get_open_algo_orders(self, symbol="ETHUSDT") -> list[dict]:
         """Conditional STOP/TP orders live on the algo book after 2025-12 migration."""
         try:
             raw = self.client._request_futures_api(
                 "get", "openAlgoOrders", signed=True, data={"symbol": symbol},
             )
-            rows = raw if isinstance(raw, list) else (raw or {}).get("orders", [])
+            rows = self._parse_algo_order_rows(raw)
             out = []
             for row in rows or []:
-                if not isinstance(row, dict):
-                    continue
                 status = str(row.get("algoStatus") or row.get("status") or "").upper()
                 if status in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "FILLED"):
                     continue
