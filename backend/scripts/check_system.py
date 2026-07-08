@@ -154,7 +154,7 @@ def check_execution() -> None:
     from app.config import get_settings
 
     ok(f"Webhook actions: {', '.join(sorted(VALID_ACTIONS))}")
-    ok("开仓必填: regime, atr, price, tv_tp1~3")
+    ok("开仓必填: price；regime/atr/tv_tp 可由网关补全 (v6.9.75+)")
 
     s = get_settings()
     ok(f"交易对 {s.SYMBOL} · 杠杆 {s.LEVERAGE}x · Regime 1~4 保证金已配置")

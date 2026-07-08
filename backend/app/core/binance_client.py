@@ -233,6 +233,31 @@ class BinanceClient:
             logger.error(f"[User {self.user_id}] get position failed: {e}")
             return None
 
+    def estimate_atr(self, symbol="ETHUSDT", period: int = 14) -> float:
+        """Wilder ATR from recent 1h klines — fallback when TV webhook omits atr."""
+        try:
+            klines = self.client.futures_klines(
+                symbol=symbol, interval="1h", limit=period + 2,
+            )
+            if not klines or len(klines) < period + 1:
+                return 0.0
+            trs: list[float] = []
+            for i in range(1, len(klines)):
+                high = float(klines[i][2])
+                low = float(klines[i][3])
+                prev_close = float(klines[i - 1][4])
+                tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                trs.append(tr)
+            if len(trs) < period:
+                return 0.0
+            atr = sum(trs[:period]) / period
+            for tr in trs[period:]:
+                atr = (atr * (period - 1) + tr) / period
+            return round(float(atr), 4)
+        except Exception as e:
+            logger.warning(f"[User {self.user_id}] estimate_atr failed: {e}")
+            return 0.0
+
     def _normalize_algo_order(self, row: dict) -> dict:
         """Map Binance algo conditional order into futures_get_open_orders shape."""
         trigger = row.get("triggerPrice") or row.get("stopPrice")

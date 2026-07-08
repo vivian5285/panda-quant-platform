@@ -6,6 +6,8 @@ import json
 import logging
 import re
 
+from app.services.tv_signal_enrich import enrich_tv_signal
+
 logger = logging.getLogger(__name__)
 
 # Pine v6.9.30 bug: missing closing quote after side/reason
@@ -14,18 +16,25 @@ logger = logging.getLogger(__name__)
 _PINE_CLOSE_PROTECT_SIDE_REASON = re.compile(
     r'"side":"(LONG|SHORT|NONE),("reason":")([^"]*?)(,"pnl_pct":)'
 )
+# v6.9.x: missing quote before reason key on CLOSE_STOPLOSS
+_PINE_CLOSE_SIDE_REASON_GENERIC = re.compile(
+    r'"side":"(LONG|SHORT|NONE),("reason":")([^"]*?)(,"(?:pnl_pct|price)":)'
+)
+_TRAILING_COMMA = re.compile(r",(\s*[}\]])")
 
 
 def repair_pine_close_protect_json(raw: str) -> str | None:
-    """Repair known malformed CLOSE_PROTECT JSON from 万亿战神 v6.9.30."""
-    if "CLOSE_PROTECT" not in raw:
+    """Repair known malformed CLOSE_* JSON from 万亿战神 v6.9.30–v6.9.75."""
+    if not any(x in raw for x in ("CLOSE_PROTECT", "CLOSE_TP3", "CLOSE_STOPLOSS", "CLOSE")):
         return None
-    fixed, n = _PINE_CLOSE_PROTECT_SIDE_REASON.subn(
-        r'"side":"\1","reason":"\3"\4',
-        raw,
-        count=1,
-    )
-    return fixed if n else None
+    fixed = raw
+    n_total = 0
+    for pattern in (_PINE_CLOSE_PROTECT_SIDE_REASON, _PINE_CLOSE_SIDE_REASON_GENERIC):
+        fixed, n = pattern.subn(r'"side":"\1","reason":"\3"\4', fixed, count=1)
+        n_total += n
+    fixed, n = _TRAILING_COMMA.subn(r"\1", fixed)
+    n_total += n
+    return fixed if n_total else None
 
 
 def normalize_tv_payload(data: dict) -> dict:
@@ -41,7 +50,9 @@ def normalize_tv_payload(data: dict) -> dict:
         if key in out and out[key] is not None and out[key] != "":
             try:
                 val = out[key]
-                out[key] = float(str(val).strip()) if isinstance(val, str) else float(val)
+                if isinstance(val, str):
+                    val = val.strip().replace(",", "")
+                out[key] = float(val)
             except (TypeError, ValueError):
                 pass
     if out.get("side") is not None:
@@ -57,13 +68,17 @@ def parse_webhook_payload(raw_text: str) -> tuple[dict | None, str | None]:
     On success error_message is None.
     """
     text = (raw_text or "").strip()
+    if text.startswith("\ufeff"):
+        text = text.lstrip("\ufeff")
     if not text:
         return None, "Empty payload"
 
     try:
         data = json.loads(text)
         if isinstance(data, dict):
-            return normalize_tv_payload(data), None
+            data = normalize_tv_payload(data)
+            data = enrich_tv_signal(data)
+            return data, None
         return None, "JSON root must be an object"
     except json.JSONDecodeError as first_err:
         repaired = repair_pine_close_protect_json(text)
@@ -72,9 +87,11 @@ def parse_webhook_payload(raw_text: str) -> tuple[dict | None, str | None]:
                 data = json.loads(repaired)
                 if isinstance(data, dict):
                     logger.warning(
-                        "[Webhook] Repaired malformed CLOSE_PROTECT JSON (Pine side/reason quote bug)"
+                        "[Webhook] Repaired malformed CLOSE JSON (Pine side/reason quote bug)"
                     )
-                    return normalize_tv_payload(data), None
+                    data = normalize_tv_payload(data)
+                    data = enrich_tv_signal(data)
+                    return data, None
             except json.JSONDecodeError:
                 pass
         return None, f"Invalid JSON: {first_err.msg}"

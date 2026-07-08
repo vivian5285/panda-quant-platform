@@ -1,6 +1,7 @@
 """Tests for TradingView webhook JSON parsing."""
 
 from app.services.webhook_payload import parse_webhook_payload, repair_pine_close_protect_json
+from app.services.webhook_guard import validate_signal_payload
 
 
 def test_valid_close_protect():
@@ -44,6 +45,14 @@ def test_tv_screenshot_close_protect_payload():
     assert data["side"] == "SHORT"
     assert data["pnl_pct"] == -1.08
     assert "裸K" in data["reason"]
+
+
+def test_v6975_minimal_entry_after_enrich_validates():
+    raw = '{"action":"LONG","secret":"528586","price":3500}'
+    data, err = parse_webhook_payload(raw)
+    assert err is None
+    ok, msg = validate_signal_payload(data)
+    assert ok, msg
 
 
 def test_invalid_json_still_rejected():

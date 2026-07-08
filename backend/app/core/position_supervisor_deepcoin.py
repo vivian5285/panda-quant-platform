@@ -1517,6 +1517,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             return default
 
     def _process_signal(self, payload):
+        from app.services.tv_signal_enrich import merge_supervisor_fallbacks
+
+        payload = merge_supervisor_fallbacks(
+            payload,
+            regime=self.regime,
+            atr=self.current_atr,
+        )
         raw_action = str(payload.get("action", "")).strip().upper()
         held_regime = self.regime
         held_atr = self.current_atr
@@ -1565,6 +1572,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self._close_all(f"🛡️ 保护性全平：{close_reason}{extra}")
             elif raw_action == "CLOSE_TP3":
                 self._close_all("🎯 完美胜利：大趋势吃满，TP3 终极收网")
+            elif raw_action == "CLOSE_STOPLOSS":
+                self._close_all(f"🛑 TV止损/保本：{close_reason}")
             elif raw_action == "CLOSE":
                 self._close_all(f"🧹 换防清场：{close_reason}")
             elif raw_action in ["LONG", "SHORT"]:

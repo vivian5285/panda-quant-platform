@@ -8,7 +8,9 @@ from app.utils.rate_limit import rate_limiter
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-VALID_ACTIONS = frozenset({"LONG", "SHORT", "CLOSE", "CLOSE_PROTECT", "CLOSE_TP3"})
+VALID_ACTIONS = frozenset({
+    "LONG", "SHORT", "CLOSE", "CLOSE_PROTECT", "CLOSE_TP3", "CLOSE_STOPLOSS",
+})
 ENTRY_ACTIONS = frozenset({"LONG", "SHORT"})
 
 
@@ -48,25 +50,32 @@ def validate_signal_payload(data: dict) -> tuple[bool, str]:
     if not action:
         return False, "Missing action"
 
-    if action not in VALID_ACTIONS and "CLOSE_PROTECT" not in action:
+    if action not in VALID_ACTIONS and not action.startswith("CLOSE"):
         return False, f"Unsupported action: {action}"
 
     if action in ENTRY_ACTIONS:
-        for field in ("regime", "atr", "price"):
-            if data.get(field) is None:
-                return False, f"Missing required field for {action}: {field}"
+        if data.get("price") is None or float(data.get("price") or 0) <= 0:
+            return False, f"Missing required field for {action}: price"
+        # v6.9.75 minimal webhook: regime/atr/tv_tp* enriched by tv_signal_enrich
+        if data.get("regime") is not None:
+            try:
+                regime = int(data.get("regime"))
+                if regime not in (1, 2, 3, 4):
+                    return False, "regime must be 1-4"
+            except (TypeError, ValueError):
+                return False, "Invalid regime"
+        if data.get("atr") is not None:
+            try:
+                if float(data.get("atr", 0)) <= 0:
+                    return False, "atr must be > 0"
+            except (TypeError, ValueError):
+                return False, "Invalid atr"
         for field in ("tv_tp1", "tv_tp2", "tv_tp3"):
-            if data.get(field) is None:
-                return False, f"Missing required field for {action}: {field}"
-        try:
-            regime = int(data.get("regime"))
-            if regime not in (1, 2, 3, 4):
-                return False, "regime must be 1-4"
-            if float(data.get("atr", 0)) <= 0:
-                return False, "atr must be > 0"
-            if float(data.get("price", 0)) <= 0:
-                return False, "price must be > 0"
-        except (TypeError, ValueError):
-            return False, "Invalid numeric fields in payload"
+            if data.get(field) is not None:
+                try:
+                    if float(data.get(field, 0)) < 0:
+                        return False, f"Invalid {field}"
+                except (TypeError, ValueError):
+                    return False, f"Invalid {field}"
 
     return True, ""

@@ -26,6 +26,7 @@ from app.core.position_sizing import compute_eth_qty, read_contract_equity
 from app.core.position_qty_tolerance import qty_change_significant, qty_drift_tolerance, tp_slice_qty_tolerance
 from app.core.tp_defense_reconcile import tp_price_matches
 from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, match_qty_reduction_to_tp_level
+from app.services.tv_signal_enrich import format_enrich_note, merge_supervisor_fallbacks
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 
@@ -262,6 +263,12 @@ class PositionSupervisor(
         return item.result or {"status": "skipped", "reason": "empty_result"}
 
     def _execute_signal(self, payload: dict) -> dict:
+        payload = merge_supervisor_fallbacks(
+            payload,
+            regime=self.regime,
+            atr=self.current_atr,
+        )
+        enrich_note = format_enrich_note(payload)
         raw_action = str(payload.get("action", "")).upper()
         held_regime = self.regime
         held_atr = self.current_atr
@@ -303,6 +310,15 @@ class PositionSupervisor(
                 close_action=raw_action,
             )
             return {"status": "ok", "action": raw_action, "detail": {"type": "close_tp3"}}
+        if raw_action == "CLOSE_STOPLOSS":
+            sl_reason = close_reason or "触碰硬止损或追踪保本线"
+            self._close_all(
+                f"🛑 TV止损/保本：{sl_reason}",
+                tv_side=tv_side,
+                tv_pnl_pct=tv_pnl_pct,
+                close_action=raw_action,
+            )
+            return {"status": "ok", "action": raw_action, "detail": {"type": "close_stoploss"}}
         if raw_action == "CLOSE":
             self._close_all(
                 f"🧹 换防清场：{close_reason}",
@@ -553,15 +569,28 @@ class PositionSupervisor(
                 "atr": self.current_atr,
                 **sizing_meta,
             }
+            self._protect_and_monitor(real_qty, entry_price)
+            defense = getattr(self, "_last_defense_result", None) or {}
+            if defense:
+                detail["defense_matched"] = defense.get("matched")
+                detail["defense_expected"] = defense.get("expected")
+                detail["defense_summary"] = defense.get("summary")
+            verify_note = ""
+            if detail.get("defense_expected"):
+                verify_note = (
+                    f" | 实盘止盈 {detail.get('defense_matched')}/"
+                    f"{detail.get('defense_expected')} 档"
+                )
+            enrich_suffix = f" | {enrich_note}" if enrich_note else ""
             open_title = f"{theme['accent']} GEMINI开仓 · {theme['label']} 档位{self.regime}"
-            self._log("OPEN", f"🔶 战神出击：{action} {real_qty} ETH @ {entry_price} | 滑点 {slip:+.2f}", detail)
+            self._log("OPEN", f"🔶 战神出击：{action} {real_qty} ETH @ {entry_price} | 滑点 {slip:+.2f}{verify_note}{enrich_suffix}", detail)
             self._alert(
                 "info", "OPEN",
                 open_title,
-                f"{action} {real_qty} ETH @ {entry_price} | 滑点 {slip:+.2f} | TP {self.tv_tps} | ATR {self.current_atr} | {theme['leverage']}×",
+                f"{action} {real_qty} ETH @ {entry_price} | 滑点 {slip:+.2f} | "
+                f"TP {self.tv_tps} | ATR {self.current_atr} | {theme['leverage']}×{verify_note}{enrich_suffix}",
                 detail,
             )
-            self._protect_and_monitor(real_qty, entry_price)
             return {
                 "status": "ok",
                 "action": action,
@@ -1243,6 +1272,7 @@ class PositionSupervisor(
                 pos["entry_price"],
                 reason="开仓后智能防线对齐",
             )
+            self._last_defense_result = result
             summary = self._format_audit_summary(result["audit"])
             self._log(
                 "DEFENSE",
@@ -2040,6 +2070,29 @@ class PositionSupervisor(
 
         if closed_successfully and had_position:
             self._trigger_settlement_on_flat()
+        elif had_position and not closed_successfully:
+            residual_amt = 0.0
+            pos = self.position_manager.get_position(self.symbol)
+            if pos:
+                residual_amt = abs(float(pos.get("positionAmt", 0) or 0))
+            fail_detail = {
+                "reason": reason,
+                "close_action": close_action,
+                "residual_qty": residual_amt,
+                "exit_price": exit_price,
+            }
+            self._log(
+                "CLOSE_FAIL",
+                f"❌ 清仓未完全归零，残仓 {residual_amt} ETH",
+                fail_detail,
+            )
+            self._alert(
+                "critical",
+                "CLOSE_FAIL",
+                "清仓失败 · 请人工核查",
+                f"平台强平后仍剩 {residual_amt} ETH | {reason}",
+                fail_detail,
+            )
 
         self.monitoring = False
         self._disarm_adverse_staged_stops()
