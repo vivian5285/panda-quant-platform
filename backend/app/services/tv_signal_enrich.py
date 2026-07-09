@@ -119,6 +119,8 @@ def enrich_tv_signal(
         enriched.append("tv_tps")
 
     out.setdefault("strategy_version", "v6.9.75")
+    if out.get("risk_pct") is not None:
+        out["strategy_version"] = "v6.9.85"
     out["_enriched_fields"] = enriched
     if enriched:
         logger.info(

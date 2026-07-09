@@ -22,7 +22,13 @@ from app.core.same_direction_policy import (
 )
 from app.core.close_attribution import diagnose_flat_close, format_close_reason
 from app.core.symbol_precision import normalize_tv_targets, round_price, round_quantity, PRICE_TICK
-from app.core.position_sizing import compute_eth_qty, read_contract_equity
+from app.core.position_sizing import read_contract_equity
+from app.core.tv_entry_sizing import (
+    ENTRY_TYPES_ADD,
+    parse_tv_entry_fields,
+    resolve_entry_order_qty_deepcoin,
+    resolve_entry_order_qty_eth,
+)
 from app.core.position_qty_tolerance import qty_change_significant, qty_drift_tolerance, tp_slice_qty_tolerance
 from app.core.tp_defense_reconcile import tp_price_matches
 from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, match_qty_reduction_to_tp_level
@@ -295,6 +301,7 @@ class PositionSupervisor(
             payload.get("tv_tp3", 0),
         ])
         self.risk_multiplier = float(payload.get("risk_multiplier", 1.0))
+        self._apply_tv_entry_context(payload)
         self._apply_tv_sl_from_payload(payload)
         close_reason = payload.get("reason", "策略指标反转/波动率安全退出")
         tv_side = str(payload.get("side") or "").upper().strip() or None
@@ -359,6 +366,151 @@ class PositionSupervisor(
             )
         return {"status": "skipped", "reason": "unknown_action", "detail": {"action": raw_action}}
 
+    def _apply_tv_entry_context(self, payload: dict) -> None:
+        fields = parse_tv_entry_fields(payload)
+        self._tv_entry_fields = fields
+        self._entry_type = fields["entry_type"]
+        self._explicit_entry_type = "entry_type" in (payload or {})
+
+    def _uses_tv_entry_routing(self) -> bool:
+        fields = getattr(self, "_tv_entry_fields", None) or {}
+        return bool(fields.get("uses_tv_sizing") or getattr(self, "_explicit_entry_type", False))
+
+    def _resolve_entry_leverage(self) -> int:
+        fields = getattr(self, "_tv_entry_fields", None) or {}
+        tv_lev = fields.get("tv_leverage")
+        if tv_lev and float(tv_lev) > 0:
+            return max(1, int(float(tv_lev)))
+        return int(self.leverage)
+
+    def _resolve_entry_qty(self, curr_px: float) -> tuple[float, dict]:
+        equity = read_contract_equity(self.client)
+        margin_pct = self.regime_settings[self.regime]["margin"] * self.risk_multiplier
+        leverage = self._resolve_entry_leverage()
+        return resolve_entry_order_qty_eth(
+            live_balance=equity,
+            initial_principal=self.initial_principal,
+            price=curr_px,
+            regime_margin_pct=margin_pct,
+            exchange_leverage=leverage,
+            round_fn=round_quantity,
+            tv_fields=getattr(self, "_tv_entry_fields", None),
+        )
+
+    def _force_flat_before_open(self, reason: str) -> bool:
+        self.client.cancel_all_open_orders(self.symbol)
+        time.sleep(0.5)
+        self._close_all(reason)
+        if not self._wait_until_flat():
+            self._log("ERROR", "先平后开：平仓后仍未归零，暂缓新开仓")
+            return False
+        self.client.cancel_all_open_orders(self.symbol)
+        time.sleep(0.4)
+        return True
+
+    def _handle_tv_entry(
+        self,
+        action: str,
+        curr_px: float,
+        *,
+        has_pos: bool,
+        current_side: str | None,
+    ) -> dict:
+        entry_type = getattr(self, "_entry_type", "OPEN")
+        if entry_type in ENTRY_TYPES_ADD:
+            if not has_pos:
+                self._log("SIGNAL", f"⚠️ {entry_type} 无持仓，降级为 OPEN")
+                return self._open_position(action, curr_px)
+            if current_side != action:
+                self._log("SIGNAL", f"⚠️ {entry_type} 方向不一致，先平后开")
+                if not self._force_flat_before_open(f"{entry_type} 反向后降级 OPEN"):
+                    return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
+                return self._open_position(action, curr_px)
+            return self._add_to_position(action, curr_px, entry_type)
+
+        if has_pos:
+            self._log("SIGNAL", f"⚡ TV OPEN [{action}] 先平后开")
+            if not self._force_flat_before_open("TV OPEN 先平后开"):
+                return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
+        return self._open_position(action, curr_px)
+
+    def _add_to_position(self, action: str, curr_px: float, entry_type: str) -> dict:
+        pos_before = self.position_manager.get_position(self.symbol)
+        prev_qty = abs(float(pos_before.get("positionAmt", 0) or 0)) if pos_before else 0.0
+        leverage = self._resolve_entry_leverage()
+        self.client.set_leverage(self.symbol, leverage=leverage)
+
+        qty, sizing_meta = self._resolve_entry_qty(curr_px)
+        if qty <= 0:
+            self._log("ERROR", f"{entry_type} 余额不足，无法加仓")
+            self._alert("warning", "INSUFFICIENT_BALANCE", "余额不足", f"用户 {self.user_id} {entry_type} 无法加仓")
+            return {"status": "error", "reason": "insufficient_balance", "message": "余额不足，无法加仓"}
+
+        self._log(
+            "SIGNAL",
+            f"📈 [{entry_type}] 同向追加: {action} +{qty} ETH | risk_pct={sizing_meta.get('risk_pct')} "
+            f"qty_ratio={sizing_meta.get('qty_ratio')} | {sizing_meta.get('sizing_source', 'regime')}",
+        )
+        self.client.place_market_order(action, qty, self.symbol)
+        time.sleep(2.0)
+
+        pos = self.position_manager.get_position(self.symbol)
+        if not pos or float(pos.get("positionAmt", 0)) == 0:
+            return {"status": "error", "reason": "add_failed", "message": "加仓后未检测到持仓"}
+
+        real_qty = abs(float(pos["positionAmt"]))
+        entry_price = float(pos.get("entryPrice") or self.watched_entry or 0)
+        add_qty = max(real_qty - prev_qty, qty * 0.5)
+        self.current_side = action
+        self.watched_qty = real_qty
+        self.watched_entry = entry_price
+        self.initial_qty = float(self.initial_qty or prev_qty) + add_qty
+        self.monitoring = True
+        self._ensure_price_ws()
+
+        shield = {}
+        if float(getattr(self, "tv_sl", 0) or 0) > 0:
+            shield = self._sync_tv_hard_stop(real_qty, force_replace=True)
+        self._save_state()
+
+        theme = resolve_exchange_theme(self.exchange_id)
+        detail = {
+            "exchange": self.exchange_id,
+            "entry_type": entry_type,
+            "side": action,
+            "add_qty": round(add_qty, 6),
+            "total_qty": real_qty,
+            "entry": entry_price,
+            "tv_price": self.tv_price,
+            "tv_tps": list(self.tv_tps),
+            "leverage": leverage,
+            "atr": self.current_atr,
+            **sizing_meta,
+        }
+        if shield:
+            detail["shield"] = shield
+            detail["tv_sl"] = self.tv_sl
+        verify_note = ""
+        if shield.get("aligned") or shield.get("skipped") == "live_already_aligned":
+            sl_label = shield.get("label") or self._hard_stop_label()
+            verify_note = f" | {sl_label}已核实 @{shield.get('stop_price', 0):.2f}"
+        add_label = "金字塔加仓" if entry_type == "PYRAMID" else "浮盈加仓"
+        self._log(
+            "OPEN",
+            f"📈 {add_label}：{action} +{add_qty:.4f} → 总 {real_qty} ETH @ {entry_price}{verify_note}",
+            detail,
+        )
+        self._alert(
+            "info",
+            entry_type,
+            f"{theme['accent']} {add_label} · {theme['label']}",
+            f"{action} +{add_qty:.4f} ETH → 总 {real_qty} @ {entry_price} | "
+            f"risk {sizing_meta.get('risk_pct')}% × ratio {sizing_meta.get('qty_ratio')} "
+            f"× {leverage}×{verify_note}",
+            detail,
+        )
+        return {"status": "ok", "action": action, "detail": {"type": entry_type.lower(), **detail}}
+
     def _handle_smart_entry(
         self,
         action: str,
@@ -383,6 +535,11 @@ class PositionSupervisor(
         curr_px = self.client.get_current_price(self.symbol)
         if curr_px <= 0:
             return {"status": "error", "reason": "price_unavailable", "message": "无法获取当前价格"}
+
+        if self._uses_tv_entry_routing():
+            return self._handle_tv_entry(
+                action, curr_px, has_pos=has_pos, current_side=current_side,
+            )
 
         tv_price = float(self.tv_price or curr_px)
         if has_pos and current_side == action:
@@ -533,29 +690,23 @@ class PositionSupervisor(
         }
 
     def _open_position(self, action: str, curr_px: float) -> dict:
-        equity = read_contract_equity(self.client)
+        leverage = self._resolve_entry_leverage()
         margin_pct = self.regime_settings[self.regime]["margin"] * self.risk_multiplier
-        self.client.set_leverage(self.symbol, leverage=self.leverage)
+        self.client.set_leverage(self.symbol, leverage=leverage)
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.4)
-        qty, sizing_meta = compute_eth_qty(
-            live_balance=equity,
-            initial_principal=self.initial_principal,
-            margin_pct=margin_pct,
-            leverage=self.leverage,
-            price=curr_px,
-            round_fn=round_quantity,
-        )
+        qty, sizing_meta = self._resolve_entry_qty(curr_px)
         if qty <= 0:
             self._log("ERROR", "余额不足，无法开仓")
             self._alert("warning", "INSUFFICIENT_BALANCE", "余额不足", f"用户 {self.user_id} 无法开仓")
             return {"status": "error", "reason": "insufficient_balance", "message": "余额不足，无法开仓"}
 
         open_side = "BUY" if action == "LONG" else "SELL"
+        entry_type = getattr(self, "_entry_type", "OPEN")
         self._log(
             "SIGNAL",
-            f"🚀 [唯一主仓] 极速开仓: {open_side} {qty} 个ETH | 档位 {self.regime} | "
-            f"保证金 {sizing_meta['margin_usd']}U ({sizing_meta['sizing_source']})",
+            f"🚀 [唯一主仓] 极速开仓: {open_side} {qty} 个ETH | {entry_type} | 档位 {self.regime} | "
+            f"保证金 {sizing_meta.get('margin_usd', '—')}U ({sizing_meta.get('sizing_source', 'regime')})",
         )
         self.client.place_market_order(action, qty, self.symbol)
         time.sleep(2.0)
@@ -581,6 +732,7 @@ class PositionSupervisor(
             theme = resolve_exchange_theme(self.exchange_id)
             detail = {
                 "exchange": self.exchange_id,
+                "entry_type": entry_type,
                 "regime": self.regime,
                 "side": action,
                 "qty": real_qty,
@@ -590,7 +742,7 @@ class PositionSupervisor(
                 "tv_tps": list(self.tv_tps),
                 "margin_pct": margin_pct,
                 "risk_multiplier": self.risk_multiplier,
-                "leverage": self.leverage,
+                "leverage": leverage,
                 "atr": self.current_atr,
                 **sizing_meta,
             }

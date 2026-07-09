@@ -77,6 +77,29 @@ def validate_signal_payload(data: dict) -> tuple[bool, str]:
                         return False, f"Invalid {field}"
                 except (TypeError, ValueError):
                     return False, f"Invalid {field}"
+        entry_type = str(data.get("entry_type") or "OPEN").upper().strip()
+        if data.get("entry_type") is not None and entry_type not in (
+            "OPEN", "PYRAMID", "PROFIT_ADD",
+        ):
+            return False, f"Invalid entry_type: {entry_type}"
+        if data.get("risk_pct") is not None:
+            try:
+                if float(data.get("risk_pct") or 0) <= 0:
+                    return False, "risk_pct must be > 0 when provided"
+            except (TypeError, ValueError):
+                return False, "Invalid risk_pct"
+        if data.get("qty_ratio") is not None:
+            try:
+                if float(data.get("qty_ratio") or 0) <= 0:
+                    return False, "qty_ratio must be > 0 when provided"
+            except (TypeError, ValueError):
+                return False, "Invalid qty_ratio"
+        if data.get("leverage") is not None:
+            try:
+                if float(data.get("leverage") or 0) <= 0:
+                    return False, "leverage must be > 0 when provided"
+            except (TypeError, ValueError):
+                return False, "Invalid leverage"
 
     if action == "UPDATE_SL":
         side = str(data.get("side") or "").upper().strip()

@@ -16,7 +16,12 @@ from app.core.same_direction_policy import (
     format_refresh_reason,
     format_reopen_reason,
 )
-from app.core.position_sizing import compute_deepcoin_contracts, read_contract_equity
+from app.core.position_sizing import read_contract_equity
+from app.core.tv_entry_sizing import (
+    ENTRY_TYPES_ADD,
+    parse_tv_entry_fields,
+    resolve_entry_order_qty_deepcoin,
+)
 from app.core.position_qty_tolerance import qty_change_significant
 from app.core.tp_defense_reconcile import (
     STARTUP_ORDER_FETCH_DELAY,
@@ -1610,6 +1615,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         self.current_atr = self._safe_float(payload.get("atr"), 30.0)
         self.risk_multiplier = float(payload.get("risk_multiplier", 1.0))
+        self._apply_tv_entry_context(payload)
         self._apply_tv_sl_from_payload(payload)
         self.tv_price = self._safe_float(payload.get("price"), 0.0)
         self.tv_tps = self._sanitize_tp_prices([
@@ -1710,6 +1716,147 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self._save_state()
         self._report_flat_close(reason or "仓位归零 (人工全平 / 止盈吃满)")
 
+    def _apply_tv_entry_context(self, payload: dict) -> None:
+        fields = parse_tv_entry_fields(payload)
+        self._tv_entry_fields = fields
+        self._entry_type = fields["entry_type"]
+        self._explicit_entry_type = "entry_type" in (payload or {})
+
+    def _uses_tv_entry_routing(self) -> bool:
+        fields = getattr(self, "_tv_entry_fields", None) or {}
+        return bool(fields.get("uses_tv_sizing") or getattr(self, "_explicit_entry_type", False))
+
+    def _resolve_entry_leverage(self) -> int:
+        fields = getattr(self, "_tv_entry_fields", None) or {}
+        tv_lev = fields.get("tv_leverage")
+        if tv_lev and float(tv_lev) > 0:
+            return max(1, int(float(tv_lev)))
+        return int(self.leverage)
+
+    def _resolve_entry_qty(self, curr_px: float) -> tuple[int, dict]:
+        equity = read_contract_equity(self.client)
+        margin_pct = self.regime_settings[self.regime]["margin"] * self.risk_multiplier
+        leverage = self._resolve_entry_leverage()
+        return resolve_entry_order_qty_deepcoin(
+            live_balance=equity,
+            initial_principal=self.initial_principal,
+            price=curr_px,
+            regime_margin_pct=margin_pct,
+            exchange_leverage=leverage,
+            face_value=self.face_value,
+            tv_fields=getattr(self, "_tv_entry_fields", None),
+        )
+
+    def _force_flat_before_open(self, reason: str) -> bool:
+        self.client.cancel_all_open_orders(self.symbol)
+        time.sleep(0.5)
+        self._close_all(reason)
+        if not self._wait_until_flat():
+            logger.error("先平后开：平仓后仍未归零，暂缓新开仓")
+            return False
+        self.client.cancel_all_open_orders(self.symbol)
+        time.sleep(0.4)
+        return True
+
+    def _handle_tv_entry(self, action, curr_px, *, has_pos, current_side):
+        entry_type = getattr(self, "_entry_type", "OPEN")
+        if entry_type in ENTRY_TYPES_ADD:
+            if not has_pos:
+                logger.info(f"⚠️ {entry_type} 无持仓，降级为 OPEN")
+                self._open_position(action, curr_px)
+                return
+            if current_side != action:
+                logger.info(f"⚠️ {entry_type} 方向不一致，先平后开")
+                if not self._force_flat_before_open(f"{entry_type} 反向后降级 OPEN"):
+                    return
+                self._open_position(action, curr_px)
+                return
+            self._add_to_position(action, curr_px, entry_type)
+            return
+
+        if has_pos:
+            logger.info(f"⚡ TV OPEN [{action}] 先平后开")
+            if not self._force_flat_before_open("TV OPEN 先平后开"):
+                return
+        self._open_position(action, curr_px)
+
+    def _add_to_position(self, action, curr_px, entry_type):
+        pos_before = self._get_active_position()
+        prev_qty = self._safe_qty(pos_before.get("size", 0)) if pos_before else 0
+        leverage = self._resolve_entry_leverage()
+        self.client.set_leverage(self.symbol, leverage=leverage)
+
+        qty, sizing_meta = self._resolve_entry_qty(curr_px)
+        if qty <= 0:
+            logger.error(f"{entry_type} 余额不足，无法加仓")
+            self._alert("warning", "INSUFFICIENT_BALANCE", "余额不足", f"用户 {self.user_id} {entry_type} 无法加仓")
+            return
+
+        open_side = "buy" if action == "LONG" else "sell"
+        pos_side = "long" if action == "LONG" else "short"
+        logger.info(
+            f"📈 [{entry_type}] 同向追加: {open_side} +{qty} 张 | risk_pct={sizing_meta.get('risk_pct')} "
+            f"qty_ratio={sizing_meta.get('qty_ratio')} | {sizing_meta.get('sizing_source', 'regime')}"
+        )
+        self.client.place_market_order(self.symbol, open_side, pos_side, qty)
+        time.sleep(2.0)
+
+        pos = self._get_active_position()
+        if not pos or self._safe_qty(pos.get("size", 0)) <= 0:
+            logger.error(f"{entry_type} 加仓后未检测到持仓")
+            return
+
+        real_qty = self._safe_qty(pos["size"])
+        entry_price = float(pos.get("entry_price") or self.watched_entry or 0)
+        add_qty = max(real_qty - prev_qty, qty)
+        self.current_side = action
+        self.watched_qty = real_qty
+        self.watched_entry = entry_price
+        self.initial_qty = float(self.initial_qty or prev_qty) + add_qty
+        self.monitoring = True
+
+        shield = {}
+        if float(getattr(self, "tv_sl", 0) or 0) > 0:
+            shield = self._sync_tv_hard_stop(real_qty, force_replace=True)
+        self._save_state()
+
+        theme = resolve_exchange_theme(self.exchange_id)
+        detail = {
+            "exchange": self.exchange_id,
+            "entry_type": entry_type,
+            "side": action,
+            "add_qty": add_qty,
+            "total_qty": real_qty,
+            "entry": entry_price,
+            "tv_price": self.tv_price,
+            "tv_tps": list(self.tv_tps),
+            "leverage": leverage,
+            "atr": self.current_atr,
+            **sizing_meta,
+        }
+        if shield:
+            detail["shield"] = shield
+            detail["tv_sl"] = self.tv_sl
+        verify_note = ""
+        if shield.get("aligned") or shield.get("skipped") == "live_already_aligned":
+            sl_label = shield.get("label") or self._hard_stop_label()
+            verify_note = f" | {sl_label}已核实 @{shield.get('stop_price', 0):.2f}"
+        add_label = "金字塔加仓" if entry_type == "PYRAMID" else "浮盈加仓"
+        self._log(
+            "OPEN",
+            f"📈 {add_label}：{action} +{add_qty} → 总 {real_qty} 张 @ {entry_price}{verify_note}",
+            detail,
+        )
+        self._alert(
+            "info",
+            entry_type,
+            f"{theme['accent']} {add_label} · {theme['label']}",
+            f"{action} +{add_qty} 张 → 总 {real_qty} @ {entry_price} | "
+            f"risk {sizing_meta.get('risk_pct')}% × ratio {sizing_meta.get('qty_ratio')} "
+            f"× {leverage}×{verify_note}",
+            detail,
+        )
+
     def _handle_smart_entry(
         self,
         action,
@@ -1733,6 +1880,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         curr_px = self.client.get_current_price(self.symbol)
         if curr_px <= 0:
             logger.error("无法获取当前价格，跳过建仓信号")
+            return
+
+        if self._uses_tv_entry_routing():
+            self._handle_tv_entry(action, curr_px, has_pos=has_pos, current_side=current_side)
             return
 
         tv_price = float(self.tv_price or curr_px)
@@ -1868,26 +2019,20 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self._save_state()
 
     def _open_position(self, action, curr_px):
-        equity = read_contract_equity(self.client)
+        leverage = self._resolve_entry_leverage()
         margin_pct = self.regime_settings[self.regime]["margin"] * self.risk_multiplier
 
-        self.client.set_leverage(self.symbol, leverage=self.leverage)
+        self.client.set_leverage(self.symbol, leverage=leverage)
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.4)
-        qty, sizing_meta = compute_deepcoin_contracts(
-            live_balance=equity,
-            initial_principal=self.initial_principal,
-            margin_pct=margin_pct,
-            leverage=self.leverage,
-            price=curr_px,
-            face_value=self.face_value,
-        )
+        qty, sizing_meta = self._resolve_entry_qty(curr_px)
         open_side = "buy" if action == "LONG" else "sell"
         pos_side = "long" if action == "LONG" else "short"
+        entry_type = getattr(self, "_entry_type", "OPEN")
 
         logger.info(
-            f"🚀 [唯一主仓] 极速开仓: {open_side} {qty} 张 | 档位 {self.regime} | "
-            f"保证金 {sizing_meta['margin_usd']}U ({sizing_meta['sizing_source']})"
+            f"🚀 [唯一主仓] 极速开仓: {open_side} {qty} 张 | {entry_type} | 档位 {self.regime} | "
+            f"保证金 {sizing_meta.get('margin_usd', '—')}U ({sizing_meta.get('sizing_source', 'regime')})"
         )
         self.client.place_market_order(self.symbol, open_side, pos_side, qty)
         time.sleep(2.0)
