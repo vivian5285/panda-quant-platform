@@ -395,6 +395,24 @@ class AdverseRadarMixin:
             live_qty, 0.0, repair=force_replace or tv_sl > 0, at_open=at_open,
         )
 
+    def _tv_hard_stop_updates_allowed(self, curr_px: float | None = None) -> bool:
+        """
+        False once radar has taken over — UPDATE_SL must be ignored (手册场景3).
+        Radar owns stops when breakeven SL is active, or activation reached and TV shield disarmed.
+        """
+        if hasattr(self, "_is_radar_active") and self._is_radar_active():
+            return False
+        px = float(curr_px or 0)
+        if px <= 0 and hasattr(self, "client") and hasattr(self, "symbol"):
+            try:
+                px = float(self.client.get_current_price(self.symbol) or 0)
+            except Exception:
+                px = 0.0
+        if px > 0 and self._radar_activation_reached(px):
+            if not self._has_live_adverse_shield():
+                return False
+        return True
+
     def _handle_update_sl(self, payload: dict) -> dict[str, Any]:
         """UPDATE_SL: cancel old TV hard stop and re-place at new tv_sl (idempotent)."""
         self._init_adverse_radar_fields()
@@ -402,6 +420,22 @@ class AdverseRadarMixin:
         tv_sl = parse_tv_sl(payload.get("tv_sl"))
         if not tv_sl:
             return {"status": "skipped", "reason": "invalid_tv_sl"}
+
+        if not self._tv_hard_stop_updates_allowed():
+            detail = {
+                "tv_sl": tv_sl,
+                "side": side,
+                "skipped": "radar_takeover",
+                "radar_active": bool(
+                    hasattr(self, "_is_radar_active") and self._is_radar_active()
+                ),
+            }
+            self._log(
+                "UPDATE_SL",
+                f"雷达已接管，忽略 UPDATE_SL @{tv_sl:.2f}",
+                detail,
+            )
+            return {"status": "ok", "action": "UPDATE_SL", "detail": detail}
 
         pos = self._get_active_position() if hasattr(self, "_get_active_position") else None
         if not pos or float(pos.get("size", 0) or 0) <= 0:

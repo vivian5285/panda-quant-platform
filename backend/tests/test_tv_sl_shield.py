@@ -4,6 +4,7 @@ import pytest
 
 from app.core.adverse_radar_guard import (
     TV_SL_TIER_MARKER,
+    AdverseRadarMixin,
     compute_adverse_stop_plan,
     parse_tv_sl,
 )
@@ -63,7 +64,88 @@ def test_validate_update_sl_rejects_missing_side():
     assert "side" in msg
 
 
-def test_entry_payload_accepts_tv_sl():
+def test_update_sl_ignored_when_radar_active():
+    class Probe(AdverseRadarMixin):
+        exchange_id = "binance"
+        symbol = "ETHUSDT"
+        user_id = 1
+        current_side = "LONG"
+        watched_entry = 2000.0
+        current_sl = 2005.0  # breakeven radar active
+        tv_sl = 1800.0
+        client = type("C", (), {"get_current_price": lambda _s, _sym: 2050.0})()
+
+        def _get_active_position(self):
+            return {"size": 0.5, "side": "LONG"}
+
+        def _log(self, *a, **k):
+            pass
+
+        def _save_state(self):
+            pass
+
+        def _is_radar_active(self):
+            return True
+
+        def _has_live_adverse_shield(self):
+            return False
+
+        def _radar_activation_reached(self, curr_px):
+            return True
+
+    probe = Probe()
+    probe._init_adverse_radar_fields()
+    result = probe._handle_update_sl({"side": "LONG", "tv_sl": 1900.0})
+    assert result["status"] == "ok"
+    assert result["detail"]["skipped"] == "radar_takeover"
+
+
+def test_update_sl_allowed_before_radar():
+    class Probe(AdverseRadarMixin):
+        exchange_id = "binance"
+        symbol = "ETHUSDT"
+        user_id = 1
+        current_side = "LONG"
+        watched_entry = 2000.0
+        current_sl = 2000.0
+        tv_sl = 1800.0
+        adverse_sl_armed = True
+        adverse_sl_prices = [1800.0]
+        client = type("C", (), {"get_current_price": lambda _s, _sym: 2010.0})()
+
+        def _get_active_position(self):
+            return {"size": 0.5, "side": "LONG"}
+
+        def _log(self, *a, **k):
+            pass
+
+        def _save_state(self):
+            pass
+
+        def _sync_tv_hard_stop(self, live_qty, *, at_open=False, force_replace=False):
+            return {"armed": True, "placed": 1, "stop_price": 1900.0, "label": "TV硬止损"}
+
+        def _sync_adverse_shield_from_exchange(self, live_qty):
+            return {"aligned": False}
+
+        def _alert(self, *a, **k):
+            pass
+
+        def _has_live_adverse_shield(self):
+            return True
+
+        def _radar_activation_reached(self, curr_px):
+            return False
+
+        def _is_radar_active(self):
+            return False
+
+    probe = Probe()
+    probe._init_adverse_radar_fields()
+    result = probe._handle_update_sl({"side": "LONG", "tv_sl": 1900.0})
+    assert result["status"] == "ok"
+    assert result["detail"].get("skipped") != "radar_takeover"
+
     ok, msg = validate_signal_payload({
         "action": "LONG",
         "secret": "528586",

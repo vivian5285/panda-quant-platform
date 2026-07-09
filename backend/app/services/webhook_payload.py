@@ -46,7 +46,7 @@ def normalize_tv_payload(data: dict) -> dict:
             out["regime"] = int(out["regime"])
         except (TypeError, ValueError):
             pass
-    for key in ("atr", "price", "tv_tp1", "tv_tp2", "tv_tp3", "pnl_pct"):
+    for key in ("atr", "price", "tv_tp1", "tv_tp2", "tv_tp3", "tv_sl", "pnl_pct"):
         if key in out and out[key] is not None and out[key] != "":
             try:
                 val = out[key]

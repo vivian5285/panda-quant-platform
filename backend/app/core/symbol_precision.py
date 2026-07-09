@@ -59,4 +59,6 @@ def normalize_entry_payload(data: dict) -> dict:
         if out.get(key) is not None:
             p = float(out[key] or 0)
             out[key] = round_price(p) if p > 0 else 0.0
+    if out.get("tv_sl") is not None:
+        out["tv_sl"] = round_price(out["tv_sl"])
     return out
