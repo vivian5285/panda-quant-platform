@@ -126,12 +126,12 @@ def test_unified_startup_loss_track_arms_shield():
     probe.client.place_stop_market_order.assert_called()
 
 
-def test_unified_startup_profit_track_disarms_shield():
+def test_unified_startup_profit_track_coexist_shield():
     probe = _StartupProbe()
     probe.adverse_sl_armed = True
     with patch.object(probe, "_startup_wait_live_book", lambda: None), patch.object(
-        probe, "_disarm_adverse_staged_stops", return_value={"cancelled": 1},
-    ) as disarm, patch.object(probe, "_handoff_shield_to_radar", return_value=True):
+        probe, "_sync_binance_merged_stop", return_value={"aligned": True, "merged": True},
+    ) as merged, patch.object(probe, "_handoff_shield_to_radar", return_value=True):
         result = probe._unified_startup_defense_reconcile(0.6, 2000.0, 2050.0)
     assert result["pnl_track"] == "profit_radar"
-    disarm.assert_called_once()
+    assert merged.called

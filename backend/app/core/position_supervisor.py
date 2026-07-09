@@ -1787,8 +1787,6 @@ class PositionSupervisor(
         return SENTINEL_POLL_NORMAL
 
     def _process_radar_trailing(self, real_amt: float, curr_px: float) -> bool:
-        self._disarm_shield_before_radar(curr_px, reason="pre_radar_sl", notify=False)
-
         tp1_dist = (
             abs(self.tv_tps[0] - self.watched_entry)
             if self.tv_tps[0] > 0

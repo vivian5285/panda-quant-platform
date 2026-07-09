@@ -272,6 +272,30 @@ class AdverseRadarMixin:
             return round_price(min(sl, tv_sl))
         return sl
 
+    def _uses_dual_stop_track(self) -> bool:
+        """Deepcoin: TV底线 + 雷达双轨；其余交易所 Binance 类合并单槽。"""
+        return getattr(self, "exchange_id", "") == "deepcoin"
+
+    def _effective_radar_sl_for_merge(self) -> float:
+        if hasattr(self, "_is_radar_active") and self._is_radar_active():
+            return float(getattr(self, "current_sl", 0) or 0)
+        return 0.0
+
+    def _merged_stop_price(self, radar_sl: float | None = None) -> float:
+        """Binance 单槽：LONG max(tv_sl, radar)，SHORT min。"""
+        tv = float(getattr(self, "tv_sl", 0) or 0)
+        radar = float(
+            radar_sl if radar_sl is not None else self._effective_radar_sl_for_merge()
+        )
+        side = getattr(self, "current_side", None)
+        if side == "LONG":
+            parts = [p for p in (tv, radar) if p > 0]
+            return round_price(max(parts)) if parts else 0.0
+        if side == "SHORT":
+            parts = [p for p in (tv, radar) if p > 0]
+            return round_price(min(parts)) if parts else 0.0
+        return 0.0
+
     def _shield_tier_prices(self) -> set[float]:
         """All stop trigger prices used to identify TV/legacy hard stops on the book."""
         prices = set(self._adverse_tier_stop_prices())
@@ -285,6 +309,10 @@ class AdverseRadarMixin:
         return prices
 
     def _adverse_tier_stop_prices(self) -> set[float]:
+        if not self._uses_dual_stop_track():
+            merged = self._merged_stop_price()
+            if merged > 0:
+                return {merged}
         tv_sl = float(getattr(self, "tv_sl", 0) or 0)
         if tv_sl > 0:
             return {round_price(tv_sl)}
@@ -292,6 +320,99 @@ class AdverseRadarMixin:
             float(self.watched_entry or 0),
             str(self.current_side or "LONG"),
         )
+
+    def _cancel_binance_all_close_stops(self) -> int:
+        """Cancel every STOP closePosition on book before replacing merged slot."""
+        if self._uses_dual_stop_track():
+            return 0
+        symbol = getattr(self, "symbol", None)
+        client = getattr(self, "client", None)
+        if not symbol or not client:
+            return 0
+        cancelled = 0
+        seen: set[str | int] = set()
+        for o in client.get_open_orders(symbol) or []:
+            if not _is_stop_market_like(o):
+                continue
+            oid = o.get("algoId") or o.get("orderId")
+            if oid is None or oid in seen:
+                continue
+            seen.add(oid)
+            client.cancel_order(symbol, int(oid))
+            cancelled += 1
+            time.sleep(0.2)
+        for o in self._collect_pending_adverse_algo_orders(set()):
+            oid = o.get("algoId") or o.get("orderId")
+            if oid is None or oid in seen:
+                continue
+            seen.add(oid)
+            client.cancel_order(symbol, int(oid))
+            cancelled += 1
+            time.sleep(0.2)
+        if cancelled:
+            self._pending_adverse_algo_ids = []
+        return cancelled
+
+    def _sync_binance_merged_stop(
+        self,
+        live_qty: float,
+        *,
+        radar_sl: float | None = None,
+        force_replace: bool = False,
+        at_open: bool = False,
+    ) -> dict[str, Any]:
+        """Route A · Binance/OKX/Gate：单 closePosition = max/min(tv_sl, 雷达)。"""
+        live_qty = self._resolve_adverse_live_qty(live_qty)
+        if live_qty <= 0:
+            return {"armed": False, "reason": "no_live_position", "live_qty": 0}
+
+        effective = self._merged_stop_price(radar_sl)
+        if effective <= 0:
+            if at_open:
+                return self._arm_adverse_shield_at_open(live_qty)
+            return {"armed": False, "reason": "no_merged_price"}
+
+        plan = [{
+            "tier_pct": TV_SL_TIER_MARKER,
+            "stop_price": effective,
+            "qty": self._adverse_round_qty(live_qty),
+            "level": 1,
+            "source": "merged",
+        }]
+        audit = self._audit_adverse_shield_live(plan)
+        if audit.get("aligned") and not force_replace:
+            self.adverse_sl_armed = True
+            self.adverse_sl_prices = [effective]
+            return {
+                "armed": True,
+                "aligned": True,
+                "merged": True,
+                "stop_price": effective,
+                "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
+                "placed": 0,
+                "skipped": "live_already_aligned",
+                "label": self._hard_stop_label(),
+            }
+
+        cancelled = self._cancel_binance_all_close_stops() if force_replace or not audit.get("aligned") else 0
+        placed = 1 if self._place_adverse_stop_slice(effective, live_qty) else 0
+        if placed:
+            audit = self._refresh_adverse_shield_audit(
+                plan, retries=ADVERSE_VERIFY_RETRIES, delay=ADVERSE_VERIFY_RETRY_DELAY_SEC,
+            )
+        self.adverse_sl_armed = bool(audit.get("aligned") or placed)
+        self.adverse_sl_prices = [effective] if self.adverse_sl_armed else []
+        return {
+            "armed": self.adverse_sl_armed,
+            "aligned": audit.get("aligned", False),
+            "merged": True,
+            "stop_price": effective,
+            "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
+            "placed": placed,
+            "cancelled": cancelled,
+            "label": self._hard_stop_label(),
+            **audit,
+        }
 
     def _resolve_adverse_live_qty(self, fallback_qty: float) -> float:
         """Always anchor adverse slices to exchange live position, not stale watched_qty."""
@@ -363,7 +484,13 @@ class AdverseRadarMixin:
         at_open: bool = False,
         force_replace: bool = False,
     ) -> dict[str, Any]:
-        """Arm or refresh hard stop from self.tv_sl (or legacy 10% when tv_sl unset)."""
+        """Arm TV hard stop — Deepcoin 独立底线；其余交易所走合并单槽。"""
+        if not self._uses_dual_stop_track():
+            radar = self._effective_radar_sl_for_merge() or None
+            return self._sync_binance_merged_stop(
+                live_qty, radar_sl=radar, force_replace=force_replace, at_open=at_open,
+            )
+
         live_qty = self._resolve_adverse_live_qty(live_qty)
         if live_qty <= 0:
             return {"armed": False, "reason": "no_live_position", "live_qty": 0}
@@ -395,47 +522,13 @@ class AdverseRadarMixin:
             live_qty, 0.0, repair=force_replace or tv_sl > 0, at_open=at_open,
         )
 
-    def _tv_hard_stop_updates_allowed(self, curr_px: float | None = None) -> bool:
-        """
-        False once radar has taken over — UPDATE_SL must be ignored (手册场景3).
-        Radar owns stops when breakeven SL is active, or activation reached and TV shield disarmed.
-        """
-        if hasattr(self, "_is_radar_active") and self._is_radar_active():
-            return False
-        px = float(curr_px or 0)
-        if px <= 0 and hasattr(self, "client") and hasattr(self, "symbol"):
-            try:
-                px = float(self.client.get_current_price(self.symbol) or 0)
-            except Exception:
-                px = 0.0
-        if px > 0 and self._radar_activation_reached(px):
-            if not self._has_live_adverse_shield():
-                return False
-        return True
-
     def _handle_update_sl(self, payload: dict) -> dict[str, Any]:
-        """UPDATE_SL: cancel old TV hard stop and re-place at new tv_sl (idempotent)."""
+        """UPDATE_SL: 同步 TV 底线 — 雷达已激活时仍有效（Route A 共存/合并）。"""
         self._init_adverse_radar_fields()
         side = str(payload.get("side") or "").upper().strip()
         tv_sl = parse_tv_sl(payload.get("tv_sl"))
         if not tv_sl:
             return {"status": "skipped", "reason": "invalid_tv_sl"}
-
-        if not self._tv_hard_stop_updates_allowed():
-            detail = {
-                "tv_sl": tv_sl,
-                "side": side,
-                "skipped": "radar_takeover",
-                "radar_active": bool(
-                    hasattr(self, "_is_radar_active") and self._is_radar_active()
-                ),
-            }
-            self._log(
-                "UPDATE_SL",
-                f"雷达已接管，忽略 UPDATE_SL @{tv_sl:.2f}",
-                detail,
-            )
-            return {"status": "ok", "action": "UPDATE_SL", "detail": detail}
 
         pos = self._get_active_position() if hasattr(self, "_get_active_position") else None
         if not pos or float(pos.get("size", 0) or 0) <= 0:
@@ -463,21 +556,48 @@ class AdverseRadarMixin:
                     "side": live_side,
                     "skipped": "idempotent",
                     "label": self._hard_stop_label(),
+                    "radar_active": bool(
+                        hasattr(self, "_is_radar_active") and self._is_radar_active()
+                    ),
                 }
-                self._log("UPDATE_SL", f"TV硬止损未变 @{tv_sl:.2f}，跳过", detail)
+                verify_msg = f"UPDATE_SL 核实成功 | tv_sl @{tv_sl:.2f} | 盘口已对齐"
+                self._log("UPDATE_SL", verify_msg, detail)
+                self._alert("info", "UPDATE_SL", "UPDATE_SL · 核实成功", verify_msg, detail)
                 return {"status": "ok", "action": "UPDATE_SL", "detail": detail}
 
-        result = self._sync_tv_hard_stop(live_qty, force_replace=True)
+        if self._uses_dual_stop_track():
+            result = self._sync_tv_hard_stop(live_qty, force_replace=True)
+            if self._is_radar_active() and float(getattr(self, "current_sl", 0) or 0) > 0:
+                radar_sl = self._clamp_radar_sl_to_tv_floor(float(self.current_sl))
+                if hasattr(self, "_ensure_radar_sl"):
+                    result["radar_verified"] = bool(self._ensure_radar_sl(live_qty, radar_sl))
+        else:
+            radar = self._effective_radar_sl_for_merge() or None
+            result = self._sync_binance_merged_stop(
+                live_qty, radar_sl=radar, force_replace=True,
+            )
+
         result["tv_sl"] = tv_sl
         result["side"] = live_side
         result["label"] = self._hard_stop_label()
+        result["radar_active"] = bool(
+            hasattr(self, "_is_radar_active") and self._is_radar_active()
+        )
         msg = f"{result['label']} 更新 @{tv_sl:.2f}"
+        if result.get("merged"):
+            msg += f" | Binance合并 @{result.get('stop_price', 0):.2f}"
+        elif self._uses_dual_stop_track():
+            msg += " | Deepcoin TV底线+雷达双轨"
         if result.get("placed", 0) > 0:
-            msg += f" | 已撤旧单并新挂 {result['placed']} 笔"
+            msg += f" | 已同步 {result['placed']} 笔"
         elif result.get("skipped"):
             msg += f" | {result['skipped']}"
         self._log("UPDATE_SL", msg, result)
-        self._alert("info", "UPDATE_SL", f"{result['label']} · 已同步", msg, result)
+        if result.get("aligned") or result.get("placed", 0) > 0:
+            verify_msg = f"UPDATE_SL 核实成功 | {msg}"
+            self._alert("info", "UPDATE_SL", "UPDATE_SL · 核实成功", verify_msg, result)
+        else:
+            self._alert("info", "UPDATE_SL", f"{result['label']} · 已同步", msg, result)
         if hasattr(self, "_save_state"):
             self._save_state()
         return {"status": "ok", "action": "UPDATE_SL", "detail": result}
@@ -509,14 +629,8 @@ class AdverseRadarMixin:
         return bool(self.adverse_sl_armed or self.adverse_sl_prices)
 
     def _should_disarm_adverse_for_recovery(self, curr_px: float) -> bool:
-        """
-        Cancel 10% hard stop when radar should take over:
-        - TP1 activation distance reached (progress 100%)
-        - radar breakeven already active (SL past entry)
-        """
-        if not self._radar_activation_reached(curr_px):
-            return False
-        return self._has_live_adverse_shield()
+        """Route A: TV 底线与雷达共存，不因雷达激活撤销 TV 止损。"""
+        return False
 
     def _disarm_shield_before_radar(
         self,
@@ -525,12 +639,8 @@ class AdverseRadarMixin:
         reason: str = "radar_tp1_activation",
         notify: bool = False,
     ) -> dict[str, Any]:
-        """Mandatory pre-radar step: cancel 10% hard stop (never touches TP123)."""
-        if not self._radar_activation_reached(curr_px):
-            return {"cancelled": 0, "skipped": "radar_not_active", "reason": reason}
-        if not self._has_live_adverse_shield():
-            return {"cancelled": 0, "skipped": "no_shield", "reason": reason}
-        return self._disarm_adverse_staged_stops(reason=reason, notify=notify)
+        """Route A: 不撤 TV 硬止损；Binance 由合并单槽表达双层语义。"""
+        return {"cancelled": 0, "skipped": "route_a_coexist", "reason": reason}
 
     def _handoff_shield_to_radar(self, live_qty: float, curr_px: float) -> bool:
         """After shield disarm: activate radar breakeven trail when TP1 distance is met."""
@@ -1323,9 +1433,8 @@ class AdverseRadarMixin:
 
     def _orchestrate_defense_monitoring(self, live_qty: float, curr_px: float) -> None:
         """
-        Dual-track defense (exchange-first):
-        - 朝 TP1 达雷达激活 → 先撤 10% 硬止损，再挂雷达保本移动止损
-        - 雷达未激活 → 静默维护 10% 硬止损（缺失才补挂）
+        Route A 三层分工：TV底线 + 雷达追踪 + TP123。
+        雷达激活时不撤 TV 止损；Binance 合并单槽，Deepcoin 双轨并行。
         """
         if curr_px <= 0:
             return
@@ -1334,32 +1443,22 @@ class AdverseRadarMixin:
         progress = self._radar_activation_progress(curr_px) if hasattr(self, "_radar_activation_progress") else 0.0
 
         if self._radar_activation_reached(curr_px):
-            disarm = self._disarm_shield_before_radar(
-                curr_px, reason="radar_tp1_activation", notify=True,
-            )
-            if disarm.get("cancelled", 0) > 0:
-                self._log(
-                    "RECOVERY",
-                    f"雷达激活 · 10%硬止损已撤，保本移动止损启动 | 现价 {curr_px:.2f} | 进度 {progress:.0%}",
-                    {
-                        "entry": self.watched_entry,
-                        "price": curr_px,
-                        "side": self.current_side,
-                        "progress": progress,
-                        "disarm": disarm,
-                    },
-                )
             if hasattr(self, "_process_radar_trailing"):
                 self._process_radar_trailing(live_qty, curr_px)
             elif self._handoff_shield_to_radar(live_qty, curr_px):
                 pass
+            if self._uses_dual_stop_track():
+                self._process_adverse_radar_guard(live_qty, curr_px)
+            else:
+                radar = self._effective_radar_sl_for_merge() or None
+                self._sync_binance_merged_stop(live_qty, radar_sl=radar)
             return
 
         self._process_adverse_radar_guard(live_qty, curr_px)
 
         if progress >= 0.5 and getattr(self, "_scan_ticks", 0) % 5 == 0:
             logger.info(
-                "[User %s] 📡 雷达预热: 进度 %.0f%% | 现价 %.2f | 10%%硬止损守护中",
+                "[User %s] 📡 雷达预热: 进度 %.0f%% | 现价 %.2f | TV底线守护中",
                 self.user_id, progress * 100, curr_px,
             )
 

@@ -121,23 +121,20 @@ def test_disarm_when_radar_activation_reached():
     probe = _AdverseProbe()
     probe.adverse_sl_armed = True
     assert probe._should_disarm_adverse_for_recovery(1990.0) is False
-    assert probe._should_disarm_adverse_for_recovery(2045.0) is True
+    assert probe._should_disarm_adverse_for_recovery(2045.0) is False
+
+
+def test_disarm_shield_before_radar_is_noop_route_a():
+    probe = _AdverseProbe()
+    probe.adverse_sl_armed = True
+    result = probe._disarm_shield_before_radar(2045.0)
+    assert result.get("skipped") == "route_a_coexist"
+    assert result.get("cancelled") == 0
 
 
 def test_disarm_when_live_stop_even_if_flag_false():
     probe = _AdverseProbe()
-    plan = probe._compute_adverse_stop_plan(0.6)
-    probe.adverse_sl_armed = False
-    probe.client.get_open_orders.return_value = [
-        {
-            "type": "STOP_MARKET",
-            "orderId": 1,
-            "stopPrice": str(plan[0]["stop_price"]),
-            "closePosition": True,
-            "side": "SELL",
-        }
-    ]
-    assert probe._should_disarm_adverse_for_recovery(2045.0) is True
+    assert probe._should_disarm_adverse_for_recovery(2045.0) is False
 
 
 def test_arm_at_open_places_single_stop_market():
@@ -262,15 +259,18 @@ def test_arm_skips_when_already_aligned():
     probe.client.place_stop_market_order.assert_not_called()
 
 
-def test_orchestrate_disarms_on_radar_activation():
+def test_orchestrate_radar_coexist_route_a():
     probe = _AdverseProbe()
     probe.adverse_sl_armed = True
-    with patch.object(probe, "_disarm_adverse_staged_stops", return_value={"cancelled": 1}) as disarm, patch.object(
+    with patch.object(probe, "_process_adverse_radar_guard", return_value=True) as guard, patch.object(
         probe, "_process_radar_trailing", return_value=True,
-    ) as trail:
+    ) as trail, patch.object(
+        probe, "_sync_binance_merged_stop", return_value={"aligned": True},
+    ) as merged:
         probe._orchestrate_defense_monitoring(0.6, 2045.0)
-    disarm.assert_called_once()
     trail.assert_called_once()
+    merged.assert_called_once()
+    guard.assert_not_called()
 
 
 def test_orchestrate_maintains_hard_stop_before_radar():

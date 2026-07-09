@@ -124,15 +124,13 @@ def test_startup_tp_reconcile_ok_without_radar_sl_on_book(supervisor):
 def test_ensure_radar_sl_uses_close_position_and_verifies(supervisor):
     supervisor.current_side = "LONG"
     supervisor.symbol = "ETHUSDT"
-    supervisor.client.get_current_price.return_value = 1820.0
-    supervisor._has_stop_sl_near = MagicMock(side_effect=[False, True])
-    supervisor._cancel_radar_stop_orders = MagicMock(return_value=0)
-    supervisor._disarm_shield_before_radar = MagicMock(return_value={})
-    supervisor.client.place_stop_market_order.return_value = {"orderId": 1}
+    supervisor._sync_binance_merged_stop = MagicMock(
+        return_value={"aligned": True, "armed": True, "merged": True},
+    )
 
     ok = supervisor._ensure_radar_sl(1796.43, 0.046)
 
     assert ok is True
-    supervisor.client.place_stop_market_order.assert_called_once_with(
-        "SHORT", 1796.43, "ETHUSDT", quantity=None,
-    )
+    supervisor._sync_binance_merged_stop.assert_called_once()
+    args, kwargs = supervisor._sync_binance_merged_stop.call_args
+    assert kwargs.get("radar_sl") == 1796.43

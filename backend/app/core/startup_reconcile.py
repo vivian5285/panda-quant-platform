@@ -223,9 +223,12 @@ class StartupReconcileMixin:
         radar_handoff = False
 
         if pnl_track == "profit_radar":
-            shield_audit = self._disarm_adverse_staged_stops(
-                reason="startup_radar_track", notify=False,
-            )
+            if self._uses_dual_stop_track():
+                shield_audit = self._on_adverse_startup_reconcile(live_qty, curr_px)
+            elif hasattr(self, "_sync_binance_merged_stop"):
+                shield_audit = self._sync_binance_merged_stop(live_qty)
+            else:
+                shield_audit = {}
             if progress >= 1.0 or radar_active or consumed:
                 radar_handoff = bool(self._handoff_shield_to_radar(live_qty, curr_px))
         else:

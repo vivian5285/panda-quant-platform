@@ -635,37 +635,37 @@ class BinanceSmartDefenseMixin:
         return cancelled
 
     def _ensure_radar_sl(self, dynamic_sl, live_qty=None) -> bool:
-        """Place radar breakeven STOP as closePosition — independent of TP123 reduceOnly slices."""
+        """Place radar breakeven STOP — Route A: Binance 合并单槽，Deepcoin 双轨。"""
         if not dynamic_sl:
             return False
-        curr_px = 0.0
-        if hasattr(self.client, "get_current_price"):
-            try:
-                curr_px = float(self.client.get_current_price(self.symbol) or 0)
-            except Exception:
-                curr_px = 0.0
-        if hasattr(self, "_disarm_shield_before_radar"):
-            self._disarm_shield_before_radar(curr_px or float(dynamic_sl), notify=False)
-        if self._has_stop_sl_near(dynamic_sl):
+        sl = float(dynamic_sl)
+        if hasattr(self, "_clamp_radar_sl_to_tv_floor"):
+            sl = self._clamp_radar_sl_to_tv_floor(sl)
+        qty = live_qty if live_qty is not None else getattr(self, "watched_qty", 0)
+        if hasattr(self, "_uses_dual_stop_track") and not self._uses_dual_stop_track():
+            if hasattr(self, "_sync_binance_merged_stop"):
+                result = self._sync_binance_merged_stop(qty, radar_sl=sl)
+                return bool(result.get("aligned") or result.get("armed"))
+        if self._has_stop_sl_near(sl):
             return True
         self._cancel_radar_stop_orders()
         time.sleep(0.25)
         close_side = "SHORT" if self.current_side == "LONG" else "LONG"
         symbol = getattr(self, "symbol", "ETHUSDT")
         res = self.client.place_stop_market_order(
-            close_side, dynamic_sl, symbol, quantity=None,
+            close_side, sl, symbol, quantity=None,
         )
         if not res:
             self._def_log(
-                f"⚠️ 雷达保本 STOP 下单失败 @ {dynamic_sl:.2f}（closePosition，不与 TP 抢份额）",
+                f"⚠️ 雷达保本 STOP 下单失败 @ {sl:.2f}（closePosition，不与 TP 抢份额）",
                 logging.WARNING,
             )
             return False
         time.sleep(0.35)
-        on_book = self._has_stop_sl_near(dynamic_sl)
+        on_book = self._has_stop_sl_near(sl)
         if not on_book:
             self._def_log(
-                f"⚠️ 雷达 STOP 已提交但盘口未核实 @ {dynamic_sl:.2f}",
+                f"⚠️ 雷达 STOP 已提交但盘口未核实 @ {sl:.2f}",
                 logging.WARNING,
             )
         return on_book
@@ -889,10 +889,11 @@ class BinanceSmartDefenseMixin:
         }
 
     def _realign_radar_defenses(self, live_qty: float, entry: float, new_sl: float) -> bool:
-        """雷达推升：只动 STOP（closePosition），TP123 增量补挂与雷达分轨，不抢 reduceOnly 份额。"""
+        """雷达推升：Route A 不撤 TV 底线；Binance 合并，Deepcoin 双轨。"""
         curr_px = self._current_tp_price()
-        if hasattr(self, "_disarm_shield_before_radar"):
-            self._disarm_shield_before_radar(curr_px or new_sl, notify=False)
+        sl = float(new_sl)
+        if hasattr(self, "_clamp_radar_sl_to_tv_floor"):
+            sl = self._clamp_radar_sl_to_tv_floor(sl)
         if not self._defenses_fully_ok(
             live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
         ):
@@ -902,7 +903,7 @@ class BinanceSmartDefenseMixin:
                 self._cancel_orphan_tp_orders(live_qty)
                 self._patch_missing_tp_levels(live_qty, curr_px=curr_px)
                 time.sleep(0.6)
-        return self._ensure_radar_sl(new_sl, live_qty)
+        return self._ensure_radar_sl(sl, live_qty)
 
 
 SmartDefenseMixin = BinanceSmartDefenseMixin

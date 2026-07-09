@@ -31,7 +31,7 @@ from app.core.tp_defense_reconcile import (
 from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, match_qty_reduction_to_tp_level
 from app.core.position_qty_tolerance import tp_slice_qty_tolerance
 from app.core.position_cap_guard import PositionCapGuardMixin
-from app.core.adverse_radar_guard import AdverseRadarMixin
+from app.core.adverse_radar_guard import AdverseRadarMixin, ADVERSE_STOP_TOLERANCE
 from app.core.startup_reconcile import StartupReconcileMixin, format_startup_defense_summary
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
@@ -1113,6 +1113,21 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             logger.info(f"🧹 撤销 {cancelled} 张孤儿止盈单")
         return cancelled
 
+    def _cancel_radar_trigger_orders_only(self) -> int:
+        """撤销雷达条件单，保留 TV 底线单（Deepcoin 双轨）。"""
+        floor_prices = self._shield_tier_prices()
+        cancelled = 0
+        for t in self.client.get_trigger_orders_pending(self.symbol):
+            px = float(t.get("triggerPrice", 0) or 0)
+            if floor_prices and any(abs(px - p) <= ADVERSE_STOP_TOLERANCE for p in floor_prices):
+                continue
+            oid = t.get("ordId")
+            if oid:
+                self.client.cancel_trigger_order(self.symbol, oid)
+                cancelled += 1
+                time.sleep(0.2)
+        return cancelled
+
     def _cancel_stop_orders(self):
         cancelled = 0
         for t in self.client.get_trigger_orders_pending(self.symbol):
@@ -1261,21 +1276,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
     def _ensure_radar_sl(self, live_qty, sl_price):
         if not sl_price:
             return False
-        curr_px = 0.0
-        if hasattr(self.client, "get_current_price"):
-            try:
-                curr_px = float(self.client.get_current_price(self.symbol) or 0)
-            except Exception:
-                curr_px = 0.0
-        if hasattr(self, "_disarm_shield_before_radar"):
-            self._disarm_shield_before_radar(curr_px or float(sl_price), notify=False)
-        if self._has_trigger_sl_near(sl_price):
+        sl = float(sl_price)
+        if hasattr(self, "_clamp_radar_sl_to_tv_floor"):
+            sl = self._clamp_radar_sl_to_tv_floor(sl)
+        if self._has_trigger_sl_near(sl):
             return True
-        self._cancel_stop_orders()
+        self._cancel_radar_trigger_orders_only()
         time.sleep(0.25)
-        self._place_radar_sl(live_qty, sl_price)
+        self._place_radar_sl(live_qty, sl)
         time.sleep(0.35)
-        on_book = self._has_trigger_sl_near(sl_price)
+        on_book = self._has_trigger_sl_near(sl)
         if not on_book:
             logger.warning(f"⚠️ 雷达 STOP 已提交但盘口未核实 @ {sl_price:.2f}")
         return on_book
@@ -1475,8 +1485,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
     def _realign_radar_defenses(self, live_qty, entry, new_sl):
         curr_px = self._current_tp_price()
-        if hasattr(self, "_disarm_shield_before_radar"):
-            self._disarm_shield_before_radar(curr_px or float(new_sl), notify=False)
+        sl = float(new_sl)
+        if hasattr(self, "_clamp_radar_sl_to_tv_floor"):
+            sl = self._clamp_radar_sl_to_tv_floor(sl)
         if not self._defenses_fully_ok(
             live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
         ):
@@ -1486,7 +1497,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 self._cancel_orphan_tp_orders(live_qty)
                 self._patch_missing_tp_levels(live_qty, curr_px=curr_px)
                 time.sleep(0.6)
-        return self._ensure_radar_sl(live_qty, new_sl)
+        return self._ensure_radar_sl(live_qty, sl)
 
     def _wait_tp_hung(self, tp_pxs, live_qty=None, retries=5, delay=0.8):
         expected = self._expected_tp_count(tp_pxs)
@@ -1971,8 +1982,6 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return SENTINEL_POLL_NORMAL
 
     def _process_radar_trailing(self, real_amt, curr_px):
-        self._disarm_shield_before_radar(curr_px, reason="pre_radar_sl", notify=False)
-
         tp1_dist = abs(self.tv_tps[0] - self.watched_entry) if self.tv_tps[0] > 0 else self.current_atr * 1.5
         cfg = self.regime_settings[self.regime]
         activation_ratio = cfg["activation"]
