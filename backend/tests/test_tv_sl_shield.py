@@ -32,16 +32,14 @@ def test_compute_adverse_stop_plan_uses_tv_sl():
     assert plan[0]["source"] == "tv_sl"
 
 
-def test_compute_adverse_stop_plan_fallback_10pct():
+def test_compute_adverse_stop_plan_empty_without_tv_sl():
     plan = compute_adverse_stop_plan(
         2000.0,
         "LONG",
         0.6,
         round_qty_fn=lambda q: q,
     )
-    assert len(plan) == 1
-    assert plan[0]["stop_price"] == pytest.approx(1800.0, rel=0.001)
-    assert plan[0]["source"] == "pct10"
+    assert plan == []
 
 
 def test_validate_update_sl_payload():

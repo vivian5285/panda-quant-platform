@@ -28,15 +28,15 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
     SYMBOL: str = "ETHUSDT"
-    LEVERAGE: int = 15
+    LEVERAGE: int = 5
     DEEPCOIN_SYMBOL: str = "ETH-USDT-SWAP"
-    DEEPCOIN_LEVERAGE: int = 15
+    DEEPCOIN_LEVERAGE: int = 5
     OKX_SYMBOL: str = "ETH-USDT-SWAP"
-    OKX_LEVERAGE: int = 15
+    OKX_LEVERAGE: int = 5
     OKX_CONTRACT_VALUE: float = 0.1
     OKX_LOT_SIZE: float = 0.01
     GATE_SYMBOL: str = "ETH_USDT"
-    GATE_LEVERAGE: int = 15
+    GATE_LEVERAGE: int = 5
     GATE_QUANTO_MULTIPLIER: float = 0.01
 
     # Same-direction TV entry: skip re-open when |TV价−持仓价|/现价 below this % (regime unchanged)

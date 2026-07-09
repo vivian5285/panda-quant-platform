@@ -123,7 +123,7 @@ def _make_supervisor(**kwargs):
     client.place_market_order.return_value = {}
     client.trading_symbol = "ETHUSDT"
     client.exchange_id = "binance"
-    client.trading_leverage = 10
+    client.trading_leverage = 5
 
     sup = PositionSupervisor(user_id=1, client=client, initial_principal=10000.0, **kwargs)
     sup.regime = 3
@@ -155,7 +155,7 @@ def test_open_entry_type_forces_flat_before_open():
         result = sup._handle_tv_entry("LONG", 2000.0, has_pos=True, current_side="LONG")
     sup._close_all.assert_called_once()
     assert result["status"] == "ok"
-    client.set_leverage.assert_called_with(sup.symbol, leverage=3)
+    client.set_leverage.assert_called_with(sup.symbol, leverage=5)
 
 
 def test_pyramid_adds_without_cancel_all():
@@ -166,6 +166,8 @@ def test_pyramid_adds_without_cancel_all():
         "leverage": 3,
         "qty_ratio": 0.5,
     })
+    sup._sync_tv_hard_stop = MagicMock(return_value={"aligned": True, "stop_price": 1900.0})
+    sup._smart_realign_defenses = MagicMock(return_value={"matched": 3, "expected": 3})
     with patch.object(sup.position_manager, "get_position") as gp:
         gp.side_effect = [
             {"positionAmt": "0.202", "entryPrice": "2000"},

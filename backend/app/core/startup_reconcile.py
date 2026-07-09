@@ -9,7 +9,6 @@ from typing import Any
 from app.core.adverse_radar_guard import (
     ADVERSE_VERIFY_RETRIES,
     ADVERSE_VERIFY_RETRY_DELAY_SEC,
-    adverse_hard_stop_price,
     adverse_move_pct,
     is_floating_profit,
 )
@@ -28,7 +27,7 @@ def classify_startup_pnl_track(
     consumed_tp_levels: list | None = None,
 ) -> str:
     """
-    loss_shield — 浮亏/雷达未激活：保 TP123 + 10% 硬止损
+    loss_shield — 浮亏/雷达未激活：保 TP123 + TV 硬止损
     profit_radar — 朝 TP1 达激活比例或雷达已锁 / TP 已部分成交：撤硬止损，雷达接管
     """
     if consumed_tp_levels:
@@ -62,9 +61,9 @@ def format_startup_defense_summary(audit: dict) -> str:
     shield = audit.get("shield")
     if isinstance(shield, dict):
         if shield.get("aligned") or shield.get("synced_armed"):
-            parts.append("10%硬止损✓")
+            parts.append("TV硬止损✓")
         elif shield.get("placed", 0):
-            parts.append("10%硬止损补挂")
+            parts.append("TV硬止损补挂")
         elif audit.get("pnl_track") == "profit_radar":
             parts.append("硬止损已撤")
         elif audit.get("pnl_track") == "loss_shield":
@@ -188,7 +187,7 @@ class StartupReconcileMixin:
         1. 实盘持仓数量
         2. 浮盈/浮亏 + 雷达进度 → 选轨
         3. TP123 交易所优先对账（齐全跳过）
-        4. 浮亏轨：10% 硬止损核实/缺失补挂
+        4. 浮亏轨：TV 硬止损核实/缺失补挂
         5. 浮盈轨：撤硬止损 + 雷达保本 SL（达比例时）
         """
         self._startup_wait_live_book()
@@ -270,7 +269,7 @@ class StartupReconcileMixin:
                     context="startup",
                 )
 
-        stop_px = adverse_hard_stop_price(entry, str(side or "LONG"))
+        stop_px = float(getattr(self, "tv_sl", 0) or 0)
 
         radar_sl_audit = self._finalize_startup_radar_sl(
             live_qty, entry, curr_px, pnl_track,

@@ -51,6 +51,7 @@ class _StartupProbe(StartupReconcileMixin, AdverseRadarMixin, BinanceSmartDefens
         3: {"margin": 0.35, "ratios": [0.18, 0.32, 0.50], "activation": 0.60, "trail_offset": 0.90},
     }
     tv_tps = [2050.0, 2100.0, 2150.0]
+    tv_sl = 1900.0
     current_atr = 30.0
     current_sl = 2000.0
     best_price = 2000.0

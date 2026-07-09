@@ -1,4 +1,4 @@
-"""Adverse-move radar + smart defense orchestration (浮盈雷达 / 开仓10%硬止损防护盾)."""
+"""Adverse-move radar + TV hard stop orchestration (浮盈雷达 / TV tv_sl 防护)."""
 from __future__ import annotations
 
 import logging
@@ -10,7 +10,7 @@ from app.core.symbol_precision import round_price, round_quantity
 
 logger = logging.getLogger(__name__)
 
-# Single hard stop at open: TV tv_sl when synced, else legacy 10% from entry.
+# TV hard stop from webhook tv_sl; legacy 10% kept only for fill-attribution helpers.
 ADVERSE_HARD_STOP_PCT = 0.10
 TV_SL_TIER_MARKER = -1.0  # plan tier_pct when stop price comes from TV
 ADVERSE_STOP_TOLERANCE = 2.0
@@ -146,40 +146,23 @@ def compute_adverse_stop_plan(
     consumed_tiers: set[float] | None = None,
     tv_sl_price: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Full-position hard stop — TV tv_sl when provided, else legacy 10% tier."""
+    """Full-position hard stop — TV tv_sl only (no legacy 10% fallback)."""
     if live_qty <= 0:
         return []
     qty = round_qty_fn(live_qty)
     if qty <= 0:
         return []
 
-    stop_px = 0.0
-    tier_pct = ADVERSE_HARD_STOP_PCT
-    source = "pct10"
-
     tv_px = parse_tv_sl(tv_sl_price)
-    if tv_px:
-        stop_px = tv_px
-        tier_pct = TV_SL_TIER_MARKER
-        source = "tv_sl"
-    elif entry > 0 and side in ("LONG", "SHORT"):
-        consumed = set(consumed_tiers or [])
-        if ADVERSE_HARD_STOP_PCT in consumed or any(
-            abs(float(t) - ADVERSE_HARD_STOP_PCT) < 1e-6 for t in consumed
-        ):
-            return []
-        stop_px = adverse_hard_stop_price(entry, side)
-    else:
+    if not tv_px:
         return []
 
-    if stop_px <= 0:
-        return []
     return [{
-        "tier_pct": tier_pct,
-        "stop_price": stop_px,
+        "tier_pct": TV_SL_TIER_MARKER,
+        "stop_price": tv_px,
         "qty": qty,
         "level": 1,
-        "source": source,
+        "source": "tv_sl",
     }]
 
 
@@ -191,12 +174,15 @@ def match_adverse_tier_fill(
     *,
     round_qty_fn,
     qty_tol: float | None = None,
+    tv_sl_price: float | None = None,
 ) -> float | None:
-    """If reduction matches full-position 10% hard stop, return tier pct."""
+    """If reduction matches full-position TV hard stop, return tier marker."""
     if old_qty <= 0 or reduced_qty <= 0:
         return None
     tol = qty_tol if qty_tol is not None else qty_drift_tolerance(old_qty, old_qty)
-    plan = compute_adverse_stop_plan(entry, side, old_qty, round_qty_fn=round_qty_fn)
+    plan = compute_adverse_stop_plan(
+        entry, side, old_qty, round_qty_fn=round_qty_fn, tv_sl_price=tv_sl_price,
+    )
     if not plan:
         return None
     tier = plan[0]
@@ -208,8 +194,8 @@ def match_adverse_tier_fill(
 class AdverseRadarMixin:
     """
     Dual-track VPS defense:
-    - 开仓: 10% 硬止损全平（挂一次，实盘核实）
-    - 朝 TP1: 达雷达激活比例 → 撤硬止损 + 雷达保本移动止损
+    - 开仓: TV tv_sl 硬止损全平（挂一次，实盘核实）
+    - 朝 TP1: 达雷达激活比例 → 雷达保本移动止损（不低于 TV 底线）
     """
 
     adverse_sl_armed: bool
@@ -243,9 +229,7 @@ class AdverseRadarMixin:
         self.tv_sl = preserved
 
     def _hard_stop_label(self) -> str:
-        if float(getattr(self, "tv_sl", 0) or 0) > 0:
-            return "TV硬止损"
-        return "10%硬止损"
+        return "TV硬止损"
 
     def _apply_tv_sl_from_payload(self, payload: dict | None) -> float | None:
         """Parse tv_sl from LONG/SHORT/UPDATE_SL webhook; mutates self.tv_sl when present."""
@@ -316,10 +300,7 @@ class AdverseRadarMixin:
         tv_sl = float(getattr(self, "tv_sl", 0) or 0)
         if tv_sl > 0:
             return {round_price(tv_sl)}
-        return adverse_tier_stop_prices(
-            float(self.watched_entry or 0),
-            str(self.current_side or "LONG"),
-        )
+        return set()
 
     def _cancel_binance_all_close_stops(self) -> int:
         """Cancel every STOP closePosition on book before replacing merged slot."""
@@ -368,9 +349,7 @@ class AdverseRadarMixin:
 
         effective = self._merged_stop_price(radar_sl)
         if effective <= 0:
-            if at_open:
-                return self._arm_adverse_shield_at_open(live_qty)
-            return {"armed": False, "reason": "no_merged_price"}
+            return {"armed": False, "reason": "no_tv_sl_or_radar"}
 
         plan = [{
             "tier_pct": TV_SL_TIER_MARKER,
@@ -516,7 +495,7 @@ class AdverseRadarMixin:
             self.adverse_sl_prices = []
 
         if at_open and tv_sl <= 0:
-            return self._arm_adverse_shield_at_open(live_qty)
+            return {"armed": False, "reason": "no_tv_sl", "skipped": "await_tv_sl"}
 
         return self._arm_adverse_staged_stops(
             live_qty, 0.0, repair=force_replace or tv_sl > 0, at_open=at_open,
@@ -1025,7 +1004,7 @@ class AdverseRadarMixin:
         self._alert(
             "critical",
             "ADVERSE_SL_MISALIGN",
-            "10%硬止损未对齐",
+            "TV硬止损未对齐",
             msg + " | 系统已退避冷却，下轮自动重试；请勿手动重复挂单",
             payload,
         )
@@ -1178,9 +1157,7 @@ class AdverseRadarMixin:
             )
         if notify and (n > 0 or open_before):
             entry = float(self.watched_entry or 0)
-            stop_px = float(getattr(self, "tv_sl", 0) or 0) or adverse_hard_stop_price(
-                entry, str(self.current_side or "LONG"),
-            )
+            stop_px = float(getattr(self, "tv_sl", 0) or 0)
             label = self._hard_stop_label()
             msg = (
                 f"雷达接管 · {reason} | 已撤 {label} {n} 笔"
@@ -1199,7 +1176,7 @@ class AdverseRadarMixin:
         return result
 
     def _arm_adverse_shield_at_open(self, live_qty: float) -> dict[str, Any]:
-        """开仓后挂一次 10% 硬止损（交易所优先，已存在则跳过）。"""
+        """开仓后挂 TV 硬止损（交易所优先，已存在则跳过）。"""
         return self._arm_adverse_staged_stops(live_qty, 0.0, repair=False, at_open=True)
 
     def _arm_adverse_staged_stops(
@@ -1488,16 +1465,16 @@ class AdverseRadarMixin:
             self.adverse_sl_prices = []
             tp_result = self._smart_realign_defenses(
                 new_qty, entry, dynamic_sl=None,
-                reason=f"10%硬止损触发 · {cause}",
+                reason=f"TV硬止损触发 · {cause}",
             )
             result.update({
                 "defense": tp_result,
-                "action_msg": f"10%硬止损全平 · {cause}",
+                "action_msg": f"TV硬止损全平 · {cause}",
             })
             self._alert(
                 "critical",
                 "ADVERSE_SL_HIT",
-                "防护盾触发 · 10%硬止损",
+                "TV硬止损触发",
                 f"{cause} 全平 {old_qty}→{new_qty}",
                 result,
             )

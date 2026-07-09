@@ -30,23 +30,33 @@ def test_adverse_move_pct_long_underwater():
     assert adverse_move_pct(2000.0, 1800.0, "LONG") == pytest.approx(0.10, rel=0.01)
 
 
-def test_compute_adverse_stop_plan_single_full_qty():
+def test_compute_adverse_stop_plan_tv_sl_only():
+    plan = compute_adverse_stop_plan(
+        2000.0, "LONG", 0.6,
+        round_qty_fn=lambda x: round(x, 3),
+        tv_sl_price=1900.0,
+    )
+    assert len(plan) == 1
+    assert plan[0]["source"] == "tv_sl"
+    assert plan[0]["stop_price"] == pytest.approx(1900.0, rel=0.001)
+    assert plan[0]["qty"] == pytest.approx(0.6, rel=0.01)
+
+
+def test_compute_adverse_stop_plan_empty_without_tv_sl():
     plan = compute_adverse_stop_plan(
         2000.0, "LONG", 0.6,
         round_qty_fn=lambda x: round(x, 3),
     )
-    assert len(plan) == 1
-    assert plan[0]["tier_pct"] == ADVERSE_HARD_STOP_PCT
-    assert plan[0]["stop_price"] == pytest.approx(1800.0, rel=0.001)
-    assert plan[0]["qty"] == pytest.approx(0.6, rel=0.01)
+    assert plan == []
 
 
 def test_match_adverse_tier_fill_full_position():
     tier = match_adverse_tier_fill(
         2000.0, "LONG", 0.6, 0.6,
         round_qty_fn=lambda x: round(x, 3),
+        tv_sl_price=1900.0,
     )
-    assert tier == pytest.approx(0.10, rel=0.01)
+    assert tier == pytest.approx(-1.0, rel=0.01)
 
 
 class _AdverseProbe(AdverseRadarMixin):
@@ -64,6 +74,7 @@ class _AdverseProbe(AdverseRadarMixin):
         3: {"margin": 0.35, "ratios": [0.18, 0.32, 0.50], "activation": 0.60, "trail_offset": 0.90},
     }
     tv_tps = [2050.0, 2100.0, 2150.0]
+    tv_sl = 1900.0
     current_atr = 30.0
     current_sl = 2000.0
     best_price = 2000.0

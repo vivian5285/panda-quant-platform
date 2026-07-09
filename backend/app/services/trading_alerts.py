@@ -95,10 +95,11 @@ ALERT_TYPE_TAGS = {
     "CAP_ALIGN_FAIL": "叠仓减仓失败",
     "CAP_ALIGN_OVERTRIM": "叠仓过度减仓",
     "UPDATE_SL": "TV硬止损更新",
+    "SIGNAL_RECV": "TV信号接收",
     "ADVERSE_SL": "TV硬止损",
     "ADVERSE_SL_DISARM": "防护盾撤销·雷达接管",
-    "ADVERSE_SL_HIT": "10%硬止损触发",
-    "ADVERSE_SL_MISALIGN": "10%硬止损未对齐",
+    "ADVERSE_SL_HIT": "TV硬止损触发",
+    "ADVERSE_SL_MISALIGN": "TV硬止损未对齐",
     "ADVERSE_SL_REPAIR": "逆势止损补挂",
     "FALSE_FLAT": "误报空仓",
     "CLOSE_ATTRIBUTION": "平仓归因",
@@ -170,6 +171,26 @@ def resolve_exchange_theme(exchange: str | None = None) -> dict:
 
 def qty_unit_for_exchange(exchange: str | None) -> str:
     return resolve_exchange_theme(exchange).get("qty_unit", "ETH")
+
+
+def format_signal_received_message(payload: dict | None) -> str:
+    data = dict(payload or {})
+    action = str(data.get("action") or "").upper()
+    entry_type = str(data.get("entry_type") or "").upper()
+    parts = [f"action={action}"]
+    if entry_type:
+        parts.append(f"entry_type={entry_type}")
+    if data.get("side"):
+        parts.append(f"side={data.get('side')}")
+    if data.get("price"):
+        parts.append(f"price={data.get('price')}")
+    if data.get("risk_pct") is not None:
+        parts.append(f"risk_pct={data.get('risk_pct')}%")
+    if data.get("qty_ratio") is not None:
+        parts.append(f"qty_ratio={data.get('qty_ratio')}")
+    if data.get("tv_sl"):
+        parts.append(f"tv_sl={data.get('tv_sl')}")
+    return " | ".join(parts)
 
 
 def _pct_text(val: float | None) -> str:

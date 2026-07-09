@@ -377,10 +377,7 @@ class PositionSupervisor(
         return bool(fields.get("uses_tv_sizing") or getattr(self, "_explicit_entry_type", False))
 
     def _resolve_entry_leverage(self) -> int:
-        fields = getattr(self, "_tv_entry_fields", None) or {}
-        tv_lev = fields.get("tv_leverage")
-        if tv_lev and float(tv_lev) > 0:
-            return max(1, int(float(tv_lev)))
+        """实盘杠杆固定为 VPS 配置（5×），TV leverage 仅作信号参考。"""
         return int(self.leverage)
 
     def _resolve_entry_qty(self, curr_px: float) -> tuple[float, dict]:
@@ -469,8 +466,15 @@ class PositionSupervisor(
         self._ensure_price_ws()
 
         shield = {}
+        tp_heal = {}
         if float(getattr(self, "tv_sl", 0) or 0) > 0:
             shield = self._sync_tv_hard_stop(real_qty, force_replace=True)
+        if self.tv_tps and any(float(t or 0) > 0 for t in self.tv_tps):
+            dynamic_sl = self._radar_sl_to_pass()
+            tp_heal = self._smart_realign_defenses(
+                real_qty, entry_price, dynamic_sl=dynamic_sl,
+                reason=f"{entry_type} 加仓后止盈数量对齐",
+            )
         self._save_state()
 
         theme = resolve_exchange_theme(self.exchange_id)
@@ -490,7 +494,11 @@ class PositionSupervisor(
         if shield:
             detail["shield"] = shield
             detail["tv_sl"] = self.tv_sl
+        if tp_heal:
+            detail["tp_realign"] = tp_heal
         verify_note = ""
+        if tp_heal.get("expected"):
+            verify_note += f" | 止盈 {tp_heal.get('matched', 0)}/{tp_heal.get('expected')} 档已对齐"
         if shield.get("aligned") or shield.get("skipped") == "live_already_aligned":
             sl_label = shield.get("label") or self._hard_stop_label()
             verify_note = f" | {sl_label}已核实 @{shield.get('stop_price', 0):.2f}"
@@ -759,9 +767,7 @@ class PositionSupervisor(
                     f"{detail.get('defense_expected')} 档"
                 )
             shield = getattr(self, "_last_shield_result", None) or {}
-            sl_label = shield.get("label") or (
-                self._hard_stop_label() if float(getattr(self, "tv_sl", 0) or 0) > 0 else "10%硬止损"
-            )
+            sl_label = shield.get("label") or self._hard_stop_label()
             if shield.get("aligned") or shield.get("skipped") == "live_already_aligned":
                 verify_note += f" | {sl_label}已核实 @{shield.get('stop_price', 0):.2f}"
             elif shield.get("armed") and shield.get("stop_price"):

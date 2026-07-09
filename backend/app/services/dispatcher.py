@@ -275,6 +275,22 @@ class SignalDispatcher:
             logger.warning("No eligible supervisors (all paused, settlement-gated, or inactive)")
             return {"dispatched": 0, "results": results, "reason": "all_users_paused"}
 
+        from app.services.trading_alerts import format_signal_received_message
+        notify_system(
+            "info",
+            "SIGNAL_RECV",
+            "TV 信号接收",
+            format_signal_received_message(payload),
+            {
+                "action": action,
+                "eligible_users": len(eligible),
+                "entry_type": payload.get("entry_type"),
+                "price": payload.get("price"),
+                "risk_pct": payload.get("risk_pct"),
+                "qty_ratio": payload.get("qty_ratio"),
+            },
+        )
+
         errors = []
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {

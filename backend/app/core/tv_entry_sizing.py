@@ -155,7 +155,7 @@ def resolve_entry_order_qty_eth(
 ) -> tuple[float, dict]:
     tv = dict(tv_fields or {})
     if tv.get("uses_tv_sizing") and tv.get("risk_pct"):
-        lev = int(tv.get("tv_leverage") or exchange_leverage or 1)
+        lev = int(exchange_leverage or 1)
         return compute_tv_eth_qty(
             live_balance=live_balance,
             initial_principal=initial_principal,
@@ -187,7 +187,7 @@ def resolve_entry_order_qty_deepcoin(
 ) -> tuple[int, dict]:
     tv = dict(tv_fields or {})
     if tv.get("uses_tv_sizing") and tv.get("risk_pct"):
-        lev = int(tv.get("tv_leverage") or exchange_leverage or 1)
+        lev = int(exchange_leverage or 1)
         return compute_tv_deepcoin_contracts(
             live_balance=live_balance,
             initial_principal=initial_principal,
