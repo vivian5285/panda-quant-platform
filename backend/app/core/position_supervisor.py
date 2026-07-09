@@ -165,6 +165,7 @@ class PositionSupervisor(
                     "adverse_consumed_tiers": list(self.adverse_consumed_tiers),
                     "adverse_arm_dingtalk_sent": bool(getattr(self, "adverse_arm_dingtalk_sent", False)),
                     "adverse_last_repair_ts": float(getattr(self, "_adverse_last_repair_ts", 0) or 0),
+                    "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
                 }, f)
         except Exception as e:
             logger.error(f"[User {self.user_id}] save state failed: {e}")
@@ -197,6 +198,7 @@ class PositionSupervisor(
                     ]
                     self._adverse_last_repair_ts = float(s.get("adverse_last_repair_ts", 0) or 0)
                     self.adverse_arm_dingtalk_sent = bool(s.get("adverse_arm_dingtalk_sent", False))
+                    self.tv_sl = float(s.get("tv_sl", 0) or 0)
         except Exception as e:
             logger.error(f"[User {self.user_id}] load state failed: {e}")
 
@@ -293,6 +295,7 @@ class PositionSupervisor(
             payload.get("tv_tp3", 0),
         ])
         self.risk_multiplier = float(payload.get("risk_multiplier", 1.0))
+        self._apply_tv_sl_from_payload(payload)
         close_reason = payload.get("reason", "策略指标反转/波动率安全退出")
         tv_side = str(payload.get("side") or "").upper().strip() or None
         tv_pnl_pct = payload.get("pnl_pct")
@@ -343,6 +346,8 @@ class PositionSupervisor(
                 **_tv_close_kwargs(),
             )
             return {"status": "ok", "action": raw_action, "detail": {"type": "close"}}
+        if raw_action == "UPDATE_SL":
+            return self._handle_update_sl(payload)
         if raw_action in ["LONG", "SHORT"]:
             self.last_tv_side = raw_action
             self._save_state()
@@ -512,6 +517,10 @@ class PositionSupervisor(
 
         dynamic_sl = self._radar_sl_to_pass()
         heal = self._rebuild_defenses(real_qty, entry_price, dynamic_sl=dynamic_sl)
+        if float(getattr(self, "tv_sl", 0) or 0) > 0:
+            shield = self._sync_tv_hard_stop(real_qty, force_replace=True)
+            detail["tv_sl"] = self.tv_sl
+            detail["shield"] = shield
         self._save_state()
         return {
             "status": "ok",
@@ -598,10 +607,15 @@ class PositionSupervisor(
                     f"{detail.get('defense_expected')} 档"
                 )
             shield = getattr(self, "_last_shield_result", None) or {}
+            sl_label = shield.get("label") or (
+                self._hard_stop_label() if float(getattr(self, "tv_sl", 0) or 0) > 0 else "10%硬止损"
+            )
             if shield.get("aligned") or shield.get("skipped") == "live_already_aligned":
-                verify_note += f" | 10%硬止损已核实 @{shield.get('stop_price', 0):.2f}"
+                verify_note += f" | {sl_label}已核实 @{shield.get('stop_price', 0):.2f}"
             elif shield.get("armed") and shield.get("stop_price"):
-                verify_note += f" | 10%硬止损 @{shield.get('stop_price', 0):.2f}"
+                verify_note += f" | {sl_label} @{shield.get('stop_price', 0):.2f}"
+            if float(getattr(self, "tv_sl", 0) or 0) > 0:
+                detail["tv_sl"] = self.tv_sl
             if shield:
                 detail["shield"] = shield
             enrich_suffix = ""
@@ -1313,23 +1327,24 @@ class PositionSupervisor(
                     f"{self.current_side} {pos['size']} ETH | 仅 {result['matched']}/{result['expected']} 档 | {summary}",
                     result,
                 )
-            shield = self._arm_adverse_shield_at_open(pos["size"])
+            shield = self._sync_tv_hard_stop(pos["size"], at_open=True)
             self._last_shield_result = shield
+            sl_label = shield.get("label") or self._hard_stop_label()
             shield_note = ""
             if shield.get("aligned") or shield.get("skipped") == "live_already_aligned":
-                shield_note = f" | 10%硬止损已核实 @{shield.get('stop_price', 0):.2f}"
+                shield_note = f" | {sl_label}已核实 @{shield.get('stop_price', 0):.2f}"
             elif shield.get("armed"):
-                shield_note = f" | 10%硬止损 @{shield.get('stop_price', 0):.2f}"
+                shield_note = f" | {sl_label} @{shield.get('stop_price', 0):.2f}"
             if shield.get("placed", 0) > 0:
                 self._log(
                     "ADVERSE_SL",
-                    f"🛡️ 开仓 10% 硬止损已挂 @{shield.get('stop_price', 0):.2f}{shield_note}",
+                    f"🛡️ 开仓 {sl_label}已挂 @{shield.get('stop_price', 0):.2f}{shield_note}",
                     shield,
                 )
             elif shield.get("aligned") or shield.get("skipped") == "live_already_aligned":
                 self._log(
                     "ADVERSE_SL",
-                    f"🛡️ 开仓 10% 硬止损实盘已存在 @{shield.get('stop_price', 0):.2f}",
+                    f"🛡️ 开仓 {sl_label}实盘已存在 @{shield.get('stop_price', 0):.2f}",
                     shield,
                 )
         self._save_state()
@@ -1796,6 +1811,7 @@ class PositionSupervisor(
         moved = False
         if self.current_side == "LONG":
             breakeven_floor = round_price(self.watched_entry + fee_buffer)
+            breakeven_floor = self._clamp_radar_sl_to_tv_floor(breakeven_floor)
             new_sl = round_price(max(self.best_price - trail_offset, breakeven_floor))
             on_book = self._has_stop_sl_near(new_sl)
             if self._radar_activation_reached(curr_px) and not on_book:
@@ -1836,6 +1852,7 @@ class PositionSupervisor(
                     moved = True
         else:
             breakeven_floor = round_price(self.watched_entry - fee_buffer)
+            breakeven_floor = self._clamp_radar_sl_to_tv_floor(breakeven_floor)
             new_sl = round_price(min(self.best_price + trail_offset, breakeven_floor))
             on_book = self._has_stop_sl_near(new_sl)
             should_trail = (
@@ -2144,6 +2161,7 @@ class PositionSupervisor(
 
         self.monitoring = False
         self._disarm_adverse_staged_stops()
+        self._reset_adverse_radar(keep_tv_sl=False)
         self.watched_qty = 0.0
         self.initial_qty = 0.0
         self.consumed_tp_levels = []

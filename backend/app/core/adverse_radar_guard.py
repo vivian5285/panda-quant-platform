@@ -10,8 +10,9 @@ from app.core.symbol_precision import round_price, round_quantity
 
 logger = logging.getLogger(__name__)
 
-# Single hard stop at open: 10% adverse move from entry → full close (ETH price anchor).
+# Single hard stop at open: TV tv_sl when synced, else legacy 10% from entry.
 ADVERSE_HARD_STOP_PCT = 0.10
+TV_SL_TIER_MARKER = -1.0  # plan tier_pct when stop price comes from TV
 ADVERSE_STOP_TOLERANCE = 2.0
 ADVERSE_REPAIR_COOLDOWN_SEC = 20.0
 ADVERSE_MAX_STOP_ORDERS = 1
@@ -21,6 +22,16 @@ ADVERSE_VERIFY_RETRY_DELAY_SEC = 0.5
 ADVERSE_ARM_PCT = ADVERSE_HARD_STOP_PCT
 ADVERSE_SL_TIERS = (ADVERSE_HARD_STOP_PCT,)
 ADVERSE_MAX_TIER_ORDERS = ADVERSE_MAX_STOP_ORDERS
+
+
+def parse_tv_sl(raw) -> float | None:
+    if raw is None or raw == "":
+        return None
+    try:
+        px = round_price(float(raw))
+        return px if px > 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def adverse_hard_stop_price(entry: float, side: str) -> float:
@@ -133,26 +144,42 @@ def compute_adverse_stop_plan(
     *,
     round_qty_fn,
     consumed_tiers: set[float] | None = None,
+    tv_sl_price: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Single 10% hard stop — full live qty, one order."""
-    if entry <= 0 or live_qty <= 0:
-        return []
-    consumed = set(consumed_tiers or [])
-    if ADVERSE_HARD_STOP_PCT in consumed or any(
-        abs(float(t) - ADVERSE_HARD_STOP_PCT) < 1e-6 for t in consumed
-    ):
+    """Full-position hard stop — TV tv_sl when provided, else legacy 10% tier."""
+    if live_qty <= 0:
         return []
     qty = round_qty_fn(live_qty)
     if qty <= 0:
         return []
-    stop_px = adverse_hard_stop_price(entry, side)
+
+    stop_px = 0.0
+    tier_pct = ADVERSE_HARD_STOP_PCT
+    source = "pct10"
+
+    tv_px = parse_tv_sl(tv_sl_price)
+    if tv_px:
+        stop_px = tv_px
+        tier_pct = TV_SL_TIER_MARKER
+        source = "tv_sl"
+    elif entry > 0 and side in ("LONG", "SHORT"):
+        consumed = set(consumed_tiers or [])
+        if ADVERSE_HARD_STOP_PCT in consumed or any(
+            abs(float(t) - ADVERSE_HARD_STOP_PCT) < 1e-6 for t in consumed
+        ):
+            return []
+        stop_px = adverse_hard_stop_price(entry, side)
+    else:
+        return []
+
     if stop_px <= 0:
         return []
     return [{
-        "tier_pct": ADVERSE_HARD_STOP_PCT,
+        "tier_pct": tier_pct,
         "stop_price": stop_px,
         "qty": qty,
         "level": 1,
+        "source": source,
     }]
 
 
@@ -190,6 +217,8 @@ class AdverseRadarMixin:
     adverse_consumed_tiers: list[float]
 
     def _init_adverse_radar_fields(self) -> None:
+        if not hasattr(self, "tv_sl"):
+            self.tv_sl = 0.0
         if not hasattr(self, "adverse_sl_armed"):
             self.adverse_sl_armed = False
         if not hasattr(self, "adverse_sl_prices"):
@@ -203,15 +232,62 @@ class AdverseRadarMixin:
         if not hasattr(self, "_pending_adverse_algo_ids"):
             self._pending_adverse_algo_ids = []
 
-    def _reset_adverse_radar(self) -> None:
+    def _reset_adverse_radar(self, *, keep_tv_sl: bool = True) -> None:
+        preserved = float(getattr(self, "tv_sl", 0) or 0) if keep_tv_sl else 0.0
         self.adverse_sl_armed = False
         self.adverse_sl_prices = []
         self.adverse_consumed_tiers = []
         self._adverse_last_repair_ts = 0.0
         self.adverse_arm_dingtalk_sent = False
         self._pending_adverse_algo_ids = []
+        self.tv_sl = preserved
+
+    def _hard_stop_label(self) -> str:
+        if float(getattr(self, "tv_sl", 0) or 0) > 0:
+            return "TV硬止损"
+        return "10%硬止损"
+
+    def _apply_tv_sl_from_payload(self, payload: dict | None) -> float | None:
+        """Parse tv_sl from LONG/SHORT/UPDATE_SL webhook; mutates self.tv_sl when present."""
+        self._init_adverse_radar_fields()
+        if not payload:
+            return None
+        raw = payload.get("tv_sl")
+        if raw is None or raw == "":
+            return None
+        px = parse_tv_sl(raw)
+        if px:
+            self.tv_sl = px
+        return px
+
+    def _clamp_radar_sl_to_tv_floor(self, sl: float) -> float:
+        """Radar breakeven must never sit below TV hard stop (LONG) or above it (SHORT)."""
+        tv_sl = float(getattr(self, "tv_sl", 0) or 0)
+        if tv_sl <= 0 or sl <= 0:
+            return sl
+        side = getattr(self, "current_side", None)
+        if side == "LONG":
+            return round_price(max(sl, tv_sl))
+        if side == "SHORT":
+            return round_price(min(sl, tv_sl))
+        return sl
+
+    def _shield_tier_prices(self) -> set[float]:
+        """All stop trigger prices used to identify TV/legacy hard stops on the book."""
+        prices = set(self._adverse_tier_stop_prices())
+        for px in (self.adverse_sl_prices or []):
+            try:
+                p = round(float(px), 2)
+                if p > 0:
+                    prices.add(p)
+            except (TypeError, ValueError):
+                continue
+        return prices
 
     def _adverse_tier_stop_prices(self) -> set[float]:
+        tv_sl = float(getattr(self, "tv_sl", 0) or 0)
+        if tv_sl > 0:
+            return {round_price(tv_sl)}
         return adverse_tier_stop_prices(
             float(self.watched_entry or 0),
             str(self.current_side or "LONG"),
@@ -270,13 +346,107 @@ class AdverseRadarMixin:
         return {round(float(t), 4) for t in (self.adverse_consumed_tiers or [])}
 
     def _compute_adverse_stop_plan(self, live_qty: float) -> list[dict[str, Any]]:
+        tv_sl = float(getattr(self, "tv_sl", 0) or 0)
         return compute_adverse_stop_plan(
             float(self.watched_entry or 0),
             str(self.current_side or "LONG"),
             float(live_qty),
             round_qty_fn=self._adverse_round_qty,
             consumed_tiers=self._adverse_consumed_set(),
+            tv_sl_price=tv_sl if tv_sl > 0 else None,
         )
+
+    def _sync_tv_hard_stop(
+        self,
+        live_qty: float,
+        *,
+        at_open: bool = False,
+        force_replace: bool = False,
+    ) -> dict[str, Any]:
+        """Arm or refresh hard stop from self.tv_sl (or legacy 10% when tv_sl unset)."""
+        live_qty = self._resolve_adverse_live_qty(live_qty)
+        if live_qty <= 0:
+            return {"armed": False, "reason": "no_live_position", "live_qty": 0}
+
+        label = self._hard_stop_label()
+        tv_sl = float(getattr(self, "tv_sl", 0) or 0)
+        if not force_replace:
+            audit = self._sync_adverse_shield_from_exchange(live_qty)
+            if audit.get("aligned"):
+                stop_px = (audit.get("plan") or [{}])[0].get("stop_price") or tv_sl
+                return {
+                    "armed": True,
+                    "placed": 0,
+                    "skipped": "live_already_aligned",
+                    "stop_price": stop_px,
+                    "label": label,
+                    **audit,
+                }
+
+        if force_replace or (tv_sl > 0 and not at_open):
+            self._cancel_adverse_stop_orders()
+            self.adverse_sl_armed = False
+            self.adverse_sl_prices = []
+
+        if at_open and tv_sl <= 0:
+            return self._arm_adverse_shield_at_open(live_qty)
+
+        return self._arm_adverse_staged_stops(
+            live_qty, 0.0, repair=force_replace or tv_sl > 0, at_open=at_open,
+        )
+
+    def _handle_update_sl(self, payload: dict) -> dict[str, Any]:
+        """UPDATE_SL: cancel old TV hard stop and re-place at new tv_sl (idempotent)."""
+        self._init_adverse_radar_fields()
+        side = str(payload.get("side") or "").upper().strip()
+        tv_sl = parse_tv_sl(payload.get("tv_sl"))
+        if not tv_sl:
+            return {"status": "skipped", "reason": "invalid_tv_sl"}
+
+        pos = self._get_active_position() if hasattr(self, "_get_active_position") else None
+        if not pos or float(pos.get("size", 0) or 0) <= 0:
+            self.tv_sl = tv_sl
+            self._save_state() if hasattr(self, "_save_state") else None
+            return {"status": "skipped", "reason": "no_position", "tv_sl": tv_sl}
+
+        live_side = str(pos.get("side") or self.current_side or "").upper()
+        if side and live_side and side != live_side:
+            self._log(
+                "WARN",
+                f"UPDATE_SL 方向 {side} 与实盘 {live_side} 不一致（按实盘更新止损）",
+                {"tv_side": side, "live_side": live_side, "tv_sl": tv_sl},
+            )
+
+        old_sl = float(getattr(self, "tv_sl", 0) or 0)
+        self.tv_sl = tv_sl
+        live_qty = float(pos.get("size", 0))
+
+        if old_sl > 0 and abs(old_sl - tv_sl) <= ADVERSE_STOP_TOLERANCE:
+            audit = self._sync_adverse_shield_from_exchange(live_qty)
+            if audit.get("aligned"):
+                detail = {
+                    "tv_sl": tv_sl,
+                    "side": live_side,
+                    "skipped": "idempotent",
+                    "label": self._hard_stop_label(),
+                }
+                self._log("UPDATE_SL", f"TV硬止损未变 @{tv_sl:.2f}，跳过", detail)
+                return {"status": "ok", "action": "UPDATE_SL", "detail": detail}
+
+        result = self._sync_tv_hard_stop(live_qty, force_replace=True)
+        result["tv_sl"] = tv_sl
+        result["side"] = live_side
+        result["label"] = self._hard_stop_label()
+        msg = f"{result['label']} 更新 @{tv_sl:.2f}"
+        if result.get("placed", 0) > 0:
+            msg += f" | 已撤旧单并新挂 {result['placed']} 笔"
+        elif result.get("skipped"):
+            msg += f" | {result['skipped']}"
+        self._log("UPDATE_SL", msg, result)
+        self._alert("info", "UPDATE_SL", f"{result['label']} · 已同步", msg, result)
+        if hasattr(self, "_save_state"):
+            self._save_state()
+        return {"status": "ok", "action": "UPDATE_SL", "detail": result}
 
     def _mark_adverse_tier_consumed(self, tier_pct: float) -> None:
         t = round(float(tier_pct), 4)
@@ -512,7 +682,7 @@ class AdverseRadarMixin:
     def _collect_adverse_stop_orders(self) -> list[dict]:
         orders: list[dict] = []
         symbol = getattr(self, "symbol", None)
-        tier_prices = self._adverse_tier_stop_prices()
+        tier_prices = self._shield_tier_prices()
 
         if getattr(self, "exchange_id", "") == "deepcoin":
             try:
@@ -864,9 +1034,12 @@ class AdverseRadarMixin:
             )
         if notify and (n > 0 or open_before):
             entry = float(self.watched_entry or 0)
-            stop_px = adverse_hard_stop_price(entry, str(self.current_side or "LONG"))
+            stop_px = float(getattr(self, "tv_sl", 0) or 0) or adverse_hard_stop_price(
+                entry, str(self.current_side or "LONG"),
+            )
+            label = self._hard_stop_label()
             msg = (
-                f"雷达接管 · {reason} | 已撤 10% 硬止损 {n} 笔"
+                f"雷达接管 · {reason} | 已撤 {label} {n} 笔"
                 + (f" @{stop_px:.2f}" if stop_px > 0 else "")
             )
             self._log("ADVERSE_SL_DISARM", msg, result)
@@ -976,6 +1149,8 @@ class AdverseRadarMixin:
         detail = {
             "adverse_pct": round(adverse_pct * 100, 2) if adverse_pct else 0.0,
             "hard_stop_pct": round(ADVERSE_HARD_STOP_PCT * 100, 1),
+            "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
+            "shield_label": self._hard_stop_label(),
             "entry": self.watched_entry,
             "side": self.current_side,
             "exchange": getattr(self, "exchange_id", "binance"),
@@ -1011,15 +1186,17 @@ class AdverseRadarMixin:
             }
         if not repair and placed > 0 and aligned and not self.adverse_arm_dingtalk_sent:
             stop_px = detail["stop_price"]
+            label = self._hard_stop_label()
             msg = (
-                f"10% 硬止损已挂 | 开仓价 {detail['entry']:.2f} → 止损 @{stop_px:.2f} | "
+                f"{label} 已挂 | 开仓价 {detail['entry']:.2f} → 止损 @{stop_px:.2f} | "
                 f"全平 {detail['live_qty']}"
             )
             self._log("ADVERSE_SL", msg, detail)
-            self._alert("warning", "ADVERSE_SL", "防护盾 · 10%硬止损", msg, detail)
+            self._alert("warning", "ADVERSE_SL", f"防护盾 · {label}", msg, detail)
             self.adverse_arm_dingtalk_sent = True
         elif repair and placed > 0:
-            msg = f"10% 硬止损补挂 | @{detail['stop_price']:.2f} qty={detail['live_qty']}"
+            label = self._hard_stop_label()
+            msg = f"{label} 补挂 | @{detail['stop_price']:.2f} qty={detail['live_qty']}"
             self._log("ADVERSE_SL_REPAIR", msg, detail)
         if hasattr(self, "_save_state"):
             self._save_state()
@@ -1081,7 +1258,7 @@ class AdverseRadarMixin:
         tp3 = float(self.tv_tps[2]) if len(getattr(self, "tv_tps", []) or []) > 2 else 0.0
 
         if self.current_side == "LONG":
-            floor_sl = round_price(entry + fee_buffer)
+            floor_sl = self._clamp_radar_sl_to_tv_floor(round_price(entry + fee_buffer))
             if float(getattr(self, "current_sl", 0) or 0) < floor_sl:
                 self.current_sl = floor_sl
             if curr_px > 0:
@@ -1091,7 +1268,7 @@ class AdverseRadarMixin:
                 if trail > self.current_sl:
                     self.current_sl = min(trail, round_price(tp3 * 0.995))
         else:
-            floor_sl = round_price(entry - fee_buffer)
+            floor_sl = self._clamp_radar_sl_to_tv_floor(round_price(entry - fee_buffer))
             if float(getattr(self, "current_sl", 0) or 0) <= 0 or self.current_sl > floor_sl:
                 self.current_sl = floor_sl
             if curr_px > 0:

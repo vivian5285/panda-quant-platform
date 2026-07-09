@@ -102,3 +102,23 @@ def test_v6975_close_tp3():
     assert err is None
     assert data["action"] == "CLOSE_TP3"
     assert data["reason"] == "TP3完美收网"
+
+
+def test_v6975_entry_with_tv_sl():
+    raw = (
+        '{"action":"LONG","secret":"528586","price":70000,"regime":3,'
+        '"atr":42.5,"tv_tp1":70500,"tv_tp2":71000,"tv_tp3":72000,'
+        '"tv_sl":64428}'
+    )
+    data, err = parse_webhook_payload(raw)
+    assert err is None
+    assert data["action"] == "LONG"
+    assert data["tv_sl"] == 64428
+
+
+def test_v6975_update_sl():
+    raw = '{"action":"UPDATE_SL","secret":"528586","side":"LONG","tv_sl":64500}'
+    data, err = parse_webhook_payload(raw)
+    assert err is None
+    assert data["action"] == "UPDATE_SL"
+    assert data["tv_sl"] == 64500

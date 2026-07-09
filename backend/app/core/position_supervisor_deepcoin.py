@@ -423,6 +423,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "adverse_consumed_tiers": list(self.adverse_consumed_tiers),
                     "adverse_arm_dingtalk_sent": bool(getattr(self, "adverse_arm_dingtalk_sent", False)),
                     "adverse_last_repair_ts": float(getattr(self, "_adverse_last_repair_ts", 0) or 0),
+                    "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
                 }, f)
         except Exception as e:
             logger.error(f"保存状态失败: {e}")
@@ -1598,6 +1599,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         self.current_atr = self._safe_float(payload.get("atr"), 30.0)
         self.risk_multiplier = float(payload.get("risk_multiplier", 1.0))
+        self._apply_tv_sl_from_payload(payload)
         self.tv_price = self._safe_float(payload.get("price"), 0.0)
         self.tv_tps = self._sanitize_tp_prices([
             self._safe_float(payload.get("tv_tp1"), 0),
@@ -1622,7 +1624,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if not raw_action:
             logger.warning("TV 信号缺少 action，已忽略")
             return
-        if raw_action in ("LONG", "SHORT", "CLOSE", "CLOSE_PROTECT", "CLOSE_TP3") or \
+        if raw_action in ("LONG", "SHORT", "CLOSE", "CLOSE_PROTECT", "CLOSE_TP3", "UPDATE_SL") or \
                 raw_action.startswith("CLOSE"):
             self._record_tv_signal(payload, raw_action)
 
@@ -1670,6 +1672,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 self._close_all(f"🛑 {tv_reason or '触碰硬止损或追踪保本线'}", **_tv_close_kwargs())
             elif raw_action == "CLOSE":
                 self._close_all(f"🧹 换防清场：{tv_reason}", **_tv_close_kwargs())
+            elif raw_action == "UPDATE_SL":
+                self._handle_update_sl(payload)
             elif raw_action in ["LONG", "SHORT"]:
                 self.last_tv_side = raw_action
                 self._save_state()
@@ -1846,6 +1850,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         dynamic_sl = self._radar_sl_to_pass()
         self._rebuild_defenses(real_qty, entry_price, dynamic_sl=dynamic_sl)
+        if float(getattr(self, "tv_sl", 0) or 0) > 0:
+            shield = self._sync_tv_hard_stop(real_qty, force_replace=True)
+            detail["tv_sl"] = self.tv_sl
+            detail["shield"] = shield
         self._save_state()
 
     def _open_position(self, action, curr_px):
@@ -1924,10 +1932,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     f"{self.current_side} {verified['size']}张 | 仅 {matched}/{expected} 档 | "
                     f"{self._format_audit_summary(audit)}",
                 )
-            shield = self._arm_adverse_shield_at_open(self._safe_qty(verified["size"]))
+            shield = self._sync_tv_hard_stop(self._safe_qty(verified["size"]), at_open=True)
             if shield.get("placed", 0) > 0:
+                label = shield.get("label") or self._hard_stop_label()
                 logger.info(
-                    f"🛡️ 开仓 10% 硬止损已挂 @{shield.get('stop_price', 0):.2f} | "
+                    f"🛡️ 开仓 {label}已挂 @{shield.get('stop_price', 0):.2f} | "
                     f"{verified['size']}张"
                 )
         else:
@@ -1982,7 +1991,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         fee_buffer = self.watched_entry * 0.0015
 
         if self.current_side == "LONG":
-            breakeven_floor = self.watched_entry + fee_buffer
+            breakeven_floor = self._clamp_radar_sl_to_tv_floor(self.watched_entry + fee_buffer)
             new_sl = max(round(self.best_price - trail_offset, 2), breakeven_floor)
             on_book = self._has_trigger_sl_near(new_sl)
             if self._radar_activation_reached(curr_px) and not on_book:
@@ -2017,7 +2026,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     return True
                 logger.warning(f"雷达钉钉跳过：条件止损 @{new_sl} 实盘核查未通过")
         else:
-            breakeven_floor = self.watched_entry - fee_buffer
+            breakeven_floor = self._clamp_radar_sl_to_tv_floor(self.watched_entry - fee_buffer)
             new_sl = min(round(self.best_price + trail_offset, 2), breakeven_floor)
             on_book = self._has_trigger_sl_near(new_sl)
             if self._radar_activation_reached(curr_px) and not on_book:
@@ -2303,6 +2312,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         self.monitoring = False
         self._disarm_adverse_staged_stops()
+        self._reset_adverse_radar(keep_tv_sl=False)
         self.watched_qty = 0
         self.initial_qty = 0
         self.current_side = None
@@ -2363,6 +2373,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     ]
                     self._adverse_last_repair_ts = float(s.get("adverse_last_repair_ts", 0) or 0)
                     self.adverse_arm_dingtalk_sent = bool(s.get("adverse_arm_dingtalk_sent", False))
+                    self.tv_sl = float(s.get("tv_sl", 0) or 0)
 
             if self._scan_and_sweep_dust_on_startup():
                 return
