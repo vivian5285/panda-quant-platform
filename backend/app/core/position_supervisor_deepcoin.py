@@ -37,7 +37,7 @@ from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, m
 from app.core.position_qty_tolerance import tp_slice_qty_tolerance
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.adverse_radar_guard import AdverseRadarMixin, ADVERSE_STOP_TOLERANCE
-from app.core.startup_reconcile import StartupReconcileMixin, format_startup_defense_summary
+from app.core.startup_reconcile import StartupReconcileMixin, format_startup_defense_summary, recovery_section, apply_tv_sl_from_sources
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 from app.services.close_alert_utils import (
@@ -837,9 +837,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if not recovery:
             return report
 
-        trade = recovery.get("trade") or {}
-        open_log = recovery.get("open_log") or {}
-        latest_tv = recovery.get("latest_tv") or {}
+        trade = recovery_section(recovery, "trade")
+        open_log = recovery_section(recovery, "open_log")
+        latest_tv = recovery_section(recovery, "latest_tv")
 
         if trade:
             report["sources"].append("db_trade")
@@ -885,6 +885,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.current_atr = float(latest_tv["atr"])
             elif tv_action.startswith("CLOSE"):
                 report["warnings"].append("tv_close_while_position")
+
+        apply_tv_sl_from_sources(self, latest_tv, open_log, trade)
 
         report["last_tv_side"] = self.last_tv_side
         report["tv_tps"] = list(self.tv_tps)
@@ -2742,9 +2744,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             "tv_tps": list(self.tv_tps),
         }
         if recovery_context:
-            trade = recovery_context.get("trade") or {}
-            open_log = recovery_context.get("open_log") or {}
-            latest_tv = recovery_context.get("latest_tv") or {}
+            trade = recovery_section(recovery_context, "trade")
+            open_log = recovery_section(recovery_context, "open_log")
+            latest_tv = recovery_section(recovery_context, "latest_tv")
             reconcile = self._reconcile_radar_context(recovery_context)
             audit.update(reconcile)
             open_qty = float(open_log.get("qty") or trade.get("quantity") or 0)

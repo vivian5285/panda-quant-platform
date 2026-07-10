@@ -9,7 +9,7 @@ from typing import Callable, Optional
 
 from app.core.binance_client import BinanceClient
 from app.core.adverse_radar_guard import AdverseRadarMixin
-from app.core.startup_reconcile import StartupReconcileMixin, format_startup_defense_summary
+from app.core.startup_reconcile import StartupReconcileMixin, format_startup_defense_summary, recovery_section, apply_tv_sl_from_sources
 from app.core.binance_smart_defense import BinanceSmartDefenseMixin
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.position_manager import PositionManager
@@ -931,9 +931,9 @@ class PositionSupervisor(
         if not recovery:
             return report
 
-        trade = recovery.get("trade") or {}
-        open_log = recovery.get("open_log") or {}
-        latest_tv = recovery.get("latest_tv") or {}
+        trade = recovery_section(recovery, "trade")
+        open_log = recovery_section(recovery, "open_log")
+        latest_tv = recovery_section(recovery, "latest_tv")
 
         if trade:
             report["sources"].append("db_trade")
@@ -977,8 +977,12 @@ class PositionSupervisor(
                     self.regime = clamp_regime(latest_tv["regime"])
                 if latest_tv.get("atr"):
                     self.current_atr = float(latest_tv["atr"])
+                if latest_tv.get("price"):
+                    self.tv_price = round_price(latest_tv["price"])
             elif tv_action.startswith("CLOSE"):
                 report["warnings"].append("tv_close_while_position")
+
+        apply_tv_sl_from_sources(self, latest_tv, open_log, trade)
 
         report["last_tv_side"] = self.last_tv_side
         report["tv_tps"] = list(self.tv_tps)
@@ -2397,7 +2401,7 @@ class PositionSupervisor(
                 recovery_context = {"trade": trade_context}
 
             if recovery_context:
-                trade = recovery_context.get("trade") or {}
+                trade = recovery_section(recovery_context, "trade")
                 if open_trade_id is None and trade.get("id"):
                     open_trade_id = trade["id"]
                     audit["open_trade_id"] = open_trade_id
@@ -2427,7 +2431,8 @@ class PositionSupervisor(
 
             self.watched_qty = abs(real_amt)
             open_log_qty = float(reconcile.get("open_log_qty") or 0)
-            trade_qty = float((recovery_context or {}).get("trade", {}).get("quantity") or 0)
+            trade_ctx = recovery_section(recovery_context, "trade")
+            trade_qty = float(trade_ctx.get("quantity") or 0)
             saved_initial = float(self.initial_qty or 0)
             restored = max(saved_initial, open_log_qty, trade_qty)
             if restored > self.watched_qty:
@@ -2443,6 +2448,14 @@ class PositionSupervisor(
                     self.add_count = min(max(inferred, 0), self._max_add_times())
             self.watched_entry = float(pos["entryPrice"])
             self.current_trade_id = open_trade_id
+            if not open_trade_id and not trade_ctx:
+                audit["adopted_manual"] = True
+                audit["adopt_source"] = "live_position+latest_tv"
+                self._log(
+                    "STARTUP",
+                    f"人工/外部持仓接管: {self.current_side} {self.watched_qty} @ {self.watched_entry} "
+                    f"| TV={self.last_tv_side} SL={getattr(self, 'tv_sl', 0)}",
+                )
 
             if self.best_price <= 0:
                 self.best_price = self.watched_entry

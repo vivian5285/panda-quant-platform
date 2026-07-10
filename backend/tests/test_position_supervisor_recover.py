@@ -131,3 +131,51 @@ def test_recover_falls_back_to_db_trade_context(supervisor):
 
 def test_min_sl_move_matches_tick():
     assert MIN_SL_MOVE == 0.01
+
+
+def test_recover_manual_position_when_trade_is_null(supervisor, monkeypatch):
+    """Manual exchange open: recovery_context.trade is None — must not crash."""
+    monkeypatch.setattr("app.core.position_supervisor.threading.Thread.start", lambda self: None)
+    supervisor.client.get_current_price.return_value = 3650.0
+    supervisor.leverage = 5
+    supervisor.initial_principal = 700.0
+    supervisor.client.get_available_balance.return_value = 1000.0
+
+    with patch.object(
+        supervisor.position_manager,
+        "get_position",
+        return_value={"positionAmt": "0.42", "entryPrice": "3620.0"},
+    ), patch.object(supervisor, "_unified_startup_defense_reconcile") as ensure:
+        ensure.return_value = {
+            "tp_defense": {"skipped": False, "aligned": True, "matched": 3, "expected": 3},
+            "defenses_skipped": False,
+            "defenses_rebuilt": True,
+            "tp_matched": 3,
+            "tp_expected": 3,
+            "shield": {"aligned": True},
+            "startup_summary": "浮亏/防护轨 | TP3/3 | TV硬止损✓",
+            "pnl_track": "loss_shield",
+        }
+        audit = supervisor.recover_on_startup(
+            open_trade_id=None,
+            recovery_context={
+                "trade": None,
+                "open_log": None,
+                "latest_tv": {
+                    "action": "LONG",
+                    "regime": 3,
+                    "atr": 30.0,
+                    "price": 3620.0,
+                    "tv_sl": 3550.0,
+                    "tv_tps": [3680.0, 3720.0, 3780.0],
+                },
+                "checks": [],
+            },
+        )
+
+    assert audit.get("error") is None
+    assert audit["has_position"] is True
+    assert audit.get("adopted_manual") is True
+    assert supervisor.tv_sl == pytest.approx(3550.0)
+    assert supervisor.tv_tps == [3680.0, 3720.0, 3780.0]
+    ensure.assert_called_once()

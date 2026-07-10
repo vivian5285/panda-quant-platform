@@ -47,6 +47,8 @@ def get_latest_tv_signal(db: Session) -> dict | None:
             summary.get("tv_tp2", 0),
             summary.get("tv_tp3", 0),
         ]),
+        "tv_sl": float(summary.get("tv_sl", 0) or 0),
+        "entry_type": (summary.get("entry_type") or "").upper() or None,
         "reason": summary.get("reason"),
     }
 
@@ -76,6 +78,7 @@ def get_open_trade_log_detail(db: Session, user_id: int, trade_id: int | None = 
         "atr": float(detail.get("atr", 0) or 0),
         "tv_tps": normalize_tv_targets(detail.get("tv_tps") or []),
         "tv_price": float(detail.get("tv_price", 0) or 0),
+        "tv_sl": float(detail.get("tv_sl", 0) or 0),
     }
 
 

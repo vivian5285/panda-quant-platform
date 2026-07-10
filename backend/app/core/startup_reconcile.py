@@ -17,6 +17,27 @@ logger = logging.getLogger(__name__)
 STARTUP_LIVE_SETTLE_SEC = 1.0
 
 
+def recovery_section(ctx: dict | None, key: str) -> dict:
+    """Safe nested recovery access — .get(key, {}) still returns None if value is null."""
+    if not ctx:
+        return {}
+    val = ctx.get(key)
+    return val if isinstance(val, dict) else {}
+
+
+def apply_tv_sl_from_sources(target, *sources: dict | None) -> float:
+    """Apply first valid tv_sl from recovery sources (latest TV preferred for manual adopt)."""
+    for src in sources:
+        if not src:
+            continue
+        sl = float(src.get("tv_sl") or 0)
+        if sl > 0:
+            if hasattr(target, "tv_sl"):
+                target.tv_sl = sl
+            return sl
+    return float(getattr(target, "tv_sl", 0) or 0)
+
+
 def classify_startup_pnl_track(
     entry: float,
     curr_px: float,

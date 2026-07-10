@@ -400,6 +400,8 @@ def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
         lines.append(_line("首仓基准", f"{float(detail['base_qty']):.4f} {unit}"))
     if detail.get("add_count") is not None:
         lines.append(_line("已加仓", f"{int(detail['add_count'])} 次"))
+    if detail.get("adopted_manual"):
+        lines.append(_line("接管类型", "人工/外部持仓 · 按最新 TV 补挂"))
     if detail.get("startup_summary"):
         lines.append(_line("对账摘要", str(detail["startup_summary"])))
     tp_m, tp_e = detail.get("tp_matched"), detail.get("tp_expected")
