@@ -14,8 +14,11 @@ from app.core.startup_reconcile import (
     apply_tv_sl_from_sources,
     finalize_recovery_tv_params,
     format_startup_defense_summary,
+    is_manual_same_direction_position,
+    is_tv_close_action,
     prepare_manual_adopt,
     recovery_section,
+    should_skip_tv_close_for_manual,
 )
 from app.core.binance_smart_defense import BinanceSmartDefenseMixin
 from app.core.position_cap_guard import PositionCapGuardMixin
@@ -337,6 +340,13 @@ class PositionSupervisor(
         tv_close = extract_tv_close_fields(payload)
         tv_reason = tv_close.get("tv_reason") or close_reason
 
+        if is_tv_close_action(raw_action):
+            skip, skip_reason = should_skip_tv_close_for_manual(self)
+            if skip:
+                return self._preserve_manual_on_tv_close(
+                    raw_action, skip_reason=skip_reason, tv_reason=tv_reason,
+                )
+
         def _tv_close_kwargs() -> dict:
             return {
                 "tv_side": tv_side or tv_close.get("tv_side"),
@@ -477,6 +487,8 @@ class PositionSupervisor(
             return self._add_to_position(action, curr_px, entry_type)
 
         if has_pos:
+            if is_manual_same_direction_position(self, action):
+                return self._preserve_manual_on_tv_open_reopen(action, curr_px)
             self._log("SIGNAL", f"⚡ TV OPEN [{action}] 先平后开")
             if not self._force_flat_before_open("TV OPEN 先平后开"):
                 return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}

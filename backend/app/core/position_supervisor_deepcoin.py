@@ -42,8 +42,11 @@ from app.core.startup_reconcile import (
     apply_tv_sl_from_sources,
     finalize_recovery_tv_params,
     format_startup_defense_summary,
+    is_manual_same_direction_position,
+    is_tv_close_action,
     prepare_manual_adopt,
     recovery_section,
+    should_skip_tv_close_for_manual,
 )
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
@@ -1693,6 +1696,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             return
 
         try:
+            if is_tv_close_action(raw_action):
+                skip, skip_reason = should_skip_tv_close_for_manual(self)
+                if skip:
+                    return self._preserve_manual_on_tv_close(
+                        raw_action, skip_reason=skip_reason, tv_reason=tv_reason,
+                    )
+
             self.monitoring = False
             if raw_action == "CLOSE_PROTECT" or raw_action.startswith("CLOSE_PROTECT"):
                 pos = self._get_active_position()
@@ -1845,6 +1855,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             return
 
         if has_pos:
+            if is_manual_same_direction_position(self, action):
+                self._preserve_manual_on_tv_open_reopen(action, curr_px)
+                return
             logger.info(f"⚡ TV OPEN [{action}] 先平后开")
             if not self._force_flat_before_open("TV OPEN 先平后开"):
                 return

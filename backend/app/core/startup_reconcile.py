@@ -126,6 +126,90 @@ def prepare_manual_adopt(supervisor) -> None:
     supervisor.adopted_manual = True
 
 
+TV_CLOSE_ACTIONS = frozenset({"CLOSE", "CLOSE_PROTECT", "CLOSE_TP3", "CLOSE_STOPLOSS"})
+
+
+def _safe_float(val, default: float = 0.0) -> float:
+    try:
+        return float(val or 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def is_tv_close_action(action: str | None) -> bool:
+    a = (action or "").upper().strip()
+    return a in TV_CLOSE_ACTIONS or a.startswith("CLOSE")
+
+
+def resolve_supervisor_live_side(supervisor) -> tuple[str | None, float]:
+    """Exchange-first live side/qty for TV close skip decisions."""
+    side = getattr(supervisor, "current_side", None)
+    qty = _safe_float(getattr(supervisor, "watched_qty", 0))
+    symbol = getattr(supervisor, "symbol", None)
+
+    pm = getattr(supervisor, "position_manager", None)
+    if pm and symbol:
+        pos = pm.get_position(symbol)
+        if pos and isinstance(pos, dict):
+            amt = _safe_float(pos.get("positionAmt", 0))
+            if amt != 0:
+                return ("LONG" if amt > 0 else "SHORT"), abs(amt)
+
+    get_pos = getattr(supervisor, "_get_active_position", None)
+    if get_pos:
+        pos = get_pos()
+        if pos and isinstance(pos, dict):
+            live_qty = _safe_float(pos.get("size", 0))
+            if live_qty > 0:
+                live_side = pos.get("side") or pos.get("posSide")
+                if str(live_side or "").lower() in ("long", "buy"):
+                    return "LONG", live_qty
+                if str(live_side or "").lower() in ("short", "sell"):
+                    return "SHORT", live_qty
+                if side in ("LONG", "SHORT"):
+                    return side, live_qty
+
+    if side in ("LONG", "SHORT") and qty > 0:
+        return side, qty
+    return None, 0.0
+
+
+def should_skip_tv_close_for_manual(supervisor) -> tuple[bool, str]:
+    """
+    TV CLOSE_* must not flatten manual / external positions aligned with entry direction.
+    Only factory-open trades (current_trade_id, not adopted_manual) honor TV CLOSE.
+    """
+    live_side, live_qty = resolve_supervisor_live_side(supervisor)
+    if live_side not in ("LONG", "SHORT") or live_qty <= 0:
+        return False, ""
+
+    adopted = bool(getattr(supervisor, "adopted_manual", False))
+    trade_id = getattr(supervisor, "current_trade_id", None)
+    if trade_id and not adopted:
+        return False, ""
+
+    last_tv = (getattr(supervisor, "last_tv_side", None) or "").upper()
+    if adopted or not trade_id:
+        if not last_tv or last_tv == live_side:
+            return True, "manual_same_direction_skip_tv_close"
+        if is_opposite_tv_live(last_tv, live_side):
+            return False, ""
+        return True, "manual_external_skip_tv_close"
+    return False, ""
+
+
+def is_manual_same_direction_position(supervisor, action: str | None) -> bool:
+    """True when live position is manual/external and matches TV OPEN direction."""
+    live_side, live_qty = resolve_supervisor_live_side(supervisor)
+    if live_side not in ("LONG", "SHORT") or live_qty <= 0:
+        return False
+    if str(action or "").upper() != live_side:
+        return False
+    adopted = bool(getattr(supervisor, "adopted_manual", False))
+    trade_id = getattr(supervisor, "current_trade_id", None)
+    return adopted or not trade_id
+
+
 def adopt_live_tv_side(
     supervisor,
     reconcile: dict | None = None,
@@ -361,6 +445,130 @@ class StartupReconcileMixin:
             trigger="sentinel",
         )
         return True
+
+    def _preserve_manual_on_tv_close(
+        self,
+        raw_action: str,
+        *,
+        skip_reason: str,
+        tv_reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Ignore TV CLOSE for manual same-direction positions; refresh TP123/雷达."""
+        import threading
+
+        was_monitoring = bool(getattr(self, "monitoring", False))
+        live_side, live_qty = resolve_supervisor_live_side(self)
+        if live_side:
+            self.current_side = live_side
+            self.last_tv_side = live_side
+        self.adopted_manual = True
+        self.monitoring = True
+        self.watched_qty = live_qty
+
+        entry = float(getattr(self, "watched_entry", 0) or 0)
+        pm = getattr(self, "position_manager", None)
+        if pm and getattr(self, "symbol", None):
+            pos = pm.get_position(self.symbol)
+            if pos:
+                entry = float(pos.get("entryPrice") or entry or 0)
+                self.watched_entry = entry
+        elif hasattr(self, "_get_active_position"):
+            pos = self._get_active_position()
+            if pos:
+                entry = float(pos.get("entry_price", 0) or entry or 0)
+                self.watched_entry = entry
+
+        curr_px = entry
+        if hasattr(self.client, "get_current_price"):
+            curr_px = float(self.client.get_current_price(self.symbol) or 0) or entry
+
+        detail: dict[str, Any] = {
+            "tv_action": raw_action,
+            "skip_reason": skip_reason,
+            "side": live_side,
+            "qty": live_qty,
+            "entry": entry,
+            "tv_reason": tv_reason,
+            "adopted_manual": True,
+        }
+        msg = (
+            f"收到 TV {raw_action}，人工同向持仓 {live_side} {live_qty} "
+            f"继续 TP123/雷达管理（未强平）"
+        )
+        if hasattr(self, "_log"):
+            self._log("SIGNAL", f"⏭️ {msg}", detail)
+        if hasattr(self, "_alert"):
+            self._alert(
+                "info",
+                "TV_CLOSE_SKIPPED",
+                "TV平仓信号已忽略 · 人工同向持仓",
+                msg,
+                detail,
+            )
+
+        if live_qty > 0 and entry > 0:
+            try:
+                if hasattr(self, "_unified_startup_defense_reconcile"):
+                    unified = self._unified_startup_defense_reconcile(
+                        live_qty, entry, curr_px, reason="TV_CLOSE忽略后补挂",
+                    )
+                    detail["startup_summary"] = unified.get("startup_summary")
+                elif hasattr(self, "_smart_realign_defenses"):
+                    detail["tp_realign"] = self._smart_realign_defenses(
+                        live_qty, entry, dynamic_sl=None,
+                    )
+                    if hasattr(self, "_sync_tv_hard_stop"):
+                        detail["shield"] = self._sync_tv_hard_stop(live_qty)
+            except Exception as exc:
+                logger.warning(
+                    "[User %s] defense refresh after TV close skip: %s",
+                    getattr(self, "user_id", "?"), exc,
+                )
+                detail["refresh_error"] = str(exc)
+
+        if hasattr(self, "_save_state"):
+            self._save_state()
+        if hasattr(self, "_ensure_price_ws"):
+            self._ensure_price_ws()
+
+        if not was_monitoring:
+            target = getattr(self, "_sentinel_loop", None)
+            if target:
+                threading.Thread(target=target, daemon=True).start()
+
+        return {"status": "skipped", "reason": skip_reason, "action": raw_action, "detail": detail}
+
+    def _preserve_manual_on_tv_open_reopen(self, action: str, curr_px: float) -> dict[str, Any]:
+        """Same-direction TV OPEN must not 先平后开 manual positions."""
+        live_side, live_qty = resolve_supervisor_live_side(self)
+        entry = float(getattr(self, "watched_entry", 0) or 0)
+        pm = getattr(self, "position_manager", None)
+        if pm and getattr(self, "symbol", None):
+            pos = pm.get_position(self.symbol)
+            if pos:
+                entry = float(pos.get("entryPrice") or entry or 0)
+        self.adopted_manual = True
+        self.monitoring = True
+        self.current_side = action
+        self.last_tv_side = action
+        self.watched_qty = live_qty
+        self.watched_entry = entry
+
+        detail = {"side": action, "qty": live_qty, "entry": entry, "tv_price": curr_px}
+        msg = "人工同向持仓：忽略 TV OPEN 先平后开，刷新 TP123/雷达"
+        if hasattr(self, "_log"):
+            self._log("SIGNAL", msg, detail)
+        if hasattr(self, "_alert"):
+            self._alert("info", "TV_OPEN_SKIPPED", "TV开仓信号 · 保留人工持仓", msg, detail)
+
+        if live_qty > 0 and hasattr(self, "_unified_startup_defense_reconcile"):
+            unified = self._unified_startup_defense_reconcile(
+                live_qty, entry, curr_px, reason="TV_OPEN忽略先平后开",
+            )
+            detail["startup_summary"] = unified.get("startup_summary")
+        if hasattr(self, "_save_state"):
+            self._save_state()
+        return {"status": "skipped", "reason": "manual_skip_tv_open_reopen", "action": action, "detail": detail}
 
     def _idle_book_is_flat(self) -> bool:
         wq = float(getattr(self, "watched_qty", 0) or 0)

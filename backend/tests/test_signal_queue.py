@@ -75,6 +75,7 @@ def test_close_with_position_still_logs_close(supervisor):
 
 def test_handle_signal_waits_for_lock_instead_of_dropping(supervisor):
     supervisor._lock.acquire()
+    supervisor.client.get_position.return_value = {"positionAmt": "0"}
     results: list[dict] = []
 
     def run_signal():

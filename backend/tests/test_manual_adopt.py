@@ -9,6 +9,7 @@ from app.core.startup_reconcile import (
     finalize_recovery_tv_params,
     live_matches_tv_direction,
     prepare_manual_adopt,
+    should_skip_tv_close_for_manual,
 )
 
 
@@ -73,6 +74,76 @@ class _WatchHost(StartupReconcileMixin):
         self._close_all = MagicMock()
         self._log = MagicMock()
         self._alert = MagicMock()
+
+
+def test_should_skip_tv_close_for_manual_position():
+    class Sup:
+        adopted_manual = True
+        current_trade_id = None
+        current_side = "LONG"
+        watched_qty = 0.5
+        last_tv_side = "LONG"
+        symbol = "ETHUSDT"
+        position_manager = None
+
+    skip, reason = should_skip_tv_close_for_manual(Sup())
+    assert skip is True
+    assert "manual" in reason
+
+
+def test_should_not_skip_tv_close_for_factory_trade():
+    class Sup:
+        adopted_manual = False
+        current_trade_id = 42
+        current_side = "LONG"
+        watched_qty = 0.5
+        last_tv_side = "LONG"
+
+    skip, _ = should_skip_tv_close_for_manual(Sup())
+    assert skip is False
+
+
+def test_execute_signal_skips_close_for_manual_adopt():
+    from unittest.mock import MagicMock, patch
+
+    from app.core.position_supervisor import PositionSupervisor
+
+    client = MagicMock()
+    client.get_futures_account_summary.return_value = {"total_margin_balance": 1000.0}
+    client.get_current_price.return_value = 1775.0
+    client.trading_symbol = "ETHUSDT"
+    client.exchange_id = "binance"
+    client.trading_leverage = 15
+
+    sup = PositionSupervisor(user_id=1, client=client, initial_principal=1000.0)
+    sup.adopted_manual = True
+    sup.current_trade_id = None
+    sup.current_side = "LONG"
+    sup.watched_qty = 0.42
+    sup.watched_entry = 1760.0
+    sup.last_tv_side = "LONG"
+    sup.monitoring = True
+    sup.on_log = MagicMock()
+    sup.on_alert = MagicMock()
+    sup.position_manager = MagicMock()
+    sup.position_manager.get_position.return_value = {
+        "positionAmt": 0.42,
+        "entryPrice": 1760.0,
+    }
+
+    with patch.object(sup, "_preserve_manual_on_tv_close") as preserve:
+        preserve.return_value = {"status": "skipped", "reason": "manual_same_direction_skip_tv_close"}
+        result = sup._execute_signal({
+            "action": "CLOSE",
+            "reason": "策略指标反转",
+            "side": "LONG",
+            "regime": 3,
+            "atr": 21.2,
+            "price": 1775.36,
+        })
+    preserve.assert_called_once()
+    assert result["status"] == "skipped"
+    sup.client.place_market_order.assert_not_called()
 
 
 def test_idle_watch_does_not_flatten_manual_on_tv_close():
