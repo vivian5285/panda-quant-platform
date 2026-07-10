@@ -320,6 +320,60 @@ def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
     return "\n".join(lines)
 
 
+def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str:
+    """VPS 开仓/加仓 — 风险系数口径（非档位保证金百分比）."""
+    theme = resolve_exchange_theme(exchange or detail.get("exchange"))
+    unit = theme["qty_unit"]
+    entry_type = str(detail.get("entry_type") or "OPEN").upper()
+    regime = detail.get("regime")
+    regime_txt = f"R{regime}" if regime else "—"
+    side = detail.get("side") or "—"
+    side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(side).upper(), str(side))
+
+    lines = [
+        _line("交易所", theme["label"]),
+        _line("类型", {"OPEN": "首次开仓", "PYRAMID": "加仓", "PROFIT_ADD": "浮盈加仓"}.get(entry_type, entry_type)),
+        _line("方向", side_txt),
+        _line("档位", regime_txt),
+    ]
+
+    principal = detail.get("initial_principal") or detail.get("sizing_base")
+    if principal:
+        lines.append(_line("合约本金", f"{float(principal):.2f} USDT"))
+
+    if entry_type == "OPEN":
+        if detail.get("vps_risk_pct") is not None:
+            eff = detail.get("effective_risk_pct") or detail.get("scaled_risk_pct")
+            scale = detail.get("regime_scale")
+            if eff and scale:
+                lines.append(_line("VPS 风险", f"{float(detail['vps_risk_pct']):.2f}% × 档位系数 {float(scale):.2f} = {float(eff):.2f}%"))
+            else:
+                lines.append(_line("VPS 风险", f"{float(detail['vps_risk_pct']):.2f}%"))
+        if detail.get("order_amount") is not None:
+            lev = detail.get("leverage") or theme["leverage"]
+            lines.append(_line("下单名义", f"{float(detail['order_amount']):.2f} USDT × {lev}×杠杆"))
+        if detail.get("sl_distance") is not None:
+            lines.append(_line("止损距离", f"{float(detail['sl_distance']):.2f}"))
+        if detail.get("base_qty") is not None:
+            lines.append(_line("基准数量", f"**{float(detail['base_qty']):.4f}** {unit}"))
+    else:
+        if detail.get("base_qty") is not None:
+            lines.append(_line("首次基准", f"{float(detail['base_qty']):.4f} {unit}"))
+        if detail.get("qty_ratio") is not None:
+            lines.append(_line("加仓比例", f"{float(detail['qty_ratio']):.2f}"))
+        if detail.get("add_qty") is not None:
+            lines.append(_line("本次加仓", f"**{float(detail['add_qty']):.4f}** {unit}"))
+
+    if detail.get("qty") is not None:
+        lines.append(_line("实盘数量", f"**{float(detail['qty']):.4f}** {unit}"))
+    if detail.get("entry") is not None:
+        lines.append(_line("开仓价", f"{float(detail['entry']):.2f}"))
+    if detail.get("tv_sl"):
+        lines.append(_line("TV 止损", f"{float(detail['tv_sl']):.2f}"))
+
+    return "\n".join(lines)
+
+
 def format_admin_detail_lines(
     alert_type: str,
     detail: dict | None,
@@ -337,6 +391,8 @@ def format_admin_detail_lines(
         return format_adverse_sl_detail_cn(detail, ex)
     if alert_type in ("CLOSE", "CLOSE_TP3", "CLOSE_PROTECT", "CLOSE_STOPLOSS", "CLOSE_ATTRIBUTION"):
         return format_close_detail_cn(detail, ex)
+    if alert_type in ("OPEN", "PYRAMID", "PROFIT_ADD") or detail.get("sizing_mode") in ("vps_open", "vps_add"):
+        return format_vps_entry_detail_cn(detail, ex)
 
     theme = resolve_exchange_theme(ex)
     lines = [_line("交易所", theme["label"])]

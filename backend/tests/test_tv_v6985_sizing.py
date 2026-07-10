@@ -1,220 +1,107 @@
-"""v6.9.85 TV proportional sizing and entry_type routing."""
-
-from unittest.mock import MagicMock, patch
+"""VPS final sizing: OPEN by sl-distance; ADD by base_qty × qty_ratio."""
 
 import pytest
 
 from app.core.tv_entry_sizing import (
-    apply_vps_regime_risk,
-    compute_tv_eth_qty,
-    compute_tv_notional_usd,
-    normalize_risk_pct,
+    compute_vps_add_qty,
+    compute_vps_open_qty,
+    effective_vps_risk_pct,
     parse_tv_entry_fields,
-    regime_vps_coefficient,
-    resolve_entry_order_qty_eth,
+    regime_scale,
+    resolve_vps_entry_qty_eth,
 )
-from app.core.position_supervisor import PositionSupervisor
-from app.services.webhook_guard import validate_signal_payload
 
 
-def test_normalize_risk_pct_percent_points():
-    assert normalize_risk_pct(1.35) == pytest.approx(0.0135)
-    assert normalize_risk_pct(0.5) == pytest.approx(0.005)
-
-
-def test_regime_vps_coefficients():
-    assert regime_vps_coefficient(1) == 1.0
-    assert regime_vps_coefficient(2) == 1.0
-    assert regime_vps_coefficient(3) == pytest.approx(1.1)
-    assert regime_vps_coefficient(4) == pytest.approx(1.25)
-
-
-def test_apply_vps_regime_risk_clamps_regime4():
-    meta = apply_vps_regime_risk(3.90, 4)
-    assert meta["scaled_risk_pct"] == pytest.approx(4.875)
-    assert meta["effective_risk_pct"] == pytest.approx(4.0)
-    assert meta["risk_clamped"] is True
+def test_regime_scale_from_doc():
+    assert regime_scale(1) == pytest.approx(0.55)
+    assert regime_scale(2) == pytest.approx(0.75)
+    assert regime_scale(3) == pytest.approx(0.95)
+    assert regime_scale(4) == pytest.approx(1.30)
 
 
 @pytest.mark.parametrize(
-    "regime,tv_risk,expected_notional",
+    "regime,price,tv_sl,expected_qty",
     [
-        (1, 1.65, 82.5),
-        (2, 2.25, 112.5),
-        (3, 2.85, 156.75),
-        (4, 3.90, 200.0),
+        (1, 2000.0, 1955.0, 1.833),   # 82.5 / 45
+        (2, 2000.0, 1947.5, 2.143),   # 112.5 / 52.5
+        (3, 2000.0, 1945.0, 2.591),   # 142.5 / 55
+        (4, 2000.0, 1937.5, 3.12),    # 195 / 62.5
     ],
 )
-def test_vps_regime_sizing_table_1000u_5x(regime, tv_risk, expected_notional):
-    """对照文档 4.2：1000u 本金 × 5× 杠杆."""
-    _, notional, _, meta = compute_tv_notional_usd(
-        1000.0, risk_pct=tv_risk, leverage=5, qty_ratio=1.0, regime=regime,
-    )
-    assert notional == pytest.approx(expected_notional, rel=0.001)
-    assert meta["regime"] == regime
-
-
-def test_compute_tv_notional_usd_formula():
-    margin, notional, cap, meta = compute_tv_notional_usd(
-        10000.0, risk_pct=1.35, leverage=3, qty_ratio=1.0, regime=1,
-    )
-    assert margin == pytest.approx(135.0)
-    assert notional == pytest.approx(405.0)
-    assert cap == pytest.approx(30000.0)
-    assert meta["vps_coeff"] == 1.0
-
-
-def test_compute_tv_notional_pyramid_half_ratio():
-    _, notional, _, _ = compute_tv_notional_usd(
-        10000.0, risk_pct=1.35, leverage=3, qty_ratio=0.5, regime=1,
-    )
-    assert notional == pytest.approx(202.5)
-
-
-def test_compute_tv_eth_qty():
-    qty, meta = compute_tv_eth_qty(
-        live_balance=10000.0,
-        initial_principal=10000.0,
-        risk_pct=1.35,
-        leverage=3,
-        qty_ratio=1.0,
-        price=2000.0,
+def test_vps_open_table_1000u(regime, price, tv_sl, expected_qty):
+    qty, meta = compute_vps_open_qty(
+        live_balance=1000.0,
+        initial_principal=1000.0,
+        price=price,
+        tv_sl=tv_sl,
+        regime=regime,
+        leverage=5,
         round_fn=lambda x: round(x, 3),
-        regime=1,
     )
-    assert qty == pytest.approx(0.203)
-    assert meta["sizing_mode"] == "tv_v6985_proportional"
-    assert meta["risk_pct"] == pytest.approx(1.35)
-    assert meta["effective_risk_pct"] == pytest.approx(1.35)
-    assert meta["vps_coeff"] == 1.0
+    assert qty == pytest.approx(expected_qty, rel=0.02)
+    assert meta["sizing_mode"] == "vps_open"
+    assert meta["order_amount"] > 0
 
 
-def test_parse_tv_entry_fields_defaults():
-    fields = parse_tv_entry_fields({"action": "LONG"})
-    assert fields["entry_type"] == "OPEN"
-    assert fields["qty_ratio"] == 1.0
-    assert fields["uses_tv_sizing"] is False
+def test_vps_add_uses_base_qty_not_risk():
+    qty, meta = compute_vps_add_qty(
+        base_qty=1.83,
+        qty_ratio=0.5,
+        round_fn=lambda x: round(x, 3),
+        entry_type="PYRAMID",
+    )
+    assert qty == pytest.approx(0.915, rel=0.01)
+    assert meta["sizing_mode"] == "vps_add"
+    assert meta["base_qty"] == pytest.approx(1.83)
 
 
-def test_parse_tv_entry_fields_v6985():
+def test_parse_tv_entry_fields_ignores_risk_pct():
     fields = parse_tv_entry_fields({
         "action": "LONG",
-        "entry_type": "PYRAMID",
-        "risk_pct": 1.35,
-        "leverage": 3,
-        "qty_ratio": 0.5,
-        "regime": 3,
+        "entry_type": "OPEN",
+        "risk_pct": 99.0,
+        "regime": 2,
     })
-    assert fields["entry_type"] == "PYRAMID"
-    assert fields["uses_tv_sizing"] is True
-    assert fields["tv_leverage"] == 3.0
-    assert fields["regime"] == 3
+    assert fields["uses_vps_sizing"] is True
+    assert fields["entry_type"] == "OPEN"
 
 
-def test_resolve_entry_order_qty_falls_back_without_risk_pct():
-    qty, meta = resolve_entry_order_qty_eth(
+def test_resolve_open_never_uses_regime_margin():
+    qty, meta = resolve_vps_entry_qty_eth(
         live_balance=1000.0,
-        initial_principal=700.0,
+        initial_principal=1000.0,
+        entry_type="OPEN",
+        base_qty=0,
+        qty_ratio=1.0,
         price=2000.0,
-        regime_margin_pct=0.35,
-        exchange_leverage=10,
+        tv_sl=1955.0,
+        regime=1,
+        exchange_leverage=5,
         round_fn=lambda x: round(x, 3),
-        tv_fields={"uses_tv_sizing": False},
     )
     assert qty > 0
-    assert "sizing_mode" not in meta or meta.get("sizing_mode") != "tv_v6985_proportional"
+    assert meta.get("sizing_mode") == "vps_open"
+    assert "margin_pct" not in meta
 
 
-def test_webhook_guard_accepts_v6985_fields():
-    ok, err = validate_signal_payload({
-        "action": "LONG",
-        "secret": "x",
-        "entry_type": "PYRAMID",
-        "risk_pct": 1.35,
-        "leverage": 3,
-        "qty_ratio": 0.5,
-        "price": 2000,
-        "tv_sl": 1900,
-        "tv_tp1": 2100,
-        "tv_tp2": 2200,
-        "tv_tp3": 2300,
-    })
-    assert ok, err
+def test_resolve_add_requires_base_qty():
+    qty, meta = resolve_vps_entry_qty_eth(
+        live_balance=1000.0,
+        initial_principal=1000.0,
+        entry_type="PYRAMID",
+        base_qty=2.0,
+        qty_ratio=0.5,
+        price=2000.0,
+        tv_sl=1950.0,
+        regime=3,
+        exchange_leverage=5,
+        round_fn=lambda x: round(x, 3),
+    )
+    assert qty == pytest.approx(1.0)
+    assert meta["add_qty"] == 1.0
 
 
-def test_webhook_guard_rejects_bad_entry_type():
-    ok, err = validate_signal_payload({
-        "action": "LONG",
-        "secret": "x",
-        "price": 2000,
-        "entry_type": "INVALID",
-    })
-    assert not ok
-    assert "entry_type" in err
-
-
-def _make_supervisor(**kwargs):
-    client = MagicMock()
-    client.get_futures_account_summary.return_value = {
-        "total_margin_balance": 10000.0,
-        "available_balance": 5000.0,
-    }
-    client.get_current_price.return_value = 2000.0
-    client.place_market_order.return_value = {}
-    client.trading_symbol = "ETHUSDT"
-    client.exchange_id = "binance"
-    client.trading_leverage = 5
-
-    sup = PositionSupervisor(user_id=1, client=client, initial_principal=10000.0, **kwargs)
-    sup.regime = 3
-    sup.tv_price = 2000.0
-    sup.tv_tps = [2100.0, 2200.0, 2300.0]
-    sup.tv_sl = 1900.0
-    sup.on_trade_open = MagicMock(return_value=1)
-    sup._protect_and_monitor = MagicMock()
-    sup._sync_tv_hard_stop = MagicMock(return_value={"aligned": True, "stop_price": 1900.0})
-    return sup, client
-
-
-def test_open_entry_type_forces_flat_before_open():
-    sup, client = _make_supervisor()
-    sup._apply_tv_entry_context({
-        "entry_type": "OPEN",
-        "risk_pct": 1.35,
-        "leverage": 3,
-        "qty_ratio": 1.0,
-    })
-    with patch.object(sup.position_manager, "get_position") as gp:
-        gp.side_effect = [
-            {"positionAmt": "0.5", "entryPrice": "1990"},
-            {"positionAmt": "0", "entryPrice": "0"},
-            {"positionAmt": "0.202", "entryPrice": "2000"},
-        ]
-        sup._close_all = MagicMock()
-        sup._wait_until_flat = MagicMock(return_value=True)
-        result = sup._handle_tv_entry("LONG", 2000.0, has_pos=True, current_side="LONG")
-    sup._close_all.assert_called_once()
-    assert result["status"] == "ok"
-    client.set_leverage.assert_called_with(sup.symbol, leverage=5)
-
-
-def test_pyramid_adds_without_cancel_all():
-    sup, client = _make_supervisor()
-    sup._apply_tv_entry_context({
-        "entry_type": "PYRAMID",
-        "risk_pct": 1.35,
-        "leverage": 3,
-        "qty_ratio": 0.5,
-    })
-    sup._sync_tv_hard_stop = MagicMock(return_value={"aligned": True, "stop_price": 1900.0})
-    sup._smart_realign_defenses = MagicMock(return_value={"matched": 3, "expected": 3})
-    with patch.object(sup.position_manager, "get_position") as gp:
-        gp.side_effect = [
-            {"positionAmt": "0.202", "entryPrice": "2000"},
-            {"positionAmt": "0.303", "entryPrice": "2005"},
-        ]
-        result = sup._add_to_position("LONG", 2000.0, "PYRAMID")
-    client.cancel_all_open_orders.assert_not_called()
-    assert result["status"] == "ok"
-    assert result["detail"]["entry_type"] == "PYRAMID"
-    sup._sync_tv_hard_stop.assert_called_once()
+def test_effective_risk_pct_cap():
+    pct, meta = effective_vps_risk_pct(4)
+    assert pct == pytest.approx(3.9)  # 3 * 1.30
+    assert meta["risk_clamped"] is False

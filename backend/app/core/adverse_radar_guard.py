@@ -1505,7 +1505,11 @@ class AdverseRadarMixin:
         if cause == "manual_add":
             if hasattr(self, "consumed_tp_levels"):
                 self.consumed_tp_levels = []
-            self._reset_adverse_radar()
+            self._reset_adverse_radar(keep_tv_sl=True)
+            if hasattr(self, "initial_qty"):
+                self.initial_qty = new_qty
+            if float(getattr(self, "tv_sl", 0) or 0) > 0 and hasattr(self, "_sync_tv_hard_stop"):
+                self._sync_tv_hard_stop(new_qty, force_replace=True)
 
         sl_to_pass = self._radar_sl_to_pass() if hasattr(self, "_radar_sl_to_pass") else None
         action_labels = {

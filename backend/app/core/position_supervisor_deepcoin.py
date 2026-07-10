@@ -20,7 +20,7 @@ from app.core.position_sizing import read_contract_equity
 from app.core.tv_entry_sizing import (
     ENTRY_TYPES_ADD,
     parse_tv_entry_fields,
-    resolve_entry_order_qty_deepcoin,
+    resolve_vps_entry_qty_deepcoin,
 )
 from app.core.position_qty_tolerance import qty_change_significant
 from app.core.tp_defense_reconcile import (
@@ -130,6 +130,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.tv_tps = [0.0, 0.0, 0.0]
 
         self.initial_qty = 0
+        self.base_qty = 0
         self.consumed_tp_levels: list[int] = []
         self.watched_qty = 0
         self.watched_entry = 0.0
@@ -421,6 +422,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "tv_price": self.tv_price,
                     "best_price": self.best_price,
                     "initial_qty": self.initial_qty,
+                    "base_qty": float(getattr(self, "base_qty", 0) or 0),
                     "consumed_tp_levels": list(self.consumed_tp_levels),
                     "last_tv_signal": self.last_tv_signal,
                     "adverse_sl_armed": self.adverse_sl_armed,
@@ -598,6 +600,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             time.sleep(1.0)
         self.watched_qty = 0
         self.initial_qty = 0
+        self.base_qty = 0
         self.current_side = None
         self._save_state()
         self.client.cancel_all_open_orders(self.symbol)
@@ -658,6 +661,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.monitoring = False
         self.watched_qty = 0
         self.initial_qty = 0
+        self.base_qty = 0
         self.current_side = None
         self._save_state()
 
@@ -1711,6 +1715,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.monitoring = False
         self.watched_qty = 0
         self.initial_qty = 0
+        self.base_qty = 0
         self.current_side = None
         self.client.cancel_all_open_orders(self.symbol)
         self._save_state()
@@ -1727,26 +1732,27 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self._tv_entry_fields["regime"] = self.regime
 
     def _uses_tv_entry_routing(self) -> bool:
-        fields = getattr(self, "_tv_entry_fields", None) or {}
-        return bool(fields.get("uses_tv_sizing") or getattr(self, "_explicit_entry_type", False))
+        return True
 
     def _resolve_entry_leverage(self) -> int:
-        """实盘杠杆固定为 VPS 配置（5×），TV leverage 仅作信号参考。"""
         return int(self.leverage)
 
     def _resolve_entry_qty(self, curr_px: float) -> tuple[int, dict]:
         equity = read_contract_equity(self.client)
-        margin_pct = self.regime_settings[self.regime]["margin"] * self.risk_multiplier
         leverage = self._resolve_entry_leverage()
-        return resolve_entry_order_qty_deepcoin(
+        tv_fields = getattr(self, "_tv_entry_fields", None) or {}
+        entry_type = getattr(self, "_entry_type", "OPEN")
+        return resolve_vps_entry_qty_deepcoin(
             live_balance=equity,
             initial_principal=self.initial_principal,
-            price=curr_px,
-            regime_margin_pct=margin_pct,
+            entry_type=entry_type,
+            base_qty=float(getattr(self, "base_qty", 0) or 0),
+            qty_ratio=float(tv_fields.get("qty_ratio") or 1.0),
+            price=float(curr_px or self.tv_price or 0),
+            tv_sl=float(getattr(self, "tv_sl", 0) or 0),
+            regime=int(tv_fields.get("regime") or self.regime),
             exchange_leverage=leverage,
             face_value=self.face_value,
-            tv_fields=getattr(self, "_tv_entry_fields", None),
-            regime=self.regime,
         )
 
     def _force_flat_before_open(self, reason: str) -> bool:
@@ -1797,8 +1803,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         open_side = "buy" if action == "LONG" else "sell"
         pos_side = "long" if action == "LONG" else "short"
         logger.info(
-            f"📈 [{entry_type}] 同向追加: {open_side} +{qty} 张 | risk_pct={sizing_meta.get('risk_pct')} "
-            f"qty_ratio={sizing_meta.get('qty_ratio')} | {sizing_meta.get('sizing_source', 'regime')}"
+            f"📈 [{entry_type}] 同向追加: {open_side} +{qty} 张 | "
+            f"base={sizing_meta.get('base_qty')} × ratio={sizing_meta.get('qty_ratio')}",
         )
         self.client.place_market_order(self.symbol, open_side, pos_side, qty)
         time.sleep(2.0)
@@ -1865,8 +1871,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             entry_type,
             f"{theme['accent']} {add_label} · {theme['label']}",
             f"{action} +{add_qty} 张 → 总 {real_qty} @ {entry_price} | "
-            f"risk {sizing_meta.get('risk_pct')}% × ratio {sizing_meta.get('qty_ratio')} "
-            f"× {leverage}×{verify_note}",
+            f"base {sizing_meta.get('base_qty')} × {sizing_meta.get('qty_ratio')} "
+            f"= +{add_qty}{verify_note}",
             detail,
         )
 
@@ -1895,47 +1901,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             logger.error("无法获取当前价格，跳过建仓信号")
             return
 
-        if self._uses_tv_entry_routing():
-            self._handle_tv_entry(action, curr_px, has_pos=has_pos, current_side=current_side)
-            return
-
-        tv_price = float(self.tv_price or curr_px)
-        if has_pos and current_side == action:
-            ev = evaluate_same_direction(
-                has_position=True,
-                current_side=current_side,
-                signal_side=action,
-                entry_price=entry_price,
-                tv_price=tv_price,
-                mark_price=curr_px,
-                held_regime=held_regime,
-                new_regime=self.regime,
-                held_atr=held_atr,
-                new_atr=self.current_atr,
-                threshold_pct=threshold,
-            )
-            if ev.action == SameDirAction.REFRESH_TPS:
-                self._refresh_same_direction_tps(
-                    action, entry_price, ev, prev_tv_tps=prev_tv_tps or []
-                )
-                return
-            self._close_then_open_entry(action, curr_px, ev)
-            return
-
-        if has_pos and current_side != action:
-            logger.info(f"⚡ 收到建仓信号 [{action}]，反方向先平后开")
-            self.client.cancel_all_open_orders(self.symbol)
-            time.sleep(0.5)
-            self._close_all("反方向指令到达，触发【先平后开】原子对冲换防")
-            if not self._wait_until_flat():
-                logger.error("反方向平仓后仍未归零，暂缓新开仓")
-                return
-            self.client.cancel_all_open_orders(self.symbol)
-            time.sleep(0.4)
-            self._open_position(action, curr_px)
-            return
-
-        self._open_position(action, curr_px)
+        self._handle_tv_entry(action, curr_px, has_pos=has_pos, current_side=current_side)
 
     def _close_then_open_entry(self, action, curr_px, ev):
         threshold = float(settings.SAME_DIR_IGNORE_PRICE_DIFF_PCT)
@@ -2033,19 +1999,22 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
     def _open_position(self, action, curr_px):
         leverage = self._resolve_entry_leverage()
-        margin_pct = self.regime_settings[self.regime]["margin"] * self.risk_multiplier
-
         self.client.set_leverage(self.symbol, leverage=leverage)
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.4)
         qty, sizing_meta = self._resolve_entry_qty(curr_px)
+        if qty <= 0:
+            err = sizing_meta.get("error", "insufficient_balance")
+            logger.error(f"开仓失败: {err} | {sizing_meta}")
+            self._alert("warning", "INSUFFICIENT_BALANCE", "开仓失败", f"用户 {self.user_id}: {err}", sizing_meta)
+            return
         open_side = "buy" if action == "LONG" else "sell"
         pos_side = "long" if action == "LONG" else "short"
         entry_type = getattr(self, "_entry_type", "OPEN")
 
         logger.info(
-            f"🚀 [唯一主仓] 极速开仓: {open_side} {qty} 张 | {entry_type} | 档位 {self.regime} | "
-            f"保证金 {sizing_meta.get('margin_usd', '—')}U ({sizing_meta.get('sizing_source', 'regime')})"
+            f"🚀 [VPS开仓] {open_side} {qty} 张 | {entry_type} R{self.regime} | "
+            f"名义{sizing_meta.get('order_amount')}U / sl_dist={sizing_meta.get('sl_distance')}"
         )
         self.client.place_market_order(self.symbol, open_side, pos_side, qty)
         time.sleep(2.0)
@@ -2061,6 +2030,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             )
             if cap_result.get("new_qty"):
                 real_qty = self._safe_qty(cap_result["new_qty"])
+            self.base_qty = real_qty
             self.initial_qty = real_qty
             self._protect_and_monitor(real_qty, entry_price or pos['entry_price'])
 
@@ -2482,6 +2452,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self._reset_adverse_radar(keep_tv_sl=False)
         self.watched_qty = 0
         self.initial_qty = 0
+        self.base_qty = 0
         self.current_side = None
         self._save_state()
         self.client.cancel_all_open_orders(self.symbol)
@@ -2527,6 +2498,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.watched_qty = s.get("watched_qty", 0)
                     self.watched_entry = s.get("watched_entry", 0.0)
                     self.initial_qty = s.get("initial_qty", 0)
+                    self.base_qty = float(s.get("base_qty", 0) or s.get("initial_qty", 0) or 0)
                     self.consumed_tp_levels = [
                         int(x) for x in (s.get("consumed_tp_levels") or []) if int(x) in (1, 2, 3)
                     ]
@@ -2701,6 +2673,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 self.monitoring = False
                 self.watched_qty = 0
                 self.initial_qty = 0
+                self.base_qty = 0
                 self.current_side = None
                 self._save_state()
         except Exception as e:

@@ -1,15 +1,11 @@
-"""v6.9.85 TV proportional sizing — risk_pct × leverage × qty_ratio on VPS principal."""
+"""VPS entry sizing — OPEN: VPS risk formula; ADD: base_qty × qty_ratio (ignore TV risk_pct)."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from app.config import get_settings
-from app.core.position_sizing import (
-    compute_deepcoin_contracts,
-    compute_eth_qty,
-    resolve_principal_sizing_base,
-)
+from app.core.position_sizing import resolve_principal_sizing_base
 from app.core.regime_utils import clamp_regime
 
 settings = get_settings()
@@ -27,49 +23,35 @@ def _parse_float(raw, default: float | None = None) -> float | None:
         return default
 
 
-def normalize_risk_pct(risk_pct: float) -> float:
-    """TV sends percent points (e.g. 1.35 = 1.35% of principal)."""
-    v = float(risk_pct or 0)
-    if v <= 0:
-        return 0.0
-    return v / 100.0
-
-
-def regime_vps_coefficient(regime: int) -> float:
-    """VPS 档位系数 — TV regime → 下单风险放大/保守系数."""
+def regime_scale(regime: int) -> float:
+    """档位系数 — 仅首次 OPEN 使用."""
     r = clamp_regime(int(regime or 3))
     return {
-        1: float(settings.REGIME_VPS_COEFF_1),
-        2: float(settings.REGIME_VPS_COEFF_2),
-        3: float(settings.REGIME_VPS_COEFF_3),
-        4: float(settings.REGIME_VPS_COEFF_4),
+        1: float(settings.REGIME_SCALE_1),
+        2: float(settings.REGIME_SCALE_2),
+        3: float(settings.REGIME_SCALE_3),
+        4: float(settings.REGIME_SCALE_4),
     }.get(r, 1.0)
 
 
-def apply_vps_regime_risk(
-    tv_risk_pct: float,
-    regime: int,
-    *,
-    max_risk_pct_limit: float | None = None,
-) -> dict[str, Any]:
-    """
-    最终风险% = TV risk_pct × VPS档位系数，超过 MAX_RISK_PCT_LIMIT 则截断。
-    例：regime4 × 1.25 后 4.875% → clamp 至 4.0%。
-    """
-    raw = float(tv_risk_pct or 0)
+def effective_vps_risk_pct(regime: int) -> tuple[float, dict[str, Any]]:
+    """effective = VPS_RISK_PCT × REGIME_SCALE × GLOBAL_SCALE, clamped to MAX_RISK_PCT."""
     r = clamp_regime(int(regime or 3))
-    coeff = regime_vps_coefficient(r)
-    cap = float(max_risk_pct_limit if max_risk_pct_limit is not None else settings.MAX_RISK_PCT_LIMIT)
-    scaled = raw * coeff
-    effective = min(scaled, cap) if cap > 0 else scaled
-    return {
+    scale = regime_scale(r)
+    global_scale = float(settings.GLOBAL_SCALE or 1.0)
+    raw = float(settings.VPS_RISK_PCT) * scale * global_scale
+    cap = float(settings.MAX_RISK_PCT)
+    floor = float(settings.MIN_VPS_RISK_PCT)
+    effective = max(min(raw, cap), floor) if cap > 0 else raw
+    return effective, {
         "regime": r,
-        "tv_risk_pct": round(raw, 4),
-        "vps_coeff": round(coeff, 4),
-        "scaled_risk_pct": round(scaled, 4),
+        "vps_risk_pct": round(float(settings.VPS_RISK_PCT), 4),
+        "regime_scale": round(scale, 4),
+        "global_scale": round(global_scale, 4),
+        "scaled_risk_pct": round(raw, 4),
         "effective_risk_pct": round(effective, 4),
-        "risk_clamped": bool(cap > 0 and scaled > cap + 1e-9),
-        "max_risk_pct_limit": round(cap, 4),
+        "risk_clamped": bool(cap > 0 and raw > cap + 1e-9),
+        "max_risk_pct": round(cap, 4),
     }
 
 
@@ -78,9 +60,7 @@ def parse_tv_entry_fields(payload: dict | None) -> dict[str, Any]:
     entry_type = str(data.get("entry_type") or "OPEN").upper().strip()
     if entry_type not in ENTRY_TYPES:
         entry_type = "OPEN"
-    risk_pct = _parse_float(data.get("risk_pct"))
     qty_ratio = _parse_float(data.get("qty_ratio"), default=1.0) or 1.0
-    tv_leverage = _parse_float(data.get("leverage"))
     regime_raw = data.get("regime")
     try:
         regime = clamp_regime(int(regime_raw)) if regime_raw is not None else None
@@ -88,195 +68,211 @@ def parse_tv_entry_fields(payload: dict | None) -> dict[str, Any]:
         regime = None
     return {
         "entry_type": entry_type,
-        "risk_pct": risk_pct,
         "qty_ratio": max(float(qty_ratio), 0.01),
-        "tv_leverage": tv_leverage,
         "regime": regime,
-        "uses_tv_sizing": bool(risk_pct and risk_pct > 0),
+        "uses_vps_sizing": True,
     }
 
 
-def compute_tv_notional_usd(
-    sizing_base: float,
+def _clamp_qty(qty: float, *, min_qty: float, max_qty: float) -> float:
+    if qty <= 0:
+        return 0.0
+    if max_qty > 0:
+        qty = min(qty, max_qty)
+    if min_qty > 0:
+        qty = max(qty, min_qty)
+    return qty
+
+
+def compute_vps_open_qty(
     *,
-    risk_pct: float,
-    leverage: float,
-    qty_ratio: float = 1.0,
-    regime: int = 3,
-) -> tuple[float, float, float, dict[str, Any]]:
+    live_balance: float,
+    initial_principal: float,
+    price: float,
+    tv_sl: float,
+    regime: int,
+    leverage: int,
+    round_fn,
+    min_qty: float | None = None,
+    max_qty: float | None = None,
+) -> tuple[float, dict[str, Any]]:
     """
-    下单名义价值 = 本金 × effective_risk_pct × leverage × qty_ratio
-    effective_risk_pct = min(TV risk_pct × VPS系数, MAX_RISK_PCT_LIMIT)
+    OPEN: 下单名义 = 本金 × effective_risk% × leverage; 数量 = 名义 / |price - tv_sl|
+    完全忽略 TV risk_pct。
     """
-    risk_meta = apply_vps_regime_risk(risk_pct, regime)
-    effective_pct = float(risk_meta["effective_risk_pct"])
-    risk_frac = normalize_risk_pct(effective_pct)
+    sizing_base, sizing_source = resolve_principal_sizing_base(live_balance, initial_principal)
+    eff_pct, risk_meta = effective_vps_risk_pct(regime)
+    lev = max(int(leverage or 1), 1)
+    order_amount = sizing_base * (eff_pct / 100.0) * lev
+    sl_dist = abs(float(price or 0) - float(tv_sl or 0))
+    meta: dict[str, Any] = {
+        "sizing_mode": "vps_open",
+        "entry_type": "OPEN",
+        "sizing_base": round(sizing_base, 2),
+        "sizing_source": sizing_source,
+        "order_amount": round(order_amount, 4),
+        "sl_distance": round(sl_dist, 4),
+        "leverage": lev,
+        "price": round(float(price or 0), 2),
+        "tv_sl": round(float(tv_sl or 0), 2),
+        "equity_balance": round(live_balance, 2),
+        "initial_principal": round(initial_principal, 2),
+        **risk_meta,
+    }
+    if sl_dist <= 0:
+        meta["error"] = "invalid_sl_distance"
+        return 0.0, meta
+    raw_qty = order_amount / sl_dist
+    mn = float(min_qty if min_qty is not None else settings.MIN_ORDER_QTY_ETH)
+    mx = float(max_qty if max_qty is not None else settings.MAX_POSITION_QTY)
+    qty = round_fn(_clamp_qty(raw_qty, min_qty=mn, max_qty=mx))
+    meta["raw_qty"] = round(raw_qty, 6)
+    meta["base_qty"] = qty
+    meta["final_qty"] = qty
+    return qty, meta
+
+
+def compute_vps_add_qty(
+    *,
+    base_qty: float,
+    qty_ratio: float,
+    round_fn,
+    min_qty: float | None = None,
+    max_qty: float | None = None,
+    entry_type: str = "PYRAMID",
+) -> tuple[float, dict[str, Any]]:
+    """PYRAMID / PROFIT_ADD: add_qty = base_qty × qty_ratio（不重新算风险）."""
+    bq = max(float(base_qty or 0), 0.0)
     qr = max(float(qty_ratio or 1.0), 0.01)
-    lev = max(float(leverage or 1), 1.0)
-    base = max(float(sizing_base or 0), 0.0)
-    margin_usd = base * risk_frac * qr
-    notional_usd = margin_usd * lev
-    max_notional = base * lev
-    if max_notional > 0:
-        notional_usd = min(notional_usd, max_notional)
-    return round(margin_usd, 4), round(notional_usd, 4), round(max_notional, 4), risk_meta
-
-
-def compute_tv_eth_qty(
-    *,
-    live_balance: float,
-    initial_principal: float,
-    risk_pct: float,
-    leverage: int,
-    qty_ratio: float,
-    price: float,
-    round_fn,
-    regime: int = 3,
-) -> tuple[float, dict]:
-    sizing_base, sizing_source = resolve_principal_sizing_base(live_balance, initial_principal)
-    margin_usd, notional_usd, max_notional, risk_meta = compute_tv_notional_usd(
-        sizing_base,
-        risk_pct=risk_pct,
-        leverage=leverage,
-        qty_ratio=qty_ratio,
-        regime=regime,
-    )
-    qty = round_fn(notional_usd / price) if price > 0 else 0.0
-    effective_pct = float(risk_meta["effective_risk_pct"])
+    raw = bq * qr
+    mn = float(min_qty if min_qty is not None else settings.MIN_ORDER_QTY_ETH)
+    mx = float(max_qty if max_qty is not None else settings.MAX_POSITION_QTY)
+    qty = round_fn(_clamp_qty(raw, min_qty=mn, max_qty=mx))
     return qty, {
-        "sizing_mode": "tv_v6985_proportional",
-        "sizing_base": round(sizing_base, 2),
-        "sizing_source": sizing_source,
-        "risk_pct": round(float(risk_pct), 4),
-        "effective_risk_pct": round(effective_pct, 4),
-        "risk_frac": round(normalize_risk_pct(effective_pct), 6),
-        "vps_coeff": risk_meta["vps_coeff"],
-        "scaled_risk_pct": risk_meta["scaled_risk_pct"],
-        "risk_clamped": risk_meta["risk_clamped"],
-        "max_risk_pct_limit": risk_meta["max_risk_pct_limit"],
-        "regime": risk_meta["regime"],
-        "qty_ratio": round(float(qty_ratio), 4),
-        "margin_usd": margin_usd,
-        "notional_usd": notional_usd,
-        "max_notional_usd": max_notional,
-        "equity_balance": round(live_balance, 2),
-        "initial_principal": round(initial_principal, 2),
-        "leverage": int(leverage),
-        "price": round(price, 2),
+        "sizing_mode": "vps_add",
+        "entry_type": entry_type,
+        "base_qty": round(bq, 6),
+        "qty_ratio": round(qr, 4),
+        "add_qty": qty,
+        "final_qty": qty,
     }
 
 
-def compute_tv_deepcoin_contracts(
+def compute_vps_open_contracts(
     *,
     live_balance: float,
     initial_principal: float,
-    risk_pct: float,
-    leverage: int,
-    qty_ratio: float,
     price: float,
+    tv_sl: float,
+    regime: int,
+    leverage: int,
     face_value: float,
-    regime: int = 3,
-) -> tuple[int, dict]:
-    sizing_base, sizing_source = resolve_principal_sizing_base(live_balance, initial_principal)
-    margin_usd, notional_usd, max_notional, risk_meta = compute_tv_notional_usd(
-        sizing_base,
-        risk_pct=risk_pct,
-        leverage=leverage,
-        qty_ratio=qty_ratio,
-        regime=regime,
-    )
-    denom = price * face_value
-    qty = max(int(notional_usd / denom), 1) if denom > 0 else 1
-    effective_pct = float(risk_meta["effective_risk_pct"])
-    return qty, {
-        "sizing_mode": "tv_v6985_proportional",
-        "sizing_base": round(sizing_base, 2),
-        "sizing_source": sizing_source,
-        "risk_pct": round(float(risk_pct), 4),
-        "effective_risk_pct": round(effective_pct, 4),
-        "risk_frac": round(normalize_risk_pct(effective_pct), 6),
-        "vps_coeff": risk_meta["vps_coeff"],
-        "scaled_risk_pct": risk_meta["scaled_risk_pct"],
-        "risk_clamped": risk_meta["risk_clamped"],
-        "max_risk_pct_limit": risk_meta["max_risk_pct_limit"],
-        "regime": risk_meta["regime"],
-        "qty_ratio": round(float(qty_ratio), 4),
-        "margin_usd": margin_usd,
-        "notional_usd": notional_usd,
-        "max_notional_usd": max_notional,
-        "equity_balance": round(live_balance, 2),
-        "initial_principal": round(initial_principal, 2),
-        "leverage": int(leverage),
-        "price": round(price, 2),
-        "face_value": face_value,
-    }
+    min_qty: float | None = None,
+    max_qty: float | None = None,
+) -> tuple[int, dict[str, Any]]:
+    def _round_contracts(x: float) -> float:
+        return max(int(x), 1)
 
-
-def resolve_entry_order_qty_eth(
-    *,
-    live_balance: float,
-    initial_principal: float,
-    price: float,
-    regime_margin_pct: float,
-    exchange_leverage: int,
-    round_fn,
-    tv_fields: dict | None,
-    regime: int = 3,
-) -> tuple[float, dict]:
-    tv = dict(tv_fields or {})
-    if tv.get("uses_tv_sizing") and tv.get("risk_pct"):
-        lev = int(exchange_leverage or 1)
-        entry_regime = int(tv.get("regime") or regime or 3)
-        return compute_tv_eth_qty(
-            live_balance=live_balance,
-            initial_principal=initial_principal,
-            risk_pct=float(tv["risk_pct"]),
-            leverage=lev,
-            qty_ratio=float(tv.get("qty_ratio") or 1.0),
-            price=price,
-            round_fn=round_fn,
-            regime=entry_regime,
-        )
-    return compute_eth_qty(
+    qty, meta = compute_vps_open_qty(
         live_balance=live_balance,
         initial_principal=initial_principal,
-        margin_pct=regime_margin_pct,
-        leverage=exchange_leverage,
         price=price,
+        tv_sl=tv_sl,
+        regime=regime,
+        leverage=leverage,
+        round_fn=_round_contracts,
+        min_qty=min_qty or 1,
+        max_qty=max_qty,
+    )
+    denom = float(price or 0) * float(face_value or 1)
+    if denom > 0 and meta.get("order_amount"):
+        meta["notional_usd"] = round(meta["order_amount"], 4)
+    meta["face_value"] = face_value
+    return int(qty), meta
+
+
+def compute_vps_add_contracts(
+    *,
+    base_qty: float,
+    qty_ratio: float,
+    entry_type: str = "PYRAMID",
+    min_qty: float | None = None,
+    max_qty: float | None = None,
+) -> tuple[int, dict[str, Any]]:
+    def _round_contracts(x: float) -> float:
+        return max(int(x), 1)
+
+    qty, meta = compute_vps_add_qty(
+        base_qty=base_qty,
+        qty_ratio=qty_ratio,
+        round_fn=_round_contracts,
+        min_qty=min_qty or 1,
+        max_qty=max_qty,
+        entry_type=entry_type,
+    )
+    return int(qty), meta
+
+
+def resolve_vps_entry_qty_eth(
+    *,
+    live_balance: float,
+    initial_principal: float,
+    entry_type: str,
+    base_qty: float,
+    qty_ratio: float,
+    price: float,
+    tv_sl: float,
+    regime: int,
+    exchange_leverage: int,
+    round_fn,
+) -> tuple[float, dict]:
+    if entry_type in ENTRY_TYPES_ADD:
+        if base_qty <= 0:
+            return 0.0, {"error": "missing_base_qty", "entry_type": entry_type}
+        return compute_vps_add_qty(
+            base_qty=base_qty,
+            qty_ratio=qty_ratio,
+            round_fn=round_fn,
+            entry_type=entry_type,
+        )
+    return compute_vps_open_qty(
+        live_balance=live_balance,
+        initial_principal=initial_principal,
+        price=price,
+        tv_sl=tv_sl,
+        regime=regime,
+        leverage=exchange_leverage,
         round_fn=round_fn,
     )
 
 
-def resolve_entry_order_qty_deepcoin(
+def resolve_vps_entry_qty_deepcoin(
     *,
     live_balance: float,
     initial_principal: float,
+    entry_type: str,
+    base_qty: float,
+    qty_ratio: float,
     price: float,
-    regime_margin_pct: float,
+    tv_sl: float,
+    regime: int,
     exchange_leverage: int,
     face_value: float,
-    tv_fields: dict | None,
-    regime: int = 3,
 ) -> tuple[int, dict]:
-    tv = dict(tv_fields or {})
-    if tv.get("uses_tv_sizing") and tv.get("risk_pct"):
-        lev = int(exchange_leverage or 1)
-        entry_regime = int(tv.get("regime") or regime or 3)
-        return compute_tv_deepcoin_contracts(
-            live_balance=live_balance,
-            initial_principal=initial_principal,
-            risk_pct=float(tv["risk_pct"]),
-            leverage=lev,
-            qty_ratio=float(tv.get("qty_ratio") or 1.0),
-            price=price,
-            face_value=face_value,
-            regime=entry_regime,
+    if entry_type in ENTRY_TYPES_ADD:
+        if base_qty <= 0:
+            return 0, {"error": "missing_base_qty", "entry_type": entry_type}
+        return compute_vps_add_contracts(
+            base_qty=base_qty,
+            qty_ratio=qty_ratio,
+            entry_type=entry_type,
         )
-    return compute_deepcoin_contracts(
+    return compute_vps_open_contracts(
         live_balance=live_balance,
         initial_principal=initial_principal,
-        margin_pct=regime_margin_pct,
-        leverage=exchange_leverage,
         price=price,
+        tv_sl=tv_sl,
+        regime=regime,
+        leverage=exchange_leverage,
         face_value=face_value,
     )

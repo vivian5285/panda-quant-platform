@@ -26,8 +26,7 @@ from app.core.position_sizing import read_contract_equity
 from app.core.tv_entry_sizing import (
     ENTRY_TYPES_ADD,
     parse_tv_entry_fields,
-    resolve_entry_order_qty_deepcoin,
-    resolve_entry_order_qty_eth,
+    resolve_vps_entry_qty_eth,
 )
 from app.core.position_qty_tolerance import qty_change_significant, qty_drift_tolerance, tp_slice_qty_tolerance
 from app.core.tp_defense_reconcile import tp_price_matches
@@ -128,6 +127,7 @@ class PositionSupervisor(
         self.current_sl = 0.0
         self.tv_price = 0.0
         self.initial_qty = 0.0
+        self.base_qty = 0.0
         self.watched_qty = 0.0
         self.watched_entry = 0.0
         self.current_side = None
@@ -165,6 +165,7 @@ class PositionSupervisor(
                     "monitoring": self.monitoring,
                     "tv_tps": self.tv_tps,
                     "initial_qty": self.initial_qty,
+                    "base_qty": float(getattr(self, "base_qty", 0) or 0),
                     "consumed_tp_levels": self.consumed_tp_levels,
                     "adverse_sl_armed": self.adverse_sl_armed,
                     "adverse_sl_prices": self.adverse_sl_prices,
@@ -191,6 +192,7 @@ class PositionSupervisor(
                     self.current_atr = float(s.get("current_atr", 30) or 30)
                     self.monitoring = bool(s.get("monitoring", False))
                     self.initial_qty = float(s.get("initial_qty", 0) or 0)
+                    self.base_qty = float(s.get("base_qty", 0) or s.get("initial_qty", 0) or 0)
                     self.tv_tps = normalize_tv_targets(s.get("tv_tps", [0.0, 0.0, 0.0]))
                     self.consumed_tp_levels = [
                         int(x) for x in (s.get("consumed_tp_levels") or []) if int(x) in (1, 2, 3)
@@ -377,26 +379,28 @@ class PositionSupervisor(
             self._tv_entry_fields["regime"] = self.regime
 
     def _uses_tv_entry_routing(self) -> bool:
-        fields = getattr(self, "_tv_entry_fields", None) or {}
-        return bool(fields.get("uses_tv_sizing") or getattr(self, "_explicit_entry_type", False))
+        return True
 
     def _resolve_entry_leverage(self) -> int:
-        """实盘杠杆固定为 VPS 配置（5×），TV leverage 仅作信号参考。"""
+        """实盘杠杆固定为 VPS 配置（5×）。"""
         return int(self.leverage)
 
     def _resolve_entry_qty(self, curr_px: float) -> tuple[float, dict]:
         equity = read_contract_equity(self.client)
-        margin_pct = self.regime_settings[self.regime]["margin"] * self.risk_multiplier
         leverage = self._resolve_entry_leverage()
-        return resolve_entry_order_qty_eth(
+        tv_fields = getattr(self, "_tv_entry_fields", None) or {}
+        entry_type = getattr(self, "_entry_type", "OPEN")
+        return resolve_vps_entry_qty_eth(
             live_balance=equity,
             initial_principal=self.initial_principal,
-            price=curr_px,
-            regime_margin_pct=margin_pct,
+            entry_type=entry_type,
+            base_qty=float(getattr(self, "base_qty", 0) or 0),
+            qty_ratio=float(tv_fields.get("qty_ratio") or 1.0),
+            price=float(curr_px or self.tv_price or 0),
+            tv_sl=float(getattr(self, "tv_sl", 0) or 0),
+            regime=int(tv_fields.get("regime") or self.regime),
             exchange_leverage=leverage,
             round_fn=round_quantity,
-            tv_fields=getattr(self, "_tv_entry_fields", None),
-            regime=self.regime,
         )
 
     def _force_flat_before_open(self, reason: str) -> bool:
@@ -444,14 +448,15 @@ class PositionSupervisor(
 
         qty, sizing_meta = self._resolve_entry_qty(curr_px)
         if qty <= 0:
-            self._log("ERROR", f"{entry_type} 余额不足，无法加仓")
-            self._alert("warning", "INSUFFICIENT_BALANCE", "余额不足", f"用户 {self.user_id} {entry_type} 无法加仓")
-            return {"status": "error", "reason": "insufficient_balance", "message": "余额不足，无法加仓"}
+            err = sizing_meta.get("error", "insufficient_balance")
+            self._log("ERROR", f"{entry_type} 无法加仓: {err}")
+            self._alert("warning", "INSUFFICIENT_BALANCE", "加仓失败", f"用户 {self.user_id} {entry_type}: {err}")
+            return {"status": "error", "reason": err, "message": "加仓数量无效"}
 
         self._log(
             "SIGNAL",
-            f"📈 [{entry_type}] 同向追加: {action} +{qty} ETH | risk_pct={sizing_meta.get('risk_pct')} "
-            f"qty_ratio={sizing_meta.get('qty_ratio')} | {sizing_meta.get('sizing_source', 'regime')}",
+            f"📈 [{entry_type}] 同向追加: {action} +{qty} ETH | "
+            f"base={sizing_meta.get('base_qty')} × ratio={sizing_meta.get('qty_ratio')}",
         )
         self.client.place_market_order(action, qty, self.symbol)
         time.sleep(2.0)
@@ -467,6 +472,7 @@ class PositionSupervisor(
         self.watched_qty = real_qty
         self.watched_entry = entry_price
         self.initial_qty = float(self.initial_qty or prev_qty) + add_qty
+        # base_qty 保持不变（首次 OPEN 时记录）
         self.monitoring = True
         self._ensure_price_ws()
 
@@ -518,8 +524,8 @@ class PositionSupervisor(
             entry_type,
             f"{theme['accent']} {add_label} · {theme['label']}",
             f"{action} +{add_qty:.4f} ETH → 总 {real_qty} @ {entry_price} | "
-            f"risk {sizing_meta.get('risk_pct')}% × ratio {sizing_meta.get('qty_ratio')} "
-            f"× {leverage}×{verify_note}",
+            f"risk base {sizing_meta.get('base_qty')} × {sizing_meta.get('qty_ratio')} "
+            f"= +{add_qty:.4f}{verify_note}",
             detail,
         )
         return {"status": "ok", "action": action, "detail": {"type": entry_type.lower(), **detail}}
@@ -549,45 +555,9 @@ class PositionSupervisor(
         if curr_px <= 0:
             return {"status": "error", "reason": "price_unavailable", "message": "无法获取当前价格"}
 
-        if self._uses_tv_entry_routing():
-            return self._handle_tv_entry(
-                action, curr_px, has_pos=has_pos, current_side=current_side,
-            )
-
-        tv_price = float(self.tv_price or curr_px)
-        if has_pos and current_side == action:
-            ev = evaluate_same_direction(
-                has_position=True,
-                current_side=current_side,
-                signal_side=action,
-                entry_price=entry_price,
-                tv_price=tv_price,
-                mark_price=curr_px,
-                held_regime=held_regime,
-                new_regime=self.regime,
-                held_atr=held_atr,
-                new_atr=self.current_atr,
-                threshold_pct=threshold,
-            )
-            if ev.action == SameDirAction.REFRESH_TPS:
-                return self._refresh_same_direction_tps(
-                    action, entry_price, ev, prev_tv_tps=prev_tv_tps or []
-                )
-            return self._close_then_open_entry(action, curr_px, ev)
-
-        if has_pos and current_side != action:
-            self._log("SIGNAL", f"⚡ 收到建仓信号 [{action}]，反方向先平后开")
-            self.client.cancel_all_open_orders(self.symbol)
-            time.sleep(0.5)
-            self._close_all("反方向指令到达，触发【先平后开】原子对冲换防")
-            if not self._wait_until_flat():
-                self._log("ERROR", "反方向平仓后仍未归零，暂缓新开仓")
-                return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
-            self.client.cancel_all_open_orders(self.symbol)
-            time.sleep(0.4)
-            return self._open_position(action, curr_px)
-
-        return self._open_position(action, curr_px)
+        return self._handle_tv_entry(
+            action, curr_px, has_pos=has_pos, current_side=current_side,
+        )
 
     def _close_then_open_entry(self, action: str, curr_px: float, ev) -> dict:
         threshold = float(settings.SAME_DIR_IGNORE_PRICE_DIFF_PCT)
@@ -704,22 +674,28 @@ class PositionSupervisor(
 
     def _open_position(self, action: str, curr_px: float) -> dict:
         leverage = self._resolve_entry_leverage()
-        margin_pct = self.regime_settings[self.regime]["margin"] * self.risk_multiplier
         self.client.set_leverage(self.symbol, leverage=leverage)
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.4)
         qty, sizing_meta = self._resolve_entry_qty(curr_px)
         if qty <= 0:
-            self._log("ERROR", "余额不足，无法开仓")
-            self._alert("warning", "INSUFFICIENT_BALANCE", "余额不足", f"用户 {self.user_id} 无法开仓")
-            return {"status": "error", "reason": "insufficient_balance", "message": "余额不足，无法开仓"}
+            err = sizing_meta.get("error", "insufficient_balance")
+            self._log("ERROR", f"开仓失败: {err} | meta={sizing_meta}")
+            self._alert(
+                "warning", "INSUFFICIENT_BALANCE", "开仓失败",
+                f"用户 {self.user_id} 无法开仓: {err} | "
+                f"order={sizing_meta.get('order_amount')} sl_dist={sizing_meta.get('sl_distance')}",
+                sizing_meta,
+            )
+            return {"status": "error", "reason": err, "message": "无法开仓，请检查 tv_sl 与 VPS 风险参数"}
 
         open_side = "BUY" if action == "LONG" else "SELL"
         entry_type = getattr(self, "_entry_type", "OPEN")
         self._log(
             "SIGNAL",
-            f"🚀 [唯一主仓] 极速开仓: {open_side} {qty} 个ETH | {entry_type} | 档位 {self.regime} | "
-            f"保证金 {sizing_meta.get('margin_usd', '—')}U ({sizing_meta.get('sizing_source', 'regime')})",
+            f"🚀 [VPS开仓] {open_side} {qty} ETH | {entry_type} R{self.regime} | "
+            f"名义{sizing_meta.get('order_amount')}U / sl_dist={sizing_meta.get('sl_distance')} "
+            f"({sizing_meta.get('sizing_source')})",
         )
         self.client.place_market_order(action, qty, self.symbol)
         time.sleep(2.0)
@@ -735,6 +711,7 @@ class PositionSupervisor(
             )
             if cap_result.get("new_qty"):
                 real_qty = float(cap_result["new_qty"])
+            self.base_qty = real_qty
             self.initial_qty = real_qty
             self.consumed_tp_levels = []
             self.current_trade_id = self.on_trade_open(
@@ -753,7 +730,6 @@ class PositionSupervisor(
                 "tv_price": self.tv_price,
                 "slippage": round(slip, 2),
                 "tv_tps": list(self.tv_tps),
-                "margin_pct": margin_pct,
                 "risk_multiplier": self.risk_multiplier,
                 "leverage": leverage,
                 "atr": self.current_atr,
@@ -1779,6 +1755,7 @@ class PositionSupervisor(
         )
         self.watched_qty = 0.0
         self.initial_qty = 0.0
+        self.base_qty = 0.0
         self.current_side = None
         self.consumed_tp_levels = []
         self.current_trade_id = None
@@ -1855,6 +1832,7 @@ class PositionSupervisor(
         )
         self.watched_qty = 0.0
         self.initial_qty = 0.0
+        self.base_qty = 0.0
         self.current_side = None
         self.consumed_tp_levels = []
         self.current_trade_id = None
@@ -2325,6 +2303,7 @@ class PositionSupervisor(
         self._reset_adverse_radar(keep_tv_sl=False)
         self.watched_qty = 0.0
         self.initial_qty = 0.0
+        self.base_qty = 0.0
         self.consumed_tp_levels = []
         self.current_trade_id = None
         self.trade_opened_at = None
