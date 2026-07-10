@@ -150,7 +150,7 @@ def format_takeover_banner(user: User, audit: dict) -> str:
         lines.append("  实盘持仓: 无（空仓待机）")
         lines.append("  哨兵监控: 未启动")
     else:
-        aligned = "一致" if audit.get("direction_aligned") else "背离（哨兵将强制对齐）"
+        aligned = "一致" if audit.get("direction_aligned") else "已按实盘方向校正"
         pnl = audit.get("pnl_track", "—")
         pnl_txt = {"profit_radar": "浮盈·雷达轨", "loss_shield": "浮亏·防护轨"}.get(pnl, pnl)
         lines.extend([
@@ -238,10 +238,10 @@ def broadcast_startup_summary(audits: list[dict], failed_users: list[dict]) -> N
 
     if mismatches:
         notify_system(
-            "warning", "SYSTEM_RESTART",
-            "平台重启 · 账户接管完成（存在方向背离）",
+            "info", "SYSTEM_RESTART",
+            "平台重启 · 账户接管完成（方向已按实盘校正）",
             f"{len(audits)} 用户已加载，{with_pos} 个有持仓，"
-            f"{len(mismatches)} 个方向背离（哨兵将强制对齐）",
+            f"{len(mismatches)} 个历史 TV 方向与实盘不一致（已校正，不强制全平）",
             detail,
         )
         return

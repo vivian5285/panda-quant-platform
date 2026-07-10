@@ -37,7 +37,7 @@ from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, m
 from app.core.position_qty_tolerance import tp_slice_qty_tolerance
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.adverse_radar_guard import AdverseRadarMixin, ADVERSE_STOP_TOLERANCE
-from app.core.startup_reconcile import StartupReconcileMixin, format_startup_defense_summary, recovery_section, apply_tv_sl_from_sources
+from app.core.startup_reconcile import StartupReconcileMixin, format_startup_defense_summary, recovery_section, apply_tv_sl_from_sources, adopt_live_tv_side
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 from app.services.close_alert_utils import (
@@ -2262,10 +2262,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         )
                         break
 
-                    if actual_side != self.last_tv_side:
-                        reason = f"致命方向背离：实盘({actual_side}) vs TV({self.last_tv_side})"
-                        self._close_all(reason, force_align=(actual_side, self.last_tv_side))
-                        break
+                    if self.last_tv_side and actual_side != self.last_tv_side:
+                        prev = self.last_tv_side
+                        self.last_tv_side = actual_side
+                        logger.info(
+                            f"方向校正: 实盘 {actual_side} 覆盖 stale TV {prev}（不强制全平）"
+                        )
+                        self._save_state()
+                    elif not self.last_tv_side:
+                        self.last_tv_side = actual_side
+                        self._save_state()
 
                     entry_px = float(pos.get("entry_price", 0) or self.watched_entry or 0) if pos else 0.0
                     cap_px = self.client.get_current_price(self.symbol) or entry_px
@@ -2572,14 +2578,17 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     return
 
                 if reconcile.get("direction_mismatch") or side != self.last_tv_side:
-                    logger.warning(
-                        f"🔄 [重启] 方向背离 实盘{side} vs TV{self.last_tv_side} → 核武对齐"
+                    side_sync = adopt_live_tv_side(
+                        self,
+                        reconcile,
+                        adopted_manual=not bool(reconcile.get("open_log_qty")),
                     )
-                    self._close_all(
-                        f"🔄 重启方向背离: 实盘({side}) vs TV({self.last_tv_side})",
-                        force_align=(side, self.last_tv_side),
+                    reconcile_notes.append(
+                        f"方向校正: 实盘{side} ← TV{side_sync.get('previous_tv_side')} "
+                        f"({side_sync.get('reason')})"
                     )
-                    return
+                    if side_sync.get("conflict"):
+                        reconcile_notes.append("TV反向OPEN信号但信任实盘持仓")
 
                 saved_initial = self._safe_qty(self.initial_qty)
                 open_log_qty = self._safe_qty(reconcile.get("open_log_qty") or 0)

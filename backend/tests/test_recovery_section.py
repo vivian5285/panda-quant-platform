@@ -1,12 +1,38 @@
 """Tests for safe recovery_context nested access."""
 
-from app.core.startup_reconcile import recovery_section, apply_tv_sl_from_sources
+from app.core.startup_reconcile import recovery_section, apply_tv_sl_from_sources, adopt_live_tv_side
 
 
 def test_recovery_section_null_trade():
     ctx = {"trade": None, "open_log": {"qty": 1.0}}
     assert recovery_section(ctx, "trade") == {}
     assert recovery_section(ctx, "open_log")["qty"] == 1.0
+
+
+def test_adopt_live_tv_side_trusts_manual_long():
+    class Sup:
+        last_tv_side = "SHORT"
+        current_side = "LONG"
+
+    sup = Sup()
+    result = adopt_live_tv_side(
+        sup,
+        {"latest_tv_action": "LONG"},
+        adopted_manual=True,
+    )
+    assert sup.last_tv_side == "LONG"
+    assert result["realigned"] is True
+    assert result["reason"] == "trust_live_manual"
+
+
+def test_adopt_live_tv_side_when_latest_tv_is_close():
+    class Sup:
+        last_tv_side = "SHORT"
+        current_side = "LONG"
+
+    sup = Sup()
+    adopt_live_tv_side(sup, {"latest_tv_action": "CLOSE_PROTECT"})
+    assert sup.last_tv_side == "LONG"
 
 
 def test_apply_tv_sl_prefers_latest_tv():

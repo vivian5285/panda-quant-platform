@@ -38,6 +38,51 @@ def apply_tv_sl_from_sources(target, *sources: dict | None) -> float:
     return float(getattr(target, "tv_sl", 0) or 0)
 
 
+def adopt_live_tv_side(
+    supervisor,
+    reconcile: dict | None = None,
+    *,
+    adopted_manual: bool = False,
+) -> dict[str, Any]:
+    """
+    实盘有持仓时以交易所方向为准，避免人工/外部开仓被 stale last_tv_side 误杀。
+    仅当最新 TV 为明确反向 OPEN 且非人工接管时才标记 conflict（不自动全平）。
+    """
+    live = getattr(supervisor, "current_side", None)
+    result: dict[str, Any] = {
+        "live_side": live,
+        "previous_tv_side": getattr(supervisor, "last_tv_side", None),
+        "realigned": False,
+        "conflict": False,
+        "adopted_manual": adopted_manual,
+    }
+    if not live:
+        return result
+
+    reconcile = reconcile or {}
+    latest = (reconcile.get("latest_tv_action") or "").upper()
+    prev = getattr(supervisor, "last_tv_side", None)
+
+    if adopted_manual or latest not in ("LONG", "SHORT"):
+        supervisor.last_tv_side = live
+        result["realigned"] = prev != live
+        result["reason"] = "trust_live_manual" if adopted_manual else "trust_live_no_tv_entry"
+        return result
+
+    if latest == live:
+        supervisor.last_tv_side = live
+        result["realigned"] = prev != live
+        result["reason"] = "latest_tv_matches_live"
+        return result
+
+    # TV 最新为反向 OPEN：标记冲突，但默认仍信任实盘（人工可能先于 TV 成交）
+    supervisor.last_tv_side = live
+    result["realigned"] = True
+    result["conflict"] = True
+    result["reason"] = "tv_opposite_but_trust_live"
+    return result
+
+
 def classify_startup_pnl_track(
     entry: float,
     curr_px: float,

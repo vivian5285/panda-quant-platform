@@ -9,7 +9,13 @@ from typing import Callable, Optional
 
 from app.core.binance_client import BinanceClient
 from app.core.adverse_radar_guard import AdverseRadarMixin
-from app.core.startup_reconcile import StartupReconcileMixin, format_startup_defense_summary, recovery_section, apply_tv_sl_from_sources
+from app.core.startup_reconcile import (
+    StartupReconcileMixin,
+    adopt_live_tv_side,
+    apply_tv_sl_from_sources,
+    format_startup_defense_summary,
+    recovery_section,
+)
 from app.core.binance_smart_defense import BinanceSmartDefenseMixin
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.position_manager import PositionManager
@@ -2077,15 +2083,18 @@ class PositionSupervisor(
                         )
                         break
 
-                    if actual_side != self.last_tv_side:
-                        self._alert(
-                            "critical", "FORCE_ALIGN",
-                            "方向背离 · 强制全平",
-                            f"实盘 {actual_side} vs TV {self.last_tv_side}，禁止逆势持仓",
-                            {"actual_side": actual_side, "tv_side": self.last_tv_side},
+                    if self.last_tv_side and actual_side != self.last_tv_side:
+                        prev = self.last_tv_side
+                        self.last_tv_side = actual_side
+                        self._log(
+                            "SIGNAL",
+                            f"方向校正: 实盘 {actual_side} 覆盖 stale TV {prev}（不强制全平）",
+                            {"previous_tv_side": prev, "live_side": actual_side},
                         )
-                        self._close_all(f"致命方向背离：实盘({actual_side}) vs TV({self.last_tv_side})")
-                        break
+                        self._save_state()
+                    elif not self.last_tv_side:
+                        self.last_tv_side = actual_side
+                        self._save_state()
 
                     curr_px = self.client.get_current_price(self.symbol)
                     if curr_px <= 0:
@@ -2426,8 +2435,6 @@ class PositionSupervisor(
 
             real_amt = float(pos["positionAmt"])
             self.current_side = "LONG" if real_amt > 0 else "SHORT"
-            if not self.last_tv_side:
-                self.last_tv_side = self.current_side
 
             self.watched_qty = abs(real_amt)
             open_log_qty = float(reconcile.get("open_log_qty") or 0)
@@ -2456,6 +2463,15 @@ class PositionSupervisor(
                     f"人工/外部持仓接管: {self.current_side} {self.watched_qty} @ {self.watched_entry} "
                     f"| TV={self.last_tv_side} SL={getattr(self, 'tv_sl', 0)}",
                 )
+
+            side_sync = adopt_live_tv_side(
+                self,
+                reconcile,
+                adopted_manual=bool(audit.get("adopted_manual")),
+            )
+            audit["tv_side_sync"] = side_sync
+            if side_sync.get("conflict"):
+                audit.setdefault("warnings", []).append("tv_opposite_open_trust_live")
 
             if self.best_price <= 0:
                 self.best_price = self.watched_entry
@@ -2488,6 +2504,8 @@ class PositionSupervisor(
             audit["direction_aligned"] = (
                 self.current_side == self.last_tv_side if self.last_tv_side else True
             )
+            if side_sync.get("realigned"):
+                audit["direction_aligned"] = True
             if reconcile.get("warnings"):
                 audit["radar_warnings"] = reconcile["warnings"]
 
@@ -2530,7 +2548,6 @@ class PositionSupervisor(
                 "radar_handoff": unified.get("radar_handoff"),
             })
             self._save_state()
-            threading.Thread(target=self._sentinel_loop, daemon=True).start()
 
             self._log(
                 "STARTUP",
@@ -2545,6 +2562,7 @@ class PositionSupervisor(
                 f"{self.current_side} {self.watched_qty} @ {self.watched_entry} | {summary}",
                 audit,
             )
+            threading.Thread(target=self._sentinel_loop, daemon=True).start()
         except Exception as e:
             logger.error(f"[User {self.user_id}] recover failed: {e}")
             audit["error"] = str(e)
