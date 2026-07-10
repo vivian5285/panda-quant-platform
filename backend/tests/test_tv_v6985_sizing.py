@@ -22,10 +22,10 @@ def test_regime_scale_from_doc():
 @pytest.mark.parametrize(
     "regime,price,expected_qty",
     [
-        (1, 2000.0, 0.206),
-        (2, 2000.0, 0.281),
-        (3, 2000.0, 0.356),
-        (4, 2000.0, 0.500),
+        (1, 2000.0, 0.619),
+        (2, 2000.0, 0.844),
+        (3, 2000.0, 1.069),
+        (4, 2000.0, 1.496),
     ],
 )
 def test_vps_open_table_1000u(regime, price, expected_qty):
@@ -35,7 +35,7 @@ def test_vps_open_table_1000u(regime, price, expected_qty):
         price=price,
         tv_sl=1950.0,
         regime=regime,
-        leverage=5,
+        leverage=15,
         round_fn=lambda x: round(x, 3),
     )
     assert qty == pytest.approx(expected_qty, rel=0.02)
@@ -45,11 +45,11 @@ def test_vps_open_table_1000u(regime, price, expected_qty):
 
 def test_vps_add_uses_base_qty_not_risk():
     qty, meta = compute_vps_add_qty(
-        base_qty=0.5,
+        base_qty=1.496,
         round_fn=lambda x: round(x, 3),
         entry_type="PYRAMID",
     )
-    assert qty == pytest.approx(0.25, rel=0.01)
+    assert qty == pytest.approx(0.748, rel=0.01)
     assert meta["sizing_mode"] == "vps_add"
     assert meta["add_qty_ratio"] == pytest.approx(0.5)
 
@@ -59,14 +59,14 @@ def test_vps_add_ignores_tv_qty_ratio():
         live_balance=1000.0,
         initial_principal=1000.0,
         entry_type="PROFIT_ADD",
-        base_qty=0.5,
+        base_qty=1.496,
         price=2000.0,
         tv_sl=1950.0,
         regime=4,
-        exchange_leverage=5,
+        exchange_leverage=15,
         round_fn=lambda x: round(x, 3),
     )
-    assert qty == pytest.approx(0.25, rel=0.01)
+    assert qty == pytest.approx(0.748, rel=0.01)
     assert meta["add_qty_ratio"] == pytest.approx(0.5)
 
 
@@ -90,7 +90,7 @@ def test_resolve_open_never_uses_regime_margin():
         price=2000.0,
         tv_sl=1955.0,
         regime=1,
-        exchange_leverage=5,
+        exchange_leverage=15,
         round_fn=lambda x: round(x, 3),
     )
     assert qty > 0
@@ -103,15 +103,15 @@ def test_resolve_add_requires_base_qty():
         live_balance=1000.0,
         initial_principal=1000.0,
         entry_type="PYRAMID",
-        base_qty=0.356,
+        base_qty=1.069,
         price=2000.0,
         tv_sl=1950.0,
         regime=3,
-        exchange_leverage=5,
+        exchange_leverage=15,
         round_fn=lambda x: round(x, 3),
     )
-    assert qty == pytest.approx(0.178, rel=0.02)
-    assert meta["add_qty"] == pytest.approx(0.178, rel=0.02)
+    assert qty == pytest.approx(0.535, rel=0.02)
+    assert meta["add_qty"] == pytest.approx(0.535, rel=0.02)
 
 
 def test_effective_risk_pct_cap():

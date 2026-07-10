@@ -104,8 +104,8 @@ def compute_vps_open_qty(
 ) -> tuple[float, dict[str, Any]]:
     """
     OPEN（开发清单最终版）:
-      保证金 = 本金 × VPS_RISK_PCT% × LEVERAGE × REGIME_SCALE
-      头寸价值 = 保证金 × LEVERAGE
+      保证金 = 本金 × effective_risk% × SIZING_MARGIN_LEVERAGE（默认 5，预算不变）
+      头寸价值 = 保证金 × 交易所杠杆（LEVERAGE，默认 15）
       张数 = 头寸价值 / price
     tv_sl 仅用于挂单止损，不参与张数计算。忽略 TV risk_pct / qty_ratio。
     """
@@ -130,8 +130,10 @@ def compute_vps_open_qty(
         meta["error"] = "invalid_price"
         return 0.0, meta
 
-    margin_usd = sizing_base * (eff_pct / 100.0) * lev
+    margin_lev = max(int(getattr(settings, "SIZING_MARGIN_LEVERAGE", 5) or 5), 1)
+    margin_usd = sizing_base * (eff_pct / 100.0) * margin_lev
     position_value = margin_usd * lev
+    meta["sizing_margin_leverage"] = margin_lev
     raw_qty = position_value / price_f
     meta["margin_usd"] = round(margin_usd, 4)
     meta["position_value"] = round(position_value, 4)

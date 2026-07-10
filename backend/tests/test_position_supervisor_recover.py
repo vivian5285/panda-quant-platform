@@ -137,7 +137,7 @@ def test_recover_manual_position_when_trade_is_null(supervisor, monkeypatch):
     """Manual exchange open: recovery_context.trade is None — must not crash."""
     monkeypatch.setattr("app.core.position_supervisor.threading.Thread.start", lambda self: None)
     supervisor.client.get_current_price.return_value = 3650.0
-    supervisor.leverage = 5
+    supervisor.leverage = 15
     supervisor.initial_principal = 700.0
     supervisor.client.get_available_balance.return_value = 1000.0
 
@@ -188,7 +188,7 @@ def test_recover_realigns_stale_tv_side_not_flat(supervisor, monkeypatch):
     monkeypatch.setattr("app.core.position_supervisor.threading.Thread.start", lambda self: None)
     supervisor.last_tv_side = "SHORT"
     supervisor.client.get_current_price.return_value = 3650.0
-    supervisor.leverage = 5
+    supervisor.leverage = 15
     supervisor.initial_principal = 700.0
     supervisor.client.get_available_balance.return_value = 1000.0
 

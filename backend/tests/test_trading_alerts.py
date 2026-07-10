@@ -9,17 +9,17 @@ from app.services.trading_alerts import (
 )
 
 
-def test_binance_theme_5x():
+def test_binance_theme_15x():
     theme = resolve_exchange_theme("binance")
-    assert theme["leverage"] == 5
-    assert theme["tag"] == "#币安5x"
+    assert theme["leverage"] == 15
+    assert theme["tag"] == "#币安15x"
     assert "GEMINI量化" in theme["brand"]
     assert "黄金" not in theme["brand"]
 
 
-def test_all_exchanges_5x_leverage():
+def test_all_exchanges_15x_leverage():
     for key in ("binance", "deepcoin", "okx", "gate"):
-        assert resolve_exchange_theme(key)["leverage"] == 5
+        assert resolve_exchange_theme(key)["leverage"] == 15
 
 
 def test_exchange_themes_distinct_palettes():
@@ -28,7 +28,7 @@ def test_exchange_themes_distinct_palettes():
 
 
 def test_resolve_gateio_alias():
-    assert resolve_exchange_theme("gateio")["tag"] == "#Gate5x"
+    assert resolve_exchange_theme("gateio")["tag"] == "#Gate15x"
 
 
 def test_alert_body_includes_gemini_header_and_exchange_accent():
@@ -44,8 +44,8 @@ def test_alert_body_includes_gemini_header_and_exchange_accent():
         display="test@example.com",
     )
     assert "GEMINI量化 · OKX" in body
-    assert "#OKX5x" in body
-    assert "5×" in body
+    assert "#OKX15x" in body
+    assert "15×" in body
     assert "ETH-USDT-SWAP" in body
 
 

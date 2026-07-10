@@ -63,7 +63,7 @@ def test_binance_open_ignores_depleted_available_balance():
     client.place_market_order.return_value = {}
     client.trading_symbol = "ETHUSDT"
     client.exchange_id = "binance"
-    client.trading_leverage = 10
+    client.trading_leverage = 15
 
     sup = PositionSupervisor(user_id=6, client=client, initial_principal=700.0)
     sup.regime = 4
@@ -79,13 +79,13 @@ def test_binance_open_ignores_depleted_available_balance():
         return_value={"matched": 3, "expected": 3, "audit": {"levels": []}}
     )
     with patch.object(sup.position_manager, "get_position", return_value={
-        "positionAmt": "1.578",
+        "positionAmt": "1.184",
         "entryPrice": "1770",
-    }), patch.object(sup, "_get_active_position", return_value={"size": 1.578, "entry_price": 1770.0, "side": "LONG"}):
+    }), patch.object(sup, "_get_active_position", return_value={"size": 1.184, "entry_price": 1770.0, "side": "LONG"}):
         sup._open_position("LONG", 1770.0)
 
     call_qty = client.place_market_order.call_args[0][1]
-    assert call_qty == pytest.approx(1.578, rel=0.05)
+    assert call_qty == pytest.approx(1.184, rel=0.05)
 
 
 def test_resolve_cap_sizing_base_uses_principal_when_available_depleted():
@@ -141,7 +141,7 @@ def test_binance_open_position_uses_principal_cap():
     client.place_market_order.return_value = {}
     client.trading_symbol = "ETHUSDT"
     client.exchange_id = "binance"
-    client.trading_leverage = 10
+    client.trading_leverage = 15
 
     sup = PositionSupervisor(user_id=6, client=client, initial_principal=700.0)
     sup.regime = 4
@@ -157,14 +157,14 @@ def test_binance_open_position_uses_principal_cap():
         return_value={"matched": 3, "expected": 3, "audit": {"levels": []}}
     )
     with patch.object(sup.position_manager, "get_position", return_value={
-        "positionAmt": "1.578",
+        "positionAmt": "1.184",
         "entryPrice": "1770",
-    }), patch.object(sup, "_get_active_position", return_value={"size": 1.578, "entry_price": 1770.0, "side": "LONG"}):
+    }), patch.object(sup, "_get_active_position", return_value={"size": 1.184, "entry_price": 1770.0, "side": "LONG"}):
         sup._open_position("LONG", 1770.0)
 
     client.cancel_all_open_orders.assert_called()
     call_qty = client.place_market_order.call_args[0][1]
-    assert call_qty == pytest.approx(1.578, rel=0.05)
+    assert call_qty == pytest.approx(1.184, rel=0.05)
 
 
 def test_deepcoin_open_ignores_depleted_available_balance():
