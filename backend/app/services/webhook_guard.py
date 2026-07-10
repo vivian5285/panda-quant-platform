@@ -90,8 +90,9 @@ def validate_signal_payload(data: dict) -> tuple[bool, str]:
                 return False, "Invalid risk_pct"
         if data.get("qty_ratio") is not None:
             try:
-                if float(data.get("qty_ratio") or 0) <= 0:
-                    return False, "qty_ratio must be > 0 when provided"
+                qr = float(data.get("qty_ratio") or 0)
+                if qr < 0:
+                    return False, "qty_ratio must be >= 0 when provided"
             except (TypeError, ValueError):
                 return False, "Invalid qty_ratio"
         if data.get("leverage") is not None:

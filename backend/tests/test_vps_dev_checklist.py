@@ -13,10 +13,11 @@ from app.core.startup_reconcile import StartupReconcileMixin
 from app.core.tv_entry_sizing import (
     compute_vps_add_qty,
     compute_vps_open_qty,
+    max_add_times_for_regime,
     parse_tv_entry_fields,
+    regime_add_qty_ratio,
     resolve_vps_entry_qty_deepcoin,
     resolve_vps_entry_qty_eth,
-    vps_add_qty_ratio,
 )
 from app.models import ExchangeType, User
 from app.services.trading_alerts import should_push_trading_dingtalk
@@ -25,10 +26,10 @@ from unittest.mock import MagicMock, patch
 
 
 CHECKLIST_OPEN_TABLE = [
-    (1, 0.619, 0.310),
-    (2, 0.844, 0.422),
+    (1, 0.619, 0.0),
+    (2, 0.844, 0.253),
     (3, 1.069, 0.535),
-    (4, 1.496, 0.748),
+    (4, 1.496, 1.047),
 ]
 
 
@@ -48,9 +49,14 @@ def test_checklist_open_and_add_table_1000u_2000(regime, open_qty, add_qty):
     assert meta["margin_usd"] > 0
     assert meta["position_value"] == pytest.approx(meta["margin_usd"] * 15, rel=0.01)
 
-    add, add_meta = compute_vps_add_qty(base_qty=qty, round_fn=lambda x: round(x, 3))
+    tv_ratio = regime_add_qty_ratio(regime)
+    add, add_meta = compute_vps_add_qty(
+        base_qty=qty,
+        tv_qty_ratio=tv_ratio,
+        round_fn=lambda x: round(x, 3),
+    )
     assert add == pytest.approx(add_qty, rel=0.02)
-    assert add_meta["add_qty_ratio"] == pytest.approx(0.5)
+    assert add_meta["add_qty_ratio"] == pytest.approx(tv_ratio)
 
 
 def test_checklist_tv_fields_parsed_and_ignored():
@@ -76,7 +82,7 @@ def test_checklist_tv_fields_parsed_and_ignored():
     fields = parse_tv_entry_fields(norm)
     assert fields["entry_type"] == "OPEN"
     assert fields["uses_vps_sizing"] is True
-    assert vps_add_qty_ratio() == pytest.approx(0.5)
+    assert fields["tv_qty_ratio_ignored"] is True
 
 
 @pytest.mark.parametrize("exchange", ["binance", "okx", "gate", "deepcoin"])
@@ -124,6 +130,7 @@ def test_dingtalk_push_open_startup_radar_alerts():
     assert should_push_trading_dingtalk("OPEN", "info") is True
     assert should_push_trading_dingtalk("STARTUP", "info") is True
     assert should_push_trading_dingtalk("PYRAMID", "info") is True
+    assert should_push_trading_dingtalk("UPDATE_SL", "info") is True
     assert should_push_trading_dingtalk("FORCE_ALIGN", "critical") is True
     assert should_push_trading_dingtalk("IDLE_WATCH", "info") is True
     assert should_push_trading_dingtalk("TRAIL", "info") is False
@@ -134,6 +141,8 @@ def test_config_matches_checklist_defaults():
     assert s.VPS_RISK_PCT == pytest.approx(3.0)
     assert s.ADD_QTY_RATIO == pytest.approx(0.5)
     assert s.MAX_ADD_TIMES == 2
+    assert s.ADD_RATIO_REG4 == pytest.approx(0.7)
+    assert max_add_times_for_regime(4) == 3
     assert s.REGIME_SCALE_1 == pytest.approx(0.55)
     assert s.REGIME_SCALE_4 == pytest.approx(1.33)
     assert s.SIZING_MARGIN_LEVERAGE == 5
@@ -187,6 +196,7 @@ def test_resolve_entry_qty_deepcoin_add():
         regime=3,
         exchange_leverage=15,
         face_value=0.1,
+        tv_qty_ratio=0.5,
     )
     assert qty == 2
     assert meta["add_qty"] == 2

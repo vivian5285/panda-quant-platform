@@ -56,9 +56,17 @@ class Settings(BaseSettings):
     REGIME_SCALE_3: float = 0.95
     REGIME_SCALE_4: float = 1.33
 
-    # 加仓（固定比例，忽略 TV qty_ratio）
-    ADD_QTY_RATIO: float = 0.5
-    MAX_ADD_TIMES: int = 2
+    # 加仓：OPEN 由 VPS 算量；PYRAMID/PROFIT_ADD 用 TV qty_ratio × 首仓 base_qty
+    ADD_QTY_RATIO: float = 0.5  # TV 未传 qty_ratio 时的全局回退
+    ADD_RATIO_REG1: float = 0.0
+    ADD_RATIO_REG2: float = 0.3
+    ADD_RATIO_REG3: float = 0.5
+    ADD_RATIO_REG4: float = 0.7
+    MAX_ADD_TIMES: int = 2  # 全局回退
+    MAX_ADD_TIMES_REG1: int = 1
+    MAX_ADD_TIMES_REG2: int = 2
+    MAX_ADD_TIMES_REG3: int = 2
+    MAX_ADD_TIMES_REG4: int = 3
 
     # 空仓待命时仍巡检交易所（秒）— 发现同向持仓则接管补挂 TP123/雷达
     IDLE_PATROL_INTERVAL_SEC: float = 10.0

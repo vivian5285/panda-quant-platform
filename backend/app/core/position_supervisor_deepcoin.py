@@ -25,7 +25,9 @@ from app.core.same_direction_policy import (
 from app.core.position_sizing import read_contract_equity
 from app.core.tv_entry_sizing import (
     ENTRY_TYPES_ADD,
+    max_add_times_for_regime,
     parse_tv_entry_fields,
+    regime_add_qty_ratio,
     resolve_vps_entry_qty_deepcoin,
 )
 from app.core.position_qty_tolerance import qty_change_significant
@@ -1803,6 +1805,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         leverage = self._resolve_entry_leverage()
         tv_fields = getattr(self, "_tv_entry_fields", None) or {}
         entry_type = getattr(self, "_entry_type", "OPEN")
+        regime = int(tv_fields.get("regime") or self.regime)
         return resolve_vps_entry_qty_deepcoin(
             live_balance=equity,
             initial_principal=self.initial_principal,
@@ -1810,13 +1813,17 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             base_qty=float(getattr(self, "base_qty", 0) or 0),
             price=float(curr_px or self.tv_price or 0),
             tv_sl=float(getattr(self, "tv_sl", 0) or 0),
-            regime=int(tv_fields.get("regime") or self.regime),
+            regime=regime,
             exchange_leverage=leverage,
             face_value=self.face_value,
+            tv_qty_ratio=tv_fields.get("qty_ratio"),
+            qty_ratio_source=str(tv_fields.get("qty_ratio_source") or "tv_qty_ratio"),
         )
 
     def _max_add_times(self) -> int:
-        return max(int(getattr(settings, "MAX_ADD_TIMES", 2) or 2), 0)
+        tv_fields = getattr(self, "_tv_entry_fields", None) or {}
+        regime = int(tv_fields.get("regime") or self.regime or 3)
+        return max_add_times_for_regime(regime)
 
     def _can_add_more(self) -> tuple[bool, str]:
         cap = self._max_add_times()
@@ -1852,6 +1859,18 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 if not self._force_flat_before_open(f"{entry_type} 反向后降级 OPEN"):
                     return
                 self._open_position(action, curr_px)
+                return
+            tv_fields = getattr(self, "_tv_entry_fields", None) or {}
+            qty_ratio = float(tv_fields.get("qty_ratio") or 0)
+            if qty_ratio <= 0:
+                skip_reason = f"TV qty_ratio={qty_ratio}，本档位不加仓"
+                logger.info(f"⏭️ {entry_type} 跳过: {skip_reason}")
+                self._alert(
+                    "info", entry_type,
+                    "加仓跳过",
+                    f"用户 {self.user_id} {entry_type}: {skip_reason}",
+                    {"qty_ratio": qty_ratio, "regime": tv_fields.get("regime") or self.regime},
+                )
                 return
             ok, skip_reason = self._can_add_more()
             if not ok:
@@ -2638,7 +2657,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 if float(getattr(self, "base_qty", 0) or 0) <= 0:
                     self.base_qty = float(open_log_qty or real_amt)
                 if int(getattr(self, "add_count", 0) or 0) <= 0 and self.base_qty > 0:
-                    ratio = float(getattr(settings, "ADD_QTY_RATIO", 0.5) or 0.5)
+                    ratio = regime_add_qty_ratio(int(getattr(self, "regime", 3) or 3))
                     if real_amt > self.base_qty and ratio > 0:
                         inferred = int(round((real_amt - self.base_qty) / (self.base_qty * ratio)))
                         self.add_count = min(max(inferred, 0), self._max_add_times())

@@ -365,7 +365,9 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             lines.append(_line("首次基准", f"{float(detail['base_qty']):.4f} {unit}"))
         ratio = detail.get("add_qty_ratio") or detail.get("qty_ratio")
         if ratio is not None:
-            lines.append(_line("加仓比例", f"VPS 固定 {float(ratio):.2f}"))
+            source = detail.get("qty_ratio_source") or "tv_qty_ratio"
+            source_label = "TV 动态" if source == "tv_qty_ratio" else "档位默认"
+            lines.append(_line("加仓比例", f"{source_label} {float(ratio):.2f} × 首仓"))
         if detail.get("add_qty") is not None:
             lines.append(_line("本次加仓", f"**{float(detail['add_qty']):.4f}** {unit}"))
         if detail.get("add_count") is not None:

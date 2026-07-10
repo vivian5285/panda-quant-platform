@@ -78,8 +78,9 @@ def test_pyramid_adds_without_cancel_all():
 def test_pyramid_skipped_when_max_add_times_reached():
     sup, client = _make_supervisor()
     sup.base_qty = 0.619
-    sup.add_count = 2
-    sup._apply_tv_entry_context({"entry_type": "PYRAMID", "regime": 1})
+    sup.add_count = 1
+    sup.regime = 1
+    sup._apply_tv_entry_context({"entry_type": "PYRAMID", "regime": 1, "qty_ratio": 0.5})
     result = sup._handle_tv_entry(
         "LONG", 2000.0, has_pos=True, current_side="LONG",
     )

@@ -1,4 +1,4 @@
-"""VPS dev checklist sizing: OPEN by price; ADD by base_qty × ADD_QTY_RATIO."""
+"""VPS sizing: OPEN by VPS formula; ADD by base_qty × TV qty_ratio."""
 
 import pytest
 
@@ -6,7 +6,9 @@ from app.core.tv_entry_sizing import (
     compute_vps_add_qty,
     compute_vps_open_qty,
     effective_vps_risk_pct,
+    max_add_times_for_regime,
     parse_tv_entry_fields,
+    regime_add_qty_ratio,
     regime_scale,
     resolve_vps_entry_qty_eth,
 )
@@ -17,6 +19,20 @@ def test_regime_scale_from_doc():
     assert regime_scale(2) == pytest.approx(0.75)
     assert regime_scale(3) == pytest.approx(0.95)
     assert regime_scale(4) == pytest.approx(1.33)
+
+
+def test_regime_dynamic_add_defaults_match_pine():
+    assert regime_add_qty_ratio(1) == pytest.approx(0.0)
+    assert regime_add_qty_ratio(2) == pytest.approx(0.3)
+    assert regime_add_qty_ratio(3) == pytest.approx(0.5)
+    assert regime_add_qty_ratio(4) == pytest.approx(0.7)
+
+
+def test_regime_max_add_times_match_pine():
+    assert max_add_times_for_regime(1) == 1
+    assert max_add_times_for_regime(2) == 2
+    assert max_add_times_for_regime(3) == 2
+    assert max_add_times_for_regime(4) == 3
 
 
 @pytest.mark.parametrize(
@@ -43,18 +59,31 @@ def test_vps_open_table_1000u(regime, price, expected_qty):
     assert meta["position_value"] > 0
 
 
-def test_vps_add_uses_base_qty_not_risk():
+def test_vps_add_uses_tv_qty_ratio():
     qty, meta = compute_vps_add_qty(
         base_qty=1.496,
+        tv_qty_ratio=0.7,
         round_fn=lambda x: round(x, 3),
-        entry_type="PYRAMID",
+        entry_type="PROFIT_ADD",
     )
-    assert qty == pytest.approx(0.748, rel=0.01)
+    assert qty == pytest.approx(1.047, rel=0.01)
     assert meta["sizing_mode"] == "vps_add"
-    assert meta["add_qty_ratio"] == pytest.approx(0.5)
+    assert meta["add_qty_ratio"] == pytest.approx(0.7)
+    assert meta["qty_ratio_source"] == "tv_qty_ratio"
 
 
-def test_vps_add_ignores_tv_qty_ratio():
+def test_vps_add_zero_ratio_returns_zero():
+    qty, meta = compute_vps_add_qty(
+        base_qty=1.496,
+        tv_qty_ratio=0.0,
+        round_fn=lambda x: round(x, 3),
+        entry_type="PROFIT_ADD",
+    )
+    assert qty == 0.0
+    assert meta["error"] == "zero_qty_ratio"
+
+
+def test_resolve_add_uses_tv_qty_ratio():
     qty, meta = resolve_vps_entry_qty_eth(
         live_balance=1000.0,
         initial_principal=1000.0,
@@ -65,20 +94,45 @@ def test_vps_add_ignores_tv_qty_ratio():
         regime=4,
         exchange_leverage=15,
         round_fn=lambda x: round(x, 3),
+        tv_qty_ratio=0.7,
     )
-    assert qty == pytest.approx(0.748, rel=0.01)
-    assert meta["add_qty_ratio"] == pytest.approx(0.5)
+    assert qty == pytest.approx(1.047, rel=0.01)
+    assert meta["add_qty_ratio"] == pytest.approx(0.7)
 
 
-def test_parse_tv_entry_fields_ignores_risk_pct():
+def test_parse_tv_entry_fields_open_ignores_qty_ratio():
     fields = parse_tv_entry_fields({
         "action": "LONG",
         "entry_type": "OPEN",
         "risk_pct": 99.0,
         "regime": 2,
+        "qty_ratio": 0.8,
     })
     assert fields["uses_vps_sizing"] is True
     assert fields["entry_type"] == "OPEN"
+    assert fields["tv_qty_ratio_ignored"] is True
+    assert "qty_ratio" not in fields
+
+
+def test_parse_tv_entry_fields_add_reads_qty_ratio():
+    fields = parse_tv_entry_fields({
+        "action": "LONG",
+        "entry_type": "PROFIT_ADD",
+        "regime": 4,
+        "qty_ratio": 0.7,
+    })
+    assert fields["qty_ratio"] == pytest.approx(0.7)
+    assert fields["max_add_times"] == 3
+
+
+def test_parse_tv_entry_fields_add_falls_back_to_regime_ratio():
+    fields = parse_tv_entry_fields({
+        "action": "LONG",
+        "entry_type": "PYRAMID",
+        "regime": 2,
+    })
+    assert fields["qty_ratio"] == pytest.approx(0.3)
+    assert fields["qty_ratio_source"] == "regime_default"
 
 
 def test_resolve_open_never_uses_regime_margin():
@@ -109,6 +163,7 @@ def test_resolve_add_requires_base_qty():
         regime=3,
         exchange_leverage=15,
         round_fn=lambda x: round(x, 3),
+        tv_qty_ratio=0.5,
     )
     assert qty == pytest.approx(0.535, rel=0.02)
     assert meta["add_qty"] == pytest.approx(0.535, rel=0.02)

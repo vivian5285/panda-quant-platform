@@ -39,20 +39,34 @@ TradingView POST → nginx /gemini/webhook → 127.0.0.1:6010/webhook
   → 后台线程 SignalDispatcher → 每用户 PositionSupervisor.handle_signal()
   → 交易所 API 实盘下单 + TradeLog + 关键动作钉钉
 
-# 执行铁律（PositionSupervisor）
+# 统一交易工厂（全交易所一套逻辑）
+trading_factory:
+  factory: backend/app/core/exchange_factory.py   # 按 User.exchange 创建 Client + Supervisor
+  supervisors:
+    binance_okx_gate: backend/app/core/position_supervisor.py
+    deepcoin: backend/app/core/position_supervisor_deepcoin.py
+  shared_mixins: [PositionCapGuardMixin, AdverseRadarMixin, StartupReconcileMixin]
+  binance_only_mixin: BinanceSmartDefenseMixin      # OKX/Gate 复用同一 TP/雷达挂单实现
+  shared_modules: [radar_trail, tv_entry_sizing, tp_slice_guard, same_direction_policy, startup_reconcile]
+  defense_route_a: TV tv_sl + TP123 + 雷达保本；Binance/OKX/Gate 合并单槽 STOP；DeepCoin 双轨并行
+  leverage: 15× 全所统一（config LEVERAGE / OKX / GATE / DEEPCOIN，钉钉 #币安15x 动态读取）
+  sizing: OPEN 由 VPS 公式（忽略 TV qty_ratio）；ADD = base_qty × TV qty_ratio（档位动态）
+
+# 执行铁律（PositionSupervisor — 四所相同）
 rules:
-  - 永远一手、单向持仓 One-Way
+  - 永远一手、单向持仓 One-Way；工厂 OPEN 同向已有仓 → 先平后开（人工接管同向仓除外）
   - 反方向 TV 信号：一律先平后开（cancel all → 市价全平 → 再开仓）
-  - 同方向 TV 信号：ATR 优先智能筛选（见下文「同向智能筛选」）；非忽略时先平后开
-  - 开仓后挂限价止盈 TP1/2/3（reduceOnly）+ 雷达移动止损
-  - 禁止与 TV 反向持仓：哨兵检测背离 → FORCE_ALIGN 全平
-  - 人工加减仓：识别、重构防线、对齐 TV、钉钉报告
+  - PYRAMID / PROFIT_ADD：同向追加，数量 = base_qty × TV qty_ratio（档位动态比例/次数），重建 TP + TV SL
+  - 开仓后挂限价止盈 TP1/2/3（reduceOnly）+ TV 硬止损 tv_sl + 雷达移动保本
+  - 禁止与 TV 反向持仓：哨兵 / 重启 / 空闲巡检 → FORCE_ALIGN 全平
+  - 人工/外部同向仓：manual adopt 后保留仓位，TV CLOSE 不强制全平，补挂 TP123+雷达
   - 未结清绩效账单 / 用户暂停 / 全局暂停 → 跳过建仓；平仓类信号在暂停时仍放行
 
 # 策略对接（Pine v6.9.45 双系统）
 tv_actions: [LONG, SHORT, CLOSE, CLOSE_PROTECT, CLOSE_TP3]
-entry_fields: [action, secret, price, regime, atr, tv_tp1, tv_tp2, tv_tp3]
+entry_fields: [action, secret, price, regime, atr, tv_tp1, tv_tp2, tv_tp3, tv_sl?, entry_type?]
 close_fields: [action, secret, regime, price, atr, side, reason, pnl_pct?]
+extra_actions: [UPDATE_SL]   # 仅更新 TV 硬止损底线，不撤雷达
 note: TP1/TP2 策略内部记账不发 TV 警报；仅 TP3 与保护性全平各发一条
 
 # 密钥与配置优先级（重要）
@@ -77,6 +91,9 @@ trading_control: backend/app/services/trading_control.py
 engine: backend/app/core/position_supervisor.py
 engine_deepcoin: backend/app/core/position_supervisor_deepcoin.py
 exchange_factory: backend/app/core/exchange_factory.py
+mixins: backend/app/core/{adverse_radar_guard,binance_smart_defense,startup_reconcile,position_cap_guard}.py
+sizing: backend/app/core/tv_entry_sizing.py
+radar: backend/app/core/radar_trail.py
 admin_api: backend/app/api/admin.py
 admin_ui_system_tab: frontend/src/pages/admin/tabs/AdminSystemTab.tsx  # Webhook Secret 配置置顶
 self_check: production_check.sh + backend/scripts/check_system.py
@@ -91,7 +108,7 @@ self_check: production_check.sh + backend/scripts/check_system.py
 3. [系统架构与数据流](#系统架构与数据流)
 4. [配置体系：.env vs 管理后台 vs platform_runtime.json](#配置体系env-vs-管理后台-vs-platform_runtimejson)
 5. [项目目录详解](#项目目录详解)
-6. [交易执行引擎（实盘逻辑全集）](#交易执行引擎实盘逻辑全集)
+6. [统一交易工厂 · 实盘逻辑全集](#统一交易工厂--实盘逻辑全集)
 7. [TradingView Webhook 对接手册](#tradingview-webhook-对接手册)
 8. [实盘核实交易日志](#实盘核实交易日志)
 9. [钉钉通知策略](#钉钉通知策略)
@@ -130,7 +147,7 @@ self_check: production_check.sh + backend/scripts/check_system.py
 
 | 系统 | 端口 | Nginx 路径 | 说明 |
 |------|------|------------|------|
-| **Gemini 多用户（本仓库）** | 8000 / 6010 / 6080 | `/gemini/webhook` | SaaS、结算、推广、多交易所 |
+| **Gemini 多用户（本仓库）** | 8000 / 6010 / 6080 | `/gemini/webhook` | SaaS、**统一交易工厂**、四所 Mixin 栈、结算、推广 |
 | 币安单账户大脑 | 5003 | `/binance/webhook` | 独立 legacy，互不共用 Supervisor |
 | Deepcoin 单账户 | 5004 | `/deepcoin/webhook` | 独立 legacy |
 
@@ -193,7 +210,7 @@ TV 信号 → 用户交易所实盘 → 周期结束且全平仓
          ▼                   ▼                   ▼
   PositionSupervisor    PositionSupervisor    ...
   + Binance/OKX/Gate/DeepCoin Client
-  + 6s 哨兵（方向背离、人工异动、雷达推止损、TP 成交识别）
+  + 6s 哨兵 + 10s 空闲巡检（方向背离、人工 adopt、雷达、TP 成交）
   + state/user_{id}.json
          │                   │
          ▼                   ▼
@@ -208,7 +225,7 @@ TV 信号 → 用户交易所实盘 → 周期结束且全平仓
   TradeLog      全域日志       DownlineLogsModal
                    │
                    ▼
-         钉钉（按交易所 GEMINI 主题 #币安10x / #深币10x / #OKX10x / #Gate10x，仅关键动作）
+         钉钉（按交易所 GEMINI 主题 #币安15x / #深币15x / #OKX15x / #Gate15x，仅关键动作）
 ```
 
 ### Docker 拓扑
@@ -287,11 +304,18 @@ panda-quant-platform/
 │   │   │   ├── wallet.py           # 充值/提现/转账
 │   │   │   └── system.py           # 系统监控、Webhook 测试
 │   │   ├── core/
-│   │   │   ├── position_supervisor.py      # ★ 币安/OKX/Gate 执行大脑
+│   │   │   ├── position_supervisor.py      # ★ Binance/OKX/Gate 统一执行大脑
 │   │   │   ├── position_supervisor_deepcoin.py
-│   │   │   ├── same_direction_policy.py    # ★ 同向信号 ATR 优先智能筛选
+│   │   │   ├── exchange_factory.py         # ★ 交易工厂：Client + Supervisor 选型
+│   │   │   ├── adverse_radar_guard.py      # ★ TV SL + 雷达 + Route A 合并止损
+│   │   │   ├── binance_smart_defense.py    # TP123 对齐/heal（OKX/Gate 复用）
+│   │   │   ├── startup_reconcile.py        # ★ 重启接管 + 空闲巡检 + 人工 adopt
+│   │   │   ├── radar_trail.py              # 雷达激活/保本/STOP 安全钳制
+│   │   │   ├── tv_entry_sizing.py          # ★ VPS OPEN/ADD  sizing（四所统一）
+│   │   │   ├── position_cap_guard.py       # 超 cap  trim + 防线重挂
+│   │   │   ├── tp_slice_guard.py           # TP123 分批 + consumed 推断
+│   │   │   ├── same_direction_policy.py    # 同向 ATR/价差策略（辅助模块）
 │   │   │   ├── regime_utils.py             # Regime 1~4 校验
-│   │   │   ├── exchange_factory.py         # 多交易所 Client/Supervisor 工厂
 │   │   │   ├── binance_client.py / okx_client.py / gate_client.py / deepcoin_client.py
 │   │   │   ├── position_manager.py
 │   │   │   └── symbol_precision.py         # ETH tick 0.01
@@ -331,16 +355,42 @@ panda-quant-platform/
 
 ---
 
-## 交易执行引擎（实盘逻辑全集）
+## 统一交易工厂 · 实盘逻辑全集
 
-实现核心：
+> **核心原则：四所一套逻辑。** Binance / OKX / Gate / DeepCoin 共用同一套 Mixin 栈、信号链路、防线编排、重启接管与空闲巡检；`exchange_factory.py` 仅负责选型 **Client + Supervisor**，DeepCoin 仅在 **数量单位** 与 **止损挂单形态** 上有最小差异。
 
-| 交易所 | Supervisor 文件 | 说明 |
-|--------|-----------------|------|
-| Binance / OKX / Gate | `position_supervisor.py` | 共享同一套执行大脑 |
-| DeepCoin | `position_supervisor_deepcoin.py` | 合约张数换算，四档/雷达/同向筛选逻辑与币安对齐 |
+### 0. 工厂架构一览
 
-经 `exchange_factory.py` 按用户 `User.exchange` 选型；每用户独立 API、独立锁、独立 FIFO 信号队列。
+```
+exchange_factory.create_supervisor(user, client)
+        │
+        ├─ Binance / OKX / Gate → PositionSupervisor
+        │     Mixins: PositionCapGuard + AdverseRadar + BinanceSmartDefense + StartupReconcile
+        │
+        └─ DeepCoin → DeepcoinPositionSupervisor
+              Mixins: PositionCapGuard + AdverseRadar + StartupReconcile
+              （TP/雷达挂单逻辑内联，语义与 BinanceSmartDefense 对齐）
+```
+
+| 层级 | 模块 | 文件 | 四所共享 |
+|------|------|------|----------|
+| 工厂 | Client / Supervisor 创建 | `exchange_factory.py` | ✅ |
+| 信号 | FIFO 队列 + `_execute_signal` | `position_supervisor*.py` | ✅ |
+| 开仓量 | VPS OPEN/ADD sizing | `tv_entry_sizing.py` | ✅ |
+| 硬止损 + 雷达 | Route A 三层防线 | `adverse_radar_guard.py` + `radar_trail.py` | ✅ |
+| 止盈 | TP123 对齐 / heal | `binance_smart_defense.py`（DeepCoin 内联） | ✅ 语义 |
+| 重启 / 巡检 | 接管 + manual adopt | `startup_reconcile.py` | ✅ |
+| 超 cap | trim + 重挂 | `position_cap_guard.py` | ✅ |
+| 交叉验证 | 重启恢复上下文 | `services/radar_context.py` | ✅ |
+
+**DeepCoin 仅有的差异：**
+
+| 项 | Binance / OKX / Gate | DeepCoin |
+|----|----------------------|----------|
+| 数量单位 | ETH（`round_quantity`） | 合约张（`face_value=0.1`，整数张） |
+| 状态文件 | `state/user_{id}.json` | `data/supervisor/deepcoin_{id}/` |
+| 止损形态 | **Route A 合并单槽** — 一个 `closePosition` STOP | **双轨并行** — TV SL + 雷达条件单各一张 |
+| Mixin | 含 `BinanceSmartDefenseMixin` | 不含，方法内联等价实现 |
 
 ---
 
@@ -348,197 +398,158 @@ panda-quant-platform/
 
 | 需求 | 说明 |
 |------|------|
-| **极速响应 TV** | 网关校验通过后 **立即 HTTP 200**，下单在后台线程异步执行，不阻塞 TradingView |
-| **永远一手** | 单向持仓 One-Way；禁止叠仓；同一用户同时仅一个方向的 ETH 主仓 |
-| **策略价格由 TV 指挥** | `price`、`regime`、`atr`、`tv_tp1/2/3` 由 Pine 计算下发；VPS 负责执行、挂单、雷达、对齐 |
-| **减少无效摩擦** | 同向重复信号在 ATR/档位/价差满足条件时 **不重复开仓**，仅更新止盈挂单 |
-| **波动率变化必换仓** | 同向但 **ATR 变化** → 视为市场波动率刷新，一律先平后开 |
-| **逆势零容忍** | 实盘方向与 `last_tv_side` 背离 → 哨兵 `FORCE_ALIGN` 强平 |
-| **全链路可审计** | 所有决策写入 `trade_logs.detail_json`；关键动作钉钉抄送管理员 |
-| **风控可门禁** | 用户暂停、绩效未缴、全局暂停、交易所未开放 → 可跳过建仓；**平仓信号例外放行** |
+| **极速响应 TV** | 网关校验通过后 **立即 HTTP 200**，下单在后台线程异步执行 |
+| **永远一手** | 单向 One-Way；工厂 OPEN 同向已有仓 → **先平后开**（人工 adopt 同向仓除外） |
+| **策略价格由 TV 指挥** | `price/regime/atr/tv_tp1~3/tv_sl` 由 Pine 下发；VPS 执行、挂单、雷达、对齐 |
+| **VPS 独立 sizing** | OPEN 由 VPS 公式计算（忽略 TV `qty_ratio`）；ADD = `base_qty × TV qty_ratio`；`tv_sl` 仅用于止损 |
+| **逆势零容忍** | 实盘方向 ≠ `last_tv_side` → 哨兵/重启/空闲巡检 `FORCE_ALIGN` |
+| **人工仓保护** | manual adopt 后：TV CLOSE 不强制全平；补挂 TP123 + TV SL + 雷达 |
+| **全链路可审计** | 所有决策写 `trade_logs.detail_json`；关键动作钉钉 |
+| **风控可门禁** | 暂停/绩效未缴/全局暂停 → 跳过建仓；**CLOSE\* 仍放行** |
 
 ---
 
-### 二、信号全链路（网关 → 分发 → 实盘）
+### 二、统一信号链路
 
 ```
 TradingView POST /gemini/webhook
-  │
-  ├─ [同步] secret / IP / 频率 / JSON / action 白名单
-  ├─ [同步] 全局暂停？→ 仅拦截 LONG/SHORT；CLOSE* 仍放行
-  ├─ [同步] 幂等指纹（默认 120s 内相同 payload 不重复执行）
-  └─ [同步] HTTP 200 + "Signal received, dispatching to all users"
-        │
-        ▼ 后台线程 run_signal_dispatch()
-  SignalDispatcher.dispatch(payload)
-  │
-  ├─ 遍历 Supervisor 池（仅 api_status=ACTIVE 且交易所已开放的用户）
-  ├─ 门禁过滤（见下节）→ eligible 列表
-  ├─ 线程池并发 _execute_for_user()
-  │     ├─ effective_risk = global_risk × user.risk_multiplier（默认 1.0）
-  │     └─ supervisor.handle_signal(payload + risk_multiplier)
-  └─ 写入 signal_dispatch_logs + 每用户执行结果
-        │
-        ▼ 每用户 FIFO 队列 + 互斥锁（最长等待 120s）
-  PositionSupervisor._execute_signal()
-  │
-  ├─ CLOSE / CLOSE_PROTECT / CLOSE_TP3 → 全平 + 撤单
-  └─ LONG / SHORT → _handle_smart_entry()（同向智能筛选）
-        │
-        ▼
-  交易所 API：set_leverage(10×) → 市价开/平 → 挂 TP1/2/3 → 启动 6s 哨兵
+  → webhook_server.py :6010（同步校验 → HTTP 200）
+  → SignalDispatcher.dispatch()（线程池广播）
+  → supervisor.handle_signal()（每用户 FIFO 队列，最长等 120s）
+  → _execute_signal()
+       ├─ LONG / SHORT / PYRAMID / PROFIT_ADD → _handle_tv_entry()
+       ├─ CLOSE / CLOSE_PROTECT / CLOSE_TP3 → 全平（manual adopt 同向可跳过）
+       └─ UPDATE_SL → 同步 TV 硬止损底线
+  → set_leverage(15×) → 市价开/平 → 挂 TP123 + TV SL + 雷达 → 启动哨兵
 ```
 
-**设计原则：** 网关只做「收信 + 校验 + 记账」；**所有实盘智能决策在 Supervisor 线程**完成，不影响 TV 收到 200 的时效。
+**设计原则：** 网关只做收信；**所有实盘决策在 Supervisor 线程**完成。
+
+#### 分发门禁
+
+| 条件 | LONG/SHORT/ADD | CLOSE\* |
+|------|----------------|---------|
+| 用户 inactive / API 未激活 | 跳过 | 跳过 |
+| 交易所未开放 | 跳过 | 跳过 |
+| 用户暂停 / 绩效未缴 | 跳过 | **仍执行** |
+| 全局暂停 | 网关 503 拦截建仓 | **放行** |
+
+`risk_multiplier = global_risk × 用户档位`（0.6 / 1.0 / 1.4）注入 payload，用于 **cap guard** 与 regime margin 缩放。
 
 ---
 
-### 三、分发门禁（Dispatcher 谁执行、谁跳过）
+### 三、统一 TV 信号规则
 
-| 条件 | LONG/SHORT | CLOSE / CLOSE_PROTECT / CLOSE_TP3 |
-|------|------------|-----------------------------------|
-| 用户 `is_active=false` | 跳过 `risk_blocked` | 跳过 |
-| `api_status != ACTIVE` | 跳过 | 跳过 |
-| 交易所未在「平台开放设置」中勾选 | 跳过 | 跳过 |
-| 用户手动暂停 / 信贷违约 / 绩效未缴 | 跳过 | **仍执行**（允许退出持仓） |
-| 全局交易暂停 | 网关 503 拦截 | **网关放行** + 分发执行 |
-| 无 Supervisor（API 绑定失败等） | 不入池，信号无接收者 | 同左 |
+#### OPEN（`entry_type` 缺省或 `OPEN`）
 
-**风险倍数注入：** 每个用户执行前计算 `risk_multiplier = global_risk × 用户档位系数`（保守 0.6 / 均衡 1.0 / 激进 1.4），写入 payload 供开仓保证金公式使用。用户无风控记录时默认 `1.0`。
+| 场景 | 四所行为 |
+|------|----------|
+| 空仓 | VPS sizing 开仓 → TP123 + TV SL + 哨兵 |
+| 已有仓 · **工厂单** | **先平后开** |
+| 已有仓 · **人工 adopt 同向** | 保留仓位，刷新 TP/雷达 |
+| 反方向 | **先平后开** |
+
+#### PYRAMID / PROFIT_ADD
+
+| 规则 | 说明 |
+|------|------|
+| 数量 | `add_qty = base_qty × TV qty_ratio`（Pine v6.9.93 档位动态：R1=0/R2=0.3/R3=0.5/R4=0.7） |
+| 次数上限 | 按档位：R1=1 / R2=2 / R3=2 / R4=3（`MAX_ADD_TIMES_REG*`） |
+| 加仓后 | 重建 TP123 + 同步 TV SL + 雷达 |
+
+#### CLOSE / CLOSE_PROTECT / CLOSE_TP3
+
+工厂单 → 全平；manual adopt 同向 → 可跳过 CLOSE，刷新防线。空仓 `CLOSE_PROTECT` → 撤单复位。
+
+#### UPDATE_SL
+
+仅更新 `tv_sl` 并同步硬止损；不撤雷达。Binance 类合并单槽取 `max/min(tv_sl, radar)`。
 
 ---
 
-### 四、同向信号智能筛选（★ ATR 优先）
+### 四、统一开仓 Sizing（VPS · 四所相同）
 
-**场景：** 实盘已持多（或持空），TV 再次传来同方向 LONG（或 SHORT）。
-
-**实现：** `same_direction_policy.py` → `evaluate_same_direction()`，在 `_handle_smart_entry()` 中调用。
-
-#### 决策优先级（同向且有持仓）
+实现：`tv_entry_sizing.py`
 
 ```
-① ATR 是否变化？（持仓 ATR vs 新信号 ATR，比较精度 2 位小数）
-   ├─ 是 → 先平后开（刷新仓位）→ 钉钉「同向刷新换仓」
-   └─ 否 → 继续
-② 档位 regime 是否变化？（1~4）
-   ├─ 是 → 先平后开（换档换保证金）→ 钉钉「同向刷新换仓」
-   └─ 否 → 继续
-③ ETH 理论开仓价差是否足够大？
-   价差% = |TV理论价 − 持仓开仓价| / ETH实时价 × 100
-   ├─ 价差% < SAME_DIR_IGNORE_PRICE_DIFF_PCT（默认 0.20%）
-   │     → 忽略重复开仓，仅更新 TP1/2/3 挂单 + 钉钉「同向智能持仓」
-   └─ 价差% ≥ 阈值
-         → 先平后开 → 钉钉「同向刷新换仓」
+effective_risk% = VPS_RISK_PCT × REGIME_SCALE × GLOBAL_SCALE
+margin_usd      = sizing_base × effective_risk% × SIZING_MARGIN_LEVERAGE（默认 5）
+position_value  = margin_usd × exchange_leverage（默认 15×）
+qty             = position_value / price   （DeepCoin 换算为合约张）
 ```
 
-#### 价差阈值示例（ETH ≈ 3500 USDT）
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `LEVERAGE` / `OKX_*` / `GATE_*` / `DEEPCOIN_*` | **15** | 实盘杠杆 + 钉钉 `#币安15x` |
+| `SIZING_MARGIN_LEVERAGE` | 5 | 保证金预算系数 |
+| `VPS_RISK_PCT` | 3.0% | 基础风险 |
+| `ADD_RATIO_REG1~4` | 0 / 0.3 / 0.5 / 0.7 | TV 未传 qty_ratio 时的档位默认 |
+| `MAX_ADD_TIMES_REG1~4` | 1 / 2 / 2 / 3 | 各档位最大加仓次数 |
 
-| 阈值 | 约等于价差 |
-|------|-----------|
-| 0.20%（默认） | ≈ $7 |
-| 0.15% | ≈ $5.25 |
-| 0.30% | ≈ $10.5 |
-
-配置：`.env` 或部署后 `SAME_DIR_IGNORE_PRICE_DIFF_PCT=0.20`
-
-#### 「仅更新止盈」时具体做什么
-
-1. **不** `cancel_all` 后重开仓（保留原持仓与开仓价）
-2. 用新 TV 的 `tv_tp1/2/3` 覆盖内存与 `state/user_{id}.json`
-3. `_rebuild_defenses()` 按新止盈价重挂 reduceOnly 限价单（保留已激活的雷达止损）
-4. 若有 open Trade 记录 → 同步更新 DB 中 `tv_tp1/2/3`
-5. 写 `SAME_DIR_TP_REFRESH` 日志；钉钉推送摘要（含 `held_atr`、`price_diff_pct`、`old_tv_tps` → `new_tv_tps`）
-
-#### 反方向（不变）
-
-持多收空 / 持空收多：**无条件** `cancel_all` → 市价全平 → 再按新方向开仓（先平后开）。
-
-#### 空仓首单
-
-无持仓时收到 LONG/SHORT：直接进入正常开仓流程，不做同向筛选。
+`tv_sl` **不参与**张数计算，仅挂 STOP。
 
 ---
 
-### 五、铁律一览
-
-| 规则 | 实现 |
-|------|------|
-| 永远一手 | 单向持仓 One-Way；不加仓叠单；开仓量按四档保证金公式计算 |
-| 反方向先平后开 | 持多收空 / 持空收多 → `cancel_all` + 市价全平 + 再开仓 |
-| 同向智能筛选 | ATR 变 / 档位变 / 价差够大 → 先平后开；否则仅更新止盈 |
-| 四档 Regime | TV 传 `regime` 1~4 → 保证金比例 + TP 分批 + 雷达激活距离（非法值 clamp 到 3） |
-| TV 限价止盈 | 按 `tv_tp1/2/3` 挂 reduceOnly 限价单（tick 0.01） |
-| 雷达保本 | 价格朝 TP1 推进达激活比例后，ATR×trail 推升 STOP_MARKET |
-| 6s 哨兵 | 方向背离、人工加减仓、TP 成交、防线漂移 |
-| 禁止逆势 | 实盘 ≠ `last_tv_side` → `FORCE_ALIGN` 全平 + 钉钉 |
-| 结算门禁 | `settlement` 待支付 → 跳过 **建仓**；平仓仍放行 |
-| 交易所门禁 | 管理员「平台开放设置」未勾选 → 不加载 Supervisor |
-
-### Regime 参数（代码内置 `regime_settings`）
-
-**开仓数量公式（全交易所统一）：**
+### 五、统一防线 · Route A
 
 ```
-margin_pct = regime_margin × risk_multiplier
-qty = (可用余额 × margin_pct × 10×杠杆) / 当前价格
+① TV 底线 (tv_sl)     Pine 硬止损，UPDATE_SL 可热更新
+② 雷达保本 (radar)    TP1 后 / 96% 路径激活，ATR 追踪
+③ TP123               regime 比例 reduceOnly 限价
 ```
 
-| Regime | 保证金占可用余额 | TP 分批 | 雷达激活（至 TP1 路径比例） | Trail ATR 倍数 |
-|--------|------------------|---------|---------------------------|----------------|
-| 1 | 15% | 25% / 35% / 40% | 40% | 0.40 |
-| 2 | 25% | 20% / 35% / 45% | 50% | 0.60 |
-| 3 | 35% | 18% / 32% / 50% | 60% | 0.90 |
-| 4 | 50% | 5% / 20% / 75% | 70% | 1.30 |
+- **合并止损（Binance/OKX/Gate）：** LONG `max(tv_sl, radar)` / SHORT `min(...)`，单张 closePosition STOP
+- **DeepCoin 双轨：** TV SL 与雷达条件单并行
+- **STOP 安全钳制：** `clamp_stop_market_safe()` 防止 SL 高于 mark 瞬间全平
+- 雷达激活 **不撤** TV SL（Route A 共存）
 
-杠杆：**全交易所统一 10×**（`LEVERAGE` / `OKX_LEVERAGE` / `GATE_LEVERAGE` / `DEEPCOIN_LEVERAGE` 默认均为 10）。实盘 `set_leverage` 与钉钉标签一致。
+---
 
-实现位置：
-- 币安 / OKX / Gate → `position_supervisor.py` `_open_position()`
-- 深币 → `position_supervisor_deepcoin.py`（合约面值换算后取整，仍按同四档 margin × risk_multiplier）
+### 六、Regime 参数（`radar_trail.merge_regime_radar`）
 
-### 三重平仓把关
+| Regime | 保证金 cap% | TP 分批 | 雷达激活路径 | Trail ATR× |
+|--------|-------------|---------|--------------|------------|
+| 1 | 15% | 25/35/40 | 85% | 0.75 |
+| 2 | 25% | 20/35/45 | 88% | 1.00 |
+| 3 | 35% | 18/32/50 | 90% | 1.35 |
+| 4 | 50% | 5/20/75 | 95% | 1.80 |
 
-1. **反方向 TV 信号** → 先平后开（换防）
-2. **同向但 ATR/档位/价差触发换仓** → 先平后开
-3. **CLOSE_PROTECT / CLOSE_TP3 / CLOSE** → 带 `reason` 全平，撤光挂单；空仓 `CLOSE_PROTECT` → `CLOSE_PROTECT_EMPTY` 撤单复位
-4. **雷达 + 限价 TP** → 行情推进过程中锁润；TP3 可由 TV 警报触发终极收网
+---
 
-### 人工异动处理
+### 七、重启接管 + 空闲巡检
 
-| 场景 | 行为 |
+**重启：** DB/Webhook/state 交叉验证 → `loss_shield` / `profit_radar` 分轨 → TP123 + TV SL + 雷达补挂 → 哨兵
+
+**空闲巡检（10s，`monitoring=False`）：** 账本/实盘偏差收口 · 反向 FORCE_ALIGN · 同向 manual adopt · dust 扫尾
+
+---
+
+### 八、哨兵（~6s 自适应）
+
+方向背离 · 仓位异动(TP/人工) · 雷达追踪 · cap trim · 全平归因
+
+---
+
+### 九、同向 ATR 模块（辅助）
+
+`same_direction_policy.py` 提供 ATR/档位/价差决策。当前工厂 OPEN 主路径为 **先平后开**；manual adopt 走 preserve。同向仅更新止盈逻辑保留供扩展。
+
+---
+
+### 十、铁律 · 人工 · heal
+
+| 规则 | 四所 |
 |------|------|
-| 人工加仓 | 识别数量变化 → 重构 TP/SL → `ADJUST` 日志 + 钉钉 |
-| 人工减仓 | 同左，按新数量重算防线 |
-| 人工全平 | 更新仓位状态 → 与 TV 对齐检查 → 钉钉 |
-| 人工开反向单 | 哨兵检测 → `FORCE_ALIGN` 强平 → 等待下次 TV |
+| 反方向 | 先平后开 |
+| 逆势 | FORCE_ALIGN |
+| 人工加仓/减仓 | 重构防线 + ADJUST |
+| TP heal | 对齐跳过；缺失则 `_smart_realign_defenses()` |
 
-### 止盈防线：对齐 · 补挂 · 智能 heal
+审计：`GET /api/admin/startup-audit` · 关键字 `VPS STARTUP` / `idle_patrol`
 
-| 场景 | 行为 |
-|------|------|
-| 已对齐 | **跳过**，不 cancel（防重启叠单） |
-| 缺 TP/SL/数量比例错/重复 TP | `_aggressive_heal_defenses()`：多轮 cancel 验证 → 重挂 |
-| 单笔补挂失败 | 最多 `TP_RETRY_MAX=3` 次 → `TP_RETRY_FAIL` 钉钉 |
+### 信号队列
 
-`DEFENSE_HEAL` 日志 `detail_json` 含 `live_audit`、`before_summary`、`after_summary`、`aligned`。
-
-### VPS 重启接管（`recover_on_startup`）
-
-对每个 **API 已激活** 且交易所仍开放的用户：
-
-1. `radar_context.build_radar_recovery_context()` — OPEN Trade + 最新 TradeLog + 最近成功 Webhook 交叉验证
-2. 读 `state/user_{id}.json` + 交易所实盘持仓
-3. 有仓 → 恢复 `best_price`、`current_sl`、`consumed_tp_levels`、`current_atr`、`regime`（非法 regime clamp 到 3）
-4. `_ensure_defenses()` — 对齐跳过，否则 heal
-5. 启动哨兵 → `STARTUP` TradeLog + 钉钉（有持仓时）
-
-审计 API：`GET /api/admin/startup-audit`；日志关键字：`VPS STARTUP`、`账户接管`。
-
-### 信号队列与锁
-
-- 每用户 Supervisor 内 **FIFO 队列**，锁忙时最多等待 **120s**（`SIGNAL_QUEUE_TTL`）
-- 超时 → `LOCK_TIMEOUT` 日志 + 钉钉
-- 建仓执行前二次校验用户暂停（TOCTOU 防护）
+FIFO · 锁超时 120s → `LOCK_TIMEOUT` · 建仓前 TOCTOU 二次校验暂停
 
 ---
 
@@ -562,11 +573,12 @@ https://twinstar.pro/gemini/webhook
 
 | action | 说明 | TV 是否常用 |
 |--------|------|-------------|
-| `LONG` | 开多（先平后开） | ✅ |
-| `SHORT` | 开空（先平后开） | ✅ |
-| `CLOSE` | 换防清场全平 | 可选 |
+| `LONG` | 开多（工厂同向先平后开） | ✅ |
+| `SHORT` | 开空（工厂同向先平后开） | ✅ |
+| `CLOSE` | 换防清场全平（manual adopt 同向可跳过） | 可选 |
 | `CLOSE_PROTECT` | 保护性全平（带 reason、pnl_pct） | ✅ |
 | `CLOSE_TP3` | TP3 终极收网全平 | ✅ |
+| `UPDATE_SL` | 仅更新 TV 硬止损 `tv_sl` | 可选 |
 
 ### 开仓 JSON（v6.9.45）
 
@@ -579,9 +591,12 @@ https://twinstar.pro/gemini/webhook
   "atr": 12.5,
   "tv_tp1": 3600,
   "tv_tp2": 3700,
-  "tv_tp3": 3800
+  "tv_tp3": 3800,
+  "tv_sl": 3400
 }
 ```
+
+> `tv_sl` 为 TV 硬止损价，VPS 挂 STOP 使用，**不参与 OPEN sizing**。`entry_type` 可选 `OPEN` / `PYRAMID` / `PROFIT_ADD`。
 
 ### 保护性全平 JSON
 
@@ -669,10 +684,10 @@ https://twinstar.pro/gemini/webhook
 
 | 交易所 | 标签 | 主题色 | 品牌 |
 |--------|------|--------|------|
-| Binance | `#币安10x` | 靛蓝 🔷 | GEMINI量化 · 币安合约实盘引擎 |
-| DeepCoin | `#深币10x` | 翡翠绿 🟢 | GEMINI量化 · 深币 SWAP 实盘引擎 |
-| OKX | `#OKX10x` | 紫罗兰 🟣 | GEMINI量化 · OKX 合约实盘引擎 |
-| Gate | `#Gate10x` | 琥珀橙 🟠 | GEMINI量化 · Gate 合约实盘引擎 |
+| Binance | `#币安15x`（读 `LEVERAGE`） | 靛蓝 🔷 | GEMINI量化 · 币安合约实盘引擎 |
+| DeepCoin | `#深币15x` | 翡翠绿 🟢 | GEMINI量化 · 深币 SWAP 实盘引擎 |
+| OKX | `#OKX15x` | 紫罗兰 🟣 | GEMINI量化 · OKX 合约实盘引擎 |
+| Gate | `#Gate15x` | 琥珀橙 🟠 | GEMINI量化 · Gate 合约实盘引擎 |
 
 前端 API 绑定页交易所卡片使用同色主题（`exchange-picker-{exchange}`），便于与原版系统视觉区分。
 
@@ -863,6 +878,7 @@ Swagger：`http://127.0.0.1:8000/docs`（`PRODUCTION_STRICT=1` 时关闭）
 | `DEFENSE_HEAL` / `DEFENSE_HEAL_OK` / `DEFENSE_HEAL_FAIL` | 止盈对齐 |
 | `STARTUP` / `STARTUP_FAIL` | 重启接管 |
 | `ADJUST` / `MANUAL_ADJUST` | 人工异动 |
+| `ADVERSE_SL_DISARM` | 防护盾撤销（雷达接管；清仓复位时不误报） |
 | `FORCE_ALIGN` | 方向背离强平 |
 | `LOCK_TIMEOUT` | 信号锁超时 |
 | `BINANCE_FILL` | 交易所成交同步 |
@@ -898,8 +914,12 @@ Swagger：`http://127.0.0.1:8000/docs`（`PRODUCTION_STRICT=1` 时关闭）
 | 变量 | 默认 |
 |------|------|
 | `SYMBOL` | ETHUSDT |
-| `LEVERAGE` | 10 |
-| `SAME_DIR_IGNORE_PRICE_DIFF_PCT` | 0.20 | 同向且 ATR/档位不变时，价差低于此%则忽略重复开仓 |
+| `LEVERAGE` / `OKX_LEVERAGE` / `GATE_LEVERAGE` / `DEEPCOIN_LEVERAGE` | **15** |
+| `SIZING_MARGIN_LEVERAGE` | 5 | 保证金预算系数（与交易所杠杆解耦） |
+| `VPS_RISK_PCT` | 3.0 | OPEN 基础风险% |
+| `ADD_RATIO_REG1~4` | 见 `.env.example` | TV 未传 qty_ratio 时的档位默认 |
+| `MAX_ADD_TIMES_REG1~4` | 见 `.env.example` | 档位最大加仓次数 |
+| `SAME_DIR_IGNORE_PRICE_DIFF_PCT` | 0.20 | 同向 ATR 模块价差阈值（辅助） |
 | `OKX_SYMBOL` / `GATE_SYMBOL` / `DEEPCOIN_SYMBOL` | 见 `.env.example` |
 
 ### 结算与监控
@@ -1043,8 +1063,9 @@ bash backend/scripts/backup_data.sh
 |------|------|
 | TV 无成交 | 用户 `api_status`、绩效门禁、全局暂停、`enabled_exchanges`、Webhook 日志；查 `signal_dispatch_logs` 用户结果 |
 | HTTP 200 但钉钉 `DISPATCH_PARTIAL_FAIL` | 查 `errors[].message`；常见为风控字段缺失（已修复 `risk_multiplier` 默认值） |
-| 同向重复信号仍平仓 | 检查持仓 ATR 是否变化、regime 是否变化、价差是否 ≥ `SAME_DIR_IGNORE_PRICE_DIFF_PCT` |
-| 同向信号应忽略但仍开仓 | 确认 TV `atr` 与持仓 `current_atr` 是否一致（2 位小数）；价差是否超过阈值 |
+| 雷达激活后瞬间全平 | 已修复：STOP 挂价高于 mark 会触发；现用 `clamp_stop_market_safe` |
+| 同向重复信号仍平仓 | 工厂单 OPEN 设计为 **先平后开**；manual adopt 同向仓会 preserve |
+| 同向信号应忽略但仍开仓 | 确认是否为工厂单；manual adopt 走不同分支 |
 | `supervisors=0` | 无用户绑定 API 或交易所未开放 |
 | Webhook 403 | secret 与后台/TV JSON 不一致 |
 | 重启后 TP 叠单 | 查 `DEFENSE_HEAL`；应对齐时 `skipped:true` |
@@ -1093,12 +1114,15 @@ bash backend/scripts/backup_data.sh
 
 ### 已完成（节选）
 
+- [x] **统一交易工厂**：四所共享 Mixin 栈 + Route A 防线 + VPS sizing + manual adopt
 - [x] 多交易所多用户执行（Binance/OKX/Gate/DeepCoin）
+- [x] **15× 杠杆**全所统一；保证金预算与交易所杠杆解耦
+- [x] TV `tv_sl` 硬止损 + 雷达保本 + STOP 安全钳制
+- [x] manual adopt：TV CLOSE 不误平同向人工仓；空闲巡检 10s
 - [x] TV v6.9.45 字段解析 + 网关极速 200
 - [x] 管理后台 Webhook/RPC/钉钉 可视化配置
 - [x] 绩效费链上监控 + 自动确认 + 缴纳跟踪 UI
 - [x] 实盘 TradeLog 全角色明细 + 钉钉按交易所主题
-- [x] 同向信号 ATR 优先智能筛选 + 价差阈值 + 仅更新止盈
 - [x] 分发风控：`risk_multiplier` 默认值、平仓信号暂停放行
 
 ### 规划中
