@@ -824,6 +824,93 @@ class BinanceSmartDefenseMixin:
         audit = self._nuclear_realign_tp(live_qty, entry, dynamic_sl=dynamic_sl, rounds=3)
         return audit["matched_full"], audit["pending_prices"], expected, True
 
+    def _rebuild_defenses_after_tv_add(
+        self,
+        live_qty: float,
+        entry: float,
+        *,
+        entry_type: str = "PYRAMID",
+        prev_tv_tps: list | None = None,
+    ) -> dict:
+        """
+        加仓后强制重建防线：
+        - 按最新 TV tp1/2/3 价格 + 新总头寸重算 regime 分批比例并核武重挂 TP
+        - TV 硬止损按新 qty 同步
+        - 雷达按新 entry / 新 TP1 距离重算并挂到新总头寸
+        """
+        entry_type = str(entry_type or "PYRAMID").upper()
+        reason = f"{entry_type} 加仓后按新总头寸重挂 TP123/雷达"
+        self._def_log(f"🧠 {reason}")
+        curr_px = self._current_tp_price()
+        consumed = set(int(x) for x in (getattr(self, "consumed_tp_levels", []) or []) if int(x) in (1, 2, 3))
+
+        self.watched_qty = live_qty
+        self.watched_entry = entry
+        if not consumed:
+            self.initial_qty = live_qty
+        else:
+            self.initial_qty = max(float(getattr(self, "initial_qty", 0) or 0), live_qty)
+
+        if hasattr(self, "_refresh_radar_state_on_recover") and curr_px > 0 and entry > 0:
+            self._refresh_radar_state_on_recover(curr_px, entry)
+
+        shield: dict = {}
+        if float(getattr(self, "tv_sl", 0) or 0) > 0 and hasattr(self, "_sync_tv_hard_stop"):
+            shield = self._sync_tv_hard_stop(live_qty, force_replace=True) or {}
+
+        tp_result: dict = {}
+        expected_slices: list = []
+        if self.tv_tps and any(float(t or 0) > 0 for t in self.tv_tps):
+            if hasattr(self, "_sync_consumed_tp_levels"):
+                self._sync_consumed_tp_levels(live_qty, curr_px)
+            self._cancel_all_tp_limit_orders()
+            time.sleep(0.5)
+            dynamic_sl = self._radar_sl_to_pass() if hasattr(self, "_radar_sl_to_pass") else None
+            tp_result = self._nuclear_realign_tp(
+                live_qty, entry, dynamic_sl=dynamic_sl, rounds=3,
+            )
+            dynamic_sl = self._radar_sl_to_pass() if hasattr(self, "_radar_sl_to_pass") else dynamic_sl
+            if dynamic_sl and hasattr(self, "_ensure_radar_sl"):
+                tp_result["radar_verified"] = bool(self._ensure_radar_sl(dynamic_sl, live_qty))
+            elif hasattr(self, "_uses_dual_stop_track") and not self._uses_dual_stop_track():
+                if hasattr(self, "_sync_binance_merged_stop"):
+                    radar = (
+                        self._effective_radar_sl_for_merge()
+                        if hasattr(self, "_effective_radar_sl_for_merge")
+                        else None
+                    )
+                    tp_result["merged_stop"] = self._sync_binance_merged_stop(
+                        live_qty, radar_sl=radar, force_replace=True,
+                    )
+            expected_slices = (
+                self._expected_tp_levels(live_qty, curr_px)
+                if hasattr(self, "_expected_tp_levels")
+                else []
+            )
+
+        audit = self._audit_tp_levels(live_qty, curr_px=curr_px) if live_qty > 0 else {}
+        return {
+            "reason": reason,
+            "entry_type": entry_type,
+            "live_qty": live_qty,
+            "entry": entry,
+            "tv_tps": list(self.tv_tps),
+            "prev_tv_tps": list(prev_tv_tps or []),
+            "tp_slices": expected_slices,
+            "tp_realign": tp_result,
+            "shield": shield,
+            "radar_sl": getattr(self, "current_sl", None),
+            "radar_active": bool(self._is_radar_active()) if hasattr(self, "_is_radar_active") else False,
+            "matched": audit.get("matched_full", 0),
+            "expected": audit.get("expected", 0),
+            "aligned": bool(
+                audit.get("expected", 0) > 0
+                and audit.get("matched_full", 0) >= audit.get("expected", 0)
+            ),
+            "summary": self._format_audit_summary(audit) if audit else "",
+            "consumed_tp_levels": sorted(consumed),
+        }
+
     def _smart_realign_defenses(
         self, live_qty: float, entry: float, dynamic_sl=None, reason: str = ""
     ) -> dict:

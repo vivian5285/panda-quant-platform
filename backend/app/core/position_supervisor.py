@@ -317,6 +317,7 @@ class PositionSupervisor(
         held_regime = self.regime
         held_atr = self.current_atr
         prev_tv_tps = list(self.tv_tps)
+        self._signal_prev_tv_tps = prev_tv_tps
         self.regime = int(payload.get("regime", 3))
         self.regime = clamp_regime(self.regime)
 
@@ -551,16 +552,15 @@ class PositionSupervisor(
         self.monitoring = True
         self._ensure_price_ws()
 
-        shield = {}
-        tp_heal = {}
-        if float(getattr(self, "tv_sl", 0) or 0) > 0:
-            shield = self._sync_tv_hard_stop(real_qty, force_replace=True)
-        if self.tv_tps and any(float(t or 0) > 0 for t in self.tv_tps):
-            dynamic_sl = self._radar_sl_to_pass()
-            tp_heal = self._smart_realign_defenses(
-                real_qty, entry_price, dynamic_sl=dynamic_sl,
-                reason=f"{entry_type} 加仓后止盈数量对齐",
-            )
+        prev_tv_tps = list(getattr(self, "_signal_prev_tv_tps", None) or [])
+        defense = self._rebuild_defenses_after_tv_add(
+            real_qty,
+            entry_price,
+            entry_type=entry_type,
+            prev_tv_tps=prev_tv_tps,
+        )
+        shield = defense.get("shield") or {}
+        tp_heal = defense.get("tp_realign") or {}
         self._save_state()
 
         theme = resolve_exchange_theme(self.exchange_id)
@@ -577,6 +577,10 @@ class PositionSupervisor(
             "atr": self.current_atr,
             "add_count": self.add_count,
             "max_add_times": self._max_add_times(),
+            "tp_slices": defense.get("tp_slices"),
+            "prev_tv_tps": defense.get("prev_tv_tps"),
+            "radar_sl": defense.get("radar_sl"),
+            "radar_active": defense.get("radar_active"),
             **sizing_meta,
         }
         if shield:
@@ -584,9 +588,13 @@ class PositionSupervisor(
             detail["tv_sl"] = self.tv_sl
         if tp_heal:
             detail["tp_realign"] = tp_heal
+        if defense.get("summary"):
+            detail["defense_summary"] = defense["summary"]
         verify_note = ""
-        if tp_heal.get("expected"):
-            verify_note += f" | 止盈 {tp_heal.get('matched', 0)}/{tp_heal.get('expected')} 档已对齐"
+        if defense.get("expected"):
+            verify_note += f" | 止盈 {defense.get('matched', 0)}/{defense.get('expected')} 档已对齐"
+        elif tp_heal.get("expected"):
+            verify_note += f" | 止盈 {tp_heal.get('matched_full', 0)}/{tp_heal.get('expected')} 档已对齐"
         if shield.get("aligned") or shield.get("skipped") == "live_already_aligned":
             sl_label = shield.get("label") or self._hard_stop_label()
             verify_note = f" | {sl_label}已核实 @{shield.get('stop_price', 0):.2f}"

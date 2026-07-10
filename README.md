@@ -56,7 +56,7 @@ trading_factory:
 rules:
   - 永远一手、单向持仓 One-Way；工厂 OPEN 同向已有仓 → 先平后开（人工接管同向仓除外）
   - 反方向 TV 信号：一律先平后开（cancel all → 市价全平 → 再开仓）
-  - PYRAMID / PROFIT_ADD：同向追加，数量 = base_qty × TV qty_ratio（档位动态比例/次数），重建 TP + TV SL
+  - PYRAMID / PROFIT_ADD：同向追加，数量 = base_qty × TV qty_ratio；**加仓后核武重挂 TP123（新价格×新总头寸）+ TV SL + 雷达**
   - 开仓后挂限价止盈 TP1/2/3（reduceOnly）+ TV 硬止损 tv_sl + 雷达移动保本
   - 禁止与 TV 反向持仓：哨兵 / 重启 / 空闲巡检 → FORCE_ALIGN 全平
   - 人工/外部同向仓：manual adopt 后保留仓位，TV CLOSE 不强制全平，补挂 TP123+雷达
@@ -455,7 +455,7 @@ TradingView POST /gemini/webhook
 |------|------|
 | 数量 | `add_qty = base_qty × TV qty_ratio`（Pine v6.9.93 档位动态：R1=0/R2=0.3/R3=0.5/R4=0.7） |
 | 次数上限 | 按档位：R1=1 / R2=2 / R3=2 / R4=3（`MAX_ADD_TIMES_REG*`） |
-| 加仓后 | 重建 TP123 + 同步 TV SL + 雷达 |
+| 加仓后 | **核武清场重挂** TP123：按 TV 最新 `tv_tp1/2/3` 价格 + 新总头寸 × regime 比例重算分批；同步 TV 硬止损；**雷达按新 entry/TP1 距离重算并挂到新 qty**（四所相同 `_rebuild_defenses_after_tv_add`） |
 
 #### CLOSE / CLOSE_PROTECT / CLOSE_TP3
 

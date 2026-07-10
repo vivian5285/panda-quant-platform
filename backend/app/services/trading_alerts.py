@@ -376,6 +376,22 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
                 lines.append(_line("加仓次数", f"{int(detail['add_count'])}/{int(cap)}"))
             else:
                 lines.append(_line("加仓次数", str(detail["add_count"])))
+        slices = detail.get("tp_slices") or []
+        if slices:
+            parts = []
+            for lv in slices[:3]:
+                if isinstance(lv, dict):
+                    parts.append(f"TP{lv.get('level')} {float(lv.get('qty', 0)):.4f}@{float(lv.get('price', 0)):.2f}")
+            if parts:
+                lines.append(_line("新 TP 分批", " · ".join(parts)))
+        prev_tps = detail.get("prev_tv_tps")
+        new_tps = detail.get("tv_tps")
+        if prev_tps and new_tps and prev_tps != new_tps:
+            lines.append(_line("TP 价格", f"{prev_tps} → {new_tps}"))
+        if detail.get("radar_active"):
+            radar_sl = detail.get("radar_sl")
+            if radar_sl:
+                lines.append(_line("雷达止损", f"{float(radar_sl):.2f}（已按新总头寸同步）"))
 
     if detail.get("qty") is not None:
         lines.append(_line("实盘数量", f"**{float(detail['qty']):.4f}** {unit}"))

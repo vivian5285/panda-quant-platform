@@ -62,7 +62,15 @@ def test_pyramid_adds_without_cancel_all():
         "qty_ratio": 0.99,
         "regime": 1,
     })
-    sup._smart_realign_defenses = MagicMock(return_value={"matched": 3, "expected": 3})
+    sup._rebuild_defenses_after_tv_add = MagicMock(
+        return_value={
+            "shield": {"aligned": True},
+            "tp_realign": {"matched_full": 3, "expected": 3},
+            "matched": 3,
+            "expected": 3,
+            "summary": "ok",
+        }
+    )
     with patch.object(sup.position_manager, "get_position") as gp:
         gp.side_effect = [
             {"positionAmt": "0.619", "entryPrice": "2000"},
@@ -70,6 +78,7 @@ def test_pyramid_adds_without_cancel_all():
         ]
         result = sup._add_to_position("LONG", 2000.0, "PYRAMID")
     client.cancel_all_open_orders.assert_not_called()
+    sup._rebuild_defenses_after_tv_add.assert_called_once()
     assert result["status"] == "ok"
     assert sup.base_qty == pytest.approx(0.619)
     assert sup.add_count == 1
