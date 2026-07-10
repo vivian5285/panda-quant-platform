@@ -57,9 +57,9 @@ CANCEL_VERIFY_ROUNDS = 5
 HEAL_PLACE_ROUNDS = 2
 SIGNAL_QUEUE_TTL = 120.0
 SIGNAL_LOCK_SLICE = 5.0
-SENTINEL_POLL_NORMAL = 6
-SENTINEL_POLL_ARMING = 3
-SENTINEL_POLL_RADAR = 2
+SENTINEL_POLL_NORMAL = 4
+SENTINEL_POLL_ARMING = 2.5
+SENTINEL_POLL_RADAR = 1.5
 DUST_QTY_ETH = 0.004
 TP_COMPLETE_RESIDUAL_RATIO = 0.12
 RADAR_SL_MIN_MOVE = 1.0
@@ -1882,9 +1882,13 @@ class PositionSupervisor(
         return True
 
     def _start_idle_flat_patrol(self) -> None:
+        from app.config import get_settings
+
+        interval = float(get_settings().IDLE_PATROL_INTERVAL_SEC or 10.0)
+
         def loop():
             while True:
-                time.sleep(30)
+                time.sleep(interval)
                 if self.monitoring:
                     continue
                 if not self._lock.acquire(timeout=2.0):
@@ -1892,14 +1896,7 @@ class PositionSupervisor(
                 try:
                     if self.monitoring:
                         continue
-                    pos = self._get_active_position()
-                    if not pos or pos["size"] <= 0:
-                        continue
-                    if not self._is_dust_qty(pos["size"]) and not self._should_finalize_tp_victory(pos["size"]):
-                        continue
-                    if not self.current_side:
-                        self.current_side = pos["side"]
-                    self._sweep_dust_and_finalize("空闲巡检：盘口蚂蚁仓自动扫平")
+                    self._run_idle_live_watch()
                 except Exception as exc:
                     logger.error(f"[User {self.user_id}] idle patrol: {exc}")
                 finally:
@@ -2423,6 +2420,10 @@ class PositionSupervisor(
             pos = self.position_manager.get_position(self.symbol)
             if not pos or float(pos.get("positionAmt", 0)) == 0:
                 self.monitoring = False
+                if not self._idle_book_is_flat():
+                    self._recover_missed_flat_on_startup(was_monitoring=saved_monitoring)
+                else:
+                    self._idle_cancel_orphan_orders_when_flat()
                 self._log("STARTUP", "VPS 自启审计：空仓待机", reconcile)
                 return audit
 

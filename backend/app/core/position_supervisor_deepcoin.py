@@ -53,9 +53,9 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 DEEPCOIN_SUPERVISOR_VERSION = "v13.4.6-flat-reconcile"
-SENTINEL_POLL_NORMAL = 6
-SENTINEL_POLL_ARMING = 3
-SENTINEL_POLL_RADAR = 2
+SENTINEL_POLL_NORMAL = 4
+SENTINEL_POLL_ARMING = 2.5
+SENTINEL_POLL_RADAR = 1.5
 DUST_ORPHAN_CONTRACTS = 1
 TP_COMPLETE_RESIDUAL_RATIO = 0.12
 FLAT_WAIT_TIMEOUT = 12.0
@@ -156,10 +156,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self._start_idle_flat_patrol()
 
     def _start_idle_flat_patrol(self):
-        """空仓待命时后台巡检：发现孤立残张 → 自动扫尾 + 钉钉"""
+        """空仓待命时后台巡检：实盘对账 / 同向接管 / 残张扫尾"""
+        from app.config import get_settings
+
+        interval = float(get_settings().IDLE_PATROL_INTERVAL_SEC or 10.0)
+
         def loop():
             while True:
-                time.sleep(30)
+                time.sleep(interval)
                 if self.monitoring:
                     continue
                 if not self._lock.acquire(timeout=2.0):
@@ -167,18 +171,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 try:
                     if self.monitoring:
                         continue
-                    pos = self._get_active_position()
-                    if not pos or self._safe_qty(pos.get("size")) <= 0:
-                        continue
-                    real_amt = self._safe_qty(pos["size"])
-                    if not self._is_dust_qty(real_amt) and not self._should_finalize_tp_victory(real_amt):
-                        continue
-                    if not self.current_side:
-                        self.current_side = "LONG" if pos.get("posSide") == "long" else "SHORT"
-                    logger.warning(
-                        f"🐜 [空闲巡检] 发现残量 {self.current_side} {real_amt}张 → 扫尾"
-                    )
-                    self._sweep_dust_and_finalize("重启扫描：盘口蚂蚁仓自动扫平")
+                    self._run_idle_live_watch()
                 except Exception as e:
                     logger.error(f"空闲巡检异常: {e}")
                 finally:

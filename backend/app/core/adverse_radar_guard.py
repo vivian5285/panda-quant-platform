@@ -1510,6 +1510,14 @@ class AdverseRadarMixin:
                 self.initial_qty = new_qty
             if float(getattr(self, "tv_sl", 0) or 0) > 0 and hasattr(self, "_sync_tv_hard_stop"):
                 self._sync_tv_hard_stop(new_qty, force_replace=True)
+            sl_to_pass = self._radar_sl_to_pass() if hasattr(self, "_radar_sl_to_pass") else None
+            if hasattr(self, "_rebuild_defenses"):
+                defense = self._rebuild_defenses(new_qty, entry, sl_to_pass)
+                result.update({
+                    "defense": defense,
+                    "action_msg": "手动加仓 · 按新头寸重算 TP123",
+                })
+                return result
 
         sl_to_pass = self._radar_sl_to_pass() if hasattr(self, "_radar_sl_to_pass") else None
         action_labels = {

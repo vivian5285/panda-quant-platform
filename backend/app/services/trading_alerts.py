@@ -80,6 +80,7 @@ ALERT_TYPE_TAGS = {
     "ADJUST": "人工异动",
     "MANUAL_ADJUST": "人工异动",
     "FORCE_ALIGN": "方向背离",
+    "IDLE_WATCH": "空仓巡检",
     "TP_RETRY_FAIL": "止盈失败",
     "SL_RETRY_FAIL": "止损失败",
     "SENTINEL_ERROR": "哨兵异常",
@@ -117,6 +118,7 @@ ADMIN_DINGTALK_KEY_TYPES = frozenset({
     "STARTUP_FAIL",
     "DEFENSE_HEAL_FAIL",
     "FORCE_ALIGN",
+    "IDLE_WATCH",
     "ADJUST",
     "MANUAL_ADJUST",
     "INSUFFICIENT_BALANCE",
@@ -474,6 +476,8 @@ def format_admin_detail_lines(
         return format_startup_detail_cn(detail, ex)
     if alert_type == "FORCE_ALIGN":
         return format_force_align_detail_cn(detail, ex)
+    if alert_type == "IDLE_WATCH":
+        return format_force_align_detail_cn(detail, ex) if detail.get("live_side") else format_startup_detail_cn(detail, ex)
     if alert_type in ("OPEN", "PYRAMID", "PROFIT_ADD") or detail.get("sizing_mode") in ("vps_open", "vps_add"):
         return format_vps_entry_detail_cn(detail, ex)
 

@@ -230,6 +230,214 @@ class StartupReconcileMixin:
         )
         return True
 
+    def _idle_book_is_flat(self) -> bool:
+        wq = float(getattr(self, "watched_qty", 0) or 0)
+        side = getattr(self, "current_side", None)
+        init = float(getattr(self, "initial_qty", 0) or 0)
+        return wq <= 0 and init <= 0 and side not in ("LONG", "SHORT")
+
+    def _load_idle_recovery_context(self) -> dict:
+        """DB 最新 TV + 开仓日志；失败时回退到 supervisor 内存状态."""
+        uid = getattr(self, "user_id", None)
+        try:
+            from app.database import SessionLocal
+            from app.services.radar_context import build_radar_recovery_context
+
+            db = SessionLocal()
+            try:
+                ctx = build_radar_recovery_context(db, uid)
+            finally:
+                db.close()
+            if ctx.get("latest_tv") or ctx.get("trade") or ctx.get("open_log"):
+                return ctx
+        except Exception as exc:
+            logger.debug("[User %s] idle recovery DB context: %s", uid, exc)
+
+        latest_tv = None
+        lts = getattr(self, "last_tv_side", None)
+        if lts in ("LONG", "SHORT"):
+            latest_tv = {
+                "action": lts,
+                "regime": int(getattr(self, "regime", 3) or 3),
+                "atr": float(getattr(self, "current_atr", 30) or 30),
+                "price": float(getattr(self, "tv_price", 0) or 0),
+                "tv_tps": list(getattr(self, "tv_tps", []) or []),
+                "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
+            }
+        else:
+            sig = getattr(self, "last_tv_signal", None)
+            if isinstance(sig, dict):
+                action = (sig.get("action") or "").upper()
+                if action in ("LONG", "SHORT"):
+                    latest_tv = {
+                        "action": action,
+                        "regime": int(sig.get("regime", 3) or 3),
+                        "atr": float(sig.get("atr", 30) or 30),
+                        "price": float(sig.get("price", 0) or 0),
+                        "tv_tps": list(sig.get("tv_tps") or []),
+                    }
+        return {"trade": None, "open_log": None, "latest_tv": latest_tv, "checks": []}
+
+    def _idle_reconcile_stale_book_flat(self) -> bool:
+        fn = getattr(self, "_recover_missed_flat_on_startup", None)
+        if fn:
+            return bool(fn(was_monitoring=False))
+        if hasattr(self, "_handle_detected_flat"):
+            return bool(self._handle_detected_flat("idle_patrol"))
+        if hasattr(self, "_handle_manual_flat_detected"):
+            self._handle_manual_flat_detected("空仓巡检：账本有仓但实盘已平")
+            return True
+        return False
+
+    def _idle_cancel_orphan_orders_when_flat(self) -> bool:
+        sym = getattr(self, "symbol", None)
+        if not sym or not hasattr(self.client, "get_open_orders"):
+            return False
+        try:
+            orders = self.client.get_open_orders(sym) or []
+        except Exception as exc:
+            logger.debug("[User %s] idle orphan order scan: %s", getattr(self, "user_id", "?"), exc)
+            return False
+        if not orders:
+            return False
+        self.client.cancel_all_open_orders(sym)
+        detail = {"trigger": "idle_patrol", "orphan_orders": len(orders)}
+        if hasattr(self, "_log"):
+            self._log("IDLE_WATCH", f"空仓巡检：清理 {len(orders)} 个孤儿挂单", detail)
+        if hasattr(self, "_alert"):
+            self._alert(
+                "info",
+                "IDLE_WATCH",
+                "空仓巡检 · 清理孤儿挂单",
+                f"实盘空仓但仍有 {len(orders)} 个挂单，已撤单",
+                detail,
+            )
+        return True
+
+    def _run_idle_live_watch(self) -> None:
+        """VPS 账本空仓时仍核对交易所：残量扫尾 / 人工平仓收口 / 同向持仓接管."""
+        if getattr(self, "monitoring", False):
+            return
+
+        get_pos = getattr(self, "_get_active_position", None)
+        if not get_pos:
+            return
+        pos = get_pos()
+        live_qty = float(pos.get("size", 0) or 0) if pos else 0.0
+
+        if live_qty <= 0:
+            if not self._idle_book_is_flat():
+                prev = float(getattr(self, "watched_qty", 0) or 0)
+                if self._idle_reconcile_stale_book_flat():
+                    if hasattr(self, "_alert"):
+                        self._alert(
+                            "warning",
+                            "MANUAL_ADJUST",
+                            "空仓巡检 · 人工全平收口",
+                            f"账本 {prev} → 实盘已空，状态已更新",
+                            {"trigger": "idle_patrol", "prev_watched": prev},
+                        )
+            else:
+                self._idle_cancel_orphan_orders_when_flat()
+            return
+
+        is_dust = getattr(self, "_is_dust_qty", None)
+        if is_dust and is_dust(live_qty):
+            if pos and not getattr(self, "current_side", None):
+                self.current_side = pos.get("side")
+            self._sweep_dust_and_finalize("空闲巡检：盘口蚂蚁仓自动扫平")
+            return
+
+        finalize = getattr(self, "_should_finalize_tp_victory", None)
+        if finalize and finalize(live_qty):
+            if pos and not getattr(self, "current_side", None):
+                self.current_side = pos.get("side")
+            self._sweep_dust_and_finalize("空闲巡检：止盈残量扫尾")
+            return
+
+        side = (pos or {}).get("side") or getattr(self, "current_side", None)
+        entry = float((pos or {}).get("entry_price", 0) or 0)
+        self.current_side = side
+        self.watched_qty = live_qty
+        self.watched_entry = entry
+
+        ctx = self._load_idle_recovery_context()
+        reconcile = (
+            self._reconcile_radar_context(ctx)
+            if hasattr(self, "_reconcile_radar_context")
+            else ctx
+        )
+        tv_action = (reconcile.get("latest_tv_action") or "").upper()
+        if not tv_action:
+            lt = recovery_section(ctx, "latest_tv")
+            tv_action = (lt.get("action") or "").upper()
+
+        if tv_action in ("LONG", "SHORT") and side != tv_action:
+            self._try_force_align_opposite_to_tv(
+                reconcile,
+                adopted_manual=True,
+                trigger="idle_patrol",
+            )
+            return
+
+        if tv_action.startswith("CLOSE"):
+            self._close_all(
+                f"空仓巡检: TV已发{tv_action}，执行清场",
+                close_trigger="idle_patrol_tv_close",
+            )
+            return
+
+        from app.config import get_settings
+
+        settings = get_settings()
+        cooldown_until = float(getattr(self, "_idle_adopt_cooldown_until", 0) or 0)
+        if time.time() < cooldown_until:
+            return
+
+        detail = {
+            "side": side,
+            "qty": live_qty,
+            "entry": entry,
+            "tv_side": tv_action or getattr(self, "last_tv_side", None),
+            "trigger": "idle_patrol",
+        }
+        if hasattr(self, "_log"):
+            self._log(
+                "IDLE_WATCH",
+                f"空仓巡检发现同向持仓 {side} {live_qty} @ {entry:.2f} → 接管补挂 TP123/雷达",
+                detail,
+            )
+        recover = getattr(self, "recover_on_startup", None)
+        if not recover:
+            return
+        try:
+            audit = recover(recovery_context=ctx)
+            if audit.get("force_aligned"):
+                return
+            if audit.get("has_position") and audit.get("monitoring"):
+                if hasattr(self, "_alert"):
+                    self._alert(
+                        "info",
+                        "IDLE_WATCH",
+                        "空仓巡检 · 同向持仓接管",
+                        f"{side} {live_qty} @ {entry:.2f} | "
+                        f"{audit.get('startup_summary', 'TP123/雷达已补挂')}",
+                        {**audit, **detail},
+                    )
+            elif audit.get("error"):
+                self._idle_adopt_cooldown_until = (
+                    time.time() + float(settings.IDLE_ADOPT_RETRY_COOLDOWN_SEC or 45)
+                )
+        except Exception as exc:
+            logger.error(
+                "[User %s] idle adopt failed: %s",
+                getattr(self, "user_id", "?"),
+                exc,
+            )
+            self._idle_adopt_cooldown_until = (
+                time.time() + float(settings.IDLE_ADOPT_RETRY_COOLDOWN_SEC or 45)
+            )
+
     def _startup_radar_progress(self, curr_px: float) -> float:
         if hasattr(self, "_radar_activation_progress"):
             return float(self._radar_activation_progress(curr_px) or 0.0)

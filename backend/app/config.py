@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     ADD_QTY_RATIO: float = 0.5
     MAX_ADD_TIMES: int = 2
 
+    # 空仓待命时仍巡检交易所（秒）— 发现同向持仓则接管补挂 TP123/雷达
+    IDLE_PATROL_INTERVAL_SEC: float = 10.0
+    IDLE_ADOPT_RETRY_COOLDOWN_SEC: float = 45.0
+
     SETTLEMENT_PRIMARY_DAYS: int = 30
     SETTLEMENT_EXTENDED_DAYS: int = 35
     SETTLEMENT_SCAN_INTERVAL_SEC: int = 3600
