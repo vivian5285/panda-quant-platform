@@ -36,13 +36,13 @@ def test_open_uses_vps_formula_not_margin_pct():
     sup._apply_tv_entry_context({"entry_type": "OPEN", "regime": 1})
     qty, meta = sup._resolve_entry_qty(2000.0)
     assert meta["sizing_mode"] == "vps_open"
-    assert qty == pytest.approx(1.833, rel=0.02)
+    assert qty == pytest.approx(0.206, rel=0.02)
     assert "margin_pct" not in meta
 
 
 def test_pyramid_uses_base_qty_times_ratio():
     sup, client = _make_supervisor()
-    sup.base_qty = 1.833
+    sup.base_qty = 0.206
     sup._apply_tv_entry_context({
         "entry_type": "PYRAMID",
         "qty_ratio": 0.5,
@@ -50,12 +50,12 @@ def test_pyramid_uses_base_qty_times_ratio():
     })
     qty, meta = sup._resolve_entry_qty(2000.0)
     assert meta["sizing_mode"] == "vps_add"
-    assert qty == pytest.approx(0.917, rel=0.02)
+    assert qty == pytest.approx(0.103, rel=0.02)
 
 
 def test_pyramid_adds_without_cancel_all():
     sup, client = _make_supervisor()
-    sup.base_qty = 1.833
+    sup.base_qty = 0.206
     sup.add_count = 0
     sup._apply_tv_entry_context({
         "entry_type": "PYRAMID",
@@ -65,19 +65,19 @@ def test_pyramid_adds_without_cancel_all():
     sup._smart_realign_defenses = MagicMock(return_value={"matched": 3, "expected": 3})
     with patch.object(sup.position_manager, "get_position") as gp:
         gp.side_effect = [
-            {"positionAmt": "1.833", "entryPrice": "2000"},
-            {"positionAmt": "2.75", "entryPrice": "2005"},
+            {"positionAmt": "0.206", "entryPrice": "2000"},
+            {"positionAmt": "0.309", "entryPrice": "2005"},
         ]
         result = sup._add_to_position("LONG", 2000.0, "PYRAMID")
     client.cancel_all_open_orders.assert_not_called()
     assert result["status"] == "ok"
-    assert sup.base_qty == pytest.approx(1.833)
+    assert sup.base_qty == pytest.approx(0.206)
     assert sup.add_count == 1
 
 
 def test_pyramid_skipped_when_max_add_times_reached():
     sup, client = _make_supervisor()
-    sup.base_qty = 1.833
+    sup.base_qty = 0.206
     sup.add_count = 2
     sup._apply_tv_entry_context({"entry_type": "PYRAMID", "regime": 1})
     result = sup._handle_tv_entry(

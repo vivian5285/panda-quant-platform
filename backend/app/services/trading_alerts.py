@@ -351,9 +351,11 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
                 lines.append(_line("VPS 风险", f"{float(detail['vps_risk_pct']):.2f}%"))
         if detail.get("order_amount") is not None:
             lev = detail.get("leverage") or theme["leverage"]
-            lines.append(_line("下单名义", f"{float(detail['order_amount']):.2f} USDT × {lev}×杠杆"))
-        if detail.get("sl_distance") is not None:
-            lines.append(_line("止损距离", f"{float(detail['sl_distance']):.2f}"))
+            lines.append(_line("头寸价值", f"{float(detail['order_amount']):.2f} USDT（{lev}×）"))
+        if detail.get("margin_usd") is not None:
+            lines.append(_line("保证金", f"{float(detail['margin_usd']):.2f} USDT"))
+        if detail.get("tv_sl"):
+            lines.append(_line("TV 止损", f"{float(detail['tv_sl']):.2f}"))
         if detail.get("base_qty") is not None:
             lines.append(_line("基准数量", f"**{float(detail['base_qty']):.4f}** {unit}"))
     else:

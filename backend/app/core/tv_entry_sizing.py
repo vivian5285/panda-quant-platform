@@ -103,32 +103,42 @@ def compute_vps_open_qty(
     max_qty: float | None = None,
 ) -> tuple[float, dict[str, Any]]:
     """
-    OPEN: 下单名义 = 本金 × effective_risk% × leverage; 数量 = 名义 / |price - tv_sl|
-    完全忽略 TV risk_pct。
+    OPEN（开发清单最终版）:
+      保证金 = 本金 × VPS_RISK_PCT% × LEVERAGE × REGIME_SCALE
+      头寸价值 = 保证金 × LEVERAGE
+      张数 = 头寸价值 / price
+    tv_sl 仅用于挂单止损，不参与张数计算。忽略 TV risk_pct / qty_ratio。
     """
     sizing_base, sizing_source = resolve_principal_sizing_base(live_balance, initial_principal)
     eff_pct, risk_meta = effective_vps_risk_pct(regime)
     lev = max(int(leverage or 1), 1)
-    order_amount = sizing_base * (eff_pct / 100.0) * lev
-    sl_dist = abs(float(price or 0) - float(tv_sl or 0))
+    price_f = float(price or 0)
+    tv_sl_f = float(tv_sl or 0)
     meta: dict[str, Any] = {
         "sizing_mode": "vps_open",
         "entry_type": "OPEN",
         "sizing_base": round(sizing_base, 2),
         "sizing_source": sizing_source,
-        "order_amount": round(order_amount, 4),
-        "sl_distance": round(sl_dist, 4),
         "leverage": lev,
-        "price": round(float(price or 0), 2),
-        "tv_sl": round(float(tv_sl or 0), 2),
+        "price": round(price_f, 2),
+        "tv_sl": round(tv_sl_f, 2),
         "equity_balance": round(live_balance, 2),
         "initial_principal": round(initial_principal, 2),
         **risk_meta,
     }
-    if sl_dist <= 0:
-        meta["error"] = "invalid_sl_distance"
+    if price_f <= 0:
+        meta["error"] = "invalid_price"
         return 0.0, meta
-    raw_qty = order_amount / sl_dist
+
+    margin_usd = sizing_base * (eff_pct / 100.0) * lev
+    position_value = margin_usd * lev
+    raw_qty = position_value / price_f
+    meta["margin_usd"] = round(margin_usd, 4)
+    meta["position_value"] = round(position_value, 4)
+    meta["order_amount"] = round(position_value, 4)
+    if tv_sl_f > 0:
+        meta["sl_distance"] = round(abs(price_f - tv_sl_f), 4)
+
     mn = float(min_qty if min_qty is not None else settings.MIN_ORDER_QTY_ETH)
     mx = float(max_qty if max_qty is not None else settings.MAX_POSITION_QTY)
     qty = round_fn(_clamp_qty(raw_qty, min_qty=mn, max_qty=mx))

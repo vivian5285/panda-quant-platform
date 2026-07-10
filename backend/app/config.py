@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     REGIME_SCALE_1: float = 0.55
     REGIME_SCALE_2: float = 0.75
     REGIME_SCALE_3: float = 0.95
-    REGIME_SCALE_4: float = 1.30
+    REGIME_SCALE_4: float = 1.33
 
     # 加仓（固定比例，忽略 TV qty_ratio）
     ADD_QTY_RATIO: float = 0.5
