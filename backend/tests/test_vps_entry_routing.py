@@ -56,9 +56,10 @@ def test_pyramid_uses_base_qty_times_ratio():
 def test_pyramid_adds_without_cancel_all():
     sup, client = _make_supervisor()
     sup.base_qty = 1.833
+    sup.add_count = 0
     sup._apply_tv_entry_context({
         "entry_type": "PYRAMID",
-        "qty_ratio": 0.5,
+        "qty_ratio": 0.99,
         "regime": 1,
     })
     sup._smart_realign_defenses = MagicMock(return_value={"matched": 3, "expected": 3})
@@ -71,3 +72,16 @@ def test_pyramid_adds_without_cancel_all():
     client.cancel_all_open_orders.assert_not_called()
     assert result["status"] == "ok"
     assert sup.base_qty == pytest.approx(1.833)
+    assert sup.add_count == 1
+
+
+def test_pyramid_skipped_when_max_add_times_reached():
+    sup, client = _make_supervisor()
+    sup.base_qty = 1.833
+    sup.add_count = 2
+    sup._apply_tv_entry_context({"entry_type": "PYRAMID", "regime": 1})
+    result = sup._handle_tv_entry(
+        "LONG", 2000.0, has_pos=True, current_side="LONG",
+    )
+    assert result["status"] == "skipped"
+    client.place_market_order.assert_not_called()

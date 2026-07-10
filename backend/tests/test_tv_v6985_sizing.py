@@ -46,13 +46,30 @@ def test_vps_open_table_1000u(regime, price, tv_sl, expected_qty):
 def test_vps_add_uses_base_qty_not_risk():
     qty, meta = compute_vps_add_qty(
         base_qty=1.83,
-        qty_ratio=0.5,
         round_fn=lambda x: round(x, 3),
         entry_type="PYRAMID",
     )
     assert qty == pytest.approx(0.915, rel=0.01)
     assert meta["sizing_mode"] == "vps_add"
     assert meta["base_qty"] == pytest.approx(1.83)
+    assert meta["add_qty_ratio"] == pytest.approx(0.5)
+
+
+def test_vps_add_ignores_tv_qty_ratio():
+    """TV 传 0.8 也应固定 VPS ADD_QTY_RATIO=0.5."""
+    qty, meta = resolve_vps_entry_qty_eth(
+        live_balance=1000.0,
+        initial_principal=1000.0,
+        entry_type="PROFIT_ADD",
+        base_qty=3.12,
+        price=2000.0,
+        tv_sl=1950.0,
+        regime=4,
+        exchange_leverage=5,
+        round_fn=lambda x: round(x, 3),
+    )
+    assert qty == pytest.approx(1.56, rel=0.01)
+    assert meta["add_qty_ratio"] == pytest.approx(0.5)
 
 
 def test_parse_tv_entry_fields_ignores_risk_pct():
@@ -72,7 +89,6 @@ def test_resolve_open_never_uses_regime_margin():
         initial_principal=1000.0,
         entry_type="OPEN",
         base_qty=0,
-        qty_ratio=1.0,
         price=2000.0,
         tv_sl=1955.0,
         regime=1,
@@ -90,7 +106,6 @@ def test_resolve_add_requires_base_qty():
         initial_principal=1000.0,
         entry_type="PYRAMID",
         base_qty=2.0,
-        qty_ratio=0.5,
         price=2000.0,
         tv_sl=1950.0,
         regime=3,

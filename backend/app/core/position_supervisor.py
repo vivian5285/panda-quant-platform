@@ -128,6 +128,7 @@ class PositionSupervisor(
         self.tv_price = 0.0
         self.initial_qty = 0.0
         self.base_qty = 0.0
+        self.add_count = 0
         self.watched_qty = 0.0
         self.watched_entry = 0.0
         self.current_side = None
@@ -166,6 +167,7 @@ class PositionSupervisor(
                     "tv_tps": self.tv_tps,
                     "initial_qty": self.initial_qty,
                     "base_qty": float(getattr(self, "base_qty", 0) or 0),
+                    "add_count": int(getattr(self, "add_count", 0) or 0),
                     "consumed_tp_levels": self.consumed_tp_levels,
                     "adverse_sl_armed": self.adverse_sl_armed,
                     "adverse_sl_prices": self.adverse_sl_prices,
@@ -193,6 +195,7 @@ class PositionSupervisor(
                     self.monitoring = bool(s.get("monitoring", False))
                     self.initial_qty = float(s.get("initial_qty", 0) or 0)
                     self.base_qty = float(s.get("base_qty", 0) or s.get("initial_qty", 0) or 0)
+                    self.add_count = int(s.get("add_count", 0) or 0)
                     self.tv_tps = normalize_tv_targets(s.get("tv_tps", [0.0, 0.0, 0.0]))
                     self.consumed_tp_levels = [
                         int(x) for x in (s.get("consumed_tp_levels") or []) if int(x) in (1, 2, 3)
@@ -395,13 +398,26 @@ class PositionSupervisor(
             initial_principal=self.initial_principal,
             entry_type=entry_type,
             base_qty=float(getattr(self, "base_qty", 0) or 0),
-            qty_ratio=float(tv_fields.get("qty_ratio") or 1.0),
             price=float(curr_px or self.tv_price or 0),
             tv_sl=float(getattr(self, "tv_sl", 0) or 0),
             regime=int(tv_fields.get("regime") or self.regime),
             exchange_leverage=leverage,
             round_fn=round_quantity,
         )
+
+    def _max_add_times(self) -> int:
+        return max(int(getattr(settings, "MAX_ADD_TIMES", 2) or 2), 0)
+
+    def _can_add_more(self) -> tuple[bool, str]:
+        cap = self._max_add_times()
+        count = int(getattr(self, "add_count", 0) or 0)
+        if cap <= 0:
+            return False, "加仓已禁用"
+        if count >= cap:
+            return False, f"已达最大加仓次数 {count}/{cap}"
+        if float(getattr(self, "base_qty", 0) or 0) <= 0:
+            return False, "缺少首仓基准数量 base_qty"
+        return True, ""
 
     def _force_flat_before_open(self, reason: str) -> bool:
         self.client.cancel_all_open_orders(self.symbol)
@@ -432,6 +448,16 @@ class PositionSupervisor(
                 if not self._force_flat_before_open(f"{entry_type} 反向后降级 OPEN"):
                     return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
                 return self._open_position(action, curr_px)
+            ok, skip_reason = self._can_add_more()
+            if not ok:
+                self._log("SIGNAL", f"⏭️ {entry_type} 跳过: {skip_reason}")
+                self._alert(
+                    "info", entry_type,
+                    "加仓跳过",
+                    f"用户 {self.user_id} {entry_type}: {skip_reason}",
+                    {"add_count": self.add_count, "max_add_times": self._max_add_times()},
+                )
+                return {"status": "skipped", "reason": "max_add_times", "message": skip_reason}
             return self._add_to_position(action, curr_px, entry_type)
 
         if has_pos:
@@ -456,7 +482,7 @@ class PositionSupervisor(
         self._log(
             "SIGNAL",
             f"📈 [{entry_type}] 同向追加: {action} +{qty} ETH | "
-            f"base={sizing_meta.get('base_qty')} × ratio={sizing_meta.get('qty_ratio')}",
+            f"base={sizing_meta.get('base_qty')} × {sizing_meta.get('add_qty_ratio')}",
         )
         self.client.place_market_order(action, qty, self.symbol)
         time.sleep(2.0)
@@ -472,6 +498,7 @@ class PositionSupervisor(
         self.watched_qty = real_qty
         self.watched_entry = entry_price
         self.initial_qty = float(self.initial_qty or prev_qty) + add_qty
+        self.add_count = int(getattr(self, "add_count", 0) or 0) + 1
         # base_qty 保持不变（首次 OPEN 时记录）
         self.monitoring = True
         self._ensure_price_ws()
@@ -500,6 +527,8 @@ class PositionSupervisor(
             "tv_tps": list(self.tv_tps),
             "leverage": leverage,
             "atr": self.current_atr,
+            "add_count": self.add_count,
+            "max_add_times": self._max_add_times(),
             **sizing_meta,
         }
         if shield:
@@ -524,8 +553,8 @@ class PositionSupervisor(
             entry_type,
             f"{theme['accent']} {add_label} · {theme['label']}",
             f"{action} +{add_qty:.4f} ETH → 总 {real_qty} @ {entry_price} | "
-            f"risk base {sizing_meta.get('base_qty')} × {sizing_meta.get('qty_ratio')} "
-            f"= +{add_qty:.4f}{verify_note}",
+            f"首仓 {sizing_meta.get('base_qty')} × {sizing_meta.get('add_qty_ratio')} "
+            f"= +{add_qty:.4f} ({self.add_count}/{self._max_add_times()}){verify_note}",
             detail,
         )
         return {"status": "ok", "action": action, "detail": {"type": entry_type.lower(), **detail}}
@@ -713,6 +742,7 @@ class PositionSupervisor(
                 real_qty = float(cap_result["new_qty"])
             self.base_qty = real_qty
             self.initial_qty = real_qty
+            self.add_count = 0
             self.consumed_tp_levels = []
             self.current_trade_id = self.on_trade_open(
                 self.user_id, action, real_qty, entry_price, self.regime, self.tv_tps
@@ -1756,6 +1786,7 @@ class PositionSupervisor(
         self.watched_qty = 0.0
         self.initial_qty = 0.0
         self.base_qty = 0.0
+        self.add_count = 0
         self.current_side = None
         self.consumed_tp_levels = []
         self.current_trade_id = None
@@ -1833,6 +1864,7 @@ class PositionSupervisor(
         self.watched_qty = 0.0
         self.initial_qty = 0.0
         self.base_qty = 0.0
+        self.add_count = 0
         self.current_side = None
         self.consumed_tp_levels = []
         self.current_trade_id = None
@@ -2304,6 +2336,7 @@ class PositionSupervisor(
         self.watched_qty = 0.0
         self.initial_qty = 0.0
         self.base_qty = 0.0
+        self.add_count = 0
         self.consumed_tp_levels = []
         self.current_trade_id = None
         self.trade_opened_at = None
@@ -2401,6 +2434,13 @@ class PositionSupervisor(
                 self.initial_qty = restored
             elif saved_initial <= 0:
                 self.initial_qty = self.watched_qty
+            if float(getattr(self, "base_qty", 0) or 0) <= 0:
+                self.base_qty = float(open_log_qty or trade_qty or self.initial_qty or self.watched_qty)
+            if int(getattr(self, "add_count", 0) or 0) <= 0 and self.base_qty > 0:
+                ratio = float(getattr(settings, "ADD_QTY_RATIO", 0.5) or 0.5)
+                if self.watched_qty > self.base_qty and ratio > 0:
+                    inferred = int(round((self.watched_qty - self.base_qty) / (self.base_qty * ratio)))
+                    self.add_count = min(max(inferred, 0), self._max_add_times())
             self.watched_entry = float(pos["entryPrice"])
             self.current_trade_id = open_trade_id
 
@@ -2446,6 +2486,8 @@ class PositionSupervisor(
                 "side": self.current_side,
                 "qty": self.watched_qty,
                 "entry": self.watched_entry,
+                "base_qty": float(getattr(self, "base_qty", 0) or 0),
+                "add_count": int(getattr(self, "add_count", 0) or 0),
                 "last_tv_side": self.last_tv_side,
                 "latest_tv_action": reconcile.get("latest_tv_action"),
                 "latest_tv_at": reconcile.get("latest_tv_at"),

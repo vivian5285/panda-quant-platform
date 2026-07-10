@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     REGIME_SCALE_3: float = 0.95
     REGIME_SCALE_4: float = 1.30
 
+    # 加仓（固定比例，忽略 TV qty_ratio）
+    ADD_QTY_RATIO: float = 0.5
+    MAX_ADD_TIMES: int = 2
+
     SETTLEMENT_PRIMARY_DAYS: int = 30
     SETTLEMENT_EXTENDED_DAYS: int = 35
     SETTLEMENT_SCAN_INTERVAL_SEC: int = 3600

@@ -1,4 +1,4 @@
-"""VPS entry sizing — OPEN: VPS risk formula; ADD: base_qty × qty_ratio (ignore TV risk_pct)."""
+"""VPS entry sizing — OPEN: VPS risk formula; ADD: base_qty × ADD_QTY_RATIO (ignore TV)."""
 
 from __future__ import annotations
 
@@ -55,23 +55,29 @@ def effective_vps_risk_pct(regime: int) -> tuple[float, dict[str, Any]]:
     }
 
 
+def vps_add_qty_ratio() -> float:
+    """固定加仓比例 — TV qty_ratio 完全忽略."""
+    return max(float(settings.ADD_QTY_RATIO or 0.5), 0.01)
+
+
 def parse_tv_entry_fields(payload: dict | None) -> dict[str, Any]:
     data = dict(payload or {})
     entry_type = str(data.get("entry_type") or "OPEN").upper().strip()
     if entry_type not in ENTRY_TYPES:
         entry_type = "OPEN"
-    qty_ratio = _parse_float(data.get("qty_ratio"), default=1.0) or 1.0
-    regime_raw = data.get("regime")
-    try:
-        regime = clamp_regime(int(regime_raw)) if regime_raw is not None else None
-    except (TypeError, ValueError):
-        regime = None
     return {
         "entry_type": entry_type,
-        "qty_ratio": max(float(qty_ratio), 0.01),
-        "regime": regime,
+        "regime": _parse_regime(data.get("regime")),
         "uses_vps_sizing": True,
+        "tv_qty_ratio_ignored": entry_type in ENTRY_TYPES_ADD,
     }
+
+
+def _parse_regime(raw) -> int | None:
+    try:
+        return clamp_regime(int(raw)) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _clamp_qty(qty: float, *, min_qty: float, max_qty: float) -> float:
@@ -135,15 +141,14 @@ def compute_vps_open_qty(
 def compute_vps_add_qty(
     *,
     base_qty: float,
-    qty_ratio: float,
     round_fn,
     min_qty: float | None = None,
     max_qty: float | None = None,
     entry_type: str = "PYRAMID",
 ) -> tuple[float, dict[str, Any]]:
-    """PYRAMID / PROFIT_ADD: add_qty = base_qty × qty_ratio（不重新算风险）."""
+    """PYRAMID / PROFIT_ADD: add_qty = base_qty × ADD_QTY_RATIO（固定，不读 TV）."""
     bq = max(float(base_qty or 0), 0.0)
-    qr = max(float(qty_ratio or 1.0), 0.01)
+    qr = vps_add_qty_ratio()
     raw = bq * qr
     mn = float(min_qty if min_qty is not None else settings.MIN_ORDER_QTY_ETH)
     mx = float(max_qty if max_qty is not None else settings.MAX_POSITION_QTY)
@@ -152,6 +157,7 @@ def compute_vps_add_qty(
         "sizing_mode": "vps_add",
         "entry_type": entry_type,
         "base_qty": round(bq, 6),
+        "add_qty_ratio": round(qr, 4),
         "qty_ratio": round(qr, 4),
         "add_qty": qty,
         "final_qty": qty,
@@ -184,8 +190,7 @@ def compute_vps_open_contracts(
         min_qty=min_qty or 1,
         max_qty=max_qty,
     )
-    denom = float(price or 0) * float(face_value or 1)
-    if denom > 0 and meta.get("order_amount"):
+    if meta.get("order_amount"):
         meta["notional_usd"] = round(meta["order_amount"], 4)
     meta["face_value"] = face_value
     return int(qty), meta
@@ -194,7 +199,6 @@ def compute_vps_open_contracts(
 def compute_vps_add_contracts(
     *,
     base_qty: float,
-    qty_ratio: float,
     entry_type: str = "PYRAMID",
     min_qty: float | None = None,
     max_qty: float | None = None,
@@ -204,7 +208,6 @@ def compute_vps_add_contracts(
 
     qty, meta = compute_vps_add_qty(
         base_qty=base_qty,
-        qty_ratio=qty_ratio,
         round_fn=_round_contracts,
         min_qty=min_qty or 1,
         max_qty=max_qty,
@@ -219,7 +222,6 @@ def resolve_vps_entry_qty_eth(
     initial_principal: float,
     entry_type: str,
     base_qty: float,
-    qty_ratio: float,
     price: float,
     tv_sl: float,
     regime: int,
@@ -231,7 +233,6 @@ def resolve_vps_entry_qty_eth(
             return 0.0, {"error": "missing_base_qty", "entry_type": entry_type}
         return compute_vps_add_qty(
             base_qty=base_qty,
-            qty_ratio=qty_ratio,
             round_fn=round_fn,
             entry_type=entry_type,
         )
@@ -252,7 +253,6 @@ def resolve_vps_entry_qty_deepcoin(
     initial_principal: float,
     entry_type: str,
     base_qty: float,
-    qty_ratio: float,
     price: float,
     tv_sl: float,
     regime: int,
@@ -264,7 +264,6 @@ def resolve_vps_entry_qty_deepcoin(
             return 0, {"error": "missing_base_qty", "entry_type": entry_type}
         return compute_vps_add_contracts(
             base_qty=base_qty,
-            qty_ratio=qty_ratio,
             entry_type=entry_type,
         )
     return compute_vps_open_contracts(

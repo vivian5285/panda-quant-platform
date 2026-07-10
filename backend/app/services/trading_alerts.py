@@ -359,10 +359,17 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
     else:
         if detail.get("base_qty") is not None:
             lines.append(_line("首次基准", f"{float(detail['base_qty']):.4f} {unit}"))
-        if detail.get("qty_ratio") is not None:
-            lines.append(_line("加仓比例", f"{float(detail['qty_ratio']):.2f}"))
+        ratio = detail.get("add_qty_ratio") or detail.get("qty_ratio")
+        if ratio is not None:
+            lines.append(_line("加仓比例", f"VPS 固定 {float(ratio):.2f}"))
         if detail.get("add_qty") is not None:
             lines.append(_line("本次加仓", f"**{float(detail['add_qty']):.4f}** {unit}"))
+        if detail.get("add_count") is not None:
+            cap = detail.get("max_add_times")
+            if cap:
+                lines.append(_line("加仓次数", f"{int(detail['add_count'])}/{int(cap)}"))
+            else:
+                lines.append(_line("加仓次数", str(detail["add_count"])))
 
     if detail.get("qty") is not None:
         lines.append(_line("实盘数量", f"**{float(detail['qty']):.4f}** {unit}"))
@@ -371,6 +378,43 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
     if detail.get("tv_sl"):
         lines.append(_line("TV 止损", f"{float(detail['tv_sl']):.2f}"))
 
+    return "\n".join(lines)
+
+
+def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
+    """VPS 重启接管 — TP123 / 硬止损 / 雷达进度."""
+    theme = resolve_exchange_theme(exchange or detail.get("exchange"))
+    unit = theme["qty_unit"]
+    side = detail.get("side") or detail.get("current_side") or "—"
+    side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(side).upper(), str(side))
+    lines = [
+        _line("交易所", theme["label"]),
+        _line("方向", side_txt),
+    ]
+    qty = detail.get("qty") or detail.get("live_qty") or detail.get("watched_qty")
+    if qty is not None:
+        lines.append(_line("实盘数量", f"**{float(qty):.4f}** {unit}"))
+    if detail.get("entry") is not None:
+        lines.append(_line("开仓价", f"{float(detail['entry']):.2f}"))
+    if detail.get("base_qty"):
+        lines.append(_line("首仓基准", f"{float(detail['base_qty']):.4f} {unit}"))
+    if detail.get("add_count") is not None:
+        lines.append(_line("已加仓", f"{int(detail['add_count'])} 次"))
+    if detail.get("startup_summary"):
+        lines.append(_line("对账摘要", str(detail["startup_summary"])))
+    tp_m, tp_e = detail.get("tp_matched"), detail.get("tp_expected")
+    if tp_e:
+        lines.append(_line("止盈挂单", f"{tp_m or 0}/{tp_e} 档"))
+    if detail.get("pnl_track"):
+        track = "浮盈/雷达轨" if detail["pnl_track"] == "profit_radar" else "浮亏/防护轨"
+        lines.append(_line("风控轨道", track))
+    prog = detail.get("radar_progress")
+    if prog is not None:
+        lines.append(_line("雷达进度", f"{float(prog):.0%}"))
+    radar_sl = detail.get("radar_sl") or {}
+    if radar_sl.get("expected_sl"):
+        status = "✓" if radar_sl.get("live") else "待补挂"
+        lines.append(_line("雷达止损", f"@{float(radar_sl['expected_sl']):.2f} {status}"))
     return "\n".join(lines)
 
 
@@ -391,6 +435,8 @@ def format_admin_detail_lines(
         return format_adverse_sl_detail_cn(detail, ex)
     if alert_type in ("CLOSE", "CLOSE_TP3", "CLOSE_PROTECT", "CLOSE_STOPLOSS", "CLOSE_ATTRIBUTION"):
         return format_close_detail_cn(detail, ex)
+    if alert_type == "STARTUP":
+        return format_startup_detail_cn(detail, ex)
     if alert_type in ("OPEN", "PYRAMID", "PROFIT_ADD") or detail.get("sizing_mode") in ("vps_open", "vps_add"):
         return format_vps_entry_detail_cn(detail, ex)
 

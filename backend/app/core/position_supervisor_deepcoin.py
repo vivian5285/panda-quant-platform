@@ -131,6 +131,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         self.initial_qty = 0
         self.base_qty = 0
+        self.add_count = 0
         self.consumed_tp_levels: list[int] = []
         self.watched_qty = 0
         self.watched_entry = 0.0
@@ -423,6 +424,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "best_price": self.best_price,
                     "initial_qty": self.initial_qty,
                     "base_qty": float(getattr(self, "base_qty", 0) or 0),
+                    "add_count": int(getattr(self, "add_count", 0) or 0),
                     "consumed_tp_levels": list(self.consumed_tp_levels),
                     "last_tv_signal": self.last_tv_signal,
                     "adverse_sl_armed": self.adverse_sl_armed,
@@ -601,6 +603,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.watched_qty = 0
         self.initial_qty = 0
         self.base_qty = 0
+        self.add_count = 0
         self.current_side = None
         self._save_state()
         self.client.cancel_all_open_orders(self.symbol)
@@ -662,6 +665,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.watched_qty = 0
         self.initial_qty = 0
         self.base_qty = 0
+        self.add_count = 0
         self.current_side = None
         self._save_state()
 
@@ -1716,6 +1720,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.watched_qty = 0
         self.initial_qty = 0
         self.base_qty = 0
+        self.add_count = 0
         self.current_side = None
         self.client.cancel_all_open_orders(self.symbol)
         self._save_state()
@@ -1747,13 +1752,26 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             initial_principal=self.initial_principal,
             entry_type=entry_type,
             base_qty=float(getattr(self, "base_qty", 0) or 0),
-            qty_ratio=float(tv_fields.get("qty_ratio") or 1.0),
             price=float(curr_px or self.tv_price or 0),
             tv_sl=float(getattr(self, "tv_sl", 0) or 0),
             regime=int(tv_fields.get("regime") or self.regime),
             exchange_leverage=leverage,
             face_value=self.face_value,
         )
+
+    def _max_add_times(self) -> int:
+        return max(int(getattr(settings, "MAX_ADD_TIMES", 2) or 2), 0)
+
+    def _can_add_more(self) -> tuple[bool, str]:
+        cap = self._max_add_times()
+        count = int(getattr(self, "add_count", 0) or 0)
+        if cap <= 0:
+            return False, "加仓已禁用"
+        if count >= cap:
+            return False, f"已达最大加仓次数 {count}/{cap}"
+        if float(getattr(self, "base_qty", 0) or 0) <= 0:
+            return False, "缺少首仓基准数量 base_qty"
+        return True, ""
 
     def _force_flat_before_open(self, reason: str) -> bool:
         self.client.cancel_all_open_orders(self.symbol)
@@ -1778,6 +1796,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 if not self._force_flat_before_open(f"{entry_type} 反向后降级 OPEN"):
                     return
                 self._open_position(action, curr_px)
+                return
+            ok, skip_reason = self._can_add_more()
+            if not ok:
+                logger.info(f"⏭️ {entry_type} 跳过: {skip_reason}")
+                self._alert(
+                    "info", entry_type,
+                    "加仓跳过",
+                    f"用户 {self.user_id} {entry_type}: {skip_reason}",
+                    {"add_count": self.add_count, "max_add_times": self._max_add_times()},
+                )
                 return
             self._add_to_position(action, curr_px, entry_type)
             return
@@ -1804,7 +1832,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         pos_side = "long" if action == "LONG" else "short"
         logger.info(
             f"📈 [{entry_type}] 同向追加: {open_side} +{qty} 张 | "
-            f"base={sizing_meta.get('base_qty')} × ratio={sizing_meta.get('qty_ratio')}",
+            f"base={sizing_meta.get('base_qty')} × {sizing_meta.get('add_qty_ratio')}",
         )
         self.client.place_market_order(self.symbol, open_side, pos_side, qty)
         time.sleep(2.0)
@@ -1821,6 +1849,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.watched_qty = real_qty
         self.watched_entry = entry_price
         self.initial_qty = float(self.initial_qty or prev_qty) + add_qty
+        self.add_count = int(getattr(self, "add_count", 0) or 0) + 1
         self.monitoring = True
 
         shield = {}
@@ -1847,6 +1876,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             "tv_tps": list(self.tv_tps),
             "leverage": leverage,
             "atr": self.current_atr,
+            "add_count": self.add_count,
+            "max_add_times": self._max_add_times(),
             **sizing_meta,
         }
         if shield:
@@ -1871,8 +1902,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             entry_type,
             f"{theme['accent']} {add_label} · {theme['label']}",
             f"{action} +{add_qty} 张 → 总 {real_qty} @ {entry_price} | "
-            f"base {sizing_meta.get('base_qty')} × {sizing_meta.get('qty_ratio')} "
-            f"= +{add_qty}{verify_note}",
+            f"首仓 {sizing_meta.get('base_qty')} × {sizing_meta.get('add_qty_ratio')} "
+            f"= +{add_qty} ({self.add_count}/{self._max_add_times()}){verify_note}",
             detail,
         )
 
@@ -2032,6 +2063,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 real_qty = self._safe_qty(cap_result["new_qty"])
             self.base_qty = real_qty
             self.initial_qty = real_qty
+            self.add_count = 0
             self._protect_and_monitor(real_qty, entry_price or pos['entry_price'])
 
     def _protect_and_monitor(self, qty, entry_price):
@@ -2453,6 +2485,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.watched_qty = 0
         self.initial_qty = 0
         self.base_qty = 0
+        self.add_count = 0
         self.current_side = None
         self._save_state()
         self.client.cancel_all_open_orders(self.symbol)
@@ -2499,6 +2532,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.watched_entry = s.get("watched_entry", 0.0)
                     self.initial_qty = s.get("initial_qty", 0)
                     self.base_qty = float(s.get("base_qty", 0) or s.get("initial_qty", 0) or 0)
+                    self.add_count = int(s.get("add_count", 0) or 0)
                     self.consumed_tp_levels = [
                         int(x) for x in (s.get("consumed_tp_levels") or []) if int(x) in (1, 2, 3)
                     ]
@@ -2555,6 +2589,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.initial_qty = real_amt
                 else:
                     self.initial_qty = saved_initial
+                if float(getattr(self, "base_qty", 0) or 0) <= 0:
+                    self.base_qty = float(open_log_qty or real_amt)
+                if int(getattr(self, "add_count", 0) or 0) <= 0 and self.base_qty > 0:
+                    ratio = float(getattr(settings, "ADD_QTY_RATIO", 0.5) or 0.5)
+                    if real_amt > self.base_qty and ratio > 0:
+                        inferred = int(round((real_amt - self.base_qty) / (self.base_qty * ratio)))
+                        self.add_count = min(max(inferred, 0), self._max_add_times())
                 self.watched_entry = float(pos["entry_price"])
                 qty_change = reconcile.get("qty_manual_change")
 
@@ -2674,6 +2715,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 self.watched_qty = 0
                 self.initial_qty = 0
                 self.base_qty = 0
+                self.add_count = 0
                 self.current_side = None
                 self._save_state()
         except Exception as e:
