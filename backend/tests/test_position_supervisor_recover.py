@@ -224,3 +224,37 @@ def test_recover_realigns_stale_tv_side_not_flat(supervisor, monkeypatch):
     close_all.assert_not_called()
     assert supervisor.last_tv_side == "LONG"
     assert audit["direction_aligned"] is True
+
+
+def test_recover_opposite_manual_position_force_flats(supervisor, monkeypatch):
+    """Live SHORT vs TV LONG → FORCE_ALIGN 强平，不对齐实盘."""
+    monkeypatch.setattr("app.core.position_supervisor.threading.Thread.start", lambda self: None)
+    supervisor.client.get_current_price.return_value = 3650.0
+    supervisor.leverage = 15
+    supervisor.initial_principal = 700.0
+
+    with patch.object(
+        supervisor.position_manager,
+        "get_position",
+        return_value={"positionAmt": "-0.42", "entryPrice": "3620.0"},
+    ), patch.object(supervisor, "_unified_startup_defense_reconcile") as ensure, patch.object(
+        supervisor, "_close_all",
+    ) as close_all:
+        audit = supervisor.recover_on_startup(
+            recovery_context={
+                "trade": None,
+                "open_log": None,
+                "latest_tv": {
+                    "action": "LONG",
+                    "tv_sl": 3550.0,
+                    "tv_tps": [3680.0, 3720.0, 3780.0],
+                },
+                "checks": [],
+            },
+        )
+
+    close_all.assert_called_once()
+    ensure.assert_not_called()
+    assert audit.get("force_aligned") is True
+    assert audit["has_position"] is False
+    assert supervisor.last_tv_side == "LONG"

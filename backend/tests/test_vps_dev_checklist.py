@@ -124,6 +124,7 @@ def test_dingtalk_push_open_startup_radar_alerts():
     assert should_push_trading_dingtalk("OPEN", "info") is True
     assert should_push_trading_dingtalk("STARTUP", "info") is True
     assert should_push_trading_dingtalk("PYRAMID", "info") is True
+    assert should_push_trading_dingtalk("FORCE_ALIGN", "critical") is True
     assert should_push_trading_dingtalk("TRAIL", "info") is False
 
 

@@ -186,6 +186,7 @@ def broadcast_startup_summary(audits: list[dict], failed_users: list[dict]) -> N
 
     with_pos = sum(1 for a in audits if a.get("has_position"))
     monitoring = sum(1 for a in audits if a.get("monitoring"))
+    force_aligned = [a for a in audits if a.get("force_aligned")]
     mismatches = [
         a for a in audits
         if a.get("has_position") and not a.get("direction_aligned")
@@ -206,6 +207,7 @@ def broadcast_startup_summary(audits: list[dict], failed_users: list[dict]) -> N
         "loss_shield_track": loss_track,
         "profit_radar_track": radar_track,
         "direction_mismatch": len(mismatches),
+        "force_aligned": len(force_aligned),
         "recover_errors": len(errors),
         "failed_users": failed_users,
         "positions": [
@@ -236,12 +238,21 @@ def broadcast_startup_summary(audits: list[dict], failed_users: list[dict]) -> N
         )
         return
 
+    if force_aligned:
+        notify_system(
+            "warning", "SYSTEM_RESTART",
+            "平台重启 · 逆势人工持仓已强平对齐 TV",
+            f"{len(audits)} 用户已加载，{len(force_aligned)} 个逆势持仓已 FORCE_ALIGN 强平",
+            detail,
+        )
+        return
+
     if mismatches:
         notify_system(
-            "info", "SYSTEM_RESTART",
-            "平台重启 · 账户接管完成（方向已按实盘校正）",
+            "warning", "SYSTEM_RESTART",
+            "平台重启 · 部分账户方向未对齐",
             f"{len(audits)} 用户已加载，{with_pos} 个有持仓，"
-            f"{len(mismatches)} 个历史 TV 方向与实盘不一致（已校正，不强制全平）",
+            f"{len(mismatches)} 个方向仍未对齐 TV",
             detail,
         )
         return

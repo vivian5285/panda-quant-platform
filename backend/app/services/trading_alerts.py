@@ -383,6 +383,35 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
     return "\n".join(lines)
 
 
+def format_force_align_detail_cn(detail: dict, exchange: str | None = None) -> str:
+    theme = resolve_exchange_theme(exchange or detail.get("exchange"))
+    unit = theme["qty_unit"]
+    live = detail.get("live_side") or "—"
+    tv = detail.get("tv_side") or detail.get("last_tv_side") or "—"
+    live_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(live).upper(), str(live))
+    tv_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(tv).upper(), str(tv))
+    lines = [
+        _line("交易所", theme["label"]),
+        _line("实盘方向", live_txt),
+        _line("TV 方向", tv_txt),
+        _line(
+            "触发",
+            {
+                "startup": "重启接管",
+                "sentinel": "哨兵巡检",
+            }.get(str(detail.get("trigger") or ""), str(detail.get("trigger") or "—")),
+        ),
+    ]
+    qty = detail.get("qty") or detail.get("watched_qty")
+    if qty is not None:
+        lines.append(_line("强平数量", f"**{float(qty):.4f}** {unit}"))
+    if detail.get("entry") is not None:
+        lines.append(_line("开仓价", f"{float(detail['entry']):.2f}"))
+    if detail.get("adopted_manual"):
+        lines.append(_line("来源", "人工/外部开仓"))
+    return "\n".join(lines)
+
+
 def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
     """VPS 重启接管 — TP123 / 硬止损 / 雷达进度."""
     theme = resolve_exchange_theme(exchange or detail.get("exchange"))
@@ -404,6 +433,8 @@ def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
         lines.append(_line("已加仓", f"{int(detail['add_count'])} 次"))
     if detail.get("adopted_manual"):
         lines.append(_line("接管类型", "人工/外部持仓 · 按最新 TV 补挂"))
+    if detail.get("force_aligned"):
+        lines.append(_line("逆势处理", "已强平对齐 TV 方向"))
     if detail.get("startup_summary"):
         lines.append(_line("对账摘要", str(detail["startup_summary"])))
     tp_m, tp_e = detail.get("tp_matched"), detail.get("tp_expected")
@@ -441,6 +472,8 @@ def format_admin_detail_lines(
         return format_close_detail_cn(detail, ex)
     if alert_type == "STARTUP":
         return format_startup_detail_cn(detail, ex)
+    if alert_type == "FORCE_ALIGN":
+        return format_force_align_detail_cn(detail, ex)
     if alert_type in ("OPEN", "PYRAMID", "PROFIT_ADD") or detail.get("sizing_mode") in ("vps_open", "vps_add"):
         return format_vps_entry_detail_cn(detail, ex)
 

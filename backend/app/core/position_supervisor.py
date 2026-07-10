@@ -11,7 +11,6 @@ from app.core.binance_client import BinanceClient
 from app.core.adverse_radar_guard import AdverseRadarMixin
 from app.core.startup_reconcile import (
     StartupReconcileMixin,
-    adopt_live_tv_side,
     apply_tv_sl_from_sources,
     format_startup_defense_summary,
     recovery_section,
@@ -2083,16 +2082,10 @@ class PositionSupervisor(
                         )
                         break
 
-                    if self.last_tv_side and actual_side != self.last_tv_side:
-                        prev = self.last_tv_side
-                        self.last_tv_side = actual_side
-                        self._log(
-                            "SIGNAL",
-                            f"方向校正: 实盘 {actual_side} 覆盖 stale TV {prev}（不强制全平）",
-                            {"previous_tv_side": prev, "live_side": actual_side},
-                        )
-                        self._save_state()
-                    elif not self.last_tv_side:
+                    if self._sentinel_force_align_if_opposite(actual_side):
+                        break
+
+                    if not self.last_tv_side:
                         self.last_tv_side = actual_side
                         self._save_state()
 
@@ -2464,14 +2457,36 @@ class PositionSupervisor(
                     f"| TV={self.last_tv_side} SL={getattr(self, 'tv_sl', 0)}",
                 )
 
-            side_sync = adopt_live_tv_side(
-                self,
+            side_sync = self._try_force_align_opposite_to_tv(
                 reconcile,
                 adopted_manual=bool(audit.get("adopted_manual")),
+                trigger="startup",
             )
             audit["tv_side_sync"] = side_sync
+            if side_sync.get("force_aligned"):
+                audit["force_aligned"] = True
+                audit["has_position"] = False
+                audit["direction_aligned"] = True
+                audit["side"] = None
+                audit["qty"] = 0.0
+                audit["monitoring"] = False
+                audit["startup_summary"] = f"逆势持仓已强平 · 对齐 TV {side_sync.get('tv_side')}"
+                self._log(
+                    "STARTUP",
+                    audit["startup_summary"],
+                    audit,
+                )
+                self._alert(
+                    "info",
+                    "STARTUP",
+                    "VPS 重启 · 逆势持仓已强平对齐 TV",
+                    audit["startup_summary"],
+                    audit,
+                )
+                self._save_state()
+                return audit
             if side_sync.get("conflict"):
-                audit.setdefault("warnings", []).append("tv_opposite_open_trust_live")
+                audit.setdefault("warnings", []).append("tv_opposite_force_flat")
 
             if self.best_price <= 0:
                 self.best_price = self.watched_entry

@@ -23,6 +23,34 @@ def test_adopt_live_tv_side_trusts_manual_long():
     assert sup.last_tv_side == "LONG"
     assert result["realigned"] is True
     assert result["reason"] == "trust_live_manual"
+    assert result["force_close"] is False
+
+
+def test_adopt_live_tv_side_opposite_marks_force_close():
+    class Sup:
+        last_tv_side = "SHORT"
+        current_side = "LONG"
+
+    sup = Sup()
+    result = adopt_live_tv_side(sup, {"latest_tv_action": "SHORT"})
+    assert result["force_close"] is True
+    assert result["conflict"] is True
+    assert sup.last_tv_side == "SHORT"
+
+
+def test_adopt_live_tv_side_manual_opposite_still_force_close():
+    class Sup:
+        last_tv_side = "LONG"
+        current_side = "SHORT"
+
+    sup = Sup()
+    result = adopt_live_tv_side(
+        sup,
+        {"latest_tv_action": "LONG"},
+        adopted_manual=True,
+    )
+    assert result["force_close"] is True
+    assert sup.last_tv_side == "LONG"
 
 
 def test_adopt_live_tv_side_when_latest_tv_is_close():

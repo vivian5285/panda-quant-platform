@@ -45,8 +45,8 @@ def adopt_live_tv_side(
     adopted_manual: bool = False,
 ) -> dict[str, Any]:
     """
-    实盘有持仓时以交易所方向为准，避免人工/外部开仓被 stale last_tv_side 误杀。
-    仅当最新 TV 为明确反向 OPEN 且非人工接管时才标记 conflict（不自动全平）。
+    TV 方向为权威：实盘与 TV 同为 LONG/SHORT 时对齐；反向则标记 force_close（由调用方强平）。
+    最新 TV 非 OPEN（如 CLOSE）时仍信任实盘方向。
     """
     live = getattr(supervisor, "current_side", None)
     result: dict[str, Any] = {
@@ -54,6 +54,7 @@ def adopt_live_tv_side(
         "previous_tv_side": getattr(supervisor, "last_tv_side", None),
         "realigned": False,
         "conflict": False,
+        "force_close": False,
         "adopted_manual": adopted_manual,
     }
     if not live:
@@ -63,24 +64,34 @@ def adopt_live_tv_side(
     latest = (reconcile.get("latest_tv_action") or "").upper()
     prev = getattr(supervisor, "last_tv_side", None)
 
-    if adopted_manual or latest not in ("LONG", "SHORT"):
+    if latest not in ("LONG", "SHORT"):
         supervisor.last_tv_side = live
+        result["tv_side"] = live
         result["realigned"] = prev != live
-        result["reason"] = "trust_live_manual" if adopted_manual else "trust_live_no_tv_entry"
+        result["reason"] = "trust_live_no_tv_entry"
         return result
 
-    if latest == live:
-        supervisor.last_tv_side = live
-        result["realigned"] = prev != live
-        result["reason"] = "latest_tv_matches_live"
+    tv_side = latest
+    result["tv_side"] = tv_side
+    supervisor.last_tv_side = tv_side
+
+    if live == tv_side:
+        result["realigned"] = prev != tv_side
+        result["reason"] = "trust_live_manual" if adopted_manual else "latest_tv_matches_live"
         return result
 
-    # TV 最新为反向 OPEN：标记冲突，但默认仍信任实盘（人工可能先于 TV 成交）
-    supervisor.last_tv_side = live
-    result["realigned"] = True
     result["conflict"] = True
-    result["reason"] = "tv_opposite_but_trust_live"
+    result["force_close"] = True
+    result["reason"] = "tv_opposite_force_flat"
     return result
+
+
+def is_opposite_tv_live(tv_side: str | None, live_side: str | None) -> bool:
+    return (
+        tv_side in ("LONG", "SHORT")
+        and live_side in ("LONG", "SHORT")
+        and tv_side != live_side
+    )
 
 
 def classify_startup_pnl_track(
@@ -154,6 +165,70 @@ def format_startup_defense_summary(audit: dict) -> str:
 
 class StartupReconcileMixin:
     """Shared restart path: TV+持仓 → cap → TP123 → 硬止损/雷达 双轨."""
+
+    def _try_force_align_opposite_to_tv(
+        self,
+        reconcile: dict | None,
+        *,
+        adopted_manual: bool = False,
+        trigger: str = "startup",
+    ) -> dict[str, Any]:
+        """实盘与 TV 反向 OPEN → 强平并保留 TV 方向（重启 / 哨兵共用）."""
+        sync = adopt_live_tv_side(self, reconcile, adopted_manual=adopted_manual)
+        if not sync.get("force_close"):
+            return sync
+
+        live = sync.get("live_side")
+        tv = sync.get("tv_side")
+        qty = float(getattr(self, "watched_qty", 0) or 0)
+        entry = float(getattr(self, "watched_entry", 0) or 0)
+        detail: dict[str, Any] = {
+            **sync,
+            "trigger": trigger,
+            "qty": qty,
+            "entry": entry,
+            "exchange": getattr(self, "exchange_id", None),
+            "watched_qty": qty,
+        }
+        msg = f"逆势人工持仓 · 实盘{live} vs TV{tv} → 强平对齐 TV"
+        if hasattr(self, "_log"):
+            self._log("SIGNAL", f"⚠️ FORCE_ALIGN: {msg}", detail)
+        else:
+            logger.warning("[User %s] FORCE_ALIGN: %s", getattr(self, "user_id", "?"), msg)
+
+        if hasattr(self, "_alert"):
+            self._alert(
+                "critical",
+                "FORCE_ALIGN",
+                "逆势人工持仓 · 强制对齐 TV",
+                f"{msg} | {qty} @ {entry:.2f}",
+                detail,
+            )
+
+        self._close_all(
+            f"FORCE_ALIGN：{msg}（{trigger}）",
+            close_trigger="force_align_opposite",
+        )
+        sync["closed"] = True
+        sync["force_aligned"] = True
+        return sync
+
+    def _sentinel_force_align_if_opposite(self, actual_side: str) -> bool:
+        """哨兵巡检：发现与 TV 反向持仓则强平。返回 True 表示已强平并应退出哨兵."""
+        tv = getattr(self, "last_tv_side", None)
+        if not is_opposite_tv_live(tv, actual_side):
+            if not tv and actual_side in ("LONG", "SHORT"):
+                self.last_tv_side = actual_side
+                if hasattr(self, "_save_state"):
+                    self._save_state()
+            return False
+
+        self.current_side = actual_side
+        self._try_force_align_opposite_to_tv(
+            {"latest_tv_action": tv},
+            trigger="sentinel",
+        )
+        return True
 
     def _startup_radar_progress(self, curr_px: float) -> float:
         if hasattr(self, "_radar_activation_progress"):

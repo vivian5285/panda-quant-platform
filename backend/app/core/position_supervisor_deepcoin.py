@@ -37,7 +37,7 @@ from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, m
 from app.core.position_qty_tolerance import tp_slice_qty_tolerance
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.adverse_radar_guard import AdverseRadarMixin, ADVERSE_STOP_TOLERANCE
-from app.core.startup_reconcile import StartupReconcileMixin, format_startup_defense_summary, recovery_section, apply_tv_sl_from_sources, adopt_live_tv_side
+from app.core.startup_reconcile import StartupReconcileMixin, format_startup_defense_summary, recovery_section, apply_tv_sl_from_sources
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 from app.services.close_alert_utils import (
@@ -340,6 +340,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
             if tv_action in ("LONG", "SHORT"):
                 self.last_tv_side = tv_action
+                reconcile["latest_tv_action"] = tv_action
                 if tv_tp_count > 0:
                     self.tv_tps = tv_tps_saved
                     notes.append(f"TV日志同步止盈价 {self.tv_tps}")
@@ -2262,14 +2263,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         )
                         break
 
-                    if self.last_tv_side and actual_side != self.last_tv_side:
-                        prev = self.last_tv_side
-                        self.last_tv_side = actual_side
-                        logger.info(
-                            f"方向校正: 实盘 {actual_side} 覆盖 stale TV {prev}（不强制全平）"
-                        )
-                        self._save_state()
-                    elif not self.last_tv_side:
+                    if self._sentinel_force_align_if_opposite(actual_side):
+                        break
+
+                    if not self.last_tv_side:
                         self.last_tv_side = actual_side
                         self._save_state()
 
@@ -2577,19 +2574,6 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     )
                     return
 
-                if reconcile.get("direction_mismatch") or side != self.last_tv_side:
-                    side_sync = adopt_live_tv_side(
-                        self,
-                        reconcile,
-                        adopted_manual=not bool(reconcile.get("open_log_qty")),
-                    )
-                    reconcile_notes.append(
-                        f"方向校正: 实盘{side} ← TV{side_sync.get('previous_tv_side')} "
-                        f"({side_sync.get('reason')})"
-                    )
-                    if side_sync.get("conflict"):
-                        reconcile_notes.append("TV反向OPEN信号但信任实盘持仓")
-
                 saved_initial = self._safe_qty(self.initial_qty)
                 open_log_qty = self._safe_qty(reconcile.get("open_log_qty") or 0)
                 restored = max(saved_initial, open_log_qty, real_amt)
@@ -2609,6 +2593,33 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         self.add_count = min(max(inferred, 0), self._max_add_times())
                 self.watched_entry = float(pos["entry_price"])
                 qty_change = reconcile.get("qty_manual_change")
+
+                side_sync = self._try_force_align_opposite_to_tv(
+                    reconcile,
+                    adopted_manual=not bool(reconcile.get("open_log_qty")),
+                    trigger="startup",
+                )
+                if side_sync.get("force_aligned"):
+                    reconcile_notes.append(
+                        f"逆势强平对齐 TV {side_sync.get('tv_side')} "
+                        f"(原实盘{side_sync.get('live_side')})"
+                    )
+                    summary = " | ".join(reconcile_notes) if reconcile_notes else "逆势持仓已强平"
+                    self._dt.report_recover_takeover(
+                        side=side_sync.get("tv_side") or side,
+                        qty=0,
+                        entry=self.watched_entry,
+                        summary=f"FORCE_ALIGN · {summary}",
+                    )
+                    if hasattr(self, "_alert"):
+                        self._alert(
+                            "info",
+                            "STARTUP",
+                            "VPS 重启 · 逆势持仓已强平对齐 TV",
+                            summary,
+                            {"force_aligned": True, **side_sync},
+                        )
+                    return
 
                 curr_px = self.client.get_current_price(self.symbol)
                 self._refresh_radar_state_on_recover(curr_px, self.watched_entry)
