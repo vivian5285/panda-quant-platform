@@ -641,6 +641,17 @@ class BinanceSmartDefenseMixin:
         sl = float(dynamic_sl)
         if hasattr(self, "_clamp_radar_sl_to_tv_floor"):
             sl = self._clamp_radar_sl_to_tv_floor(sl)
+        curr_px = self._current_tp_price()
+        if (
+            curr_px > 0
+            and hasattr(self, "_mark_price_trusted")
+            and self._mark_price_trusted(curr_px)
+            and hasattr(self, "_market_safe_stop_price")
+        ):
+            sl = self._market_safe_stop_price(sl, curr_px)
+        elif curr_px > 0 and hasattr(self, "_mark_price_trusted") and self._mark_price_trusted(curr_px):
+            from app.core.radar_trail import clamp_stop_market_safe
+            sl = clamp_stop_market_safe(sl, curr_px, getattr(self, "current_side", None))
         qty = live_qty if live_qty is not None else getattr(self, "watched_qty", 0)
         if hasattr(self, "_uses_dual_stop_track") and not self._uses_dual_stop_track():
             if hasattr(self, "_sync_binance_merged_stop"):

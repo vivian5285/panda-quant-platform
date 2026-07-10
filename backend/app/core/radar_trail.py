@@ -91,6 +91,40 @@ def breakeven_floor(
     return round_price(float(entry))
 
 
+STOP_MARKET_MIN_GAP_USD = 1.0
+STOP_MARKET_MIN_GAP_PCT = 0.0008
+
+
+def stop_market_min_gap(curr_px: float) -> float:
+    if curr_px <= 0:
+        return STOP_MARKET_MIN_GAP_USD
+    return max(STOP_MARKET_MIN_GAP_USD, float(curr_px) * STOP_MARKET_MIN_GAP_PCT)
+
+
+def clamp_stop_market_safe(sl: float, curr_px: float, side: str | None) -> float:
+    """Keep STOP trigger strictly on the safe side of mark — avoids instant full close."""
+    if sl <= 0 or curr_px <= 0:
+        return sl
+    gap = stop_market_min_gap(curr_px)
+    if side == "LONG":
+        return round_price(min(float(sl), float(curr_px) - gap))
+    if side == "SHORT":
+        return round_price(max(float(sl), float(curr_px) + gap))
+    return round_price(float(sl))
+
+
+def stop_would_trigger_immediately(sl: float, curr_px: float, side: str | None) -> bool:
+    """True when a closePosition STOP would fire as soon as it hits the book."""
+    if sl <= 0 or curr_px <= 0:
+        return False
+    safe = clamp_stop_market_safe(sl, curr_px, side)
+    if side == "LONG":
+        return safe < sl - 1e-9
+    if side == "SHORT":
+        return safe > sl + 1e-9
+    return False
+
+
 def compute_radar_sl(
     *,
     side: str | None,

@@ -7,9 +7,11 @@ from app.core.radar_trail import (
     RADAR_PRE_TP1_ARM_PROGRESS,
     REGIME_RADAR,
     breakeven_floor,
+    clamp_stop_market_safe,
     compute_radar_sl,
     merge_regime_radar,
     radar_may_arm,
+    stop_would_trigger_immediately,
     trail_distance,
     tp1_distance,
 )
@@ -101,3 +103,18 @@ def test_compute_radar_sl_short_respects_floor_and_trail():
     )
     assert sl == pytest.approx(min(1960.0 + trail, floor), rel=0.001)
     assert sl <= floor
+
+
+def test_stop_market_safe_clamp_long_pullback():
+    """Peak best_price can push SL above mark — must clamp before placement."""
+    entry = 1772.38
+    best = 1806.0
+    curr = 1785.0
+    tp1_dist = 37.62
+    trail = trail_distance(30.0, 1.35, tp1_dist)
+    raw = max(best - trail, breakeven_floor(entry, "LONG", 30.0))
+    assert raw > curr
+    assert stop_would_trigger_immediately(raw, curr, "LONG") is True
+    safe = clamp_stop_market_safe(raw, curr, "LONG")
+    assert safe < curr
+    assert stop_would_trigger_immediately(safe, curr, "LONG") is False

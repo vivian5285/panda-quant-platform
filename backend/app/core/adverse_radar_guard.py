@@ -8,8 +8,10 @@ from typing import Any
 from app.core.position_qty_tolerance import qty_drift_tolerance
 from app.core.radar_trail import (
     RADAR_STARTUP_PROFIT_PROGRESS,
+    clamp_stop_market_safe,
     compute_radar_sl,
     radar_may_arm,
+    stop_would_trigger_immediately,
     tp1_distance,
     trail_distance,
 )
@@ -263,6 +265,38 @@ class AdverseRadarMixin:
             return round_price(min(sl, tv_sl))
         return sl
 
+    def _defense_mark_price(self) -> float:
+        if hasattr(self, "_current_tp_price"):
+            try:
+                return float(self._current_tp_price() or 0)
+            except (TypeError, ValueError):
+                pass
+        client = getattr(self, "client", None)
+        symbol = getattr(self, "symbol", None)
+        if client and symbol and hasattr(client, "get_current_price"):
+            try:
+                return float(client.get_current_price(symbol) or 0)
+            except (TypeError, ValueError):
+                pass
+        return 0.0
+
+    def _mark_price_trusted(self, curr_px: float) -> bool:
+        px = float(curr_px or 0)
+        if px <= 0:
+            return False
+        entry = float(getattr(self, "watched_entry", 0) or 0)
+        if entry <= 0:
+            return True
+        return abs(px - entry) / entry <= 0.35
+
+    def _market_safe_stop_price(self, stop_price: float, curr_px: float | None = None) -> float:
+        px = float(curr_px if curr_px is not None else self._defense_mark_price())
+        side = getattr(self, "current_side", None)
+        sl = float(stop_price or 0)
+        if sl <= 0 or px <= 0 or not self._mark_price_trusted(px):
+            return sl
+        return clamp_stop_market_safe(sl, px, side)
+
     def _uses_dual_stop_track(self) -> bool:
         """Deepcoin: TV底线 + 雷达双轨；其余交易所 Binance 类合并单槽。"""
         return getattr(self, "exchange_id", "") == "deepcoin"
@@ -357,6 +391,50 @@ class AdverseRadarMixin:
         effective = self._merged_stop_price(radar_sl)
         if effective <= 0:
             return {"armed": False, "reason": "no_tv_sl_or_radar"}
+
+        curr_px = self._defense_mark_price()
+        side = getattr(self, "current_side", None)
+        raw_effective = effective
+        if curr_px > 0 and self._mark_price_trusted(curr_px):
+            if stop_would_trigger_immediately(effective, curr_px, side):
+                audit_early = self._audit_adverse_shield_live([{
+                    "tier_pct": TV_SL_TIER_MARKER,
+                    "stop_price": effective,
+                    "qty": self._adverse_round_qty(live_qty),
+                    "level": 1,
+                    "source": "merged",
+                }])
+                if audit_early.get("aligned"):
+                    open_stops = self._collect_adverse_stop_orders()
+                    live_px = (
+                        _order_stop_price(open_stops[0])
+                        if open_stops
+                        else float(getattr(self, "tv_sl", 0) or 0)
+                    )
+                    self.adverse_sl_armed = True
+                    self.adverse_sl_prices = [live_px] if live_px > 0 else []
+                    return {
+                        "armed": True,
+                        "aligned": True,
+                        "merged": True,
+                        "stop_price": live_px,
+                        "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
+                        "placed": 0,
+                        "skipped": "stop_above_mark_deferred",
+                        "curr_px": curr_px,
+                        "requested_stop": raw_effective,
+                        "label": self._hard_stop_label(),
+                    }
+                effective = self._market_safe_stop_price(effective, curr_px)
+                if effective <= 0:
+                    return {
+                        "armed": False,
+                        "reason": "stop_unsafe_no_market_gap",
+                        "curr_px": curr_px,
+                        "requested_stop": raw_effective,
+                    }
+            else:
+                effective = self._market_safe_stop_price(effective, curr_px)
 
         plan = [{
             "tier_pct": TV_SL_TIER_MARKER,
@@ -1170,7 +1248,9 @@ class AdverseRadarMixin:
                 "[User %s] adverse SL disarmed (%s), cancelled %s stops",
                 self.user_id, reason, n,
             )
-        if notify and (n > 0 or open_before):
+        live_qty = self._resolve_adverse_live_qty(float(getattr(self, "watched_qty", 0) or 0))
+        flat_reset = live_qty <= 0 or reason in ("flat_reset", "close_all")
+        if notify and (n > 0 or open_before) and not flat_reset:
             entry = float(self.watched_entry or 0)
             stop_px = float(getattr(self, "tv_sl", 0) or 0)
             label = self._hard_stop_label()
@@ -1185,6 +1265,12 @@ class AdverseRadarMixin:
                 "防护盾撤销 · 雷达保本接管",
                 msg,
                 {**result, "entry": entry, "side": self.current_side, "stop_price": stop_px},
+            )
+        elif notify and flat_reset and n > 0:
+            self._log(
+                "ADVERSE_SL_DISARM",
+                f"清仓撤盾 · {reason} | 已撤 {n} 笔",
+                result,
             )
         if hasattr(self, "_save_state"):
             self._save_state()

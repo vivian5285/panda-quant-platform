@@ -9,7 +9,13 @@ from datetime import datetime
 from typing import Callable, Optional
 
 from app.core.deepcoin_client import DeepcoinClient, CLIENT_VERSION
-from app.core.radar_trail import compute_radar_sl, merge_regime_radar, radar_may_arm, tp1_distance
+from app.core.radar_trail import (
+    clamp_stop_market_safe,
+    compute_radar_sl,
+    merge_regime_radar,
+    radar_may_arm,
+    tp1_distance,
+)
 from app.core.same_direction_policy import (
     SameDirAction,
     evaluate_same_direction,
@@ -1316,6 +1322,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         sl = float(sl_price)
         if hasattr(self, "_clamp_radar_sl_to_tv_floor"):
             sl = self._clamp_radar_sl_to_tv_floor(sl)
+        curr_px = self._current_tp_price()
+        if curr_px > 0 and hasattr(self, "_mark_price_trusted") and self._mark_price_trusted(curr_px):
+            if hasattr(self, "_market_safe_stop_price"):
+                sl = self._market_safe_stop_price(sl, curr_px)
+            else:
+                sl = clamp_stop_market_safe(sl, curr_px, getattr(self, "current_side", None))
         if self._has_trigger_sl_near(sl):
             return True
         self._cancel_radar_trigger_orders_only()
@@ -2212,6 +2224,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             consumed_tp_levels=consumed,
             clamp_fn=clamp,
         )
+        if curr_px > 0:
+            new_sl = clamp_stop_market_safe(new_sl, curr_px, self.current_side)
 
         if self.current_side == "LONG":
             on_book = self._has_trigger_sl_near(new_sl)
@@ -2517,7 +2531,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 )
 
         self.monitoring = False
-        self._disarm_adverse_staged_stops()
+        self._disarm_adverse_staged_stops(reason="flat_reset", notify=False)
         self._reset_adverse_radar(keep_tv_sl=False)
         self.watched_qty = 0
         self.initial_qty = 0

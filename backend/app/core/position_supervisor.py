@@ -24,6 +24,7 @@ from app.core.binance_smart_defense import BinanceSmartDefenseMixin
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.position_manager import PositionManager
 from app.core.radar_trail import (
+    clamp_stop_market_safe,
     compute_radar_sl,
     merge_regime_radar,
     radar_may_arm,
@@ -2065,6 +2066,8 @@ class PositionSupervisor(
             consumed_tp_levels=consumed,
             clamp_fn=clamp,
         )
+        if curr_px > 0:
+            new_sl = clamp_stop_market_safe(new_sl, curr_px, self.current_side)
         moved = False
         if self.current_side == "LONG":
             on_book = self._has_stop_sl_near(new_sl)
@@ -2408,7 +2411,7 @@ class PositionSupervisor(
             )
 
         self.monitoring = False
-        self._disarm_adverse_staged_stops()
+        self._disarm_adverse_staged_stops(reason="flat_reset", notify=False)
         self._reset_adverse_radar(keep_tv_sl=False)
         self.watched_qty = 0.0
         self.initial_qty = 0.0

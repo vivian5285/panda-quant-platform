@@ -118,6 +118,9 @@ class _AdverseProbe(AdverseRadarMixin):
     def _realign_radar_defenses(self, *a, **k):
         return True
 
+    def _current_tp_price(self):
+        return 2045.0
+
     def _log(self, *a, **k):
         pass
 
@@ -251,6 +254,41 @@ def test_disarm_clears_pending_algo_ids():
         probe._disarm_adverse_staged_stops(reason="radar_test", notify=False)
     cancel.assert_called_once()
     assert probe._pending_adverse_algo_ids == []
+
+
+def test_disarm_flat_reset_does_not_alert_radar_handoff():
+    probe = _AdverseProbe()
+    probe.adverse_sl_armed = True
+    probe.watched_qty = 0.0
+    with patch.object(probe, "_cancel_adverse_stop_orders", return_value=1), patch.object(
+        probe, "_alert",
+    ) as alert:
+        probe._disarm_adverse_staged_stops(reason="flat_reset", notify=True)
+    alert.assert_not_called()
+
+
+def test_sync_merged_stop_clamps_hot_radar_stop():
+    probe = _AdverseProbe()
+    probe.tv_sl = 1744.35
+    probe.watched_entry = 1772.38
+    probe.current_sl = 1791.0
+    probe.client.get_open_orders.return_value = [
+        {
+            "type": "STOP_MARKET",
+            "orderId": 1,
+            "stopPrice": "1744.35",
+            "closePosition": True,
+            "side": "SELL",
+        }
+    ]
+    with patch.object(probe, "_current_tp_price", return_value=1785.0), patch(
+        "app.core.adverse_radar_guard.time.sleep", lambda *_: None,
+    ):
+        result = probe._sync_binance_merged_stop(0.6, radar_sl=1791.0)
+    assert result.get("stop_price", 0) < 1785.0
+    probe.client.place_stop_market_order.assert_called_once()
+    placed_px = probe.client.place_stop_market_order.call_args[0][1]
+    assert placed_px < 1785.0
 
 
 def test_arm_skips_when_already_aligned():
