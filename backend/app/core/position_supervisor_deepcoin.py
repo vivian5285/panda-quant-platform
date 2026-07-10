@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Callable, Optional
 
 from app.core.deepcoin_client import DeepcoinClient, CLIENT_VERSION
-from app.core.regime_utils import clamp_regime
+from app.core.radar_trail import compute_radar_sl, merge_regime_radar, radar_may_arm, tp1_distance
 from app.core.same_direction_policy import (
     SameDirAction,
     evaluate_same_direction,
@@ -37,7 +37,14 @@ from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, m
 from app.core.position_qty_tolerance import tp_slice_qty_tolerance
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.adverse_radar_guard import AdverseRadarMixin, ADVERSE_STOP_TOLERANCE
-from app.core.startup_reconcile import StartupReconcileMixin, format_startup_defense_summary, recovery_section, apply_tv_sl_from_sources
+from app.core.startup_reconcile import (
+    StartupReconcileMixin,
+    apply_tv_sl_from_sources,
+    finalize_recovery_tv_params,
+    format_startup_defense_summary,
+    prepare_manual_adopt,
+    recovery_section,
+)
 from app.config import get_settings
 from app.services.trading_alerts import resolve_exchange_theme
 from app.services.close_alert_utils import (
@@ -111,13 +118,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.monitoring = False
         self._lock = threading.Lock()
 
-        # 与币安完全一致的四档矩阵：activation=启动雷达的 TP1 距离比例，trail_offset=ATR 追踪倍数
-        self.regime_settings = {
-            1: {"margin": 0.15, "ratios": [0.25, 0.35, 0.40], "activation": 0.40, "trail_offset": 0.40},
-            2: {"margin": 0.25, "ratios": [0.20, 0.35, 0.45], "activation": 0.50, "trail_offset": 0.60},
-            3: {"margin": 0.35, "ratios": [0.18, 0.32, 0.50], "activation": 0.60, "trail_offset": 0.90},
-            4: {"margin": 0.50, "ratios": [0.05, 0.20, 0.75], "activation": 0.70, "trail_offset": 1.30},
-        }
+        self.regime_settings = merge_regime_radar({
+            1: {"margin": 0.15, "ratios": [0.25, 0.35, 0.40]},
+            2: {"margin": 0.25, "ratios": [0.20, 0.35, 0.45]},
+            3: {"margin": 0.35, "ratios": [0.18, 0.32, 0.50]},
+            4: {"margin": 0.50, "ratios": [0.05, 0.20, 0.75]},
+        })
         self.leverage = int(getattr(client, "trading_leverage", settings.DEEPCOIN_LEVERAGE))
         self.face_value = 0.1
 
@@ -133,6 +139,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.base_qty = 0
         self.add_count = 0
         self.consumed_tp_levels: list[int] = []
+        self.adopted_manual = False
         self.watched_qty = 0
         self.watched_entry = 0.0
         self.current_side = None
@@ -345,13 +352,20 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             elif tv_action.startswith("CLOSE"):
                 reconcile["tv_close"] = True
                 notes.append(
-                    f"TV最新为{tv_action} ({last_tv.get('ts', '')})，实盘仍有仓 → 应清场"
+                    f"TV最新为{tv_action} ({last_tv.get('ts', '')})，实盘仍有仓"
                 )
                 if last_open_tv:
-                    self.last_tv_side = (last_open_tv.get("action") or "").upper()
+                    open_action = (last_open_tv.get("action") or "").upper()
+                    self.last_tv_side = open_action
                     open_tps = self._sanitize_tp_prices(last_open_tv.get("tv_tps", []))
                     if sum(1 for t in open_tps if t > 0) > 0:
                         self.tv_tps = open_tps
+                    if side == open_action:
+                        reconcile["tv_close"] = False
+                        notes.append("TV CLOSE 但实盘同向 → 接管补挂不 flatten")
+                elif side == self.last_tv_side:
+                    reconcile["tv_close"] = False
+                    notes.append("TV CLOSE 但实盘与 last_tv_side 同向 → 接管")
 
         if not self.last_tv_side and last_open_tv:
             self.last_tv_side = (last_open_tv.get("action") or "").upper()
@@ -427,6 +441,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "adverse_arm_dingtalk_sent": bool(getattr(self, "adverse_arm_dingtalk_sent", False)),
                     "adverse_last_repair_ts": float(getattr(self, "_adverse_last_repair_ts", 0) or 0),
                     "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
+                    "adopted_manual": bool(getattr(self, "adopted_manual", False)),
                 }, f)
         except Exception as e:
             logger.error(f"保存状态失败: {e}")
@@ -834,6 +849,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         trade = recovery_section(recovery, "trade")
         open_log = recovery_section(recovery, "open_log")
         latest_tv = recovery_section(recovery, "latest_tv")
+        entry_tv = recovery_section(recovery, "latest_entry_tv")
 
         if trade:
             report["sources"].append("db_trade")
@@ -880,11 +896,20 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             elif tv_action.startswith("CLOSE"):
                 report["warnings"].append("tv_close_while_position")
 
-        apply_tv_sl_from_sources(self, latest_tv, open_log, trade)
+            elif tv_action.startswith("CLOSE"):
+                report["warnings"].append("tv_close_while_position")
+                if entry_tv and (entry_tv.get("action") or "").upper() in ("LONG", "SHORT"):
+                    report["latest_entry_tv_action"] = entry_tv.get("action")
+                    self.last_tv_side = (entry_tv.get("action") or "").upper()
+
+        apply_tv_sl_from_sources(self, latest_tv, entry_tv, open_log, trade)
+        finalize_recovery_tv_params(self, report, recovery)
 
         report["last_tv_side"] = self.last_tv_side
         report["tv_tps"] = list(self.tv_tps)
         report["regime"] = self.regime
+        if open_log.get("side"):
+            self._open_log_side = open_log.get("side")
         return report
 
     def _expected_tp_count(self, tp_pxs=None):
@@ -1303,8 +1328,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         """重启：按现价恢复 best_price / 雷达激活 / 追踪止损位"""
         if curr_px <= 0 or not entry:
             return
-        fee_buffer = entry * 0.0015
-        trail_offset = self.current_atr * self.regime_settings[self.regime]["trail_offset"]
+        cfg = self.regime_settings[self.regime]
+        tp1_dist = tp1_distance(entry, self.tv_tps, self.current_atr)
 
         if self.best_price == 0.0:
             self.best_price = entry
@@ -1314,15 +1339,28 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self.best_price = min(self.best_price, curr_px)
 
         progress = self._radar_activation_progress(curr_px)
-        if progress >= 1.0:
+        consumed = list(getattr(self, "consumed_tp_levels", []) or [])
+        if radar_may_arm(
+            consumed_tp_levels=consumed,
+            progress=progress,
+            activation_ratio=cfg["activation"],
+            radar_active=self._is_radar_active(),
+        ):
+            clamp = self._clamp_radar_sl_to_tv_floor
+            trail_sl = compute_radar_sl(
+                side=self.current_side,
+                entry=entry,
+                best_price=self.best_price,
+                atr=self.current_atr,
+                trail_mult=cfg["trail_offset"],
+                tp1_dist=tp1_dist,
+                consumed_tp_levels=consumed,
+                clamp_fn=clamp,
+            )
             if self.current_side == "LONG":
-                breakeven_floor = entry + fee_buffer
-                trail_sl = max(round(self.best_price - trail_offset, 2), breakeven_floor)
                 if not self._is_radar_active() or trail_sl > self.current_sl:
                     self.current_sl = max(self.current_sl or entry, trail_sl)
             else:
-                breakeven_floor = entry - fee_buffer
-                trail_sl = min(round(self.best_price + trail_offset, 2), breakeven_floor)
                 if not self._is_radar_active() or trail_sl < self.current_sl:
                     self.current_sl = min(self.current_sl or entry, trail_sl)
             logger.info(
@@ -2138,26 +2176,31 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return SENTINEL_POLL_NORMAL
 
     def _process_radar_trailing(self, real_amt, curr_px):
-        tp1_dist = abs(self.tv_tps[0] - self.watched_entry) if self.tv_tps[0] > 0 else self.current_atr * 1.5
         cfg = self.regime_settings[self.regime]
-        activation_ratio = cfg["activation"]
-        trail_atr_multiplier = cfg["trail_offset"]
+        progress = self._radar_activation_progress(curr_px)
+        consumed = list(getattr(self, "consumed_tp_levels", []) or [])
+        if not radar_may_arm(
+            consumed_tp_levels=consumed,
+            progress=progress,
+            activation_ratio=cfg["activation"],
+            radar_active=self._is_radar_active(),
+        ):
+            return False
+
+        tp1_dist = tp1_distance(self.watched_entry, self.tv_tps, self.current_atr)
+        clamp = self._clamp_radar_sl_to_tv_floor
+        new_sl = compute_radar_sl(
+            side=self.current_side,
+            entry=self.watched_entry,
+            best_price=self.best_price,
+            atr=self.current_atr,
+            trail_mult=cfg["trail_offset"],
+            tp1_dist=tp1_dist,
+            consumed_tp_levels=consumed,
+            clamp_fn=clamp,
+        )
 
         if self.current_side == "LONG":
-            required = self.watched_entry + tp1_dist * activation_ratio
-            if curr_px < required:
-                return False
-        else:
-            required = self.watched_entry - tp1_dist * activation_ratio
-            if curr_px > required:
-                return False
-
-        trail_offset = self.current_atr * trail_atr_multiplier
-        fee_buffer = self.watched_entry * 0.0015
-
-        if self.current_side == "LONG":
-            breakeven_floor = self._clamp_radar_sl_to_tv_floor(self.watched_entry + fee_buffer)
-            new_sl = max(round(self.best_price - trail_offset, 2), breakeven_floor)
             on_book = self._has_trigger_sl_near(new_sl)
             if self._radar_activation_reached(curr_px) and not on_book:
                 self.current_sl = new_sl
@@ -2185,30 +2228,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 if placed or self._has_trigger_sl_near(new_sl):
                     self._dt.report_intervention(
                         real_amt, self.watched_entry, new_sl,
-                        f"🚀 档位{self.regime} 雷达实时跟踪：保本盾推升至 {new_sl:.2f}",
+                        f"🚀 档位{self.regime} 雷达实时跟踪：保本顶线推升至 {new_sl:.2f}",
                         verify_note=f"条件止损 @ {new_sl:.2f} | 持仓 {real_amt}张 | 轮询 {SENTINEL_POLL_RADAR}s",
                     )
                     return True
                 logger.warning(f"雷达钉钉跳过：条件止损 @{new_sl} 实盘核查未通过")
         else:
-            breakeven_floor = self._clamp_radar_sl_to_tv_floor(self.watched_entry - fee_buffer)
-            new_sl = min(round(self.best_price + trail_offset, 2), breakeven_floor)
             on_book = self._has_trigger_sl_near(new_sl)
-            if self._radar_activation_reached(curr_px) and not on_book:
-                self.current_sl = new_sl
-                self._save_state()
-                placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
-                if not placed:
-                    placed = bool(self._ensure_radar_sl(real_amt, new_sl))
-                if placed or self._has_trigger_sl_near(new_sl):
-                    self._dt.report_intervention(
-                        real_amt, self.watched_entry, new_sl,
-                        f"🚀 档位{self.regime} 雷达补挂保本顶线 @ {new_sl:.2f}",
-                        verify_note=f"条件止损 @ {new_sl:.2f} | 持仓 {real_amt}张",
-                    )
-                    return True
-                logger.warning(f"雷达补挂失败：条件止损 @{new_sl} 实盘核查未通过")
-                return False
             should_trail = (
                 self.current_sl <= 0
                 or self.current_sl >= self.watched_entry
@@ -2545,6 +2571,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self._adverse_last_repair_ts = float(s.get("adverse_last_repair_ts", 0) or 0)
                     self.adverse_arm_dingtalk_sent = bool(s.get("adverse_arm_dingtalk_sent", False))
                     self.tv_sl = float(s.get("tv_sl", 0) or 0)
+                    self.adopted_manual = bool(s.get("adopted_manual", False))
 
             if self._scan_and_sweep_dust_on_startup():
                 return
@@ -2571,6 +2598,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
                 saved_initial = self._safe_qty(self.initial_qty)
                 open_log_qty = self._safe_qty(reconcile.get("open_log_qty") or 0)
+                if open_log_qty <= 0:
+                    prepare_manual_adopt(self)
                 restored = max(saved_initial, open_log_qty, real_amt)
                 self.watched_qty = real_amt
                 if restored > real_amt:
@@ -2591,7 +2620,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
                 side_sync = self._try_force_align_opposite_to_tv(
                     reconcile,
-                    adopted_manual=not bool(reconcile.get("open_log_qty")),
+                    adopted_manual=bool(
+                        getattr(self, "adopted_manual", False)
+                        or not reconcile.get("open_log_qty")
+                    ),
                     trigger="startup",
                 )
                 if side_sync.get("force_aligned"):

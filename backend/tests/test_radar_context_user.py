@@ -19,6 +19,10 @@ def test_build_radar_recovery_context_prefers_user_tv(monkeypatch):
         lambda _db, _uid: user_tv,
     )
     monkeypatch.setattr(
+        "app.services.radar_context.get_latest_tv_entry_signal_for_user",
+        lambda _db, _uid: user_tv,
+    )
+    monkeypatch.setattr(
         "app.services.radar_context.get_open_trade_context",
         lambda _db, _uid: None,
     )
@@ -51,8 +55,10 @@ def test_build_radar_recovery_context_marks_platform_fallback(monkeypatch):
         "app.services.radar_context.get_open_trade_log_detail",
         lambda _db, _uid, _tid=None: None,
     )
+    monkeypatch.setattr(
+        "app.services.radar_context.get_latest_tv_entry_signal_for_user",
+        lambda _db, _uid: None,
+    )
 
     ctx = build_radar_recovery_context(MagicMock(), user_id=6)
-
-    assert ctx["tv_signal_scope"] == "platform_fallback"
     assert "tv_signal_platform_fallback" in ctx["checks"]

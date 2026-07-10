@@ -12,12 +12,20 @@ from app.core.adverse_radar_guard import AdverseRadarMixin
 from app.core.startup_reconcile import (
     StartupReconcileMixin,
     apply_tv_sl_from_sources,
+    finalize_recovery_tv_params,
     format_startup_defense_summary,
+    prepare_manual_adopt,
     recovery_section,
 )
 from app.core.binance_smart_defense import BinanceSmartDefenseMixin
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.position_manager import PositionManager
+from app.core.radar_trail import (
+    compute_radar_sl,
+    merge_regime_radar,
+    radar_may_arm,
+    tp1_distance,
+)
 from app.core.regime_utils import clamp_regime
 from app.core.same_direction_policy import (
     SameDirAction,
@@ -118,13 +126,13 @@ class PositionSupervisor(
         self._queue_worker_started = False
         self.trade_opened_at: float | None = None
 
-        # activation: 到达 TP1 距离的比例后启动保本盾；trail_offset: 锁润止损距极值的 ATR 倍数
-        self.regime_settings = {
-            1: {"margin": 0.15, "ratios": [0.25, 0.35, 0.40], "activation": 0.40, "trail_offset": 0.40},
-            2: {"margin": 0.25, "ratios": [0.20, 0.35, 0.45], "activation": 0.50, "trail_offset": 0.60},
-            3: {"margin": 0.35, "ratios": [0.18, 0.32, 0.50], "activation": 0.60, "trail_offset": 0.90},
-            4: {"margin": 0.50, "ratios": [0.05, 0.20, 0.75], "activation": 0.70, "trail_offset": 1.30},
-        }
+        # activation: TP1 路径比例（预热）；trail_offset: 锁润距极值 ATR 倍数（见 radar_trail.py）
+        self.regime_settings = merge_regime_radar({
+            1: {"margin": 0.15, "ratios": [0.25, 0.35, 0.40]},
+            2: {"margin": 0.25, "ratios": [0.20, 0.35, 0.45]},
+            3: {"margin": 0.35, "ratios": [0.18, 0.32, 0.50]},
+            4: {"margin": 0.50, "ratios": [0.05, 0.20, 0.75]},
+        })
 
         self.regime = 3
         self.current_atr = 30.0
@@ -142,6 +150,7 @@ class PositionSupervisor(
         self.current_trade_id = None
         self.risk_multiplier = 1.0
         self.consumed_tp_levels: list[int] = []
+        self.adopted_manual = False
         self._scan_ticks = 0
         self._init_adverse_radar_fields()
 
@@ -180,6 +189,7 @@ class PositionSupervisor(
                     "adverse_arm_dingtalk_sent": bool(getattr(self, "adverse_arm_dingtalk_sent", False)),
                     "adverse_last_repair_ts": float(getattr(self, "_adverse_last_repair_ts", 0) or 0),
                     "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
+                    "adopted_manual": bool(getattr(self, "adopted_manual", False)),
                 }, f)
         except Exception as e:
             logger.error(f"[User {self.user_id}] save state failed: {e}")
@@ -215,6 +225,7 @@ class PositionSupervisor(
                     self._adverse_last_repair_ts = float(s.get("adverse_last_repair_ts", 0) or 0)
                     self.adverse_arm_dingtalk_sent = bool(s.get("adverse_arm_dingtalk_sent", False))
                     self.tv_sl = float(s.get("tv_sl", 0) or 0)
+                    self.adopted_manual = bool(s.get("adopted_manual", False))
         except Exception as e:
             logger.error(f"[User {self.user_id}] load state failed: {e}")
 
@@ -939,6 +950,7 @@ class PositionSupervisor(
         trade = recovery_section(recovery, "trade")
         open_log = recovery_section(recovery, "open_log")
         latest_tv = recovery_section(recovery, "latest_tv")
+        entry_tv = recovery_section(recovery, "latest_entry_tv")
 
         if trade:
             report["sources"].append("db_trade")
@@ -1004,15 +1016,30 @@ class PositionSupervisor(
                 )
             elif tv_action.startswith("CLOSE"):
                 report["warnings"].append("tv_close_while_position")
+                if entry_tv and (entry_tv.get("action") or "").upper() in ("LONG", "SHORT"):
+                    report["latest_entry_tv_action"] = entry_tv.get("action")
+                    if not tv_conflicts_state:
+                        self.last_tv_side = (entry_tv.get("action") or "").upper()
+
+        elif entry_tv:
+            report["sources"].append("latest_entry_tv")
+            entry_action = (entry_tv.get("action") or "").upper()
+            report["latest_entry_tv_action"] = entry_action
+            if entry_action in ("LONG", "SHORT") and not self.last_tv_side:
+                self.last_tv_side = entry_action
 
         if tv_conflicts_state:
-            apply_tv_sl_from_sources(self, open_log, trade)
+            apply_tv_sl_from_sources(self, open_log, trade, entry_tv)
         else:
-            apply_tv_sl_from_sources(self, latest_tv, open_log, trade)
+            apply_tv_sl_from_sources(self, latest_tv, entry_tv, open_log, trade)
+
+        finalize_recovery_tv_params(self, report, recovery)
 
         report["last_tv_side"] = self.last_tv_side
         report["tv_tps"] = list(self.tv_tps)
         report["regime"] = self.regime
+        if open_log.get("side"):
+            self._open_log_side = open_log.get("side")
         return report
 
     def _price_matches(self, a: float, b: float) -> bool:
@@ -1932,8 +1959,8 @@ class PositionSupervisor(
         """重启：按现价恢复 best_price / 雷达激活 / 追踪止损位"""
         if curr_px <= 0 or not entry:
             return
-        fee_buffer = entry * 0.0015
-        trail_offset = self.current_atr * self.regime_settings[self.regime]["trail_offset"]
+        cfg = self.regime_settings[self.regime]
+        tp1_dist = tp1_distance(entry, self.tv_tps, self.current_atr)
 
         if self.best_price == 0.0:
             self.best_price = entry
@@ -1943,15 +1970,28 @@ class PositionSupervisor(
             self.best_price = min(self.best_price, curr_px)
 
         progress = self._radar_activation_progress(curr_px)
-        if progress >= 1.0:
+        consumed = list(getattr(self, "consumed_tp_levels", []) or [])
+        if radar_may_arm(
+            consumed_tp_levels=consumed,
+            progress=progress,
+            activation_ratio=cfg["activation"],
+            radar_active=self._is_radar_active(),
+        ):
+            clamp = self._clamp_radar_sl_to_tv_floor
+            trail_sl = compute_radar_sl(
+                side=self.current_side,
+                entry=entry,
+                best_price=self.best_price,
+                atr=self.current_atr,
+                trail_mult=cfg["trail_offset"],
+                tp1_dist=tp1_dist,
+                consumed_tp_levels=consumed,
+                clamp_fn=clamp,
+            )
             if self.current_side == "LONG":
-                breakeven_floor = round_price(entry + fee_buffer)
-                trail_sl = round_price(max(self.best_price - trail_offset, breakeven_floor))
                 if not self._is_radar_active() or trail_sl > self.current_sl:
                     self.current_sl = max(self.current_sl or entry, trail_sl)
             else:
-                breakeven_floor = round_price(entry - fee_buffer)
-                trail_sl = round_price(min(self.best_price + trail_offset, breakeven_floor))
                 if not self._is_radar_active() or trail_sl < self.current_sl:
                     self.current_sl = min(self.current_sl or entry, trail_sl)
             logger.info(
@@ -1990,30 +2030,31 @@ class PositionSupervisor(
         return SENTINEL_POLL_NORMAL
 
     def _process_radar_trailing(self, real_amt: float, curr_px: float) -> bool:
-        tp1_dist = (
-            abs(self.tv_tps[0] - self.watched_entry)
-            if self.tv_tps[0] > 0
-            else self.current_atr * 1.5
-        )
         cfg = self.regime_settings[self.regime]
-        activation_ratio = cfg["activation"]
-        trail_atr_multiplier = cfg["trail_offset"]
-        if self.current_side == "LONG":
-            required = self.watched_entry + tp1_dist * activation_ratio
-            if curr_px < required:
-                return False
-        else:
-            required = self.watched_entry - tp1_dist * activation_ratio
-            if curr_px > required:
-                return False
+        progress = self._radar_activation_progress(curr_px)
+        consumed = list(getattr(self, "consumed_tp_levels", []) or [])
+        if not radar_may_arm(
+            consumed_tp_levels=consumed,
+            progress=progress,
+            activation_ratio=cfg["activation"],
+            radar_active=self._is_radar_active(),
+        ):
+            return False
 
-        trail_offset = self.current_atr * trail_atr_multiplier
-        fee_buffer = self.watched_entry * 0.0015
+        tp1_dist = tp1_distance(self.watched_entry, self.tv_tps, self.current_atr)
+        clamp = self._clamp_radar_sl_to_tv_floor
+        new_sl = compute_radar_sl(
+            side=self.current_side,
+            entry=self.watched_entry,
+            best_price=self.best_price,
+            atr=self.current_atr,
+            trail_mult=cfg["trail_offset"],
+            tp1_dist=tp1_dist,
+            consumed_tp_levels=consumed,
+            clamp_fn=clamp,
+        )
         moved = False
         if self.current_side == "LONG":
-            breakeven_floor = round_price(self.watched_entry + fee_buffer)
-            breakeven_floor = self._clamp_radar_sl_to_tv_floor(breakeven_floor)
-            new_sl = round_price(max(self.best_price - trail_offset, breakeven_floor))
             on_book = self._has_stop_sl_near(new_sl)
             if self._radar_activation_reached(curr_px) and not on_book:
                 self.current_sl = new_sl
@@ -2052,9 +2093,6 @@ class PositionSupervisor(
                     self._alert("info", "TRAIL", "追踪雷达锁润", f"SL {new_sl}", trail_detail)
                     moved = True
         else:
-            breakeven_floor = round_price(self.watched_entry - fee_buffer)
-            breakeven_floor = self._clamp_radar_sl_to_tv_floor(breakeven_floor)
-            new_sl = round_price(min(self.best_price + trail_offset, breakeven_floor))
             on_book = self._has_stop_sl_near(new_sl)
             should_trail = (
                 self.current_sl <= 0
@@ -2482,6 +2520,7 @@ class PositionSupervisor(
             if not open_trade_id and not trade_ctx:
                 audit["adopted_manual"] = True
                 audit["adopt_source"] = "live_position+latest_tv"
+                prepare_manual_adopt(self)
                 self._log(
                     "STARTUP",
                     f"人工/外部持仓接管: {self.current_side} {self.watched_qty} @ {self.watched_entry} "

@@ -50,6 +50,16 @@ def normalize_tv_targets(values: list) -> list[float]:
     return out
 
 
+def merge_tv_targets(*sources: list | None) -> list[float]:
+    """Fill missing TP slots from any recovery source (latest TV, entry TV, open log)."""
+    merged = [0.0, 0.0, 0.0]
+    for src in sources:
+        for i, px in enumerate(normalize_tv_targets(list(src or []))):
+            if px > 0:
+                merged[i] = px
+    return normalize_tv_targets(merged)
+
+
 def normalize_entry_payload(data: dict) -> dict:
     """Round TV price / TP fields before dispatch (in-place copy)."""
     out = dict(data)

@@ -6,6 +6,13 @@ import time
 from typing import Any
 
 from app.core.position_qty_tolerance import qty_drift_tolerance
+from app.core.radar_trail import (
+    RADAR_STARTUP_PROFIT_PROGRESS,
+    compute_radar_sl,
+    radar_may_arm,
+    tp1_distance,
+    trail_distance,
+)
 from app.core.symbol_precision import round_price, round_quantity
 
 logger = logging.getLogger(__name__)
@@ -588,17 +595,25 @@ class AdverseRadarMixin:
         self.adverse_sl_armed = True
 
     def _radar_activation_reached(self, curr_px: float) -> bool:
-        """True when price has reached the TP1-distance radar activation threshold."""
+        """True when breakeven radar may arm (TP1 filled or very late path progress)."""
         progress = (
             self._radar_activation_progress(curr_px)
             if hasattr(self, "_radar_activation_progress")
             else 0.0
         )
-        if progress >= 1.0:
-            return True
-        if hasattr(self, "_is_radar_active") and self._is_radar_active():
-            return True
-        return False
+        activation = float(
+            self.regime_settings.get(self.regime, {}).get("activation", 0.90)
+        )
+        consumed = list(getattr(self, "consumed_tp_levels", []) or [])
+        radar_active = bool(
+            hasattr(self, "_is_radar_active") and self._is_radar_active()
+        )
+        return radar_may_arm(
+            consumed_tp_levels=consumed,
+            progress=progress,
+            activation_ratio=activation,
+            radar_active=radar_active,
+        )
 
     def _has_live_adverse_shield(self) -> bool:
         """Exchange-first: any 10% hard stop still on book or marked armed."""
@@ -1369,35 +1384,52 @@ class AdverseRadarMixin:
         )
 
     def _boost_radar_after_tp_fill(self, change_type: str, curr_px: float, live_qty: float) -> None:
-        """After TP1/TP2 eaten: lock breakeven and trail radar toward TP3."""
+        """After TP1/TP2 eaten: lock breakeven with regime trail width toward TP3."""
         if change_type not in ("tp1_filled", "tp2_filled", "tp3_filled"):
             return
         entry = float(self.watched_entry or 0)
         if entry <= 0:
             return
-        fee_buffer = entry * 0.0015
+        cfg = self.regime_settings[self.regime]
+        tp1_dist = tp1_distance(entry, list(getattr(self, "tv_tps", []) or []), self.current_atr)
+        consumed = list(getattr(self, "consumed_tp_levels", []) or [])
         tp3 = float(self.tv_tps[2]) if len(getattr(self, "tv_tps", []) or []) > 2 else 0.0
+        clamp = getattr(self, "_clamp_radar_sl_to_tv_floor", lambda x: x)
 
         if self.current_side == "LONG":
-            floor_sl = self._clamp_radar_sl_to_tv_floor(round_price(entry + fee_buffer))
-            if float(getattr(self, "current_sl", 0) or 0) < floor_sl:
-                self.current_sl = floor_sl
             if curr_px > 0:
                 self.best_price = max(float(getattr(self, "best_price", entry) or entry), curr_px)
-            if tp3 > entry and curr_px > 0:
-                trail = round_price(max(self.current_sl, curr_px - self.current_atr * 0.5))
-                if trail > self.current_sl:
-                    self.current_sl = min(trail, round_price(tp3 * 0.995))
+            trail_sl = compute_radar_sl(
+                side="LONG",
+                entry=entry,
+                best_price=float(self.best_price or entry),
+                atr=self.current_atr,
+                trail_mult=cfg["trail_offset"],
+                tp1_dist=tp1_dist,
+                consumed_tp_levels=consumed,
+                clamp_fn=clamp,
+            )
+            if tp3 > entry:
+                trail_sl = min(trail_sl, round_price(tp3 * 0.995))
+            if float(getattr(self, "current_sl", 0) or 0) < trail_sl:
+                self.current_sl = trail_sl
         else:
-            floor_sl = self._clamp_radar_sl_to_tv_floor(round_price(entry - fee_buffer))
-            if float(getattr(self, "current_sl", 0) or 0) <= 0 or self.current_sl > floor_sl:
-                self.current_sl = floor_sl
             if curr_px > 0:
                 self.best_price = min(float(getattr(self, "best_price", entry) or entry), curr_px)
-            if tp3 > 0 and tp3 < entry and curr_px > 0:
-                trail = round_price(min(self.current_sl, curr_px + self.current_atr * 0.5))
-                if trail < self.current_sl:
-                    self.current_sl = max(trail, round_price(tp3 * 1.005))
+            trail_sl = compute_radar_sl(
+                side="SHORT",
+                entry=entry,
+                best_price=float(self.best_price or entry),
+                atr=self.current_atr,
+                trail_mult=cfg["trail_offset"],
+                tp1_dist=tp1_dist,
+                consumed_tp_levels=consumed,
+                clamp_fn=clamp,
+            )
+            if tp3 > 0 and tp3 < entry:
+                trail_sl = max(trail_sl, round_price(tp3 * 1.005))
+            if float(getattr(self, "current_sl", 0) or 0) <= 0 or self.current_sl > trail_sl:
+                self.current_sl = trail_sl
 
         if hasattr(self, "_realign_radar_defenses"):
             self._realign_radar_defenses(live_qty, entry, self.current_sl)

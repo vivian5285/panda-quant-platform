@@ -12,6 +12,10 @@ from app.core.adverse_radar_guard import (
     adverse_move_pct,
     is_floating_profit,
 )
+from app.core.radar_trail import RADAR_STARTUP_PROFIT_PROGRESS, tp1_consumed
+from app.core.symbol_precision import merge_tv_targets
+from app.services.tv_signal_enrich import compute_tv_tps_from_regime
+
 logger = logging.getLogger(__name__)
 
 STARTUP_LIVE_SETTLE_SEC = 1.0
@@ -36,6 +40,90 @@ def apply_tv_sl_from_sources(target, *sources: dict | None) -> float:
                 target.tv_sl = sl
             return sl
     return float(getattr(target, "tv_sl", 0) or 0)
+
+
+def live_matches_tv_direction(reconcile: dict | None, live_side: str | None) -> bool:
+    """
+    True when live position aligns with TV entry direction — manual adopt, not flatten.
+    Used to avoid closing same-direction manual positions when latest TV is CLOSE.
+    """
+    live = (live_side or "").upper()
+    if live not in ("LONG", "SHORT"):
+        return False
+    reconcile = reconcile or {}
+    for key in (
+        "state_last_tv_side",
+        "latest_tv_action",
+        "latest_entry_tv_action",
+        "open_log_side",
+        "last_tv_side",
+    ):
+        val = (reconcile.get(key) or "").upper()
+        if val == live:
+            return True
+    return False
+
+
+def finalize_recovery_tv_params(supervisor, report: dict, recovery: dict | None) -> None:
+    """Merge TP123 / TV SL from all recovery sources; derive missing TPs from regime+ATR."""
+    entry_tv = recovery_section(recovery, "latest_entry_tv")
+    open_log = recovery_section(recovery, "open_log")
+    latest_tv = recovery_section(recovery, "latest_tv")
+    trade = recovery_section(recovery, "trade")
+
+    tp_sources = []
+    for src in (latest_tv, entry_tv, open_log, trade):
+        if src and src.get("tv_tps"):
+            tp_sources.append(src["tv_tps"])
+    if getattr(supervisor, "tv_tps", None):
+        tp_sources.append(supervisor.tv_tps)
+    if tp_sources:
+        supervisor.tv_tps = merge_tv_targets(*tp_sources)
+
+    apply_tv_sl_from_sources(supervisor, latest_tv, entry_tv, open_log, trade)
+
+    side = (
+        getattr(supervisor, "last_tv_side", None)
+        or report.get("open_log_side")
+        or (entry_tv or {}).get("action")
+    )
+    entry_px = float(
+        report.get("open_log_entry")
+        or getattr(supervisor, "watched_entry", 0)
+        or getattr(supervisor, "tv_price", 0)
+        or (entry_tv or {}).get("price")
+        or (latest_tv or {}).get("price")
+        or 0
+    )
+    atr = float(getattr(supervisor, "current_atr", 0) or 0)
+    regime = int(getattr(supervisor, "regime", 3) or 3)
+    if sum(1 for t in supervisor.tv_tps if t > 0) < 3 and str(side or "").upper() in ("LONG", "SHORT"):
+        if entry_px <= 0:
+            entry_px = float(getattr(supervisor, "watched_entry", 0) or 0)
+        if atr <= 0:
+            atr = 30.0
+            supervisor.current_atr = atr
+        if entry_px > 0:
+            derived = compute_tv_tps_from_regime(entry_px, atr, regime, str(side).upper())
+            supervisor.tv_tps = merge_tv_targets(supervisor.tv_tps, derived)
+            report.setdefault("warnings", []).append("tv_tps_derived_from_regime")
+
+    if entry_tv:
+        report["latest_entry_tv_action"] = entry_tv.get("action")
+    report["tv_tps"] = list(supervisor.tv_tps)
+    report["tv_sl"] = float(getattr(supervisor, "tv_sl", 0) or 0)
+
+
+def prepare_manual_adopt(supervisor) -> None:
+    """Reset anchor qty so false TP1 consumption does not drop TP123 on manual takeover."""
+    qty = float(getattr(supervisor, "watched_qty", 0) or 0)
+    if qty <= 0:
+        return
+    supervisor.initial_qty = qty
+    if float(getattr(supervisor, "base_qty", 0) or 0) <= 0:
+        supervisor.base_qty = qty
+    supervisor.consumed_tp_levels = []
+    supervisor.adopted_manual = True
 
 
 def adopt_live_tv_side(
@@ -127,11 +215,14 @@ def classify_startup_pnl_track(
 ) -> str:
     """
     loss_shield — 浮亏/雷达未激活：保 TP123 + TV 硬止损
-    profit_radar — 朝 TP1 达激活比例或雷达已锁 / TP 已部分成交：撤硬止损，雷达接管
+    profit_radar — TP1 已成交或雷达已锁 / 路径≥96%：撤硬止损，雷达接管
     """
-    if consumed_tp_levels:
+    consumed = list(consumed_tp_levels or [])
+    if tp1_consumed(consumed) or any(x in consumed for x in (2, 3)):
         return "profit_radar"
-    if radar_active or radar_progress >= 1.0:
+    if radar_active:
+        return "profit_radar"
+    if float(radar_progress or 0) >= RADAR_STARTUP_PROFIT_PROGRESS:
         return "profit_radar"
     return "loss_shield"
 
@@ -236,7 +327,8 @@ class StartupReconcileMixin:
         return sync
 
     def _sentinel_force_align_if_opposite(self, actual_side: str) -> bool:
-        """哨兵巡检：发现与 TV 反向持仓则强平。返回 True 表示已强平并应退出哨兵."""
+        """哨兵巡检：仅当 TV 方向与实盘 OPEN 反向时强平（人工同向单不扫）."""
+        adopted = bool(getattr(self, "adopted_manual", False))
         tv = getattr(self, "last_tv_side", None)
         if not is_opposite_tv_live(tv, actual_side):
             if not tv and actual_side in ("LONG", "SHORT"):
@@ -246,8 +338,26 @@ class StartupReconcileMixin:
             return False
 
         self.current_side = actual_side
+        if adopted:
+            sync = adopt_live_tv_side(
+                self,
+                {
+                    "latest_tv_action": tv,
+                    "state_last_tv_side": tv,
+                    "open_log_side": getattr(self, "_open_log_side", None),
+                },
+                adopted_manual=True,
+            )
+            if not sync.get("force_close"):
+                return False
+
         self._try_force_align_opposite_to_tv(
-            {"latest_tv_action": tv},
+            {
+                "latest_tv_action": tv,
+                "state_last_tv_side": tv,
+                "open_log_side": getattr(self, "_open_log_side", None),
+            },
+            adopted_manual=adopted,
             trigger="sentinel",
         )
         return True
@@ -406,11 +516,26 @@ class StartupReconcileMixin:
             return
 
         if tv_action.startswith("CLOSE"):
-            self._close_all(
-                f"空仓巡检: TV已发{tv_action}，执行清场",
-                close_trigger="idle_patrol_tv_close",
-            )
-            return
+            trade = recovery_section(ctx, "trade")
+            factory_open = bool(trade and trade.get("id"))
+            entry_tv = recovery_section(ctx, "latest_entry_tv")
+            if entry_tv:
+                reconcile["latest_entry_tv_action"] = entry_tv.get("action")
+            if factory_open and (trade.get("side") or "").upper() == (side or "").upper():
+                self._close_all(
+                    f"空仓巡检: TV已发{tv_action}，工厂持仓清场",
+                    close_trigger="idle_patrol_tv_close",
+                )
+                return
+            if side in ("LONG", "SHORT"):
+                if hasattr(self, "_log"):
+                    self._log(
+                        "IDLE_WATCH",
+                        f"TV已发{tv_action}，实盘{side}同向 → 接管补挂 TP123/雷达（人工不强平）",
+                        {"trigger": "idle_patrol", "latest_tv": tv_action, "side": side},
+                    )
+            else:
+                return
 
         from app.config import get_settings
 
@@ -547,6 +672,45 @@ class StartupReconcileMixin:
                 )
         return audit
 
+    def _ensure_tv_shield_on_startup(self, live_qty: float, shield_audit: dict) -> dict:
+        """TV 硬止损：重启/人工接管时不论盈亏轨，缺失则补挂."""
+        tv_sl = float(getattr(self, "tv_sl", 0) or 0)
+        if tv_sl <= 0 or live_qty <= 0:
+            return shield_audit
+        if shield_audit.get("aligned"):
+            return shield_audit
+
+        if hasattr(self, "_uses_dual_stop_track") and self._uses_dual_stop_track():
+            if not shield_audit.get("aligned"):
+                arm = self._arm_adverse_shield_at_open(live_qty)
+                return {**shield_audit, **(arm or {})}
+            return shield_audit
+
+        if hasattr(self, "_sync_binance_merged_stop"):
+            merged = self._sync_binance_merged_stop(live_qty)
+            shield_audit = {**shield_audit, **merged}
+
+        post = self._sync_adverse_shield_with_retry(live_qty)
+        shield_audit = {**shield_audit, **post}
+        if not post.get("aligned") and self._can_repair_adverse_stops():
+            repair = self._arm_adverse_shield_at_open(live_qty)
+            shield_audit = {**shield_audit, **repair}
+            if not repair.get("aligned") and repair.get("placed", 0) > 0:
+                post2 = self._sync_adverse_shield_with_retry(live_qty)
+                shield_audit = {**shield_audit, **post2}
+        elif not post.get("aligned"):
+            self._maybe_alert_shield_misalign(
+                post,
+                {
+                    "live_qty": live_qty,
+                    "placed": shield_audit.get("placed", 0),
+                    "purged_duplicates": shield_audit.get("startup_purged", 0),
+                    "force_alert": True,
+                },
+                context="startup",
+            )
+        return shield_audit
+
     def _unified_startup_defense_reconcile(
         self,
         live_qty: float,
@@ -642,6 +806,8 @@ class StartupReconcileMixin:
                     },
                     context="startup",
                 )
+        elif live_qty > 0 and float(getattr(self, "tv_sl", 0) or 0) > 0:
+            shield_audit = self._ensure_tv_shield_on_startup(live_qty, shield_audit)
 
         stop_px = float(getattr(self, "tv_sl", 0) or 0)
 

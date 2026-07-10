@@ -69,6 +69,49 @@ def _parse_dispatch_log_row(row: SignalDispatchLog) -> dict | None:
     }
 
 
+def get_latest_tv_entry_signal_for_user(db: Session, user_id: int) -> dict | None:
+    """Latest LONG/SHORT webhook for this user — used when latest overall signal is CLOSE."""
+    row = (
+        db.query(WebhookReceiveLog)
+        .join(SignalDispatchLog, WebhookReceiveLog.dispatch_log_id == SignalDispatchLog.id)
+        .join(
+            SignalDispatchUserResult,
+            SignalDispatchUserResult.dispatch_log_id == SignalDispatchLog.id,
+        )
+        .filter(
+            SignalDispatchUserResult.user_id == user_id,
+            WebhookReceiveLog.event_status.in_(("dispatched", "accepted")),
+            WebhookReceiveLog.action.in_(("LONG", "SHORT")),
+        )
+        .order_by(WebhookReceiveLog.created_at.desc())
+        .first()
+    )
+    if row:
+        parsed = _parse_webhook_tv_row(row)
+        parsed["user_id"] = user_id
+        return parsed
+
+    dispatch_row = (
+        db.query(SignalDispatchLog)
+        .join(
+            SignalDispatchUserResult,
+            SignalDispatchUserResult.dispatch_log_id == SignalDispatchLog.id,
+        )
+        .filter(
+            SignalDispatchUserResult.user_id == user_id,
+            SignalDispatchLog.action.in_(("LONG", "SHORT")),
+        )
+        .order_by(SignalDispatchLog.created_at.desc())
+        .first()
+    )
+    if dispatch_row:
+        parsed = _parse_dispatch_log_row(dispatch_row)
+        if parsed:
+            parsed["user_id"] = user_id
+            return parsed
+    return None
+
+
 def get_latest_tv_signal_for_user(db: Session, user_id: int) -> dict | None:
     """Latest TV webhook actually dispatched to this user (not platform-wide)."""
     row = (
@@ -186,6 +229,7 @@ def build_radar_recovery_context(db: Session, user_id: int) -> dict:
     if not latest_tv:
         latest_tv = get_latest_tv_signal(db)
         tv_scope = "platform_fallback" if latest_tv else "none"
+    latest_entry_tv = get_latest_tv_entry_signal_for_user(db, user_id)
 
     checks = []
     if tv_scope == "platform_fallback":
@@ -208,6 +252,7 @@ def build_radar_recovery_context(db: Session, user_id: int) -> dict:
         "trade": trade,
         "open_log": open_log,
         "latest_tv": latest_tv,
+        "latest_entry_tv": latest_entry_tv,
         "tv_signal_scope": tv_scope,
         "checks": checks,
     }
