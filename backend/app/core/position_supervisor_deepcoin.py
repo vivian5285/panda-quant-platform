@@ -1721,6 +1721,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self._tv_entry_fields = fields
         self._entry_type = fields["entry_type"]
         self._explicit_entry_type = "entry_type" in (payload or {})
+        if fields.get("regime") is not None:
+            self._tv_entry_fields["regime"] = fields["regime"]
+        elif getattr(self, "regime", None):
+            self._tv_entry_fields["regime"] = self.regime
 
     def _uses_tv_entry_routing(self) -> bool:
         fields = getattr(self, "_tv_entry_fields", None) or {}
@@ -1742,6 +1746,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             exchange_leverage=leverage,
             face_value=self.face_value,
             tv_fields=getattr(self, "_tv_entry_fields", None),
+            regime=self.regime,
         )
 
     def _force_flat_before_open(self, reason: str) -> bool:

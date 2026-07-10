@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     # Same-direction TV entry: skip re-open when |TV价−持仓价|/现价 below this % (regime unchanged)
     SAME_DIR_IGNORE_PRICE_DIFF_PCT: float = 0.20
 
+    # v6.9.85 VPS regime risk coefficient — scales TV risk_pct before sizing
+    MAX_RISK_PCT_LIMIT: float = 4.0
+    REGIME_VPS_COEFF_1: float = 1.0
+    REGIME_VPS_COEFF_2: float = 1.0
+    REGIME_VPS_COEFF_3: float = 1.1
+    REGIME_VPS_COEFF_4: float = 1.25
+
     SETTLEMENT_PRIMARY_DAYS: int = 30
     SETTLEMENT_EXTENDED_DAYS: int = 35
     SETTLEMENT_SCAN_INTERVAL_SEC: int = 3600

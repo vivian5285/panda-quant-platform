@@ -5,10 +5,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.core.tv_entry_sizing import (
+    apply_vps_regime_risk,
     compute_tv_eth_qty,
     compute_tv_notional_usd,
     normalize_risk_pct,
     parse_tv_entry_fields,
+    regime_vps_coefficient,
     resolve_entry_order_qty_eth,
 )
 from app.core.position_supervisor import PositionSupervisor
@@ -20,18 +22,51 @@ def test_normalize_risk_pct_percent_points():
     assert normalize_risk_pct(0.5) == pytest.approx(0.005)
 
 
+def test_regime_vps_coefficients():
+    assert regime_vps_coefficient(1) == 1.0
+    assert regime_vps_coefficient(2) == 1.0
+    assert regime_vps_coefficient(3) == pytest.approx(1.1)
+    assert regime_vps_coefficient(4) == pytest.approx(1.25)
+
+
+def test_apply_vps_regime_risk_clamps_regime4():
+    meta = apply_vps_regime_risk(3.90, 4)
+    assert meta["scaled_risk_pct"] == pytest.approx(4.875)
+    assert meta["effective_risk_pct"] == pytest.approx(4.0)
+    assert meta["risk_clamped"] is True
+
+
+@pytest.mark.parametrize(
+    "regime,tv_risk,expected_notional",
+    [
+        (1, 1.65, 82.5),
+        (2, 2.25, 112.5),
+        (3, 2.85, 156.75),
+        (4, 3.90, 200.0),
+    ],
+)
+def test_vps_regime_sizing_table_1000u_5x(regime, tv_risk, expected_notional):
+    """对照文档 4.2：1000u 本金 × 5× 杠杆."""
+    _, notional, _, meta = compute_tv_notional_usd(
+        1000.0, risk_pct=tv_risk, leverage=5, qty_ratio=1.0, regime=regime,
+    )
+    assert notional == pytest.approx(expected_notional, rel=0.001)
+    assert meta["regime"] == regime
+
+
 def test_compute_tv_notional_usd_formula():
-    margin, notional, cap = compute_tv_notional_usd(
-        10000.0, risk_pct=1.35, leverage=3, qty_ratio=1.0,
+    margin, notional, cap, meta = compute_tv_notional_usd(
+        10000.0, risk_pct=1.35, leverage=3, qty_ratio=1.0, regime=1,
     )
     assert margin == pytest.approx(135.0)
     assert notional == pytest.approx(405.0)
     assert cap == pytest.approx(30000.0)
+    assert meta["vps_coeff"] == 1.0
 
 
 def test_compute_tv_notional_pyramid_half_ratio():
-    _, notional, _ = compute_tv_notional_usd(
-        10000.0, risk_pct=1.35, leverage=3, qty_ratio=0.5,
+    _, notional, _, _ = compute_tv_notional_usd(
+        10000.0, risk_pct=1.35, leverage=3, qty_ratio=0.5, regime=1,
     )
     assert notional == pytest.approx(202.5)
 
@@ -45,10 +80,13 @@ def test_compute_tv_eth_qty():
         qty_ratio=1.0,
         price=2000.0,
         round_fn=lambda x: round(x, 3),
+        regime=1,
     )
     assert qty == pytest.approx(0.203)
     assert meta["sizing_mode"] == "tv_v6985_proportional"
     assert meta["risk_pct"] == pytest.approx(1.35)
+    assert meta["effective_risk_pct"] == pytest.approx(1.35)
+    assert meta["vps_coeff"] == 1.0
 
 
 def test_parse_tv_entry_fields_defaults():
@@ -65,10 +103,12 @@ def test_parse_tv_entry_fields_v6985():
         "risk_pct": 1.35,
         "leverage": 3,
         "qty_ratio": 0.5,
+        "regime": 3,
     })
     assert fields["entry_type"] == "PYRAMID"
     assert fields["uses_tv_sizing"] is True
     assert fields["tv_leverage"] == 3.0
+    assert fields["regime"] == 3
 
 
 def test_resolve_entry_order_qty_falls_back_without_risk_pct():
