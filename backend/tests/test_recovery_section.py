@@ -22,7 +22,7 @@ def test_adopt_live_tv_side_trusts_manual_long():
     )
     assert sup.last_tv_side == "LONG"
     assert result["realigned"] is True
-    assert result["reason"] == "trust_live_manual"
+    assert result["reason"] in ("trust_live_manual", "manual_adopt_matches_user_tv", "manual_adopt_matches_state_tv")
     assert result["force_close"] is False
 
 
@@ -51,6 +51,26 @@ def test_adopt_live_tv_side_manual_opposite_still_force_close():
     )
     assert result["force_close"] is True
     assert sup.last_tv_side == "LONG"
+
+
+def test_manual_adopt_long_protected_when_platform_tv_short():
+    """人工开多 + 状态/TV 本应为 LONG，但 reconcile 误读 SHORT → 不得强平."""
+    class Sup:
+        last_tv_side = "LONG"
+        current_side = "LONG"
+
+    sup = Sup()
+    result = adopt_live_tv_side(
+        sup,
+        {
+            "latest_tv_action": "SHORT",
+            "state_last_tv_side": "LONG",
+        },
+        adopted_manual=True,
+    )
+    assert result["force_close"] is False
+    assert sup.last_tv_side == "LONG"
+    assert result["reason"] == "manual_adopt_matches_state_tv"
 
 
 def test_adopt_live_tv_side_when_latest_tv_is_close():

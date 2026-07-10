@@ -260,9 +260,36 @@ def broadcast_startup_summary(audits: list[dict], failed_users: list[dict]) -> N
     notify_system(
         "info", "SYSTEM_RESTART",
         "平台重启 · 账户接管完成",
+        _format_startup_broadcast_message(audits, with_pos, monitoring, rebuilt, skipped_def, loss_track, radar_track),
+        detail,
+    )
+
+
+def _format_startup_broadcast_message(
+    audits: list[dict],
+    with_pos: int,
+    monitoring: int,
+    rebuilt: int,
+    skipped_def: int,
+    loss_track: int,
+    radar_track: int,
+) -> str:
+    lines = [
         f"已加载 {len(audits)} 个 Supervisor，{with_pos} 个有持仓，"
         f"雷达哨兵 {monitoring} 个运行中，"
         f"防护轨 {loss_track} / 雷达轨 {radar_track}，"
-        f"防线跳过 {skipped_def} / 补挂 {rebuilt}",
-        detail,
-    )
+        f"防线跳过 {skipped_def} / 补挂 {rebuilt}。",
+    ]
+    for a in audits:
+        if not a.get("has_position"):
+            continue
+        side = a.get("side") or "—"
+        side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(side).upper(), str(side))
+        uid = a.get("uid") or a.get("user_id")
+        qty = a.get("qty")
+        entry = a.get("entry")
+        summary = a.get("startup_summary") or "—"
+        lines.append(
+            f"UID {uid}: {side_txt} {qty} @ {entry} | TP {a.get('tp_matched')}/{a.get('tp_expected')} | {summary}"
+        )
+    return "\n".join(lines)

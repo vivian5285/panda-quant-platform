@@ -969,12 +969,22 @@ class PositionSupervisor(
             if open_log.get("atr"):
                 self.current_atr = float(open_log["atr"])
 
+        tv_conflicts_state = False
         if latest_tv:
             report["sources"].append("latest_tv")
             report["latest_tv_action"] = latest_tv.get("action")
             report["latest_tv_at"] = latest_tv.get("created_at")
             tv_action = (latest_tv.get("action") or "").upper()
-            if tv_action in ("LONG", "SHORT"):
+            state_tv = (recovery.get("state_last_tv_side") or "").upper()
+            scope = (recovery.get("tv_signal_scope") or "").lower()
+            tv_conflicts_state = (
+                tv_action in ("LONG", "SHORT")
+                and state_tv in ("LONG", "SHORT")
+                and tv_action != state_tv
+            )
+            if tv_conflicts_state:
+                report["warnings"].append("tv_direction_vs_state")
+            if tv_action in ("LONG", "SHORT") and not tv_conflicts_state:
                 self.last_tv_side = tv_action
                 if any(latest_tv.get("tv_tps") or []):
                     self.tv_tps = normalize_tv_targets(latest_tv["tv_tps"])
@@ -984,10 +994,21 @@ class PositionSupervisor(
                     self.current_atr = float(latest_tv["atr"])
                 if latest_tv.get("price"):
                     self.tv_price = round_price(latest_tv["price"])
+            elif tv_action in ("LONG", "SHORT") and tv_conflicts_state:
+                if state_tv in ("LONG", "SHORT"):
+                    self.last_tv_side = state_tv
+                report["warnings"].append(
+                    "ignored_conflicting_tv_for_state"
+                    if scope == "platform_fallback"
+                    else "ignored_conflicting_user_tv_for_state"
+                )
             elif tv_action.startswith("CLOSE"):
                 report["warnings"].append("tv_close_while_position")
 
-        apply_tv_sl_from_sources(self, latest_tv, open_log, trade)
+        if tv_conflicts_state:
+            apply_tv_sl_from_sources(self, open_log, trade)
+        else:
+            apply_tv_sl_from_sources(self, latest_tv, open_log, trade)
 
         report["last_tv_side"] = self.last_tv_side
         report["tv_tps"] = list(self.tv_tps)
@@ -1597,11 +1618,14 @@ class PositionSupervisor(
     def _fetch_recent_tv_close(self) -> dict | None:
         try:
             from app.database import SessionLocal
-            from app.services.radar_context import get_latest_tv_signal
+            from app.services.radar_context import get_latest_tv_signal_for_user
 
             db = SessionLocal()
             try:
-                tv = get_latest_tv_signal(db)
+                tv = get_latest_tv_signal_for_user(db, self.user_id)
+                if not tv:
+                    from app.services.radar_context import get_latest_tv_signal
+                    tv = get_latest_tv_signal(db)
                 if tv and str(tv.get("action") or "").upper().startswith("CLOSE"):
                     return tv
             finally:
@@ -2405,7 +2429,13 @@ class PositionSupervisor(
                     open_trade_id = trade["id"]
                     audit["open_trade_id"] = open_trade_id
 
+            saved_state_tv_side = self.last_tv_side
+            if recovery_context is not None:
+                recovery_context = dict(recovery_context)
+                recovery_context["state_last_tv_side"] = saved_state_tv_side
             reconcile = self._reconcile_radar_context(recovery_context)
+            reconcile["state_last_tv_side"] = saved_state_tv_side
+            audit["state_last_tv_side"] = saved_state_tv_side
             audit.update(reconcile)
 
             if self._scan_and_sweep_dust_on_startup():

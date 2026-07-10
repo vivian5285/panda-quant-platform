@@ -2554,7 +2554,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
             pos = self._get_active_position()
             if pos and self._safe_qty(pos.get("size", 0)) != 0:
+                saved_state_tv_side = self.last_tv_side
                 reconcile = self._reconcile_context_on_recover(pos)
+                reconcile["state_last_tv_side"] = saved_state_tv_side
                 reconcile_notes = reconcile["notes"]
                 real_amt = self._safe_qty(pos["size"])
                 side = "LONG" if pos.get("posSide") == "long" else "SHORT"

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.symbol_precision import normalize_tv_targets
 from app.models import Trade, TradeLog
-from app.models.platform import WebhookReceiveLog
+from app.models.platform import SignalDispatchLog, SignalDispatchUserResult, WebhookReceiveLog
 
 logger = logging.getLogger(__name__)
 
@@ -17,19 +17,7 @@ TV_ACTIONS_POSITION = {"LONG", "SHORT"}
 TV_ACTIONS_CLOSE = {"CLOSE", "CLOSE_TP3", "CLOSE_PROTECT", "CLOSE_STOPLOSS"}
 
 
-def get_latest_tv_signal(db: Session) -> dict | None:
-    """Latest successfully dispatched TradingView webhook (platform-wide)."""
-    row = (
-        db.query(WebhookReceiveLog)
-        .filter(
-            WebhookReceiveLog.event_status.in_(("dispatched", "accepted")),
-            WebhookReceiveLog.action.isnot(None),
-        )
-        .order_by(WebhookReceiveLog.created_at.desc())
-        .first()
-    )
-    if not row:
-        return None
+def _parse_webhook_tv_row(row: WebhookReceiveLog) -> dict:
     try:
         summary = json.loads(row.tv_summary_json or "{}")
     except json.JSONDecodeError:
@@ -50,7 +38,93 @@ def get_latest_tv_signal(db: Session) -> dict | None:
         "tv_sl": float(summary.get("tv_sl", 0) or 0),
         "entry_type": (summary.get("entry_type") or "").upper() or None,
         "reason": summary.get("reason"),
+        "source": "webhook_receive_log",
     }
+
+
+def _parse_dispatch_log_row(row: SignalDispatchLog) -> dict | None:
+    try:
+        payload = json.loads(row.payload_json or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    action = (row.action or payload.get("action") or "").upper()
+    if not action:
+        return None
+    return {
+        "id": row.id,
+        "action": action,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "regime": int(payload.get("regime", 0) or 0),
+        "atr": float(payload.get("atr", 0) or 0),
+        "price": float(payload.get("price", 0) or 0),
+        "tv_tps": normalize_tv_targets([
+            payload.get("tv_tp1", 0),
+            payload.get("tv_tp2", 0),
+            payload.get("tv_tp3", 0),
+        ]),
+        "tv_sl": float(payload.get("tv_sl", 0) or 0),
+        "entry_type": (payload.get("entry_type") or "").upper() or None,
+        "reason": payload.get("reason"),
+        "source": "signal_dispatch_log",
+    }
+
+
+def get_latest_tv_signal_for_user(db: Session, user_id: int) -> dict | None:
+    """Latest TV webhook actually dispatched to this user (not platform-wide)."""
+    row = (
+        db.query(WebhookReceiveLog)
+        .join(SignalDispatchLog, WebhookReceiveLog.dispatch_log_id == SignalDispatchLog.id)
+        .join(
+            SignalDispatchUserResult,
+            SignalDispatchUserResult.dispatch_log_id == SignalDispatchLog.id,
+        )
+        .filter(
+            SignalDispatchUserResult.user_id == user_id,
+            WebhookReceiveLog.event_status.in_(("dispatched", "accepted")),
+            WebhookReceiveLog.action.isnot(None),
+        )
+        .order_by(WebhookReceiveLog.created_at.desc())
+        .first()
+    )
+    if row:
+        parsed = _parse_webhook_tv_row(row)
+        parsed["user_id"] = user_id
+        return parsed
+
+    dispatch_row = (
+        db.query(SignalDispatchLog)
+        .join(
+            SignalDispatchUserResult,
+            SignalDispatchUserResult.dispatch_log_id == SignalDispatchLog.id,
+        )
+        .filter(SignalDispatchUserResult.user_id == user_id)
+        .order_by(SignalDispatchLog.created_at.desc())
+        .first()
+    )
+    if dispatch_row:
+        parsed = _parse_dispatch_log_row(dispatch_row)
+        if parsed:
+            parsed["user_id"] = user_id
+            return parsed
+    return None
+
+
+def get_latest_tv_signal(db: Session) -> dict | None:
+    """Latest successfully dispatched TradingView webhook (platform-wide fallback)."""
+    row = (
+        db.query(WebhookReceiveLog)
+        .filter(
+            WebhookReceiveLog.event_status.in_(("dispatched", "accepted")),
+            WebhookReceiveLog.action.isnot(None),
+        )
+        .order_by(WebhookReceiveLog.created_at.desc())
+        .first()
+    )
+    if not row:
+        return None
+    parsed = _parse_webhook_tv_row(row)
+    parsed["source"] = "platform_wide"
+    return parsed
 
 
 def get_open_trade_log_detail(db: Session, user_id: int, trade_id: int | None = None) -> dict | None:
@@ -103,13 +177,19 @@ def get_open_trade_context(db: Session, user_id: int) -> dict | None:
 
 
 def build_radar_recovery_context(db: Session, user_id: int) -> dict:
-    """Merge DB open trade, OPEN log, and latest TV for VPS takeover audit."""
+    """Merge DB open trade, OPEN log, and per-user latest TV for VPS takeover audit."""
     trade = get_open_trade_context(db, user_id)
     trade_id = trade["id"] if trade else None
     open_log = get_open_trade_log_detail(db, user_id, trade_id)
-    latest_tv = get_latest_tv_signal(db)
+    latest_tv = get_latest_tv_signal_for_user(db, user_id)
+    tv_scope = "user"
+    if not latest_tv:
+        latest_tv = get_latest_tv_signal(db)
+        tv_scope = "platform_fallback" if latest_tv else "none"
 
     checks = []
+    if tv_scope == "platform_fallback":
+        checks.append("tv_signal_platform_fallback")
     if trade and open_log:
         if open_log.get("side") and trade.get("side") and open_log["side"] != trade["side"]:
             checks.append("open_log_side_mismatch")
@@ -128,5 +208,6 @@ def build_radar_recovery_context(db: Session, user_id: int) -> dict:
         "trade": trade,
         "open_log": open_log,
         "latest_tv": latest_tv,
+        "tv_signal_scope": tv_scope,
         "checks": checks,
     }

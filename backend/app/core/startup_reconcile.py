@@ -63,6 +63,28 @@ def adopt_live_tv_side(
     reconcile = reconcile or {}
     latest = (reconcile.get("latest_tv_action") or "").upper()
     prev = getattr(supervisor, "last_tv_side", None)
+    state_tv = (reconcile.get("state_last_tv_side") or prev or "").upper()
+
+    if adopted_manual and live in ("LONG", "SHORT"):
+        if state_tv == live:
+            supervisor.last_tv_side = live
+            result["tv_side"] = live
+            result["realigned"] = prev != live
+            result["reason"] = "manual_adopt_matches_state_tv"
+            return result
+        if latest in ("LONG", "SHORT") and latest == live:
+            supervisor.last_tv_side = live
+            result["tv_side"] = live
+            result["realigned"] = prev != live
+            result["reason"] = "manual_adopt_matches_user_tv"
+            return result
+        open_log_side = (reconcile.get("open_log_side") or "").upper()
+        if open_log_side == live:
+            supervisor.last_tv_side = live
+            result["tv_side"] = live
+            result["realigned"] = prev != live
+            result["reason"] = "manual_adopt_matches_open_log"
+            return result
 
     if latest not in ("LONG", "SHORT"):
         supervisor.last_tv_side = live
@@ -362,11 +384,14 @@ class StartupReconcileMixin:
         self.watched_entry = entry
 
         ctx = self._load_idle_recovery_context()
+        saved_state_tv_side = getattr(self, "last_tv_side", None)
         reconcile = (
             self._reconcile_radar_context(ctx)
             if hasattr(self, "_reconcile_radar_context")
             else ctx
         )
+        if isinstance(reconcile, dict):
+            reconcile["state_last_tv_side"] = saved_state_tv_side
         tv_action = (reconcile.get("latest_tv_action") or "").upper()
         if not tv_action:
             lt = recovery_section(ctx, "latest_tv")
