@@ -26,10 +26,10 @@ from app.core.position_manager import PositionManager
 from app.core.radar_trail import (
     clamp_stop_market_safe,
     compute_radar_sl,
-    merge_regime_radar,
     radar_may_arm,
     tp1_distance,
 )
+from app.core.tp_regime_ratios import build_regime_settings, enrich_tp_alert_detail
 from app.core.regime_utils import clamp_regime
 from app.core.same_direction_policy import (
     SameDirAction,
@@ -134,12 +134,7 @@ class PositionSupervisor(
         self.trade_opened_at: float | None = None
 
         # activation: TP1 路径比例（预热）；trail_offset: 锁润距极值 ATR 倍数（见 radar_trail.py）
-        self.regime_settings = merge_regime_radar({
-            1: {"margin": 0.15, "ratios": [0.25, 0.35, 0.40]},
-            2: {"margin": 0.25, "ratios": [0.20, 0.35, 0.45]},
-            3: {"margin": 0.35, "ratios": [0.18, 0.32, 0.50]},
-            4: {"margin": 0.50, "ratios": [0.05, 0.20, 0.75]},
-        })
+        self.regime_settings = build_regime_settings()
 
         self.regime = 3
         self.current_atr = 30.0
@@ -591,6 +586,7 @@ class PositionSupervisor(
             detail["tp_realign"] = tp_heal
         if defense.get("summary"):
             detail["defense_summary"] = defense["summary"]
+        detail = enrich_tp_alert_detail(detail, regime=self.regime)
         verify_note = ""
         if defense.get("expected"):
             verify_note += f" | 止盈 {defense.get('matched', 0)}/{defense.get('expected')} 档已对齐"
@@ -844,6 +840,14 @@ class PositionSupervisor(
                 detail["tv_sl"] = self.tv_sl
             if shield:
                 detail["shield"] = shield
+            slices = (
+                self._expected_tp_levels(real_qty, entry_price)
+                if hasattr(self, "_expected_tp_levels")
+                else []
+            )
+            if slices:
+                detail["tp_slices"] = slices
+            detail = enrich_tp_alert_detail(detail, regime=self.regime)
             enrich_suffix = ""
             enrich_note = getattr(self, "_last_enrich_note", "") or ""
             if enrich_note:

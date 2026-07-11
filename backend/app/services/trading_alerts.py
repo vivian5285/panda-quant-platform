@@ -342,6 +342,8 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
         _line("方向", side_txt),
         _line("档位", regime_txt),
     ]
+    if detail.get("tp_ratios_pct"):
+        lines.append(_line("止盈比例", f"TP1/2/3 = {detail['tp_ratios_pct']}%（对齐 Pine qty_percent）"))
 
     principal = detail.get("initial_principal") or detail.get("sizing_base")
     if principal:
@@ -362,6 +364,14 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             lines.append(_line("保证金", f"{float(detail['margin_usd']):.2f} USDT"))
         if detail.get("tv_sl"):
             lines.append(_line("TV 止损", f"{float(detail['tv_sl']):.2f}"))
+        slices = detail.get("tp_slices") or []
+        if slices:
+            parts = []
+            for lv in slices[:3]:
+                if isinstance(lv, dict):
+                    parts.append(f"TP{lv.get('level')} {float(lv.get('qty', 0)):.4f}@{float(lv.get('price', 0)):.2f}")
+            if parts:
+                lines.append(_line("TP 分批", " · ".join(parts)))
         if detail.get("base_qty") is not None:
             lines.append(_line("基准数量", f"**{float(detail['base_qty']):.4f}** {unit}"))
     else:
@@ -461,6 +471,10 @@ def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
         lines.append(_line("逆势处理", "已强平对齐 TV 方向"))
     if detail.get("startup_summary"):
         lines.append(_line("对账摘要", str(detail["startup_summary"])))
+    if detail.get("regime") is not None:
+        lines.append(_line("档位", f"R{detail['regime']}"))
+    if detail.get("tp_ratios_pct"):
+        lines.append(_line("止盈比例", f"TP1/2/3 = {detail['tp_ratios_pct']}%"))
     tp_m, tp_e = detail.get("tp_matched"), detail.get("tp_expected")
     if tp_e:
         lines.append(_line("止盈挂单", f"{tp_m or 0}/{tp_e} 档"))

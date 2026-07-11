@@ -5,6 +5,7 @@ import time
 
 from app.core.symbol_precision import round_price
 from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, slices_to_level_dicts
+from app.core.tp_regime_ratios import enrich_tp_alert_detail
 from app.core.tp_defense_reconcile import (
     STARTUP_ORDER_FETCH_DELAY,
     STARTUP_ORDER_FETCH_RETRIES,
@@ -918,7 +919,7 @@ class BinanceSmartDefenseMixin:
                     f"⚠️ 加仓后仍检测到止盈超挂: {exp.get('summary')}",
                     logging.WARNING,
                 )
-        return result
+        return enrich_tp_alert_detail(result, regime=self.regime)
 
     def _smart_realign_defenses(
         self, live_qty: float, entry: float, dynamic_sl=None, reason: str = ""

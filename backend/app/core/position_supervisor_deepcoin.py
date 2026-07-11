@@ -12,10 +12,10 @@ from app.core.deepcoin_client import DeepcoinClient, CLIENT_VERSION
 from app.core.radar_trail import (
     clamp_stop_market_safe,
     compute_radar_sl,
-    merge_regime_radar,
     radar_may_arm,
     tp1_distance,
 )
+from app.core.tp_regime_ratios import build_regime_settings, enrich_tp_alert_detail
 from app.core.same_direction_policy import (
     SameDirAction,
     evaluate_same_direction,
@@ -130,12 +130,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.monitoring = False
         self._lock = threading.Lock()
 
-        self.regime_settings = merge_regime_radar({
-            1: {"margin": 0.15, "ratios": [0.25, 0.35, 0.40]},
-            2: {"margin": 0.25, "ratios": [0.20, 0.35, 0.45]},
-            3: {"margin": 0.35, "ratios": [0.18, 0.32, 0.50]},
-            4: {"margin": 0.50, "ratios": [0.05, 0.20, 0.75]},
-        })
+        self.regime_settings = build_regime_settings()
         self.leverage = int(getattr(client, "trading_leverage", settings.DEEPCOIN_LEVERAGE))
         self.face_value = 0.1
 
@@ -2047,6 +2042,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             detail["tp_realign"] = tp_heal
         if defense.get("summary"):
             detail["defense_summary"] = defense["summary"]
+        detail = enrich_tp_alert_detail(detail, regime=self.regime)
         verify_note = ""
         if defense.get("expected"):
             verify_note += f" | 止盈 {defense.get('matched', 0)}/{defense.get('expected')} 档已对齐"
@@ -2260,6 +2256,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 verified['size'], tp_pxs, self.current_atr, self.regime, self.tv_tps,
                 verify_note=verify_note,
                 tp_audit=audit,
+                **enrich_tp_alert_detail({}, regime=self.regime),
             )
             if expected > 0 and matched < expected:
                 self._dt.report_system_alert(
