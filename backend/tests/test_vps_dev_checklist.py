@@ -26,28 +26,28 @@ from unittest.mock import MagicMock, patch
 
 
 CHECKLIST_OPEN_TABLE = [
-    (1, 0.619, 0.0),
-    (2, 0.844, 0.253),
-    (3, 1.069, 0.535),
-    (4, 1.496, 1.047),
+    (1, 0.825, 0.0),
+    (2, 1.125, 0.337),
+    (3, 1.425, 0.713),
+    (4, 1.995, 1.397),
 ]
 
 
 @pytest.mark.parametrize("regime,open_qty,add_qty", CHECKLIST_OPEN_TABLE)
 def test_checklist_open_and_add_table_1000u_2000(regime, open_qty, add_qty):
-    """对照清单三：1000U 本金，价格=2000，15×交易所杠杆，保证金预算×5."""
+    """对照清单三：1000U 本金，价格=2000，20×交易所杠杆，保证金预算×5."""
     qty, meta = compute_vps_open_qty(
         live_balance=1000.0,
         initial_principal=1000.0,
         price=2000.0,
         tv_sl=1950.0,
         regime=regime,
-        leverage=15,
+        leverage=20,
         round_fn=lambda x: round(x, 3),
     )
     assert qty == pytest.approx(open_qty, rel=0.02)
     assert meta["margin_usd"] > 0
-    assert meta["position_value"] == pytest.approx(meta["margin_usd"] * 15, rel=0.01)
+    assert meta["position_value"] == pytest.approx(meta["margin_usd"] * 20, rel=0.01)
 
     tv_ratio = regime_add_qty_ratio(regime)
     add, add_meta = compute_vps_add_qty(
@@ -86,13 +86,13 @@ def test_checklist_tv_fields_parsed_and_ignored():
 
 
 @pytest.mark.parametrize("exchange", ["binance", "okx", "gate", "deepcoin"])
-def test_trading_factory_all_exchanges_15x_and_supervisor(exchange):
+def test_trading_factory_all_exchanges_20x_and_supervisor(exchange):
     settings = get_settings()
-    assert exchange_leverage(exchange) == 15
+    assert exchange_leverage(exchange) == 20
 
     user = User(id=1, exchange=exchange)
     client = MagicMock()
-    client.trading_leverage = 15
+    client.trading_leverage = 20
     client.trading_symbol = "ETHUSDT"
 
     if exchange == "deepcoin":
@@ -146,26 +146,26 @@ def test_config_matches_checklist_defaults():
     assert s.REGIME_SCALE_1 == pytest.approx(0.55)
     assert s.REGIME_SCALE_4 == pytest.approx(1.33)
     assert s.SIZING_MARGIN_LEVERAGE == 5
-    assert s.LEVERAGE == 15
-    assert s.DEEPCOIN_LEVERAGE == 15
-    assert s.OKX_LEVERAGE == 15
-    assert s.GATE_LEVERAGE == 15
+    assert s.LEVERAGE == 20
+    assert s.DEEPCOIN_LEVERAGE == 20
+    assert s.OKX_LEVERAGE == 20
+    assert s.GATE_LEVERAGE == 20
 
 
 def test_r4_strongest_open_200u_margin_3000u_position():
-    """R4 最强趋势：1000U 本金 ≈200U 保证金 ×15 杠杆 ≈3000U 头寸."""
+    """R4 最强趋势：1000U 本金 ≈200U 保证金 ×20 杠杆 ≈4000U 头寸."""
     qty, meta = compute_vps_open_qty(
         live_balance=1000.0,
         initial_principal=1000.0,
         price=2000.0,
         tv_sl=1950.0,
         regime=4,
-        leverage=15,
+        leverage=20,
         round_fn=lambda x: round(x, 3),
     )
     assert meta["margin_usd"] == pytest.approx(199.5, rel=0.02)
-    assert meta["position_value"] == pytest.approx(2992.5, rel=0.02)
-    assert qty == pytest.approx(1.496, rel=0.02)
+    assert meta["position_value"] == pytest.approx(3990.0, rel=0.02)
+    assert qty == pytest.approx(1.995, rel=0.02)
 
 
 def test_resolve_entry_qty_eth_open_uses_price_not_sl_distance():
@@ -177,10 +177,10 @@ def test_resolve_entry_qty_eth_open_uses_price_not_sl_distance():
         price=2000.0,
         tv_sl=0,
         regime=4,
-        exchange_leverage=15,
+        exchange_leverage=20,
         round_fn=lambda x: round(x, 3),
     )
-    assert qty == pytest.approx(1.496, rel=0.02)
+    assert qty == pytest.approx(1.995, rel=0.02)
     assert meta.get("error") is None
     assert "margin_usd" in meta
 
