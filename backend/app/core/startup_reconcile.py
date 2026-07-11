@@ -12,6 +12,12 @@ from app.core.adverse_radar_guard import (
     adverse_move_pct,
     is_floating_profit,
 )
+from app.core.position_exposure_guard import (
+    audit_position_tp_exposure,
+    format_exposure_summary,
+    live_side_from_amt,
+    resolve_booked_side,
+)
 from app.core.radar_trail import RADAR_STARTUP_PROFIT_PROGRESS, tp1_consumed
 from app.core.symbol_precision import merge_tv_targets
 from app.services.tv_signal_enrich import compute_tv_tps_from_regime
@@ -443,6 +449,155 @@ class StartupReconcileMixin:
             },
             adopted_manual=adopted,
             trigger="sentinel",
+        )
+        return True
+
+    def _audit_live_exposure(
+        self,
+        live_qty: float,
+        live_side: str | None,
+        *,
+        position_amt: float | None = None,
+        curr_px: float | None = None,
+    ) -> dict[str, Any]:
+        """实盘头寸 vs 挂单止盈合计 — 检测超挂/方向背离."""
+        amt = position_amt
+        if amt is None and hasattr(self, "position_manager"):
+            pos = self.position_manager.get_position(getattr(self, "symbol", ""))
+            if pos:
+                amt = float(pos.get("positionAmt", 0) or 0)
+        side = live_side or live_side_from_amt(amt or 0)
+        qty = abs(float(live_qty or 0))
+        if qty <= 0 and amt:
+            qty = abs(float(amt))
+
+        tp_orders: list[dict] = []
+        expected: list[dict] = []
+        if hasattr(self, "_collect_tp_limit_orders"):
+            tp_orders = self._collect_tp_limit_orders() or []
+        if hasattr(self, "_expected_tp_levels") and qty > 0:
+            expected = self._expected_tp_levels(qty, curr_px) or []
+
+        booked = resolve_booked_side(
+            current_side=getattr(self, "current_side", None),
+            last_tv_side=getattr(self, "last_tv_side", None),
+        )
+        is_contracts = bool(getattr(self, "face_value", None))
+        audit = audit_position_tp_exposure(
+            live_qty=qty,
+            live_side=side,
+            tp_orders=tp_orders,
+            expected_levels=expected,
+            booked_side=booked,
+            is_contracts=is_contracts,
+        )
+        audit["summary"] = format_exposure_summary(audit)
+        audit["exchange"] = getattr(self, "exchange_id", None)
+        return audit
+
+    def _remediate_exposure_anomaly(
+        self,
+        exposure: dict[str, Any],
+        entry: float,
+        *,
+        trigger: str = "sentinel",
+        curr_px: float | None = None,
+    ) -> dict[str, Any]:
+        """超挂止盈或方向背离 → 撤单重挂 / 强平对齐 TV."""
+        result: dict[str, Any] = {"trigger": trigger, "exposure": exposure, "remediated": False}
+        live_qty = float(exposure.get("live_qty") or 0)
+        live_side = exposure.get("live_side")
+        summary = exposure.get("summary") or format_exposure_summary(exposure)
+
+        if exposure.get("side_flip"):
+            tv = getattr(self, "last_tv_side", None)
+            self.current_side = live_side
+            self.watched_qty = live_qty
+            if entry > 0:
+                self.watched_entry = entry
+            detail = {
+                **exposure,
+                "trigger": trigger,
+                "tv_side": tv,
+                "live_side": live_side,
+                "qty": live_qty,
+                "entry": entry,
+            }
+            msg = f"实盘方向背离 TV：{live_side} {live_qty} vs TV {tv} | {summary}"
+            if hasattr(self, "_log"):
+                self._log("SIGNAL", f"⚠️ POSITION_SIDE_FLIP: {msg}", detail)
+            if hasattr(self, "_alert"):
+                self._alert(
+                    "critical",
+                    "POSITION_SIDE_FLIP",
+                    "逆势蚂蚁仓 · 强平对齐 TV",
+                    msg,
+                    detail,
+                )
+            sync = self._try_force_align_opposite_to_tv(
+                {
+                    "latest_tv_action": tv,
+                    "state_last_tv_side": tv,
+                    "open_log_side": getattr(self, "_open_log_side", None),
+                },
+                adopted_manual=bool(getattr(self, "adopted_manual", False)),
+                trigger=trigger,
+            )
+            result.update(sync)
+            result["remediated"] = bool(sync.get("closed"))
+            return result
+
+        if exposure.get("over_committed") and live_qty > 0 and entry > 0:
+            msg = f"止盈挂单超挂 → 核武重挂 | {summary}"
+            if hasattr(self, "_log"):
+                self._log("DEFENSE_HEAL", msg, exposure)
+            if hasattr(self, "_alert"):
+                self._alert(
+                    "warning",
+                    "TP_OVER_COMMIT",
+                    "止盈超挂纠偏",
+                    msg,
+                    exposure,
+                )
+            if hasattr(self, "_cancel_all_tp_limit_orders"):
+                self._cancel_all_tp_limit_orders()
+                time.sleep(0.5)
+            defense: dict[str, Any] = {}
+            if hasattr(self, "_nuclear_realign_tp"):
+                sl = self._radar_sl_to_pass() if hasattr(self, "_radar_sl_to_pass") else None
+                defense = self._nuclear_realign_tp(
+                    live_qty, entry, dynamic_sl=sl, rounds=3,
+                )
+            elif hasattr(self, "_smart_realign_defenses"):
+                sl = self._radar_sl_to_pass() if hasattr(self, "_radar_sl_to_pass") else None
+                defense = self._smart_realign_defenses(
+                    live_qty, entry, dynamic_sl=sl, reason="止盈超挂纠偏",
+                )
+            post = self._audit_live_exposure(live_qty, live_side, curr_px=curr_px)
+            result["defense"] = defense
+            result["post_exposure"] = post
+            result["remediated"] = not post.get("over_committed")
+            return result
+
+        return result
+
+    def _sentinel_exposure_patrol(
+        self,
+        actual_qty: float,
+        actual_side: str,
+        entry: float,
+        curr_px: float,
+        *,
+        trigger: str = "sentinel",
+    ) -> bool:
+        """巡检：头寸与止盈合计是否匹配；异常则实盘核实后纠偏."""
+        exposure = self._audit_live_exposure(
+            actual_qty, actual_side, curr_px=curr_px,
+        )
+        if not exposure.get("needs_remediate"):
+            return False
+        self._remediate_exposure_anomaly(
+            exposure, entry, trigger=trigger, curr_px=curr_px,
         )
         return True
 

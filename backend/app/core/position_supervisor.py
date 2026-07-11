@@ -48,6 +48,7 @@ from app.core.tv_entry_sizing import (
     resolve_vps_entry_qty_eth,
 )
 from app.core.position_qty_tolerance import qty_change_significant, qty_drift_tolerance, tp_slice_qty_tolerance
+from app.core.position_exposure_guard import resolve_booked_side
 from app.core.tp_defense_reconcile import tp_price_matches
 from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, match_qty_reduction_to_tp_level
 from app.services.tv_signal_enrich import format_enrich_note, merge_supervisor_fallbacks
@@ -2186,17 +2187,33 @@ class PositionSupervisor(
                     if self._sentinel_force_align_if_opposite(actual_side):
                         break
 
-                    if not self.last_tv_side:
-                        self.last_tv_side = actual_side
-                        self._save_state()
-
+                    entry_px = float(pos.get("entryPrice", 0) or self.watched_entry or 0)
                     curr_px = self.client.get_current_price(self.symbol)
                     if curr_px <= 0:
                         curr_px = last_px
                     else:
                         last_px = curr_px
 
-                    entry_px = float(pos.get("entryPrice", 0) or self.watched_entry or 0)
+                    exposure = self._audit_live_exposure(
+                        actual_qty,
+                        actual_side,
+                        position_amt=real_amt,
+                        curr_px=curr_px,
+                    )
+                    if exposure.get("side_flip"):
+                        self._remediate_exposure_anomaly(
+                            exposure, entry_px, trigger="sentinel_side_flip", curr_px=curr_px,
+                        )
+                        break
+                    if exposure.get("over_committed"):
+                        self._remediate_exposure_anomaly(
+                            exposure, entry_px, trigger="sentinel_tp_over_commit", curr_px=curr_px,
+                        )
+
+                    if not self.last_tv_side:
+                        self.last_tv_side = actual_side
+                        self._save_state()
+
                     cap_result = self._enforce_regime_cap_alignment(
                         actual_qty,
                         entry_px,
@@ -2213,6 +2230,18 @@ class PositionSupervisor(
                         actual_qty,
                         is_contracts=False,
                     )
+                    booked_side = resolve_booked_side(
+                        current_side=self.current_side,
+                        last_tv_side=self.last_tv_side,
+                    )
+                    if qty_changed and booked_side and actual_side != booked_side:
+                        exposure_flip = self._audit_live_exposure(
+                            actual_qty, actual_side, position_amt=real_amt, curr_px=curr_px,
+                        )
+                        self._remediate_exposure_anomaly(
+                            exposure_flip, entry_px, trigger="sentinel_qty_flip", curr_px=curr_px,
+                        )
+                        break
                     if qty_changed:
                         old_qty = self.watched_qty
                         orch = self._orchestrate_qty_change(

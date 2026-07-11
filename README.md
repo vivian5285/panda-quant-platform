@@ -526,7 +526,12 @@ qty             = position_value / price   （DeepCoin 换算为合约张）
 
 ### 八、哨兵（~6s 自适应）
 
-方向背离 · 仓位异动(TP/人工) · 雷达追踪 · cap trim · 全平归因
+方向背离 · 仓位异动(TP/人工) · 雷达追踪 · cap trim · 全平归因 · **头寸↔止盈挂单敞口巡检**
+
+**敞口巡检（每轮哨兵）：** 实盘持仓 vs reduceOnly 止盈挂单合计
+- `tp_booked_sum > live_qty` → `TP_OVER_COMMIT` 核武重挂 + 钉钉
+- 实盘方向 ≠ TV/账本方向（如平多过量变蚂蚁空仓）→ `POSITION_SIDE_FLIP` 强平对齐 TV + 钉钉
+- 加仓后 `_rebuild_defenses_after_tv_add` 结束再核实敞口，雷达按新总头寸同步
 
 ---
 
@@ -691,7 +696,7 @@ https://twinstar.pro/gemini/webhook
 
 前端 API 绑定页交易所卡片使用同色主题（`exchange-picker-{exchange}`），便于与原版系统视觉区分。
 
-**会推送：** `OPEN`、`CLOSE`、`CLOSE_TP3`、`CLOSE_PROTECT`、`SAME_DIR_TP_REFRESH`（同向智能持仓）、`SAME_DIR_REOPEN`（同向刷新换仓）、`STARTUP`、`STARTUP_FAIL`、`FORCE_ALIGN`、`ADJUST`、`MANUAL_ADJUST`、`DEFENSE_HEAL_FAIL`、`INSUFFICIENT_BALANCE`、`LOCK_TIMEOUT`、`TP_RETRY_FAIL`、`API_OFFLINE`、`SENTINEL_ERROR`、`severity=critical`
+**会推送：** `OPEN`、`CLOSE`、`CLOSE_TP3`、`CLOSE_PROTECT`、`SAME_DIR_TP_REFRESH`（同向智能持仓）、`SAME_DIR_REOPEN`（同向刷新换仓）、`STARTUP`、`STARTUP_FAIL`、`FORCE_ALIGN`、`POSITION_SIDE_FLIP`、`TP_OVER_COMMIT`、`ADJUST`、`MANUAL_ADJUST`、`DEFENSE_HEAL_FAIL`、`INSUFFICIENT_BALANCE`、`LOCK_TIMEOUT`、`TP_RETRY_FAIL`、`API_OFFLINE`、`SENTINEL_ERROR`、`severity=critical`
 
 **同向智能筛选钉钉示例：**
 
@@ -880,6 +885,8 @@ Swagger：`http://127.0.0.1:8000/docs`（`PRODUCTION_STRICT=1` 时关闭）
 | `ADJUST` / `MANUAL_ADJUST` | 人工异动 |
 | `ADVERSE_SL_DISARM` | 防护盾撤销（雷达接管；清仓复位时不误报） |
 | `FORCE_ALIGN` | 方向背离强平 |
+| `POSITION_SIDE_FLIP` | 平多/平空过量导致逆势蚂蚁仓，强平对齐 TV |
+| `TP_OVER_COMMIT` | 止盈挂单合计超过实盘头寸，核武重挂 |
 | `LOCK_TIMEOUT` | 信号锁超时 |
 | `BINANCE_FILL` | 交易所成交同步 |
 

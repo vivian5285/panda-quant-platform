@@ -31,6 +31,7 @@ from app.core.tv_entry_sizing import (
     resolve_vps_entry_qty_deepcoin,
 )
 from app.core.position_qty_tolerance import qty_change_significant
+from app.core.position_exposure_guard import resolve_booked_side
 from app.core.tp_defense_reconcile import (
     STARTUP_ORDER_FETCH_DELAY,
     STARTUP_ORDER_FETCH_RETRIES,
@@ -1606,6 +1607,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             "summary": self._format_audit_summary(audit) if audit else "",
             "consumed_tp_levels": sorted(consumed),
         }
+        if hasattr(self, "_audit_live_exposure"):
+            exp = self._audit_live_exposure(
+                live_qty, getattr(self, "current_side", None), curr_px=curr_px,
+            )
+            result["exposure"] = exp
+            if exp.get("over_committed") and not exp.get("side_flip"):
+                logger.warning(f"⚠️ 加仓后仍检测到止盈超挂: {exp.get('summary')}")
+        return result
 
     def _place_radar_sl(self, live_qty, sl_price):
         close_side = "sell" if self.current_side == "LONG" else "buy"
@@ -2408,12 +2417,31 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     if self._sentinel_force_align_if_opposite(actual_side):
                         break
 
+                    entry_px = float(pos.get("entry_price", 0) or self.watched_entry or 0) if pos else 0.0
+                    curr_px = self.client.get_current_price(self.symbol)
+                    if curr_px <= 0:
+                        curr_px = last_px
+                    else:
+                        last_px = curr_px
+
+                    exposure = self._audit_live_exposure(
+                        real_amt, actual_side, curr_px=curr_px,
+                    )
+                    if exposure.get("side_flip"):
+                        self._remediate_exposure_anomaly(
+                            exposure, entry_px, trigger="sentinel_side_flip", curr_px=curr_px,
+                        )
+                        break
+                    if exposure.get("over_committed"):
+                        self._remediate_exposure_anomaly(
+                            exposure, entry_px, trigger="sentinel_tp_over_commit", curr_px=curr_px,
+                        )
+
                     if not self.last_tv_side:
                         self.last_tv_side = actual_side
                         self._save_state()
 
-                    entry_px = float(pos.get("entry_price", 0) or self.watched_entry or 0) if pos else 0.0
-                    cap_px = self.client.get_current_price(self.symbol) or entry_px
+                    cap_px = curr_px or entry_px
                     cap_result = self._enforce_regime_cap_alignment(
                         real_amt, entry_px, cap_px or entry_px, reason="哨兵巡检",
                     )
@@ -2426,6 +2454,18 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         real_amt,
                         is_contracts=True,
                     )
+                    booked_side = resolve_booked_side(
+                        current_side=self.current_side,
+                        last_tv_side=self.last_tv_side,
+                    )
+                    if qty_changed and booked_side and actual_side != booked_side:
+                        exposure_flip = self._audit_live_exposure(
+                            real_amt, actual_side, curr_px=curr_px,
+                        )
+                        self._remediate_exposure_anomaly(
+                            exposure_flip, entry_px, trigger="sentinel_qty_flip", curr_px=curr_px,
+                        )
+                        break
                     if qty_changed:
                         old_qty = self.watched_qty
                         curr_px_chg = self.client.get_current_price(self.symbol) or float(

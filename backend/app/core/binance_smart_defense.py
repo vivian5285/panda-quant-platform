@@ -889,7 +889,7 @@ class BinanceSmartDefenseMixin:
             )
 
         audit = self._audit_tp_levels(live_qty, curr_px=curr_px) if live_qty > 0 else {}
-        return {
+        result = {
             "reason": reason,
             "entry_type": entry_type,
             "live_qty": live_qty,
@@ -910,6 +910,15 @@ class BinanceSmartDefenseMixin:
             "summary": self._format_audit_summary(audit) if audit else "",
             "consumed_tp_levels": sorted(consumed),
         }
+        if hasattr(self, "_audit_live_exposure"):
+            exp = self._audit_live_exposure(live_qty, getattr(self, "current_side", None), curr_px=curr_px)
+            result["exposure"] = exp
+            if exp.get("over_committed") and not exp.get("side_flip"):
+                self._def_log(
+                    f"⚠️ 加仓后仍检测到止盈超挂: {exp.get('summary')}",
+                    logging.WARNING,
+                )
+        return result
 
     def _smart_realign_defenses(
         self, live_qty: float, entry: float, dynamic_sl=None, reason: str = ""
