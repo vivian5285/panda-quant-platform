@@ -676,7 +676,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             f"📭 [重启对账] 账本/日志曾有仓 (watched={prev_watched}, side={prev_side}, "
             f"monitoring={was_monitoring}) 但盘口已全平 → 补发收网播报"
         )
-        self.client.cancel_all_open_orders(self.symbol)
+        self._purge_defense_orders_on_flat("startup_reconcile", notify=True)
         self.monitoring = False
         self.watched_qty = 0
         self.initial_qty = 0
@@ -722,6 +722,33 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if px <= 0:
             return False
         return any(tp_price_matches(px, t) for t in self.tv_tps if t > 0)
+
+    def _flat_purge_side_snapshot(self):
+        snap = getattr(self, "_flat_purge_side", None)
+        if snap in ("LONG", "SHORT"):
+            return snap
+        side = getattr(self, "current_side", None)
+        return side if side in ("LONG", "SHORT") else None
+
+    def _is_flat_orphan_tp_order(self, o, side=None):
+        if o.get("ordType") not in ("limit", "post_only", None):
+            return False
+        val = o.get("reduceOnly")
+        if val is True or str(val).lower() in ("true", "1"):
+            return True
+        side = side or self._flat_purge_side_snapshot()
+        if not side:
+            return False
+        close_side = "sell" if side == "LONG" else "buy"
+        if str(o.get("side", "")).lower() != close_side:
+            return False
+        px = float(o.get("px", 0) or 0)
+        if px <= 0:
+            return False
+        tv_tps = list(getattr(self, "tv_tps", []) or [])
+        if tv_tps:
+            return any(tp_price_matches(px, t) for t in tv_tps if t > 0)
+        return True
 
     def _collect_limit_tp_prices(self):
         prices = []
@@ -1300,10 +1327,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             live_qty, entry, dynamic_sl=None, reason="重启纠偏升级",
         )
 
-    def _cancel_all_tp_limit_orders(self):
+    def _cancel_all_tp_limit_orders(self, *, flat_purge=False):
         cancelled = 0
+        side_snap = self._flat_purge_side_snapshot() if flat_purge else None
         for o in self.client.get_pending_orders(self.symbol):
-            if not self._is_tp_limit_order(o):
+            is_tp = (
+                self._is_flat_orphan_tp_order(o, side_snap)
+                if flat_purge
+                else self._is_tp_limit_order(o)
+            )
+            if not is_tp:
                 continue
             oid = o.get("ordId")
             if oid:
@@ -1311,7 +1344,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 cancelled += 1
                 time.sleep(0.15)
         if cancelled:
-            logger.info(f"🧹 已撤销全部限价止盈 {cancelled} 张")
+            label = "平仓孤儿止盈" if flat_purge else "限价止盈"
+            logger.info(f"🧹 已撤销全部{label} {cancelled} 张")
         return cancelled
 
     def _ensure_radar_sl(self, live_qty, sl_price):
@@ -1852,16 +1886,17 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         finally:
             self._lock.release()
 
-    def _handle_manual_flat_detected(self, reason):
-        """人工全平 / 止盈吃满：智能复位账本"""
+    def _handle_manual_flat_detected(self, reason, *, skip_eager_purge=False):
+        """人工全平 / 止盈吃满：立即撤 TP123 并智能复位账本"""
         logger.info(f"📭 感知空仓: {reason}")
+        if not skip_eager_purge:
+            self._purge_defense_orders_on_flat("manual_flat", notify=True)
         self.monitoring = False
         self.watched_qty = 0
         self.initial_qty = 0
         self.base_qty = 0
         self.add_count = 0
         self.current_side = None
-        self.client.cancel_all_open_orders(self.symbol)
         self._save_state()
         self._report_flat_close(reason or "仓位归零 (人工全平 / 止盈吃满)")
 
@@ -2407,8 +2442,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
                     if real_amt == 0:
                         if self.watched_qty > 0:
+                            self._purge_defense_orders_on_flat(
+                                "sentinel_zero_eager", notify=False,
+                            )
                             self._handle_manual_flat_detected(
-                                "仓位归零 (止盈吃单 / 人工全平 / TV 强制平仓)"
+                                "仓位归零 (止盈吃单 / 人工全平 / TV 强制平仓)",
+                                skip_eager_purge=True,
                             )
                         break
 

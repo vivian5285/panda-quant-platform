@@ -730,6 +730,67 @@ class StartupReconcileMixin:
             self._save_state()
         return {"status": "skipped", "reason": "manual_skip_tv_open_reopen", "action": action, "detail": detail}
 
+    def _purge_defense_orders_on_flat(self, trigger: str = "flat", *, notify: bool = True) -> dict:
+        """Immediately tear down TP123 + STOP/algo when exchange position is flat."""
+        sym = getattr(self, "symbol", None)
+        detail: dict[str, Any] = {
+            "trigger": trigger,
+            "prev_side": getattr(self, "current_side", None),
+            "prev_watched_qty": float(getattr(self, "watched_qty", 0) or 0),
+            "cancelled_tp": 0,
+            "cancelled_stops": False,
+            "cancelled_all": False,
+        }
+        if not sym:
+            return detail
+
+        if detail["prev_side"] in ("LONG", "SHORT"):
+            self._flat_purge_side = detail["prev_side"]
+
+        tp_fn = getattr(self, "_cancel_all_tp_limit_orders", None)
+        if tp_fn:
+            try:
+                detail["cancelled_tp"] = int(tp_fn(flat_purge=True))
+            except TypeError:
+                detail["cancelled_tp"] = int(tp_fn())
+
+        consumed_fn = getattr(self, "_cancel_tp_orders_for_consumed_levels", None)
+        if consumed_fn:
+            detail["cancelled_tp"] += int(consumed_fn() or 0)
+
+        stop_fn = getattr(self, "_cancel_binance_all_close_stops", None)
+        if stop_fn:
+            detail["cancelled_stops"] = bool(stop_fn())
+        elif hasattr(self, "_cancel_radar_stop_orders"):
+            self._cancel_radar_stop_orders()
+            detail["cancelled_stops"] = True
+
+        if hasattr(self.client, "cancel_all_open_orders"):
+            self.client.cancel_all_open_orders(sym)
+            detail["cancelled_all"] = True
+
+        if hasattr(self, "_flat_purge_side"):
+            delattr(self, "_flat_purge_side")
+
+        if notify and (detail["cancelled_tp"] > 0 or detail["cancelled_all"]):
+            prev_s = detail["prev_side"] or "?"
+            prev_q = detail["prev_watched_qty"]
+            if hasattr(self, "_log"):
+                self._log(
+                    "FLAT_PURGE",
+                    f"平仓撤单: {prev_s} {prev_q} → 撤 TP×{detail['cancelled_tp']}",
+                    detail,
+                )
+            if hasattr(self, "_alert"):
+                self._alert(
+                    "warning" if detail["cancelled_tp"] > 0 else "info",
+                    "MANUAL_FLAT_TP_PURGE",
+                    "平仓后撤销止盈挂单",
+                    f"实盘已平 {prev_s} {prev_q}，已撤 TP/止损 {detail['cancelled_tp']} 张",
+                    detail,
+                )
+        return detail
+
     def _idle_book_is_flat(self) -> bool:
         wq = float(getattr(self, "watched_qty", 0) or 0)
         side = getattr(self, "current_side", None)
@@ -800,8 +861,8 @@ class StartupReconcileMixin:
             return False
         if not orders:
             return False
-        self.client.cancel_all_open_orders(sym)
-        detail = {"trigger": "idle_patrol", "orphan_orders": len(orders)}
+        detail = self._purge_defense_orders_on_flat("idle_patrol", notify=False)
+        detail["orphan_orders"] = len(orders)
         if hasattr(self, "_log"):
             self._log("IDLE_WATCH", f"空仓巡检：清理 {len(orders)} 个孤儿挂单", detail)
         if hasattr(self, "_alert"):
@@ -809,7 +870,7 @@ class StartupReconcileMixin:
                 "info",
                 "IDLE_WATCH",
                 "空仓巡检 · 清理孤儿挂单",
-                f"实盘空仓但仍有 {len(orders)} 个挂单，已撤单",
+                f"实盘空仓但仍有 {len(orders)} 个挂单，已撤 TP×{detail.get('cancelled_tp', 0)}",
                 detail,
             )
         return True

@@ -121,6 +121,34 @@ class BinanceSmartDefenseMixin:
             time.sleep(delay)
         return checks_fn()
 
+    def _flat_purge_side_snapshot(self) -> str | None:
+        snap = getattr(self, "_flat_purge_side", None)
+        if snap in ("LONG", "SHORT"):
+            return snap
+        side = getattr(self, "current_side", None)
+        return side if side in ("LONG", "SHORT") else None
+
+    def _is_flat_orphan_tp_order(self, o: dict, side: str | None = None) -> bool:
+        """Identify TP123 limits to cancel after flat — works even if current_side was cleared."""
+        if o.get("type") != "LIMIT":
+            return False
+        val = o.get("reduceOnly")
+        if val is True or str(val).lower() in ("true", "1"):
+            return True
+        side = side or self._flat_purge_side_snapshot()
+        if not side:
+            return False
+        close_side = "BUY" if side == "SHORT" else "SELL"
+        if o.get("side") != close_side:
+            return False
+        px = float(o.get("price", 0) or 0)
+        if px <= 0:
+            return False
+        tv_tps = list(getattr(self, "tv_tps", []) or [])
+        if tv_tps:
+            return any(tp_price_matches(px, t) for t in tv_tps if t > 0)
+        return True
+
     def _is_tp_limit_order(self, o: dict) -> bool:
         if o.get("type") != "LIMIT":
             return False
@@ -621,10 +649,16 @@ class BinanceSmartDefenseMixin:
             live_qty, entry, dynamic_sl=None, reason="重启纠偏升级",
         )
 
-    def _cancel_all_tp_limit_orders(self) -> int:
+    def _cancel_all_tp_limit_orders(self, *, flat_purge: bool = False) -> int:
         cancelled = 0
+        side_snap = self._flat_purge_side_snapshot() if flat_purge else None
         for o in self.client.get_open_orders(self.symbol) or []:
-            if not self._is_tp_limit_order(o):
+            is_tp = (
+                self._is_flat_orphan_tp_order(o, side_snap)
+                if flat_purge
+                else self._is_tp_limit_order(o)
+            )
+            if not is_tp:
                 continue
             oid = o.get("orderId")
             if oid:
@@ -632,7 +666,8 @@ class BinanceSmartDefenseMixin:
                 cancelled += 1
                 time.sleep(0.15)
         if cancelled:
-            self._def_log(f"🧹 已撤销全部限价止盈 {cancelled} 张")
+            label = "平仓孤儿止盈" if flat_purge else "限价止盈"
+            self._def_log(f"🧹 已撤销全部{label} {cancelled} 张")
         return cancelled
 
     def _ensure_radar_sl(self, dynamic_sl, live_qty=None) -> bool:

@@ -1806,8 +1806,13 @@ class PositionSupervisor(
                 attribution,
             )
 
-    def _handle_detected_flat(self, trigger: str = "sentinel_zero") -> bool:
+    def _handle_detected_flat(
+        self, trigger: str = "sentinel_zero", *, skip_eager_purge: bool = False,
+    ) -> bool:
         """Confirm flat, attribute cause, book-close, and detect false-flat / sync issues."""
+        if not skip_eager_purge:
+            self._purge_defense_orders_on_flat(trigger, notify=False)
+
         if not self._confirm_exchange_flat():
             self._log(
                 "WARN",
@@ -1857,6 +1862,12 @@ class PositionSupervisor(
             threading.Thread(target=self._sentinel_loop, daemon=True).start()
             return False
         return True
+
+    def _handle_manual_flat_detected(self, reason: str) -> None:
+        """账本有仓、实盘已平：立即撤 TP123 并收口账本."""
+        logger.info("[User %s] manual flat detected: %s", self.user_id, reason)
+        self._purge_defense_orders_on_flat("manual_flat", notify=True)
+        self._handle_detected_flat("manual_flat", skip_eager_purge=True)
 
     def _sweep_dust_and_finalize(self, reason: str) -> None:
         logger.warning(f"[User {self.user_id}] dust sweep → {reason}")
@@ -1932,7 +1943,7 @@ class PositionSupervisor(
         logger.warning(
             f"[User {self.user_id}] flat reconcile: book had {prev_watched} {prev_side}, exchange flat"
         )
-        self.client.cancel_all_open_orders(self.symbol)
+        self._purge_defense_orders_on_flat("startup_reconcile", notify=True)
         self.monitoring = False
         exit_price = self.client.get_current_price(self.symbol)
         if not self.current_trade_id:
@@ -2177,7 +2188,12 @@ class PositionSupervisor(
 
                     if real_amt == 0:
                         if self.watched_qty > 0:
-                            if self._handle_detected_flat("sentinel_zero"):
+                            self._purge_defense_orders_on_flat(
+                                "sentinel_zero_eager", notify=False,
+                            )
+                            if self._handle_detected_flat(
+                                "sentinel_zero", skip_eager_purge=True,
+                            ):
                                 break
                         else:
                             break
@@ -2374,7 +2390,9 @@ class PositionSupervisor(
         had_position = bool(
             pos_before and float(pos_before.get("positionAmt", 0) or 0) != 0
         )
-        self.client.cancel_all_open_orders(self.symbol)
+        self._purge_defense_orders_on_flat(
+            close_trigger or "code_close_all", notify=False,
+        )
         time.sleep(0.5)
         closed_successfully = False
         exit_price = self.client.get_current_price(self.symbol)
@@ -2481,7 +2499,7 @@ class PositionSupervisor(
         self.current_trade_id = None
         self.trade_opened_at = None
         self._save_state()
-        self.client.cancel_all_open_orders(self.symbol)
+        self._purge_defense_orders_on_flat("flat_reset", notify=False)
 
     def _trigger_settlement_on_flat(self) -> None:
         """Profitable cycle awaiting flat: bill immediately after position closes."""

@@ -175,12 +175,24 @@ def test_confirm_exchange_flat_requires_consecutive_zeros(supervisor):
 
 
 def test_handle_detected_flat_rejects_transient_zero(supervisor):
-    with patch.object(supervisor, "_confirm_exchange_flat", return_value=False), patch.object(
-        supervisor, "_close_all"
-    ) as mock_close:
+    with patch.object(supervisor, "_purge_defense_orders_on_flat", return_value={"cancelled_tp": 2}) as mock_purge, patch.object(
+        supervisor, "_confirm_exchange_flat", return_value=False
+    ), patch.object(supervisor, "_close_all") as mock_close:
         ok = supervisor._handle_detected_flat("sentinel_zero")
     assert ok is False
+    mock_purge.assert_called_once()
     mock_close.assert_not_called()
+
+
+def test_handle_detected_flat_eager_purges_before_confirm(supervisor):
+    with patch.object(supervisor, "_purge_defense_orders_on_flat", return_value={"cancelled_tp": 3}) as mock_purge, patch.object(
+        supervisor, "_confirm_exchange_flat", return_value=True
+    ), patch.object(supervisor, "_close_all") as mock_close, patch.object(
+        supervisor, "_diagnose_flat_close", return_value={"human_reason": "人工平仓"}
+    ):
+        supervisor._handle_detected_flat("sentinel_zero")
+    mock_purge.assert_called_once_with("sentinel_zero", notify=False)
+    mock_close.assert_called_once()
 
 
 def test_handle_detected_flat_books_close_with_attribution(supervisor):
