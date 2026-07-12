@@ -52,15 +52,64 @@ def test_finalize_recovery_derives_missing_tp3():
 def test_prepare_manual_adopt_resets_consumed():
     class Sup:
         watched_qty = 0.42
+        watched_entry = 1806.01
         initial_qty = 1.0
         base_qty = 0.0
         consumed_tp_levels = [1]
+        current_sl = 1808.0
+        best_price = 1810.0
 
     sup = Sup()
     prepare_manual_adopt(sup)
     assert sup.initial_qty == 0.42
     assert sup.consumed_tp_levels == []
     assert sup.adopted_manual is True
+    assert sup.current_sl == 0.0
+    assert sup.best_price == 1806.01
+
+
+def test_ensure_radar_sl_blocked_before_tp1_on_manual_adopt():
+    from app.core.binance_smart_defense import BinanceSmartDefenseMixin
+
+    class Probe(BinanceSmartDefenseMixin):
+        user_id = 1
+        symbol = "ETHUSDT"
+        current_side = "LONG"
+        watched_entry = 1806.01
+        adopted_manual = True
+        consumed_tp_levels = []
+        regime = 3
+        tv_tps = [1850.0, 1900.0, 1950.0]
+        current_atr = 20.0
+        regime_settings = {3: {"activation": 0.90, "trail_offset": 1.35, "ratios": [0.18, 0.32, 0.5]}}
+        client = MagicMock()
+
+        def _current_tp_price(self):
+            return 1805.85
+
+        def _def_log(self, msg, level=0):
+            pass
+
+        def _radar_activation_reached(self, curr_px):
+            from app.core.radar_trail import radar_may_arm
+            progress = self._radar_activation_progress(curr_px)
+
+            return radar_may_arm(
+                consumed_tp_levels=self.consumed_tp_levels,
+                progress=progress,
+                activation_ratio=0.90,
+                radar_active=False,
+            )
+
+        def _radar_activation_progress(self, curr_px):
+            entry = self.watched_entry
+            tp1_dist = abs(self.tv_tps[0] - entry)
+            required = entry + tp1_dist * 0.90
+            span = required - entry
+            return max(0.0, min(1.0, (curr_px - entry) / span))
+
+    probe = Probe()
+    assert probe._ensure_radar_sl(1808.5, 0.043) is False
 
 
 class _WatchHost(StartupReconcileMixin):

@@ -59,7 +59,7 @@ rules:
   - PYRAMID / PROFIT_ADD：同向追加，数量 = base_qty × TV qty_ratio；**加仓后核武重挂 TP123（新价格×新总头寸）+ TV SL + 雷达**
   - 开仓后挂限价止盈 TP1/2/3（reduceOnly）+ TV 硬止损 tv_sl + 雷达移动保本
   - 禁止与 TV 反向持仓：哨兵 / 重启 / 空闲巡检 → FORCE_ALIGN 全平
-  - 人工/外部同向仓：manual adopt 后保留仓位，TV CLOSE 不强制全平，补挂 TP123+雷达
+  - 人工/外部同向仓：manual adopt 后保留仓位，TV CLOSE 不强制全平，补挂 TP123 + **TV 硬止损**（雷达待 TP1/96% 路径后再激活）
   - 未结清绩效账单 / 用户暂停 / 全局暂停 → 跳过建仓；平仓类信号在暂停时仍放行
 
 # 策略对接（Pine v6.9.45 双系统）
@@ -494,7 +494,7 @@ qty             = position_value / price   （DeepCoin 换算为合约张）
 
 ```
 ① TV 底线 (tv_sl)     Pine 硬止损，UPDATE_SL 可热更新
-② 雷达保本 (radar)    TP1 后 / 96% 路径激活，ATR 追踪
+② 雷达保本 (radar)    TP1 后 / 96% 路径激活，ATR 追踪（**人工接管首挂不提前激活**）
 ③ TP123               regime 比例 reduceOnly 限价
 ```
 

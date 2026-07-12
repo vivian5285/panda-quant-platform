@@ -125,11 +125,16 @@ def prepare_manual_adopt(supervisor) -> None:
     qty = float(getattr(supervisor, "watched_qty", 0) or 0)
     if qty <= 0:
         return
+    entry = float(getattr(supervisor, "watched_entry", 0) or 0)
     supervisor.initial_qty = qty
     if float(getattr(supervisor, "base_qty", 0) or 0) <= 0:
         supervisor.base_qty = qty
     supervisor.consumed_tp_levels = []
     supervisor.adopted_manual = True
+    if entry > 0:
+        supervisor.best_price = entry
+    # 人工接管首挂仅 TV 硬止损 + TP123；雷达待 TP1/96% 路径后再激活
+    supervisor.current_sl = 0.0
 
 
 TV_CLOSE_ACTIONS = frozenset({"CLOSE", "CLOSE_PROTECT", "CLOSE_TP3", "CLOSE_STOPLOSS"})
@@ -992,6 +997,9 @@ class StartupReconcileMixin:
         audit: dict[str, Any] = {"expected_sl": 0.0, "live": False, "placed": False}
         if pnl_track != "profit_radar" or live_qty <= 0:
             return audit
+        if hasattr(self, "_radar_activation_reached") and not self._radar_activation_reached(curr_px):
+            audit["deferred"] = "await_tp1_or_96pct"
+            return audit
 
         if hasattr(self, "_refresh_radar_state_on_recover") and curr_px > 0 and entry > 0:
             self._refresh_radar_state_on_recover(curr_px, entry)
@@ -1116,6 +1124,15 @@ class StartupReconcileMixin:
             radar_active=radar_active,
             consumed_tp_levels=consumed,
         )
+        radar_permitted = (
+            self._radar_activation_reached(curr_px)
+            if hasattr(self, "_radar_activation_reached")
+            else False
+        )
+        adopted_manual = bool(getattr(self, "adopted_manual", False))
+        if adopted_manual and not radar_permitted:
+            pnl_track = "loss_shield"
+            radar_handoff = False
         adverse_pct = round(adverse_move_pct(entry, curr_px, side) * 100, 2)
         floating_profit = is_floating_profit(entry, curr_px, side)
 
@@ -1187,6 +1204,8 @@ class StartupReconcileMixin:
             "breakeven_active": breakeven_live,
             "radar_sl": radar_sl_audit,
             "radar_handoff": radar_handoff,
+            "radar_permitted": radar_permitted,
+            "adopted_manual": adopted_manual,
             "shield": shield_audit,
             "shield_stop_price": stop_px,
             "consumed_tp_levels": list(getattr(self, "consumed_tp_levels", []) or []),

@@ -1317,6 +1317,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
     def _ensure_radar_sl(self, live_qty, sl_price):
         if not sl_price:
             return False
+        curr_px = self._current_tp_price() if hasattr(self, "_current_tp_price") else 0.0
+        if hasattr(self, "_radar_activation_reached") and not self._radar_activation_reached(curr_px):
+            logger.info(
+                "⏸️ 雷达未达激活条件（待 TP1 成交或路径≥96%），跳过保本 STOP @ %.2f",
+                float(sl_price),
+            )
+            return False
         sl = float(sl_price)
         if hasattr(self, "_clamp_radar_sl_to_tv_floor"):
             sl = self._clamp_radar_sl_to_tv_floor(sl)
@@ -1380,7 +1387,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 f"📡 重启雷达恢复: 进度 {progress:.0%} | best={self.best_price:.2f} | "
                 f"SL={self.current_sl:.2f}"
             )
-        elif self.current_sl == 0.0:
+        elif self.current_sl == 0.0 and not getattr(self, "adopted_manual", False):
             self.current_sl = entry
 
     def _nuclear_realign_tp(self, live_qty, entry, dynamic_sl=None, rounds=3):

@@ -639,6 +639,12 @@ class BinanceSmartDefenseMixin:
         """Place radar breakeven STOP — Route A: Binance 合并单槽，Deepcoin 双轨。"""
         if not dynamic_sl:
             return False
+        curr_px = self._current_tp_price() if hasattr(self, "_current_tp_price") else 0.0
+        if hasattr(self, "_radar_activation_reached") and not self._radar_activation_reached(curr_px):
+            self._def_log(
+                f"⏸️ 雷达未达激活条件（待 TP1 成交或路径≥96%），跳过保本 STOP @ {float(dynamic_sl):.2f}",
+            )
+            return False
         sl = float(dynamic_sl)
         if hasattr(self, "_clamp_radar_sl_to_tv_floor"):
             sl = self._clamp_radar_sl_to_tv_floor(sl)

@@ -2043,7 +2043,7 @@ class PositionSupervisor(
                 f"[User {self.user_id}] 📡 重启雷达恢复: 进度 {progress:.0%} | "
                 f"best={self.best_price:.2f} | SL={self.current_sl:.2f}"
             )
-        elif self.current_sl == 0.0:
+        elif self.current_sl == 0.0 and not getattr(self, "adopted_manual", False):
             self.current_sl = entry
 
     def _radar_activation_progress(self, curr_px: float) -> float:
@@ -2635,7 +2635,7 @@ class PositionSupervisor(
 
             if self.best_price <= 0:
                 self.best_price = self.watched_entry
-            if self.current_sl <= 0:
+            if self.current_sl <= 0 and not getattr(self, "adopted_manual", False):
                 self.current_sl = self.watched_entry
 
             curr_px = self.client.get_current_price(self.symbol)
@@ -2706,6 +2706,8 @@ class PositionSupervisor(
                 "adverse_startup": adverse_startup,
                 "shield_stop_price": unified.get("shield_stop_price"),
                 "radar_handoff": unified.get("radar_handoff"),
+                "radar_permitted": unified.get("radar_permitted"),
+                "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
             })
             self._save_state()
 

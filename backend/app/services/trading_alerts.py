@@ -467,6 +467,14 @@ def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
         lines.append(_line("已加仓", f"{int(detail['add_count'])} 次"))
     if detail.get("adopted_manual"):
         lines.append(_line("接管类型", "人工/外部持仓 · 按最新 TV 补挂"))
+        if detail.get("radar_permitted") is False and not detail.get("breakeven_active"):
+            lines.append(_line("雷达状态", "待 TP1 成交或路径≥96% 后激活"))
+    if detail.get("shield_stop_price") or detail.get("tv_sl"):
+        stop_px = detail.get("shield_stop_price") or detail.get("tv_sl")
+        if detail.get("breakeven_active"):
+            lines.append(_line("雷达止损", f"@{float(stop_px):.2f}（已激活）"))
+        else:
+            lines.append(_line("TV 硬止损", f"@{float(stop_px):.2f}（雷达未激活）"))
     if detail.get("force_aligned"):
         lines.append(_line("逆势处理", "已强平对齐 TV 方向"))
     if detail.get("startup_summary"):
