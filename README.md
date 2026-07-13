@@ -49,7 +49,7 @@ trading_factory:
   binance_only_mixin: BinanceSmartDefenseMixin      # OKX/Gate 复用同一 TP/雷达挂单实现
   shared_modules: [radar_trail, tv_entry_sizing, tp_slice_guard, same_direction_policy, startup_reconcile]
   defense_route_a: TV tv_sl + TP123 + 雷达保本；Binance/OKX/Gate 合并单槽 STOP；DeepCoin 双轨并行
-  leverage: 20× 全所统一（config LEVERAGE / OKX / GATE / DEEPCOIN，钉钉 #币安20x 动态读取）
+  leverage: 25× 全所统一（config LEVERAGE / OKX / GATE / DEEPCOIN，钉钉 #币安25x 动态读取）
   sizing: OPEN 由 VPS 公式（忽略 TV qty_ratio）；ADD = base_qty × TV qty_ratio（档位动态）
 
 # 执行铁律（PositionSupervisor — 四所相同）
@@ -230,7 +230,7 @@ TV 信号 → 用户交易所实盘 → 周期结束且全平仓
   TradeLog      全域日志       DownlineLogsModal
                    │
                    ▼
-         钉钉（按交易所 GEMINI 主题 #币安20x / #深币20x / #OKX20x / #Gate20x，仅关键动作）
+         钉钉（按交易所 GEMINI 主题 #币安25x / #深币25x / #OKX25x / #Gate25x，仅关键动作）
 ```
 
 ### Docker 拓扑
@@ -425,7 +425,7 @@ TradingView POST /gemini/webhook
        ├─ LONG / SHORT / PYRAMID / PROFIT_ADD → _handle_tv_entry()
        ├─ CLOSE / CLOSE_PROTECT / CLOSE_TP3 → 全平（manual adopt 同向可跳过）
        └─ UPDATE_SL → 同步 TV 硬止损底线
-  → set_leverage(20×) → 市价开/平 → 挂 TP123 + TV SL + 雷达 → 启动哨兵
+  → set_leverage(25×) → 市价开/平 → 挂 TP123 + TV SL + 雷达 → 启动哨兵
 ```
 
 **设计原则：** 网关只做收信；**所有实盘决策在 Supervisor 线程**完成。
@@ -479,14 +479,14 @@ TradingView POST /gemini/webhook
 ```
 effective_risk% = VPS_RISK_PCT × REGIME_SCALE × GLOBAL_SCALE
 margin_usd      = sizing_base × effective_risk% × SIZING_MARGIN_LEVERAGE（默认 5）
-position_value  = margin_usd × exchange_leverage（默认 20×）
+position_value  = margin_usd × exchange_leverage（默认 25×）
 qty             = position_value / price   （DeepCoin 换算为合约张）
 ```
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
-| `LEVERAGE` / `OKX_*` / `GATE_*` / `DEEPCOIN_*` | **20** | 实盘杠杆 + 钉钉 `#币安20x` |
-| `SIZING_MARGIN_LEVERAGE` | 5 | 保证金预算系数 |
+| `LEVERAGE` / `OKX_*` / `GATE_*` / `DEEPCOIN_*` | **25** | 实盘杠杆 + 钉钉 `#币安25x` |
+| `SIZING_MARGIN_LEVERAGE` | 5 | 保证金预算系数（与交易所杠杆解耦） |
 | `VPS_RISK_PCT` | 3.0% | 基础风险 |
 | `ADD_RATIO_REG1~4` | 0 / 0.3 / 0.5 / 0.7 | TV 未传 qty_ratio 时的档位默认 |
 | `MAX_ADD_TIMES_REG1~4` | 1 / 2 / 2 / 3 | 各档位最大加仓次数 |
@@ -698,10 +698,10 @@ https://twinstar.pro/gemini/webhook
 
 | 交易所 | 标签 | 主题色 | 品牌 |
 |--------|------|--------|------|
-| Binance | `#币安20x`（读 `LEVERAGE`） | 靛蓝 🔷 | GEMINI量化 · 币安合约实盘引擎 |
-| DeepCoin | `#深币20x` | 翡翠绿 🟢 | GEMINI量化 · 深币 SWAP 实盘引擎 |
-| OKX | `#OKX20x` | 紫罗兰 🟣 | GEMINI量化 · OKX 合约实盘引擎 |
-| Gate | `#Gate20x` | 琥珀橙 🟠 | GEMINI量化 · Gate 合约实盘引擎 |
+| Binance | `#币安25x`（读 `LEVERAGE`） | 靛蓝 🔷 | GEMINI量化 · 币安合约实盘引擎 |
+| DeepCoin | `#深币25x` | 翡翠绿 🟢 | GEMINI量化 · 深币 SWAP 实盘引擎 |
+| OKX | `#OKX25x` | 紫罗兰 🟣 | GEMINI量化 · OKX 合约实盘引擎 |
+| Gate | `#Gate25x` | 琥珀橙 🟠 | GEMINI量化 · Gate 合约实盘引擎 |
 
 前端 API 绑定页交易所卡片使用同色主题（`exchange-picker-{exchange}`），便于与原版系统视觉区分。
 
@@ -930,7 +930,7 @@ Swagger：`http://127.0.0.1:8000/docs`（`PRODUCTION_STRICT=1` 时关闭）
 | 变量 | 默认 |
 |------|------|
 | `SYMBOL` | ETHUSDT |
-| `LEVERAGE` / `OKX_LEVERAGE` / `GATE_LEVERAGE` / `DEEPCOIN_LEVERAGE` | **20** |
+| `LEVERAGE` / `OKX_LEVERAGE` / `GATE_LEVERAGE` / `DEEPCOIN_LEVERAGE` | **25** |
 | `SIZING_MARGIN_LEVERAGE` | 5 | 保证金预算系数（与交易所杠杆解耦） |
 | `VPS_RISK_PCT` | 3.0 | OPEN 基础风险% |
 | `ADD_RATIO_REG1~4` | 见 `.env.example` | TV 未传 qty_ratio 时的档位默认 |
@@ -1132,7 +1132,7 @@ bash backend/scripts/backup_data.sh
 
 - [x] **统一交易工厂**：四所共享 Mixin 栈 + Route A 防线 + VPS sizing + manual adopt
 - [x] 多交易所多用户执行（Binance/OKX/Gate/DeepCoin）
-- [x] **20× 杠杆**全所统一；保证金预算与交易所杠杆解耦
+- [x] **25× 杠杆**全所统一；保证金预算与交易所杠杆解耦
 - [x] TV `tv_sl` 硬止损 + 雷达保本 + STOP 安全钳制
 - [x] manual adopt：TV CLOSE 不误平同向人工仓；空闲巡检 10s
 - [x] TV v6.9.45 字段解析 + 网关极速 200

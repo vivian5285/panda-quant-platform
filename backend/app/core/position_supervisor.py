@@ -432,7 +432,7 @@ class PositionSupervisor(
         return True
 
     def _resolve_entry_leverage(self) -> int:
-        """实盘杠杆固定为 VPS 配置（20×）。"""
+        """实盘杠杆固定为 VPS 配置（25×）。"""
         return int(self.leverage)
 
     def _resolve_entry_qty(self, curr_px: float) -> tuple[float, dict]:

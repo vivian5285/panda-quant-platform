@@ -145,7 +145,7 @@ def compute_vps_open_qty(
     """
     OPEN:
       保证金 = 本金 × effective_risk% × SIZING_MARGIN_LEVERAGE（默认 5）
-      头寸价值 = 保证金 × 交易所杠杆（LEVERAGE，默认 20）
+      头寸价值 = 保证金 × 交易所杠杆（LEVERAGE，默认 25）
       张数 = 头寸价值 / price
     tv_sl 仅用于挂单止损，不参与张数计算。忽略 TV risk_pct / qty_ratio。
     """
