@@ -49,6 +49,31 @@ def tp1_consumed(consumed_tp_levels: list | None) -> bool:
     return 1 in (consumed_tp_levels or [])
 
 
+def tp_path_progress(
+    entry: float,
+    curr_px: float,
+    tp1: float,
+    side: str | None,
+) -> float:
+    """0→1 progress from entry toward TP1 (used for radar arming and trail pacing)."""
+    entry = float(entry or 0)
+    tp1 = float(tp1 or 0)
+    curr_px = float(curr_px or 0)
+    if entry <= 0 or tp1 <= 0 or curr_px <= 0:
+        return 0.0
+    if side == "LONG":
+        span = tp1 - entry
+        if span <= 0:
+            return 0.0
+        return max(0.0, min(1.0, (curr_px - entry) / span))
+    if side == "SHORT":
+        span = entry - tp1
+        if span <= 0:
+            return 0.0
+        return max(0.0, min(1.0, (entry - curr_px) / span))
+    return 0.0
+
+
 def radar_may_arm(
     *,
     consumed_tp_levels: list | None,
@@ -58,16 +83,18 @@ def radar_may_arm(
 ) -> bool:
     """
     When to place/move breakeven radar STOP:
-    - TP1 filled (primary — strategy has room to breathe until then)
+    - TP1+ filled (primary — lock profit as slices exit)
     - already armed and trailing
-    - or very late path progress (≥96%) on strong trend
+    - or path progress ≥ regime activation ratio along entry→TP1
     """
     if radar_active:
         return True
     if tp1_consumed(consumed_tp_levels):
         return True
-    threshold = max(float(activation_ratio or 0), RADAR_PRE_TP1_ARM_PROGRESS)
-    return float(progress or 0) >= threshold
+    arm_at = float(activation_ratio or 0)
+    if arm_at <= 0:
+        arm_at = RADAR_PRE_TP1_ARM_PROGRESS
+    return float(progress or 0) >= arm_at
 
 
 def breakeven_floor(
@@ -135,13 +162,20 @@ def compute_radar_sl(
     tp1_dist: float,
     consumed_tp_levels: list | None,
     clamp_fn,
+    trail_cap_px: float | None = None,
 ) -> float:
     trail = trail_distance(atr, trail_mult, tp1_dist)
     floor = clamp_fn(
         breakeven_floor(entry, side, atr, consumed_tp_levels=consumed_tp_levels)
     )
     if side == "LONG":
-        return round_price(max(float(best_price) - trail, floor))
+        sl = round_price(max(float(best_price) - trail, floor))
+        if trail_cap_px and trail_cap_px > entry:
+            sl = min(sl, round_price(float(trail_cap_px) * 0.995))
+        return sl
     if side == "SHORT":
-        return round_price(min(float(best_price) + trail, floor))
+        sl = round_price(min(float(best_price) + trail, floor))
+        if trail_cap_px and 0 < trail_cap_px < entry:
+            sl = max(sl, round_price(float(trail_cap_px) * 1.005))
+        return sl
     return round_price(float(entry))

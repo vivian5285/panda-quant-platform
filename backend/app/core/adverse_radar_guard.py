@@ -392,8 +392,18 @@ class AdverseRadarMixin:
         if effective <= 0:
             return {"armed": False, "reason": "no_tv_sl_or_radar"}
 
-        curr_px = self._defense_mark_price()
         side = getattr(self, "current_side", None)
+        open_stops = self._collect_adverse_stop_orders()
+        live_stop_px = (
+            _order_stop_price(open_stops[0]) if open_stops else 0.0
+        )
+        if live_stop_px > 0 and effective > 0:
+            if side == "LONG" and effective > live_stop_px + ADVERSE_STOP_TOLERANCE:
+                force_replace = True
+            elif side == "SHORT" and effective < live_stop_px - ADVERSE_STOP_TOLERANCE:
+                force_replace = True
+
+        curr_px = self._defense_mark_price()
         raw_effective = effective
         if curr_px > 0 and self._mark_price_trusted(curr_px):
             if stop_would_trigger_immediately(effective, curr_px, side):
@@ -1469,6 +1479,14 @@ class AdverseRadarMixin:
             self._arm_adverse_staged_stops(live_qty, adverse_pct, repair=repair_mode).get("armed")
         )
 
+    def _next_unconsumed_tp_price(self) -> float:
+        consumed = set(getattr(self, "consumed_tp_levels", []) or [])
+        for i, px in enumerate(getattr(self, "tv_tps", []) or []):
+            level = i + 1
+            if level not in consumed and float(px or 0) > 0:
+                return float(px)
+        return 0.0
+
     def _boost_radar_after_tp_fill(self, change_type: str, curr_px: float, live_qty: float) -> None:
         """After TP1/TP2 eaten: lock breakeven with regime trail width toward TP3."""
         if change_type not in ("tp1_filled", "tp2_filled", "tp3_filled"):
@@ -1479,7 +1497,7 @@ class AdverseRadarMixin:
         cfg = self.regime_settings[self.regime]
         tp1_dist = tp1_distance(entry, list(getattr(self, "tv_tps", []) or []), self.current_atr)
         consumed = list(getattr(self, "consumed_tp_levels", []) or [])
-        tp3 = float(self.tv_tps[2]) if len(getattr(self, "tv_tps", []) or []) > 2 else 0.0
+        trail_cap = self._next_unconsumed_tp_price()
         clamp = getattr(self, "_clamp_radar_sl_to_tv_floor", lambda x: x)
 
         if self.current_side == "LONG":
@@ -1494,9 +1512,8 @@ class AdverseRadarMixin:
                 tp1_dist=tp1_dist,
                 consumed_tp_levels=consumed,
                 clamp_fn=clamp,
+                trail_cap_px=trail_cap or None,
             )
-            if tp3 > entry:
-                trail_sl = min(trail_sl, round_price(tp3 * 0.995))
             if float(getattr(self, "current_sl", 0) or 0) < trail_sl:
                 self.current_sl = trail_sl
         else:
@@ -1511,9 +1528,8 @@ class AdverseRadarMixin:
                 tp1_dist=tp1_dist,
                 consumed_tp_levels=consumed,
                 clamp_fn=clamp,
+                trail_cap_px=trail_cap or None,
             )
-            if tp3 > 0 and tp3 < entry:
-                trail_sl = max(trail_sl, round_price(tp3 * 1.005))
             if float(getattr(self, "current_sl", 0) or 0) <= 0 or self.current_sl > trail_sl:
                 self.current_sl = trail_sl
 
@@ -1535,6 +1551,8 @@ class AdverseRadarMixin:
             return
 
         live_qty = self._resolve_adverse_live_qty(live_qty)
+        if hasattr(self, "_sync_consumed_tp_levels"):
+            self._sync_consumed_tp_levels(live_qty, curr_px)
         progress = self._radar_activation_progress(curr_px) if hasattr(self, "_radar_activation_progress") else 0.0
 
         if self._radar_activation_reached(curr_px):
@@ -1546,7 +1564,9 @@ class AdverseRadarMixin:
                 self._process_adverse_radar_guard(live_qty, curr_px)
             else:
                 radar = self._effective_radar_sl_for_merge() or None
-                self._sync_binance_merged_stop(live_qty, radar_sl=radar)
+                self._sync_binance_merged_stop(
+                    live_qty, radar_sl=radar, force_replace=bool(radar),
+                )
             return
 
         self._process_adverse_radar_guard(live_qty, curr_px)
@@ -1609,6 +1629,16 @@ class AdverseRadarMixin:
                 dynamic_sl=sl_to_pass,
                 reason=f"止盈吃单 · {cause} · 仅挂剩余TP+雷达",
             )
+            if hasattr(self, "_process_radar_trailing"):
+                self._process_radar_trailing(new_qty, curr_px)
+            elif self._handoff_shield_to_radar(new_qty, curr_px):
+                pass
+            if not self._uses_dual_stop_track():
+                radar = self._effective_radar_sl_for_merge() or None
+                if radar:
+                    self._sync_binance_merged_stop(
+                        new_qty, radar_sl=radar, force_replace=True,
+                    )
             consumed = sorted(getattr(self, "consumed_tp_levels", []) or [])
             remaining = defense.get("expected", 0)
             result.update({

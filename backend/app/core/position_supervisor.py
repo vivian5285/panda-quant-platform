@@ -28,6 +28,7 @@ from app.core.radar_trail import (
     compute_radar_sl,
     radar_may_arm,
     tp1_distance,
+    tp_path_progress,
 )
 from app.core.tp_regime_ratios import build_regime_settings, enrich_tp_alert_detail
 from app.core.regime_utils import clamp_regime
@@ -2034,6 +2035,7 @@ class PositionSupervisor(
             radar_active=self._is_radar_active(),
         ):
             clamp = self._clamp_radar_sl_to_tv_floor
+            trail_cap = self._next_unconsumed_tp_price()
             trail_sl = compute_radar_sl(
                 side=self.current_side,
                 entry=entry,
@@ -2043,6 +2045,7 @@ class PositionSupervisor(
                 tp1_dist=tp1_dist,
                 consumed_tp_levels=consumed,
                 clamp_fn=clamp,
+                trail_cap_px=trail_cap or None,
             )
             if self.current_side == "LONG":
                 if not self._is_radar_active() or trail_sl > self.current_sl:
@@ -2060,11 +2063,10 @@ class PositionSupervisor(
     def _radar_activation_progress(self, curr_px: float) -> float:
         if curr_px <= 0 or not self.watched_entry:
             return 0.0
-        tp1_dist = (
-            abs(self.tv_tps[0] - self.watched_entry)
-            if self.tv_tps[0] > 0
-            else self.current_atr * 1.5
-        )
+        tp1 = float(self.tv_tps[0] or 0) if self.tv_tps else 0.0
+        if tp1 > 0:
+            return tp_path_progress(self.watched_entry, curr_px, tp1, self.current_side)
+        tp1_dist = self.current_atr * 1.5
         activation_ratio = self.regime_settings[self.regime]["activation"]
         if self.current_side == "LONG":
             required = self.watched_entry + tp1_dist * activation_ratio
@@ -2078,11 +2080,43 @@ class PositionSupervisor(
             return 0.0
         return max(0.0, min(1.0, (self.watched_entry - curr_px) / span))
 
+    def _next_unconsumed_tp_price(self) -> float:
+        consumed = set(getattr(self, "consumed_tp_levels", []) or [])
+        for i, px in enumerate(getattr(self, "tv_tps", []) or []):
+            level = i + 1
+            if level not in consumed and float(px or 0) > 0:
+                return float(px)
+        return 0.0
+
+    def _radar_trail_detail(self, curr_px: float, new_sl: float, **extra) -> dict:
+        cfg = self.regime_settings[self.regime]
+        progress = self._radar_activation_progress(curr_px)
+        detail = {
+            "regime": self.regime,
+            "new_sl": new_sl,
+            "best_price": self.best_price,
+            "radar_progress": round(progress, 4),
+            "activation_ratio": cfg["activation"],
+            "consumed_tp_levels": list(getattr(self, "consumed_tp_levels", []) or []),
+            "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
+            "entry": float(self.watched_entry or 0),
+            "tp1": float(self.tv_tps[0] or 0) if self.tv_tps else 0.0,
+            "curr_px": curr_px,
+            "exchange": self.exchange_id,
+        }
+        detail.update(extra)
+        return detail
+
     def _sentinel_poll_sec(self, curr_px: float = 0.0) -> float:
         if self._breakeven_sl_active():
             return SENTINEL_POLL_RADAR
-        if curr_px > 0 and self._radar_activation_progress(curr_px) >= 0.5:
-            return SENTINEL_POLL_ARMING
+        if curr_px > 0:
+            progress = self._radar_activation_progress(curr_px)
+            arm_at = float(self.regime_settings[self.regime]["activation"])
+            if progress >= max(0.0, arm_at - 0.08):
+                return SENTINEL_POLL_RADAR
+            if progress >= 0.5:
+                return SENTINEL_POLL_ARMING
         return SENTINEL_POLL_NORMAL
 
     def _process_radar_trailing(self, real_amt: float, curr_px: float) -> bool:
@@ -2099,6 +2133,7 @@ class PositionSupervisor(
 
         tp1_dist = tp1_distance(self.watched_entry, self.tv_tps, self.current_atr)
         clamp = self._clamp_radar_sl_to_tv_floor
+        trail_cap = self._next_unconsumed_tp_price()
         new_sl = compute_radar_sl(
             side=self.current_side,
             entry=self.watched_entry,
@@ -2108,6 +2143,7 @@ class PositionSupervisor(
             tp1_dist=tp1_dist,
             consumed_tp_levels=consumed,
             clamp_fn=clamp,
+            trail_cap_px=trail_cap or None,
         )
         if curr_px > 0:
             new_sl = clamp_stop_market_safe(new_sl, curr_px, self.current_side)
@@ -2120,13 +2156,9 @@ class PositionSupervisor(
                 sl_placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
                 if not sl_placed:
                     sl_placed = bool(self._ensure_radar_sl(new_sl, real_amt))
-                trail_detail = {
-                    "regime": self.regime,
-                    "new_sl": new_sl,
-                    "best_price": self.best_price,
-                    "sl_placed": sl_placed,
-                    "first_arm": True,
-                }
+                trail_detail = self._radar_trail_detail(
+                    curr_px, new_sl, sl_placed=sl_placed, first_arm=True,
+                )
                 self._log("TRAIL", f"雷达补挂保本 SL → {new_sl}", trail_detail)
                 if sl_placed:
                     self._alert("info", "TRAIL", "追踪雷达锁润", f"SL {new_sl}", trail_detail)
@@ -2140,13 +2172,12 @@ class PositionSupervisor(
                     sl_placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
                     if not sl_placed and not on_book:
                         sl_placed = bool(self._ensure_radar_sl(new_sl, real_amt))
-                    trail_detail = {
-                        "regime": self.regime,
-                        "new_sl": new_sl,
-                        "best_price": self.best_price,
-                        "sl_placed": sl_placed,
-                        "first_arm": should_arm and not should_trail,
-                    }
+                    trail_detail = self._radar_trail_detail(
+                        curr_px,
+                        new_sl,
+                        sl_placed=sl_placed,
+                        first_arm=should_arm and not should_trail,
+                    )
                     self._log("TRAIL", f"雷达推升 SL → {new_sl}", trail_detail)
                     self._alert("info", "TRAIL", "追踪雷达锁润", f"SL {new_sl}", trail_detail)
                     moved = True
@@ -2162,13 +2193,12 @@ class PositionSupervisor(
                 self.current_sl = new_sl
                 self._save_state()
                 sl_placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
-                trail_detail = {
-                    "regime": self.regime,
-                    "new_sl": new_sl,
-                    "best_price": self.best_price,
-                    "sl_placed": sl_placed,
-                    "first_arm": should_arm and not should_trail,
-                }
+                trail_detail = self._radar_trail_detail(
+                    curr_px,
+                    new_sl,
+                    sl_placed=sl_placed,
+                    first_arm=should_arm and not should_trail,
+                )
                 self._log("TRAIL", f"雷达下压 SL → {new_sl}", trail_detail)
                 self._alert("info", "TRAIL", "追踪雷达锁润", f"SL {new_sl}", trail_detail)
                 moved = True
@@ -2335,6 +2365,7 @@ class PositionSupervisor(
                             )
 
                     if curr_px > 0:
+                        self._sync_consumed_tp_levels(actual_qty, curr_px)
                         self.best_price = (
                             max(self.best_price, curr_px)
                             if self.current_side == "LONG"

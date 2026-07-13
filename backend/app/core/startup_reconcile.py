@@ -1059,7 +1059,7 @@ class StartupReconcileMixin:
         if pnl_track != "profit_radar" or live_qty <= 0:
             return audit
         if hasattr(self, "_radar_activation_reached") and not self._radar_activation_reached(curr_px):
-            audit["deferred"] = "await_tp1_or_96pct"
+            audit["deferred"] = "await_tp1_or_activation_ratio"
             return audit
 
         if hasattr(self, "_refresh_radar_state_on_recover") and curr_px > 0 and entry > 0:
