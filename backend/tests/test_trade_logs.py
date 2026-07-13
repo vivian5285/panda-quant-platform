@@ -8,7 +8,8 @@ def test_dingtalk_only_key_actions():
     assert should_push_trading_dingtalk("OPEN", "info") is True
     assert should_push_trading_dingtalk("CLOSE", "info") is True
     assert should_push_trading_dingtalk("DEFENSE_HEAL_FAIL", "critical") is True
-    assert should_push_trading_dingtalk("TRAIL", "info") is False
+    assert should_push_trading_dingtalk("TRAIL", "info") is True
+    assert should_push_trading_dingtalk("RADAR_ARM", "info") is True
     assert should_push_trading_dingtalk("DEFENSE_HEAL", "warning") is False
     assert should_push_trading_dingtalk("DEFENSE_HEAL_OK", "info") is False
     assert should_push_trading_dingtalk("DEFENSE_AUDIT", "info") is False

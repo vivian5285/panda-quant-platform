@@ -51,7 +51,7 @@ def test_alert_body_includes_gemini_header_and_exchange_accent():
 
 def test_should_push_open_but_not_trail():
     assert should_push_trading_dingtalk("OPEN", "info") is True
-    assert should_push_trading_dingtalk("TRAIL", "info") is False
+    assert should_push_trading_dingtalk("TRAIL", "info") is True
 
 
 def test_should_push_cap_align_to_admin():

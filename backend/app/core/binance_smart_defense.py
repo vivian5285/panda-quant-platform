@@ -435,7 +435,17 @@ class BinanceSmartDefenseMixin:
                         return True
                 except (TypeError, ValueError):
                     continue
+        if hasattr(self, "_collect_adverse_stop_orders"):
+            from app.core.adverse_radar_guard import _order_stop_price
+            for o in self._collect_adverse_stop_orders() or []:
+                px = _order_stop_price(o)
+                if px > 0 and abs(px - target) <= tolerance:
+                    return True
         return False
+
+    def _order_stop_price(self, o: dict) -> float:
+        from app.core.adverse_radar_guard import _order_stop_price
+        return _order_stop_price(o)
 
     def _has_duplicate_tp_orders(self, tolerance: float | None = None) -> bool:
         tol = self._tp_price_tol() if tolerance is None else float(tolerance)

@@ -133,7 +133,7 @@ def test_dingtalk_push_open_startup_radar_alerts():
     assert should_push_trading_dingtalk("UPDATE_SL", "info") is True
     assert should_push_trading_dingtalk("FORCE_ALIGN", "critical") is True
     assert should_push_trading_dingtalk("IDLE_WATCH", "info") is True
-    assert should_push_trading_dingtalk("TRAIL", "info") is False
+    assert should_push_trading_dingtalk("TRAIL", "info") is True
 
 
 def test_config_matches_checklist_defaults():

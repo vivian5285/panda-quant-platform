@@ -507,6 +507,11 @@ class AdverseRadarMixin:
             "source": "merged",
         }]
         audit = self._audit_adverse_shield_live(plan)
+        if audit.get("needs_purge_only") or audit.get("open_count", 0) > ADVERSE_MAX_STOP_ORDERS:
+            purged = self._cancel_binance_all_close_stops()
+            if purged:
+                time.sleep(0.35)
+                audit = self._audit_adverse_shield_live(plan)
         if audit.get("aligned") and not force_replace:
             self.adverse_sl_armed = True
             self.adverse_sl_prices = [effective]
@@ -1583,17 +1588,25 @@ class AdverseRadarMixin:
         progress = self._radar_activation_progress(curr_px) if hasattr(self, "_radar_activation_progress") else 0.0
 
         if self._radar_activation_reached(curr_px):
+            moved = False
             if hasattr(self, "_process_radar_trailing"):
-                self._process_radar_trailing(live_qty, curr_px)
+                moved = bool(self._process_radar_trailing(live_qty, curr_px))
             elif self._handoff_shield_to_radar(live_qty, curr_px):
-                pass
+                moved = True
             if self._uses_dual_stop_track():
                 self._process_adverse_radar_guard(live_qty, curr_px)
             else:
                 radar = self._effective_radar_sl_for_merge() or None
-                self._sync_binance_merged_stop(
-                    live_qty, radar_sl=radar, force_replace=bool(radar),
-                )
+                if radar and (
+                    moved
+                    or not (
+                        hasattr(self, "_has_stop_sl_near")
+                        and self._has_stop_sl_near(float(radar))
+                    )
+                ):
+                    self._sync_binance_merged_stop(
+                        live_qty, radar_sl=radar, force_replace=moved,
+                    )
             return
 
         self._process_adverse_radar_guard(live_qty, curr_px)

@@ -2145,8 +2145,18 @@ class PositionSupervisor(
         if self.current_side == "LONG":
             on_book = self._has_stop_sl_near(new_sl)
             should_trail = new_sl > float(self.current_sl or 0) + min_move
-            should_arm = not on_book and new_sl > float(getattr(self, "tv_sl", 0) or 0)
+            should_arm = (
+                not on_book
+                and (
+                    float(self.current_sl or 0) <= float(getattr(self, "tv_sl", 0) or 0)
+                    or abs(float(self.current_sl or 0) - new_sl) > min_move
+                )
+                and new_sl > float(getattr(self, "tv_sl", 0) or 0)
+            )
+            if on_book and not should_trail:
+                return False
             if should_trail or should_arm:
+                first_arm = should_arm and not should_trail
                 self.current_sl = new_sl
                 self._save_state()
                 sl_placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
@@ -2157,13 +2167,15 @@ class PositionSupervisor(
                     sl_placed=sl_placed,
                     stage=radar.get("stage"),
                     stage_label=radar.get("stage_label"),
-                    first_arm=should_arm and not should_trail,
+                    first_arm=first_arm,
                 )
                 label = radar.get("stage_label") or "雷达锁润"
                 self._log("TRAIL", f"{label} → SL {new_sl}", trail_detail)
-                if sl_placed:
+                if sl_placed or first_arm:
+                    alert_type = "RADAR_ARM" if first_arm else "TRAIL"
+                    title = "雷达激活·保本" if first_arm else f"雷达·{label}"
                     self._alert(
-                        "info", "TRAIL", f"雷达·{label}",
+                        "info", alert_type, title,
                         f"阶段{radar.get('stage')} SL {new_sl} | 进度 {trail_detail.get('radar_progress', 0):.0%}",
                         trail_detail,
                     )
@@ -2179,22 +2191,37 @@ class PositionSupervisor(
                 or float(self.current_sl or 0) >= float(self.watched_entry or 0)
                 or new_sl < float(self.current_sl or 0) - min_move
             )
-            should_arm = not on_book
+            should_arm = (
+                not on_book
+                and (
+                    float(self.current_sl or 0) <= 0
+                    or float(self.current_sl or 0) >= float(self.watched_entry or 0)
+                    or abs(float(self.current_sl or 0) - new_sl) > min_move
+                )
+            )
+            if on_book and not should_trail:
+                return False
             if should_trail or should_arm:
+                first_arm = should_arm and not should_trail
                 self.current_sl = new_sl
                 self._save_state()
                 sl_placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
+                if not sl_placed and not on_book:
+                    sl_placed = bool(self._ensure_radar_sl(new_sl, real_amt))
                 trail_detail = self._radar_trail_detail(
                     curr_px, new_sl,
                     sl_placed=sl_placed,
                     stage=radar.get("stage"),
                     stage_label=radar.get("stage_label"),
+                    first_arm=first_arm,
                 )
                 label = radar.get("stage_label") or "雷达锁润"
                 self._log("TRAIL", f"{label} → SL {new_sl}", trail_detail)
-                if sl_placed:
+                if sl_placed or first_arm:
+                    alert_type = "RADAR_ARM" if first_arm else "TRAIL"
+                    title = "雷达激活·保本" if first_arm else f"雷达·{label}"
                     self._alert(
-                        "info", "TRAIL", f"雷达·{label}",
+                        "info", alert_type, title,
                         f"阶段{radar.get('stage')} SL {new_sl}",
                         trail_detail,
                     )

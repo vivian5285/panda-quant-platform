@@ -2421,17 +2421,24 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if curr_px > 0:
             new_sl = clamp_stop_market_safe(new_sl, curr_px, self.current_side)
         label = radar.get("stage_label") or "雷达锁润"
+        min_move = 1.0
         if self.current_side == "LONG":
             on_book = self._has_trigger_sl_near(new_sl)
-            should_trail = new_sl > float(self.current_sl or 0) + 1.0
-            should_arm = not on_book
+            should_trail = new_sl > float(self.current_sl or 0) + min_move
+            should_arm = not on_book and (
+                float(self.current_sl or 0) <= 0
+                or abs(float(self.current_sl or 0) - new_sl) > min_move
+            )
+            if on_book and not should_trail:
+                return False
             if should_trail or should_arm:
+                first_arm = should_arm and not should_trail
                 self.current_sl = new_sl
                 self._save_state()
                 placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
                 if not placed and not on_book:
                     placed = bool(self._ensure_radar_sl(real_amt, new_sl))
-                if placed or self._has_trigger_sl_near(new_sl):
+                if placed or self._has_trigger_sl_near(new_sl) or first_arm:
                     self._dt.report_intervention(
                         real_amt, self.watched_entry, new_sl,
                         f"🚀 {label} @ {new_sl:.2f} (阶段{radar.get('stage')})",
@@ -2444,16 +2451,23 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             should_trail = (
                 float(self.current_sl or 0) <= 0
                 or float(self.current_sl or 0) >= float(self.watched_entry or 0)
-                or new_sl < float(self.current_sl or 0) - 1.0
+                or new_sl < float(self.current_sl or 0) - min_move
             )
-            should_arm = not on_book
+            should_arm = not on_book and (
+                float(self.current_sl or 0) <= 0
+                or float(self.current_sl or 0) >= float(self.watched_entry or 0)
+                or abs(float(self.current_sl or 0) - new_sl) > min_move
+            )
+            if on_book and not should_trail:
+                return False
             if should_trail or should_arm:
+                first_arm = should_arm and not should_trail
                 self.current_sl = new_sl
                 self._save_state()
                 placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
                 if not placed and not on_book:
                     placed = bool(self._ensure_radar_sl(real_amt, new_sl))
-                if placed or self._has_trigger_sl_near(new_sl):
+                if placed or self._has_trigger_sl_near(new_sl) or first_arm:
                     self._dt.report_intervention(
                         real_amt, self.watched_entry, new_sl,
                         f"🚀 {label} @ {new_sl:.2f} (阶段{radar.get('stage')})",

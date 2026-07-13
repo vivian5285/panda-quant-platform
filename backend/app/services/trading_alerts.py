@@ -77,6 +77,7 @@ ALERT_TYPE_TAGS = {
     "DEFENSE_HEAL_OK": "止盈已对齐",
     "DEFENSE_HEAL_FAIL": "止盈仍异常",
     "TRAIL": "雷达保本",
+    "RADAR_ARM": "雷达激活",
     "ADJUST": "人工异动",
     "MANUAL_ADJUST": "人工异动",
     "FORCE_ALIGN": "方向背离",
@@ -151,6 +152,8 @@ ADMIN_DINGTALK_KEY_TYPES = frozenset({
     "ADVERSE_SL_MISALIGN",
     "FALSE_FLAT",
     "CLOSE_ATTRIBUTION",
+    "TRAIL",
+    "RADAR_ARM",
 })
 
 DINGTALK_VERBOSE_EXCLUDED = frozenset({
@@ -159,7 +162,6 @@ DINGTALK_VERBOSE_EXCLUDED = frozenset({
     "DEFENSE",
     "DEFENSE_AUDIT",
     "DEFENSE_FAIL",
-    "TRAIL",
     "TP_RETRY",
     "SIGNAL",
     "ADVERSE_SL_REPAIR",
