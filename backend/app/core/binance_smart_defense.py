@@ -6,6 +6,10 @@ import time
 from app.core.symbol_precision import round_price
 from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, slices_to_level_dicts
 from app.core.tp_regime_ratios import enrich_tp_alert_detail
+from app.core.tp_orphan_guard import (
+    format_obsolete_tp_detail,
+    tp_levels_obsolete_by_radar,
+)
 from app.core.tp_defense_reconcile import (
     STARTUP_ORDER_FETCH_DELAY,
     STARTUP_ORDER_FETCH_RETRIES,
@@ -103,6 +107,69 @@ class BinanceSmartDefenseMixin:
         if cancelled:
             self._def_log(f"🧹 已撤销已成交档位多余止盈 {cancelled} 张 (consumed={sorted(consumed)})")
         return cancelled
+
+    def _cancel_tp_orders_at_levels(self, levels: list[int]) -> int:
+        """Cancel open TP limits at specific tier numbers (1=TP1, 2=TP2, ...)."""
+        if not levels:
+            return 0
+        cancelled = 0
+        targets = set(int(x) for x in levels if int(x) in (1, 2, 3))
+        for level in sorted(targets):
+            idx = level - 1
+            if idx < 0 or idx >= len(self.tv_tps):
+                continue
+            px = float(self.tv_tps[idx])
+            if px <= 0:
+                continue
+            for o in self._collect_tp_limit_orders():
+                if not tp_price_matches(o["price"], px):
+                    continue
+                oid = o.get("orderId")
+                if oid:
+                    self.client.cancel_order(self.symbol, int(oid))
+                    cancelled += 1
+                    time.sleep(0.2)
+        return cancelled
+
+    def _cancel_obsolete_tp_after_radar_move(self, radar_sl: float) -> dict:
+        """
+        After radar SL advances past TP1/TP2, stale limit TPs are useless — cancel them.
+        Prevents orphan limits from filling into reverse exposure after flat.
+        """
+        side = getattr(self, "current_side", None)
+        obsolete = tp_levels_obsolete_by_radar(
+            radar_sl,
+            side,
+            list(getattr(self, "tv_tps", []) or []),
+            consumed_levels=list(getattr(self, "consumed_tp_levels", []) or []),
+            max_level=2,
+        )
+        detail = format_obsolete_tp_detail(
+            obsolete, radar_sl, list(getattr(self, "tv_tps", []) or []), side,
+        )
+        detail["cancelled"] = 0
+        if not obsolete:
+            return detail
+        detail["cancelled"] = self._cancel_tp_orders_at_levels(obsolete)
+        if detail["cancelled"] > 0:
+            self._def_log(
+                f"🧹 雷达越过 TP{obsolete} → 撤销过时限价止盈 {detail['cancelled']} 张 @ SL {radar_sl:.2f}",
+            )
+            if hasattr(self, "_log"):
+                self._log(
+                    "TP_ORPHAN_PURGE",
+                    f"雷达止损 {radar_sl:.2f} 已越过 TP{obsolete}，撤销 {detail['cancelled']} 张",
+                    detail,
+                )
+            if hasattr(self, "_alert"):
+                self._alert(
+                    "warning",
+                    "TP_ORPHAN_PURGE",
+                    "雷达越过止盈 · 撤销过时 TP",
+                    f"SL {radar_sl:.2f} ≥ TP{obsolete}，已撤 {detail['cancelled']} 张限价单",
+                    detail,
+                )
+        return detail
 
     def _resolve_live_qty(self, fallback_qty: float) -> float:
         pos = self._get_active_position()
@@ -885,14 +952,34 @@ class BinanceSmartDefenseMixin:
         reason = f"{entry_type} 加仓后按新总头寸重挂 TP123/雷达"
         self._def_log(f"🧠 {reason}")
         curr_px = self._current_tp_price()
-        consumed = set(int(x) for x in (getattr(self, "consumed_tp_levels", []) or []) if int(x) in (1, 2, 3))
+        side = getattr(self, "current_side", None)
+        prev_sl = float(getattr(self, "tv_sl", 0) or 0)
+
+        # 合并硬止损：多头取更低（更宽），空头取更高
+        if hasattr(self, "_recompute_vps_hard_sl"):
+            sl_meta = self._recompute_vps_hard_sl(entry_px=entry, side=side)
+            new_sl = float(getattr(self, "tv_sl", 0) or 0)
+            if prev_sl > 0 and new_sl > 0:
+                if side == "LONG":
+                    self.tv_sl = min(prev_sl, new_sl)
+                elif side == "SHORT":
+                    self.tv_sl = max(prev_sl, new_sl)
+                sl_meta["merged_prev_sl"] = prev_sl
+                sl_meta["merged_new_sl"] = new_sl
+                sl_meta["stop_price"] = self.tv_sl
+                self._vps_hard_sl_meta = sl_meta
+                self._def_log(
+                    f"📐 加仓合并硬止损: {prev_sl:.2f} + {new_sl:.2f} → {self.tv_sl:.2f} ({side})",
+                )
+
+        # 重置雷达追踪器（新加权均价为基准）
+        self.best_price = entry
+        self.consumed_tp_levels = []
+        self.current_sl = entry
 
         self.watched_qty = live_qty
         self.watched_entry = entry
-        if not consumed:
-            self.initial_qty = live_qty
-        else:
-            self.initial_qty = max(float(getattr(self, "initial_qty", 0) or 0), live_qty)
+        self.initial_qty = live_qty
 
         if hasattr(self, "_refresh_radar_state_on_recover") and curr_px > 0 and entry > 0:
             self._refresh_radar_state_on_recover(curr_px, entry)
@@ -951,7 +1038,9 @@ class BinanceSmartDefenseMixin:
                 and audit.get("matched_full", 0) >= audit.get("expected", 0)
             ),
             "summary": self._format_audit_summary(audit) if audit else "",
-            "consumed_tp_levels": sorted(consumed),
+            "consumed_tp_levels": [],
+            "vps_hard_sl_meta": getattr(self, "_vps_hard_sl_meta", None),
+            "radar_reset": True,
         }
         if hasattr(self, "_audit_live_exposure"):
             exp = self._audit_live_exposure(live_qty, getattr(self, "current_side", None), curr_px=curr_px)

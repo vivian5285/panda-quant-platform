@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from app.core.binance_client import BinanceClient
-from app.core.adverse_radar_guard import AdverseRadarMixin
+from app.core.adverse_radar_guard import AdverseRadarMixin, parse_tv_sl
 from app.core.startup_reconcile import (
     StartupReconcileMixin,
     apply_tv_sl_from_sources,
@@ -305,6 +305,22 @@ class PositionSupervisor(
         )
         enrich_note = format_enrich_note(payload)
         self._last_enrich_note = enrich_note
+        signal_detail = {
+            "action": payload.get("action"),
+            "side": payload.get("side"),
+            "price": payload.get("price"),
+            "tv_tp1": payload.get("tv_tp1"),
+            "tv_tp2": payload.get("tv_tp2"),
+            "tv_tp3": payload.get("tv_tp3"),
+            "tv_sl": payload.get("tv_sl"),
+            "regime": payload.get("regime"),
+            "atr": payload.get("atr"),
+            "entry_type": payload.get("entry_type"),
+            "qty_ratio": payload.get("qty_ratio"),
+            "reason": payload.get("reason"),
+            "enrich_note": enrich_note,
+        }
+        self._log("SIGNAL_RECV", f"TV → {payload.get('action')}", signal_detail)
         raw_action = str(payload.get("action", "")).upper()
         held_regime = self.regime
         held_atr = self.current_atr
@@ -367,12 +383,21 @@ class PositionSupervisor(
             return {"status": "ok", "action": raw_action, "detail": {"type": "close_tp3"}}
         if raw_action == "CLOSE_STOPLOSS":
             sl_reason = tv_reason or "触碰硬止损或追踪保本线"
+            tv_sl_ref = parse_tv_sl(payload.get("tv_sl"))
+            vps_sl = float(getattr(self, "tv_sl", 0) or 0)
+            sl_compare = {
+                "tv_sl_reference": tv_sl_ref,
+                "vps_hard_sl": vps_sl,
+                "vps_hard_sl_meta": getattr(self, "_vps_hard_sl_meta", None),
+                "note": "TV紧止损为第一指令立即全平；VPS宽止损为备用保险",
+            }
+            self._log("CLOSE_STOPLOSS", f"TV止损 → 立即全平 | TV ref {tv_sl_ref} vs VPS {vps_sl}", sl_compare)
             self._close_all(
                 f"🛑 {sl_reason}",
                 close_action=raw_action,
                 **_tv_close_kwargs(),
             )
-            return {"status": "ok", "action": raw_action, "detail": {"type": "close_stoploss"}}
+            return {"status": "ok", "action": raw_action, "detail": {"type": "close_stoploss", **sl_compare}}
         if raw_action == "CLOSE":
             self._close_all(
                 f"🧹 换防清场：{tv_reason}",
@@ -2142,6 +2167,10 @@ class PositionSupervisor(
                         f"阶段{radar.get('stage')} SL {new_sl} | 进度 {trail_detail.get('radar_progress', 0):.0%}",
                         trail_detail,
                     )
+                if hasattr(self, "_cancel_obsolete_tp_after_radar_move"):
+                    orphan = self._cancel_obsolete_tp_after_radar_move(new_sl)
+                    if orphan.get("cancelled", 0) > 0:
+                        trail_detail["tp_orphan_purge"] = orphan
                 moved = True
         else:
             on_book = self._has_stop_sl_near(new_sl)
@@ -2169,6 +2198,10 @@ class PositionSupervisor(
                         f"阶段{radar.get('stage')} SL {new_sl}",
                         trail_detail,
                     )
+                if hasattr(self, "_cancel_obsolete_tp_after_radar_move"):
+                    orphan = self._cancel_obsolete_tp_after_radar_move(new_sl)
+                    if orphan.get("cancelled", 0) > 0:
+                        trail_detail["tp_orphan_purge"] = orphan
                 moved = True
         return moved
 

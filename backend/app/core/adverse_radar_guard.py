@@ -285,6 +285,15 @@ class AdverseRadarMixin:
         if meta.get("stop_price", 0) > 0:
             self.tv_sl = float(meta["stop_price"])
             self._vps_hard_sl_meta = meta
+        logger.info(
+            "VPS硬止损计算: entry=%.2f side=%s regime=%s atr=%.2f → stop=%.2f | %s",
+            entry,
+            side_u,
+            regime,
+            atr,
+            float(meta.get("stop_price") or 0),
+            meta,
+        )
         return meta
 
     def _apply_tv_sl_from_payload(self, payload: dict | None) -> float | None:

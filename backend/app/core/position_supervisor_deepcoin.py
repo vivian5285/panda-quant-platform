@@ -27,7 +27,10 @@ from app.core.tv_entry_sizing import (
     resolve_vps_entry_qty_deepcoin,
 )
 from app.core.position_qty_tolerance import qty_change_significant
-from app.core.position_exposure_guard import resolve_booked_side
+from app.core.tp_orphan_guard import (
+    format_obsolete_tp_detail,
+    tp_levels_obsolete_by_radar,
+)
 from app.core.tp_defense_reconcile import (
     STARTUP_ORDER_FETCH_DELAY,
     STARTUP_ORDER_FETCH_RETRIES,
@@ -1344,6 +1347,64 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             logger.info(f"🧹 已撤销全部{label} {cancelled} 张")
         return cancelled
 
+    def _cancel_tp_orders_at_levels(self, levels: list[int]) -> int:
+        if not levels:
+            return 0
+        cancelled = 0
+        targets = set(int(x) for x in levels if int(x) in (1, 2, 3))
+        for level in sorted(targets):
+            idx = level - 1
+            if idx < 0 or idx >= len(self.tv_tps):
+                continue
+            px = float(self.tv_tps[idx])
+            if px <= 0:
+                continue
+            for o in self._collect_tp_limit_orders():
+                if not tp_price_matches(o["price"], px):
+                    continue
+                oid = o.get("ordId")
+                if oid:
+                    self.client.cancel_order(self.symbol, ord_id=oid)
+                    cancelled += 1
+                    time.sleep(0.15)
+        return cancelled
+
+    def _cancel_obsolete_tp_after_radar_move(self, radar_sl: float) -> dict:
+        side = getattr(self, "current_side", None)
+        obsolete = tp_levels_obsolete_by_radar(
+            radar_sl,
+            side,
+            list(getattr(self, "tv_tps", []) or []),
+            consumed_levels=list(getattr(self, "consumed_tp_levels", []) or []),
+            max_level=2,
+        )
+        detail = format_obsolete_tp_detail(
+            obsolete, radar_sl, list(getattr(self, "tv_tps", []) or []), side,
+        )
+        detail["cancelled"] = 0
+        if not obsolete:
+            return detail
+        detail["cancelled"] = self._cancel_tp_orders_at_levels(obsolete)
+        if detail["cancelled"] > 0:
+            logger.info(
+                f"🧹 雷达越过 TP{obsolete} → 撤销过时限价止盈 {detail['cancelled']} 张 @ SL {radar_sl:.2f}",
+            )
+            if hasattr(self, "_log"):
+                self._log(
+                    "TP_ORPHAN_PURGE",
+                    f"雷达止损 {radar_sl:.2f} 已越过 TP{obsolete}，撤销 {detail['cancelled']} 张",
+                    detail,
+                )
+            if hasattr(self, "_alert"):
+                self._alert(
+                    "warning",
+                    "TP_ORPHAN_PURGE",
+                    "雷达越过止盈 · 撤销过时 TP",
+                    f"SL {radar_sl:.2f} ≥ TP{obsolete}，已撤 {detail['cancelled']} 张限价单",
+                    detail,
+                )
+        return detail
+
     def _ensure_radar_sl(self, live_qty, sl_price):
         if not sl_price:
             return False
@@ -1569,14 +1630,32 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         reason = f"{entry_type} 加仓后按新总头寸重挂 TP123/雷达"
         logger.info(f"🧠 {reason}")
         curr_px = self._current_tp_price()
-        consumed = set(int(x) for x in (getattr(self, "consumed_tp_levels", []) or []) if int(x) in (1, 2, 3))
+        side = getattr(self, "current_side", None)
+        prev_sl = float(getattr(self, "tv_sl", 0) or 0)
+
+        if hasattr(self, "_recompute_vps_hard_sl"):
+            sl_meta = self._recompute_vps_hard_sl(entry_px=entry, side=side)
+            new_sl = float(getattr(self, "tv_sl", 0) or 0)
+            if prev_sl > 0 and new_sl > 0:
+                if side == "LONG":
+                    self.tv_sl = min(prev_sl, new_sl)
+                elif side == "SHORT":
+                    self.tv_sl = max(prev_sl, new_sl)
+                sl_meta["merged_prev_sl"] = prev_sl
+                sl_meta["merged_new_sl"] = new_sl
+                sl_meta["stop_price"] = self.tv_sl
+                self._vps_hard_sl_meta = sl_meta
+                logger.info(
+                    f"📐 加仓合并硬止损: {prev_sl:.2f} + {new_sl:.2f} → {self.tv_sl:.2f} ({side})",
+                )
+
+        self.best_price = entry
+        self.consumed_tp_levels = []
+        self.current_sl = entry
 
         self.watched_qty = live_qty
         self.watched_entry = entry
-        if not consumed:
-            self.initial_qty = live_qty
-        else:
-            self.initial_qty = max(float(getattr(self, "initial_qty", 0) or 0), live_qty)
+        self.initial_qty = live_qty
 
         if hasattr(self, "_refresh_radar_state_on_recover") and curr_px > 0 and entry > 0:
             self._refresh_radar_state_on_recover(curr_px, entry)
@@ -1603,7 +1682,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             expected_slices = self._expected_tp_levels(live_qty, curr_px)
 
         audit = self._audit_tp_levels(live_qty, curr_px=curr_px) if live_qty > 0 else {}
-        return {
+        result = {
             "reason": reason,
             "entry_type": entry_type,
             "live_qty": live_qty,
@@ -1622,7 +1701,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 and audit.get("matched_full", 0) >= audit.get("expected", 0)
             ),
             "summary": self._format_audit_summary(audit) if audit else "",
-            "consumed_tp_levels": sorted(consumed),
+            "consumed_tp_levels": [],
+            "vps_hard_sl_meta": getattr(self, "_vps_hard_sl_meta", None),
+            "radar_reset": True,
         }
         if hasattr(self, "_audit_live_exposure"):
             exp = self._audit_live_exposure(
@@ -1631,7 +1712,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             result["exposure"] = exp
             if exp.get("over_committed") and not exp.get("side_flip"):
                 logger.warning(f"⚠️ 加仓后仍检测到止盈超挂: {exp.get('summary')}")
-        return result
+        return enrich_tp_alert_detail(result, regime=self.regime)
 
     def _place_radar_sl(self, live_qty, sl_price):
         close_side = "sell" if self.current_side == "LONG" else "buy"
@@ -2357,6 +2438,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         f"🚀 {label} @ {new_sl:.2f} (阶段{radar.get('stage')})",
                         verify_note=f"条件止损 @ {new_sl:.2f} | 持仓 {real_amt}张",
                     )
+                    self._cancel_obsolete_tp_after_radar_move(new_sl)
                     return True
         else:
             on_book = self._has_trigger_sl_near(new_sl)
@@ -2378,6 +2460,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         f"🚀 {label} @ {new_sl:.2f} (阶段{radar.get('stage')})",
                         verify_note=f"条件止损 @ {new_sl:.2f} | 持仓 {real_amt}张",
                     )
+                    self._cancel_obsolete_tp_after_radar_move(new_sl)
                     return True
         return False
 
