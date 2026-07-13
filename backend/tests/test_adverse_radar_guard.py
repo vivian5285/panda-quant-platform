@@ -37,7 +37,7 @@ def test_compute_adverse_stop_plan_tv_sl_only():
         tv_sl_price=1900.0,
     )
     assert len(plan) == 1
-    assert plan[0]["source"] == "tv_sl"
+    assert plan[0]["source"] == "vps_hard_sl"
     assert plan[0]["stop_price"] == pytest.approx(1900.0, rel=0.001)
     assert plan[0]["qty"] == pytest.approx(0.6, rel=0.01)
 

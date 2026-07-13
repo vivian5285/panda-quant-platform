@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     REGIME_SCALE_2: float = 0.75
     REGIME_SCALE_3: float = 0.95
     REGIME_SCALE_4: float = 1.33
+    # Optional extra hard-SL breathing room (0.05 = +5%) — v6.9.103 VPS spec
+    VPS_SL_RELAX_PCT: float = 0.0
 
     # 加仓：OPEN 由 VPS 算量；PYRAMID/PROFIT_ADD 用 TV qty_ratio × 首仓 base_qty
     ADD_QTY_RATIO: float = 0.5  # TV 未传 qty_ratio 时的全局回退

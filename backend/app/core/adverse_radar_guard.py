@@ -9,12 +9,12 @@ from app.core.position_qty_tolerance import qty_drift_tolerance
 from app.core.radar_trail import (
     RADAR_STARTUP_PROFIT_PROGRESS,
     clamp_stop_market_safe,
-    compute_radar_sl,
-    radar_may_arm,
     stop_would_trigger_immediately,
     tp1_distance,
-    trail_distance,
+    tp_path_progress,
 )
+from app.core.vps_hard_sl import compute_vps_hard_sl
+from app.core.vps_radar_stages import compute_vps_radar_sl, detect_radar_stage
 from app.core.symbol_precision import round_price, round_quantity
 
 logger = logging.getLogger(__name__)
@@ -171,7 +171,7 @@ def compute_adverse_stop_plan(
         "stop_price": tv_px,
         "qty": qty,
         "level": 1,
-        "source": "tv_sl",
+        "source": "vps_hard_sl",
     }]
 
 
@@ -238,23 +238,65 @@ class AdverseRadarMixin:
         self.tv_sl = preserved
 
     def _hard_stop_label(self) -> str:
-        return "TV硬止损"
+        return "VPS硬止损"
+
+    def _recompute_vps_hard_sl(
+        self,
+        entry_px: float | None = None,
+        *,
+        payload: dict | None = None,
+        side: str | None = None,
+    ) -> dict:
+        """Authoritative hard SL from regime × ATR (TV tv_sl reference-only)."""
+        from app.config import get_settings
+
+        self._init_adverse_radar_fields()
+        entry = float(
+            entry_px
+            or getattr(self, "watched_entry", 0)
+            or getattr(self, "tv_price", 0)
+            or 0
+        )
+        if payload:
+            entry = float(payload.get("price") or entry or 0)
+        atr = float(getattr(self, "current_atr", 0) or 0)
+        if payload and payload.get("atr"):
+            atr = float(payload.get("atr") or atr)
+        regime = int(getattr(self, "regime", 3) or 3)
+        if payload and payload.get("regime") is not None:
+            regime = int(payload.get("regime") or regime)
+        side_u = side or getattr(self, "current_side", None)
+        if not side_u and payload:
+            act = str(payload.get("action") or "").upper()
+            if "LONG" in act:
+                side_u = "LONG"
+            elif "SHORT" in act:
+                side_u = "SHORT"
+            elif payload.get("side"):
+                side_u = str(payload.get("side")).upper()
+
+        relax = float(getattr(get_settings(), "VPS_SL_RELAX_PCT", 0) or 0)
+        ref = parse_tv_sl(payload.get("tv_sl")) if payload else None
+        meta = compute_vps_hard_sl(
+            entry, side_u, atr, regime,
+            relax_pct=relax,
+            tv_sl_reference=ref,
+        )
+        if meta.get("stop_price", 0) > 0:
+            self.tv_sl = float(meta["stop_price"])
+            self._vps_hard_sl_meta = meta
+        return meta
 
     def _apply_tv_sl_from_payload(self, payload: dict | None) -> float | None:
-        """Parse tv_sl from LONG/SHORT/UPDATE_SL webhook; mutates self.tv_sl when present."""
-        self._init_adverse_radar_fields()
+        """Compute VPS hard SL from regime+ATR; TV tv_sl stored as reference only."""
         if not payload:
             return None
-        raw = payload.get("tv_sl")
-        if raw is None or raw == "":
-            return None
-        px = parse_tv_sl(raw)
-        if px:
-            self.tv_sl = px
-        return px
+        meta = self._recompute_vps_hard_sl(payload=payload)
+        px = float(meta.get("stop_price") or 0)
+        return px if px > 0 else None
 
     def _clamp_radar_sl_to_tv_floor(self, sl: float) -> float:
-        """Radar breakeven must never sit below TV hard stop (LONG) or above it (SHORT)."""
+        """Radar must never sit below VPS hard stop (LONG) or above it (SHORT)."""
         tv_sl = float(getattr(self, "tv_sl", 0) or 0)
         if tv_sl <= 0 or sl <= 0:
             return sl
@@ -597,44 +639,56 @@ class AdverseRadarMixin:
         )
 
     def _handle_update_sl(self, payload: dict) -> dict[str, Any]:
-        """UPDATE_SL: 同步 TV 底线 — 雷达已激活时仍有效（Route A 共存/合并）。"""
+        """UPDATE_SL: recompute VPS hard SL from regime+ATR and sync to exchange."""
         self._init_adverse_radar_fields()
         side = str(payload.get("side") or "").upper().strip()
-        tv_sl = parse_tv_sl(payload.get("tv_sl"))
-        if not tv_sl:
-            return {"status": "skipped", "reason": "invalid_tv_sl"}
+        if payload.get("regime") is not None:
+            self.regime = int(payload.get("regime") or self.regime)
+        if payload.get("atr"):
+            self.current_atr = float(payload.get("atr") or self.current_atr)
 
         pos = self._get_active_position() if hasattr(self, "_get_active_position") else None
         if not pos or float(pos.get("size", 0) or 0) <= 0:
-            self.tv_sl = tv_sl
+            meta = self._recompute_vps_hard_sl(payload=payload, side=side or None)
             self._save_state() if hasattr(self, "_save_state") else None
-            return {"status": "skipped", "reason": "no_position", "tv_sl": tv_sl}
+            return {
+                "status": "skipped",
+                "reason": "no_position",
+                "vps_sl": meta.get("stop_price"),
+                **meta,
+            }
 
         live_side = str(pos.get("side") or self.current_side or "").upper()
         if side and live_side and side != live_side:
             self._log(
                 "WARN",
                 f"UPDATE_SL 方向 {side} 与实盘 {live_side} 不一致（按实盘更新止损）",
-                {"tv_side": side, "live_side": live_side, "tv_sl": tv_sl},
+                {"tv_side": side, "live_side": live_side},
             )
 
+        entry = float(pos.get("entry_price") or getattr(self, "watched_entry", 0) or 0)
+        meta = self._recompute_vps_hard_sl(entry_px=entry, payload=payload, side=live_side)
+        tv_sl = float(meta.get("stop_price") or 0)
+        if tv_sl <= 0:
+            return {"status": "skipped", "reason": "invalid_vps_sl", **meta}
+
         old_sl = float(getattr(self, "tv_sl", 0) or 0)
-        self.tv_sl = tv_sl
         live_qty = float(pos.get("size", 0))
 
         if old_sl > 0 and abs(old_sl - tv_sl) <= ADVERSE_STOP_TOLERANCE:
             audit = self._sync_adverse_shield_from_exchange(live_qty)
             if audit.get("aligned"):
                 detail = {
-                    "tv_sl": tv_sl,
+                    "vps_sl": tv_sl,
                     "side": live_side,
                     "skipped": "idempotent",
                     "label": self._hard_stop_label(),
                     "radar_active": bool(
                         hasattr(self, "_is_radar_active") and self._is_radar_active()
                     ),
+                    **meta,
                 }
-                verify_msg = f"UPDATE_SL 核实成功 | tv_sl @{tv_sl:.2f} | 盘口已对齐"
+                verify_msg = f"UPDATE_SL 核实成功 | VPS硬止损 @{tv_sl:.2f} | 盘口已对齐"
                 self._log("UPDATE_SL", verify_msg, detail)
                 self._alert("info", "UPDATE_SL", "UPDATE_SL · 核实成功", verify_msg, detail)
                 return {"status": "ok", "action": "UPDATE_SL", "detail": detail}
@@ -651,13 +705,14 @@ class AdverseRadarMixin:
                 live_qty, radar_sl=radar, force_replace=True,
             )
 
-        result["tv_sl"] = tv_sl
+        result["vps_sl"] = tv_sl
         result["side"] = live_side
         result["label"] = self._hard_stop_label()
         result["radar_active"] = bool(
             hasattr(self, "_is_radar_active") and self._is_radar_active()
         )
-        msg = f"{result['label']} 更新 @{tv_sl:.2f}"
+        result.update({k: v for k, v in meta.items() if k not in result})
+        msg = f"{result['label']} 更新 @{tv_sl:.2f} | 呼吸空间 {meta.get('sl_distance')}U"
         if result.get("merged"):
             msg += f" | Binance合并 @{result.get('stop_price', 0):.2f}"
         elif self._uses_dual_stop_track():
@@ -683,25 +738,21 @@ class AdverseRadarMixin:
         self.adverse_sl_armed = True
 
     def _radar_activation_reached(self, curr_px: float) -> bool:
-        """True when breakeven radar may arm (TP1 filled or very late path progress)."""
-        progress = (
-            self._radar_activation_progress(curr_px)
-            if hasattr(self, "_radar_activation_progress")
-            else 0.0
-        )
-        activation = float(
-            self.regime_settings.get(self.regime, {}).get("activation", 0.90)
-        )
+        """True when 8-stage radar may arm (stage≥1, TP1 filled, or already trailing)."""
+        if hasattr(self, "_is_radar_active") and self._is_radar_active():
+            return True
         consumed = list(getattr(self, "consumed_tp_levels", []) or [])
-        radar_active = bool(
-            hasattr(self, "_is_radar_active") and self._is_radar_active()
+        if consumed:
+            return True
+        entry = float(getattr(self, "watched_entry", 0) or 0)
+        tps = list(getattr(self, "tv_tps", []) or [])
+        tp1 = float(tps[0] or 0) if tps else 0.0
+        tp2 = float(tps[1] or 0) if len(tps) > 1 else 0.0
+        tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
+        stage = detect_radar_stage(
+            entry, curr_px, getattr(self, "current_side", None), tp1, tp2, tp3,
         )
-        return radar_may_arm(
-            consumed_tp_levels=consumed,
-            progress=progress,
-            activation_ratio=activation,
-            radar_active=radar_active,
-        )
+        return stage >= 1
 
     def _has_live_adverse_shield(self) -> bool:
         """Exchange-first: any 10% hard stop still on book or marked armed."""
@@ -1494,44 +1545,28 @@ class AdverseRadarMixin:
         entry = float(self.watched_entry or 0)
         if entry <= 0:
             return
-        cfg = self.regime_settings[self.regime]
-        tp1_dist = tp1_distance(entry, list(getattr(self, "tv_tps", []) or []), self.current_atr)
-        consumed = list(getattr(self, "consumed_tp_levels", []) or [])
-        trail_cap = self._next_unconsumed_tp_price()
-        clamp = getattr(self, "_clamp_radar_sl_to_tv_floor", lambda x: x)
-
-        if self.current_side == "LONG":
-            if curr_px > 0:
+        tps = list(getattr(self, "tv_tps", []) or [])
+        tp1 = float(tps[0] or 0) if tps else 0.0
+        tp2 = float(tps[1] or 0) if len(tps) > 1 else 0.0
+        tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
+        if curr_px > 0:
+            if self.current_side == "LONG":
                 self.best_price = max(float(getattr(self, "best_price", entry) or entry), curr_px)
-            trail_sl = compute_radar_sl(
-                side="LONG",
-                entry=entry,
-                best_price=float(self.best_price or entry),
-                atr=self.current_atr,
-                trail_mult=cfg["trail_offset"],
-                tp1_dist=tp1_dist,
-                consumed_tp_levels=consumed,
-                clamp_fn=clamp,
-                trail_cap_px=trail_cap or None,
-            )
-            if float(getattr(self, "current_sl", 0) or 0) < trail_sl:
-                self.current_sl = trail_sl
-        else:
-            if curr_px > 0:
+            else:
                 self.best_price = min(float(getattr(self, "best_price", entry) or entry), curr_px)
-            trail_sl = compute_radar_sl(
-                side="SHORT",
-                entry=entry,
-                best_price=float(self.best_price or entry),
-                atr=self.current_atr,
-                trail_mult=cfg["trail_offset"],
-                tp1_dist=tp1_dist,
-                consumed_tp_levels=consumed,
-                clamp_fn=clamp,
-                trail_cap_px=trail_cap or None,
-            )
-            if float(getattr(self, "current_sl", 0) or 0) <= 0 or self.current_sl > trail_sl:
-                self.current_sl = trail_sl
+        radar = compute_vps_radar_sl(
+            entry=entry,
+            curr_px=float(curr_px or entry),
+            best_price=float(self.best_price or entry),
+            atr=self.current_atr,
+            side=self.current_side,
+            tp1=tp1, tp2=tp2, tp3=tp3,
+            old_sl=float(getattr(self, "current_sl", 0) or 0),
+            hard_sl=float(getattr(self, "tv_sl", 0) or 0),
+            clamp_fn=getattr(self, "_clamp_radar_sl_to_tv_floor", lambda x: x),
+        )
+        if radar.get("armed") and radar.get("radar_sl", 0) > 0:
+            self.current_sl = float(radar["radar_sl"])
 
         if hasattr(self, "_realign_radar_defenses"):
             self._realign_radar_defenses(live_qty, entry, self.current_sl)

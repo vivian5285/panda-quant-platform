@@ -98,7 +98,7 @@ ALERT_TYPE_TAGS = {
     "CAP_ALIGN_BLOCKED": "叠仓纠偏中止",
     "CAP_ALIGN_FAIL": "叠仓减仓失败",
     "CAP_ALIGN_OVERTRIM": "叠仓过度减仓",
-    "UPDATE_SL": "TV硬止损更新",
+    "UPDATE_SL": "VPS硬止损更新",
     "SIGNAL_RECV": "TV信号接收",
     "ADVERSE_SL": "TV硬止损",
     "ADVERSE_SL_DISARM": "防护盾撤销·雷达接管",
@@ -476,7 +476,7 @@ def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
         if detail.get("breakeven_active"):
             lines.append(_line("雷达止损", f"@{float(stop_px):.2f}（已激活）"))
         else:
-            lines.append(_line("TV 硬止损", f"@{float(stop_px):.2f}（雷达未激活）"))
+            lines.append(_line("VPS 硬止损", f"@{float(stop_px):.2f}（雷达未激活）"))
     if detail.get("force_aligned"):
         lines.append(_line("逆势处理", "已强平对齐 TV 方向"))
     if detail.get("startup_summary"):

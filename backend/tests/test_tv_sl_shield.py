@@ -29,7 +29,7 @@ def test_compute_adverse_stop_plan_uses_tv_sl():
     assert len(plan) == 1
     assert plan[0]["stop_price"] == 64428.0
     assert plan[0]["tier_pct"] == TV_SL_TIER_MARKER
-    assert plan[0]["source"] == "tv_sl"
+    assert plan[0]["source"] == "vps_hard_sl"
 
 
 def test_compute_adverse_stop_plan_empty_without_tv_sl():
@@ -82,13 +82,15 @@ def test_update_sl_still_applies_when_radar_active():
         symbol = "ETHUSDT"
         user_id = 1
         current_side = "LONG"
-        watched_entry = 2000.0
+        watched_entry = 1819.0
         current_sl = 2050.0
-        tv_sl = 1800.0
+        tv_sl = 1787.0
+        regime = 2
+        current_atr = 16.65
         client = type("C", (), {"get_current_price": lambda _s, _sym: 2050.0})()
 
         def _get_active_position(self):
-            return {"size": 0.5, "side": "LONG"}
+            return {"size": 0.5, "side": "LONG", "entry_price": 1819.0}
 
         def _is_radar_active(self):
             return True
@@ -112,14 +114,15 @@ def test_update_sl_still_applies_when_radar_active():
             pass
 
         def _hard_stop_label(self):
-            return "TV硬止损"
+            return "VPS硬止损"
 
     probe = Probe()
     probe._init_adverse_radar_fields()
-    result = probe._handle_update_sl({"side": "LONG", "tv_sl": 1900.0})
+    result = probe._handle_update_sl({
+        "side": "LONG", "regime": 2, "atr": 16.65, "tv_sl": 1800.0,
+    })
     assert result["status"] == "ok"
-    assert result["detail"].get("skipped") != "radar_takeover"
-    assert probe.tv_sl == 1900.0
+    assert probe.tv_sl == pytest.approx(1787.53, rel=0.01)
 
 
 def test_update_sl_allowed_before_radar():
@@ -128,15 +131,17 @@ def test_update_sl_allowed_before_radar():
         symbol = "ETHUSDT"
         user_id = 1
         current_side = "LONG"
-        watched_entry = 2000.0
-        current_sl = 2000.0
-        tv_sl = 1800.0
+        watched_entry = 1819.0
+        current_sl = 1819.0
+        tv_sl = 1787.0
+        regime = 2
+        current_atr = 16.65
         adverse_sl_armed = True
-        adverse_sl_prices = [1800.0]
-        client = type("C", (), {"get_current_price": lambda _s, _sym: 2010.0})()
+        adverse_sl_prices = [1787.0]
+        client = type("C", (), {"get_current_price": lambda _s, _sym: 1820.0})()
 
         def _get_active_position(self):
-            return {"size": 0.5, "side": "LONG"}
+            return {"size": 0.5, "side": "LONG", "entry_price": 1819.0}
 
         def _log(self, *a, **k):
             pass
@@ -148,7 +153,7 @@ def test_update_sl_allowed_before_radar():
             return False
 
         def _sync_binance_merged_stop(self, live_qty, **kwargs):
-            return {"armed": True, "placed": 1, "stop_price": 1900.0, "label": "TV硬止损", "aligned": True}
+            return {"armed": True, "placed": 1, "stop_price": 1787.5, "label": "VPS硬止损", "aligned": True}
 
         def _sync_adverse_shield_from_exchange(self, live_qty):
             return {"aligned": False}
@@ -160,13 +165,15 @@ def test_update_sl_allowed_before_radar():
             return False
 
         def _hard_stop_label(self):
-            return "TV硬止损"
+            return "VPS硬止损"
 
     probe = Probe()
     probe._init_adverse_radar_fields()
-    result = probe._handle_update_sl({"side": "LONG", "tv_sl": 1900.0})
+    result = probe._handle_update_sl({
+        "side": "LONG", "regime": 2, "atr": 16.65, "tv_sl": 1800.0,
+    })
     assert result["status"] == "ok"
-    assert result["detail"].get("skipped") != "radar_takeover"
+    assert probe.tv_sl == pytest.approx(1787.53, rel=0.01)
 
 
 def test_entry_payload_accepts_tv_sl():

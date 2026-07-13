@@ -23,13 +23,8 @@ from app.core.startup_reconcile import (
 from app.core.binance_smart_defense import BinanceSmartDefenseMixin
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.position_manager import PositionManager
-from app.core.radar_trail import (
-    clamp_stop_market_safe,
-    compute_radar_sl,
-    radar_may_arm,
-    tp1_distance,
-    tp_path_progress,
-)
+from app.core.radar_trail import clamp_stop_market_safe, tp_path_progress
+from app.core.vps_radar_stages import compute_vps_radar_sl, detect_radar_stage
 from app.core.tp_regime_ratios import build_regime_settings, enrich_tp_alert_detail
 from app.core.regime_utils import clamp_regime
 from app.core.same_direction_policy import (
@@ -1571,6 +1566,7 @@ class PositionSupervisor(
 
     def _protect_and_monitor(self, qty: float, entry_price: float):
         self._reset_adverse_radar()
+        self._recompute_vps_hard_sl(entry_px=entry_price)
         self.current_sl = entry_price
         self.best_price = entry_price
         self.watched_qty = qty
@@ -2013,12 +2009,9 @@ class PositionSupervisor(
         threading.Thread(target=loop, daemon=True, name=f"idle-patrol-u{self.user_id}").start()
 
     def _refresh_radar_state_on_recover(self, curr_px: float, entry: float) -> None:
-        """重启：按现价恢复 best_price / 雷达激活 / 追踪止损位"""
+        """重启：按现价恢复 best_price / 8 阶段雷达止损位"""
         if curr_px <= 0 or not entry:
             return
-        cfg = self.regime_settings[self.regime]
-        tp1_dist = tp1_distance(entry, self.tv_tps, self.current_atr)
-
         if self.best_price == 0.0:
             self.best_price = entry
         if self.current_side == "LONG":
@@ -2026,35 +2019,25 @@ class PositionSupervisor(
         else:
             self.best_price = min(self.best_price, curr_px)
 
-        progress = self._radar_activation_progress(curr_px)
-        consumed = list(getattr(self, "consumed_tp_levels", []) or [])
-        if radar_may_arm(
-            consumed_tp_levels=consumed,
-            progress=progress,
-            activation_ratio=cfg["activation"],
-            radar_active=self._is_radar_active(),
-        ):
-            clamp = self._clamp_radar_sl_to_tv_floor
-            trail_cap = self._next_unconsumed_tp_price()
-            trail_sl = compute_radar_sl(
-                side=self.current_side,
-                entry=entry,
-                best_price=self.best_price,
-                atr=self.current_atr,
-                trail_mult=cfg["trail_offset"],
-                tp1_dist=tp1_dist,
-                consumed_tp_levels=consumed,
-                clamp_fn=clamp,
-                trail_cap_px=trail_cap or None,
-            )
-            if self.current_side == "LONG":
-                if not self._is_radar_active() or trail_sl > self.current_sl:
-                    self.current_sl = max(self.current_sl or entry, trail_sl)
-            else:
-                if not self._is_radar_active() or trail_sl < self.current_sl:
-                    self.current_sl = min(self.current_sl or entry, trail_sl)
+        tps = list(self.tv_tps or [])
+        tp1 = float(tps[0] or 0) if tps else 0.0
+        tp2 = float(tps[1] or 0) if len(tps) > 1 else 0.0
+        tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
+        radar = compute_vps_radar_sl(
+            entry=entry,
+            curr_px=curr_px,
+            best_price=self.best_price,
+            atr=self.current_atr,
+            side=self.current_side,
+            tp1=tp1, tp2=tp2, tp3=tp3,
+            old_sl=float(self.current_sl or 0),
+            hard_sl=float(getattr(self, "tv_sl", 0) or 0),
+            clamp_fn=self._clamp_radar_sl_to_tv_floor,
+        )
+        if radar.get("armed") and radar.get("radar_sl", 0) > 0:
+            self.current_sl = float(radar["radar_sl"])
             logger.info(
-                f"[User {self.user_id}] 📡 重启雷达恢复: 进度 {progress:.0%} | "
+                f"[User {self.user_id}] 📡 重启雷达恢复: {radar.get('stage_label')} | "
                 f"best={self.best_price:.2f} | SL={self.current_sl:.2f}"
             )
         elif self.current_sl == 0.0 and not getattr(self, "adopted_manual", False):
@@ -2066,41 +2049,30 @@ class PositionSupervisor(
         tp1 = float(self.tv_tps[0] or 0) if self.tv_tps else 0.0
         if tp1 > 0:
             return tp_path_progress(self.watched_entry, curr_px, tp1, self.current_side)
-        tp1_dist = self.current_atr * 1.5
-        activation_ratio = self.regime_settings[self.regime]["activation"]
-        if self.current_side == "LONG":
-            required = self.watched_entry + tp1_dist * activation_ratio
-            span = required - self.watched_entry
-            if span <= 0:
-                return 0.0
-            return max(0.0, min(1.0, (curr_px - self.watched_entry) / span))
-        required = self.watched_entry - tp1_dist * activation_ratio
-        span = self.watched_entry - required
-        if span <= 0:
-            return 0.0
-        return max(0.0, min(1.0, (self.watched_entry - curr_px) / span))
-
-    def _next_unconsumed_tp_price(self) -> float:
-        consumed = set(getattr(self, "consumed_tp_levels", []) or [])
-        for i, px in enumerate(getattr(self, "tv_tps", []) or []):
-            level = i + 1
-            if level not in consumed and float(px or 0) > 0:
-                return float(px)
         return 0.0
 
     def _radar_trail_detail(self, curr_px: float, new_sl: float, **extra) -> dict:
-        cfg = self.regime_settings[self.regime]
         progress = self._radar_activation_progress(curr_px)
+        tps = list(self.tv_tps or [])
+        tp1 = float(tps[0] or 0) if tps else 0.0
+        tp2 = float(tps[1] or 0) if len(tps) > 1 else 0.0
+        tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
+        stage = detect_radar_stage(
+            float(self.watched_entry or 0), curr_px, self.current_side, tp1, tp2, tp3,
+        )
+        vps_meta = getattr(self, "_vps_hard_sl_meta", None) or {}
         detail = {
             "regime": self.regime,
             "new_sl": new_sl,
             "best_price": self.best_price,
             "radar_progress": round(progress, 4),
-            "activation_ratio": cfg["activation"],
+            "radar_stage": stage,
             "consumed_tp_levels": list(getattr(self, "consumed_tp_levels", []) or []),
-            "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
+            "vps_hard_sl": float(getattr(self, "tv_sl", 0) or 0),
+            "sl_distance": vps_meta.get("sl_distance"),
+            "final_multiplier": vps_meta.get("final_multiplier"),
             "entry": float(self.watched_entry or 0),
-            "tp1": float(self.tv_tps[0] or 0) if self.tv_tps else 0.0,
+            "tp1": tp1,
             "curr_px": curr_px,
             "exchange": self.exchange_id,
         }
@@ -2112,95 +2084,91 @@ class PositionSupervisor(
             return SENTINEL_POLL_RADAR
         if curr_px > 0:
             progress = self._radar_activation_progress(curr_px)
-            arm_at = float(self.regime_settings[self.regime]["activation"])
-            if progress >= max(0.0, arm_at - 0.08):
+            if progress >= 0.70:
                 return SENTINEL_POLL_RADAR
-            if progress >= 0.5:
+            if progress >= 0.50:
                 return SENTINEL_POLL_ARMING
         return SENTINEL_POLL_NORMAL
 
     def _process_radar_trailing(self, real_amt: float, curr_px: float) -> bool:
-        cfg = self.regime_settings[self.regime]
-        progress = self._radar_activation_progress(curr_px)
-        consumed = list(getattr(self, "consumed_tp_levels", []) or [])
-        if not radar_may_arm(
-            consumed_tp_levels=consumed,
-            progress=progress,
-            activation_ratio=cfg["activation"],
-            radar_active=self._is_radar_active(),
-        ):
+        if not self._radar_activation_reached(curr_px):
             return False
 
-        tp1_dist = tp1_distance(self.watched_entry, self.tv_tps, self.current_atr)
-        clamp = self._clamp_radar_sl_to_tv_floor
-        trail_cap = self._next_unconsumed_tp_price()
-        new_sl = compute_radar_sl(
-            side=self.current_side,
-            entry=self.watched_entry,
-            best_price=self.best_price,
+        tps = list(self.tv_tps or [])
+        tp1 = float(tps[0] or 0) if tps else 0.0
+        tp2 = float(tps[1] or 0) if len(tps) > 1 else 0.0
+        tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
+        radar = compute_vps_radar_sl(
+            entry=float(self.watched_entry or 0),
+            curr_px=curr_px,
+            best_price=float(self.best_price or self.watched_entry or 0),
             atr=self.current_atr,
-            trail_mult=cfg["trail_offset"],
-            tp1_dist=tp1_dist,
-            consumed_tp_levels=consumed,
-            clamp_fn=clamp,
-            trail_cap_px=trail_cap or None,
+            side=self.current_side,
+            tp1=tp1, tp2=tp2, tp3=tp3,
+            old_sl=float(self.current_sl or 0),
+            hard_sl=float(getattr(self, "tv_sl", 0) or 0),
+            clamp_fn=self._clamp_radar_sl_to_tv_floor,
         )
+        new_sl = float(radar.get("radar_sl") or 0)
+        if new_sl <= 0:
+            return False
         if curr_px > 0:
             new_sl = clamp_stop_market_safe(new_sl, curr_px, self.current_side)
+
         moved = False
+        min_move = RADAR_SL_MIN_MOVE
         if self.current_side == "LONG":
             on_book = self._has_stop_sl_near(new_sl)
-            if self._radar_activation_reached(curr_px) and not on_book:
+            should_trail = new_sl > float(self.current_sl or 0) + min_move
+            should_arm = not on_book and new_sl > float(getattr(self, "tv_sl", 0) or 0)
+            if should_trail or should_arm:
                 self.current_sl = new_sl
                 self._save_state()
                 sl_placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
-                if not sl_placed:
+                if not sl_placed and not on_book:
                     sl_placed = bool(self._ensure_radar_sl(new_sl, real_amt))
                 trail_detail = self._radar_trail_detail(
-                    curr_px, new_sl, sl_placed=sl_placed, first_arm=True,
+                    curr_px, new_sl,
+                    sl_placed=sl_placed,
+                    stage=radar.get("stage"),
+                    stage_label=radar.get("stage_label"),
+                    first_arm=should_arm and not should_trail,
                 )
-                self._log("TRAIL", f"雷达补挂保本 SL → {new_sl}", trail_detail)
+                label = radar.get("stage_label") or "雷达锁润"
+                self._log("TRAIL", f"{label} → SL {new_sl}", trail_detail)
                 if sl_placed:
-                    self._alert("info", "TRAIL", "追踪雷达锁润", f"SL {new_sl}", trail_detail)
-                moved = True
-            else:
-                should_trail = new_sl > self.current_sl + RADAR_SL_MIN_MOVE
-                should_arm = self._radar_activation_reached(curr_px) and not on_book
-                if should_trail or should_arm:
-                    self.current_sl = new_sl
-                    self._save_state()
-                    sl_placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
-                    if not sl_placed and not on_book:
-                        sl_placed = bool(self._ensure_radar_sl(new_sl, real_amt))
-                    trail_detail = self._radar_trail_detail(
-                        curr_px,
-                        new_sl,
-                        sl_placed=sl_placed,
-                        first_arm=should_arm and not should_trail,
+                    self._alert(
+                        "info", "TRAIL", f"雷达·{label}",
+                        f"阶段{radar.get('stage')} SL {new_sl} | 进度 {trail_detail.get('radar_progress', 0):.0%}",
+                        trail_detail,
                     )
-                    self._log("TRAIL", f"雷达推升 SL → {new_sl}", trail_detail)
-                    self._alert("info", "TRAIL", "追踪雷达锁润", f"SL {new_sl}", trail_detail)
-                    moved = True
+                moved = True
         else:
             on_book = self._has_stop_sl_near(new_sl)
             should_trail = (
-                self.current_sl <= 0
-                or self.current_sl >= self.watched_entry
-                or new_sl < self.current_sl - RADAR_SL_MIN_MOVE
+                float(self.current_sl or 0) <= 0
+                or float(self.current_sl or 0) >= float(self.watched_entry or 0)
+                or new_sl < float(self.current_sl or 0) - min_move
             )
-            should_arm = self._radar_activation_reached(curr_px) and not on_book
+            should_arm = not on_book
             if should_trail or should_arm:
                 self.current_sl = new_sl
                 self._save_state()
                 sl_placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
                 trail_detail = self._radar_trail_detail(
-                    curr_px,
-                    new_sl,
+                    curr_px, new_sl,
                     sl_placed=sl_placed,
-                    first_arm=should_arm and not should_trail,
+                    stage=radar.get("stage"),
+                    stage_label=radar.get("stage_label"),
                 )
-                self._log("TRAIL", f"雷达下压 SL → {new_sl}", trail_detail)
-                self._alert("info", "TRAIL", "追踪雷达锁润", f"SL {new_sl}", trail_detail)
+                label = radar.get("stage_label") or "雷达锁润"
+                self._log("TRAIL", f"{label} → SL {new_sl}", trail_detail)
+                if sl_placed:
+                    self._alert(
+                        "info", "TRAIL", f"雷达·{label}",
+                        f"阶段{radar.get('stage')} SL {new_sl}",
+                        trail_detail,
+                    )
                 moved = True
         return moved
 
