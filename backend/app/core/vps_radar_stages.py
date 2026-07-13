@@ -1,37 +1,39 @@
-"""VPS 8-stage radar trailing stop (v6.9.103 spec)."""
+"""VPS radar trailing stop — TP1-fill activation, 5-stage trail (all regimes unified)."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from app.core.radar_trail import tp_path_progress
+from app.core.radar_trail import tp1_consumed, tp_path_progress
 from app.core.symbol_precision import round_price
 
-# Stage 0 = hard SL only (no radar)
+# Stage 0 = VPS hard SL only (before TP1 fill — breathing room)
 RADAR_STAGE_LABELS: dict[int, str] = {
     0: "硬止损防守",
-    1: "TP1路径70%·提前保本",
-    2: "TP1路径85%·早追踪",
-    3: "到达TP1·标准追踪",
-    4: "TP1→TP2 25%",
-    5: "TP1→TP2 50%",
-    6: "TP1→TP2 75%",
-    7: "到达TP2·深度锁利",
-    8: "TP2→TP3 80%·极限保护",
+    1: "TP1成交·保本激活",
+    2: "TP1→TP2 50%·追踪",
+    3: "到达TP2·锁利",
+    4: "TP2→TP3 50%·加深",
+    5: "到达TP3·极限保护",
 }
 
+# Stage 1 = breakeven ±0.1%; later stages = ATR trail from best price
 RADAR_STAGE_ATR_MULT: dict[int, float | None] = {
-    1: None,   # breakeven +0.1%
-    2: 1.8,
-    3: 1.2,
-    4: 1.0,
-    5: 0.8,
-    6: 0.6,
-    7: 0.5,
-    8: 0.3,
+    1: None,
+    2: 1.0,
+    3: 0.6,
+    4: 0.5,
+    5: 0.3,
 }
 
 BREAKEVEN_BUFFER_PCT = 0.001
+
+
+def tp1_filled_from_consumed(consumed_tp_levels: list | None) -> bool:
+    """TP1 fill (or later TP fills that imply TP1 already took)."""
+    if tp1_consumed(consumed_tp_levels):
+        return True
+    return any(int(x) in (2, 3) for x in (consumed_tp_levels or []))
 
 
 def _reached_level(curr_px: float, level: float, side: str | None) -> bool:
@@ -76,33 +78,31 @@ def _detect_radar_stage_at_px(
     tp1: float,
     tp2: float,
     tp3: float,
+    *,
+    tp1_filled: bool,
 ) -> int:
-    if px <= 0 or entry <= 0 or tp1 <= 0:
+    """Stage from price only after TP1 has filled (otherwise always 0)."""
+    if not tp1_filled or entry <= 0:
         return 0
-    p_tp1 = tp_path_progress(entry, px, tp1, side)
-    if p_tp1 < 0.70:
-        return 0
-    if p_tp1 < 0.85:
+    if px <= 0:
         return 1
-    if not _reached_level(px, tp1, side):
-        return 2
+
+    stage = 1
     if tp2 <= 0:
-        return 3
+        return stage
     if not _reached_level(px, tp2, side):
-        p12 = interval_path_progress(px, tp1, tp2, side)
-        if p12 < 0.25:
-            return 3
-        if p12 < 0.50:
-            return 4
-        if p12 < 0.75:
-            return 5
-        return 6
+        if interval_path_progress(px, tp1, tp2, side) >= 0.50:
+            return 2
+        return 1
+
+    stage = 3
     if tp3 <= 0:
-        return 7
-    p23 = interval_path_progress(px, tp2, tp3, side)
-    if p23 < 0.80:
-        return 7
-    return 8
+        return stage
+    if not _reached_level(px, tp3, side):
+        if interval_path_progress(px, tp2, tp3, side) >= 0.50:
+            return 4
+        return 3
+    return 5
 
 
 def detect_radar_stage(
@@ -114,11 +114,19 @@ def detect_radar_stage(
     tp3: float,
     *,
     peak_px: float | None = None,
+    tp1_filled: bool = False,
 ) -> int:
-    """Highest stage reached by price (0–8). peak_px preserves stage after pullbacks."""
-    stage = _detect_radar_stage_at_px(entry, curr_px, side, tp1, tp2, tp3)
-    if peak_px is not None and float(peak_px or 0) > 0:
-        stage = max(stage, _detect_radar_stage_at_px(entry, peak_px, side, tp1, tp2, tp3))
+    """Highest stage (0–5). Requires TP1 fill; peak_px preserves stage after pullbacks."""
+    stage = _detect_radar_stage_at_px(
+        entry, curr_px, side, tp1, tp2, tp3, tp1_filled=tp1_filled,
+    )
+    if peak_px is not None and float(peak_px or 0) > 0 and tp1_filled:
+        stage = max(
+            stage,
+            _detect_radar_stage_at_px(
+                entry, peak_px, side, tp1, tp2, tp3, tp1_filled=True,
+            ),
+        )
     return stage
 
 
@@ -196,25 +204,39 @@ def compute_vps_radar_sl(
     hard_sl: float,
     clamp_fn,
     radar_latched: bool = False,
+    tp1_filled: bool = False,
 ) -> dict[str, Any]:
-    """Full radar evaluation: stage detect → SL compute → floor → direction."""
-    peak_px = best_price if radar_latched else None
+    """
+    Full radar evaluation.
+    Arms only after TP1 fill (or already latched). Stage never retreats on pullback.
+    Radar SL replaces hard SL as the effective stop once armed (hard_sl is floor only).
+    """
+    armed_gate = bool(tp1_filled or radar_latched)
+    if radar_latched and is_favorable_radar_sl(old_sl, entry, side):
+        armed_gate = True
+
+    peak_px = best_price if armed_gate else None
     stage = detect_radar_stage(
-        entry, curr_px, side, tp1, tp2, tp3, peak_px=peak_px,
+        entry, curr_px, side, tp1, tp2, tp3,
+        peak_px=peak_px, tp1_filled=armed_gate,
     )
-    if radar_latched and stage <= 0 and is_favorable_radar_sl(old_sl, entry, side):
+    if armed_gate and stage <= 0:
         stage = 1
 
     raw = compute_stage_radar_sl(
         stage, entry=entry, best_price=best_price, atr=atr, side=side,
     )
+    progress = (
+        round(tp_path_progress(entry, curr_px, tp1, side), 4) if tp1 > 0 else 0.0
+    )
+
     if stage <= 0 or raw <= 0:
         if radar_latched and is_favorable_radar_sl(old_sl, entry, side):
             return {
                 "stage": 1,
                 "stage_label": RADAR_STAGE_LABELS[1],
                 "radar_sl": float(old_sl),
-                "tp1_progress": round(tp_path_progress(entry, curr_px, tp1, side), 4) if tp1 > 0 else 0.0,
+                "tp1_progress": progress,
                 "armed": True,
                 "latched_hold": True,
             }
@@ -222,12 +244,13 @@ def compute_vps_radar_sl(
             "stage": 0,
             "stage_label": RADAR_STAGE_LABELS[0],
             "radar_sl": 0.0,
-            "tp1_progress": round(tp_path_progress(entry, curr_px, tp1, side), 4) if tp1 > 0 else 0.0,
+            "tp1_progress": progress,
             "armed": False,
         }
 
     sl = clamp_fn(raw)
     sl = apply_radar_sl_direction(float(old_sl or 0), sl, side)
+    # Hard SL is floor only — never lets radar retreat wider than VPS hard stop
     if hard_sl > 0 and side == "LONG":
         sl = max(sl, hard_sl)
     elif hard_sl > 0 and side == "SHORT":
@@ -238,8 +261,9 @@ def compute_vps_radar_sl(
         "stage_label": RADAR_STAGE_LABELS.get(stage, f"阶段{stage}"),
         "radar_sl": sl,
         "raw_sl": raw,
-        "tp1_progress": round(tp_path_progress(entry, curr_px, tp1, side), 4) if tp1 > 0 else 0.0,
+        "tp1_progress": progress,
         "armed": True,
         "latched": radar_latched,
+        "tp1_filled": tp1_filled,
         "atr_mult": RADAR_STAGE_ATR_MULT.get(stage),
     }

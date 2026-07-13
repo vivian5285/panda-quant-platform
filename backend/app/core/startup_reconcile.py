@@ -221,7 +221,7 @@ def prepare_manual_adopt(supervisor) -> None:
     supervisor.adopted_manual = True
     if entry > 0:
         supervisor.best_price = entry
-    # 人工接管首挂仅 TV 硬止损 + TP123；雷达待 TP1/96% 路径后再激活
+    # 人工接管首挂仅 VPS 硬止损 + TP123；雷达待 TP1 成交后再激活
     supervisor.current_sl = 0.0
 
 
@@ -404,16 +404,16 @@ def classify_startup_pnl_track(
     consumed_tp_levels: list | None = None,
 ) -> str:
     """
-    loss_shield — 浮亏/雷达未激活：保 TP123 + TV 硬止损
-    profit_radar — TP1 已成交或雷达已锁 / 路径≥96%：撤硬止损，雷达接管
+    loss_shield — TP1 未成交：保 TP123 + VPS 宽硬止损（给足呼吸空间）
+    profit_radar — TP1 已成交或雷达已锁：雷达保本接管
+    路径进度不再触发雷达轨（统一：仅 TP1 成交后激活）。
     """
     consumed = list(consumed_tp_levels or [])
     if tp1_consumed(consumed) or any(x in consumed for x in (2, 3)):
         return "profit_radar"
     if radar_active:
         return "profit_radar"
-    if float(radar_progress or 0) >= RADAR_STARTUP_PROFIT_PROGRESS:
-        return "profit_radar"
+    _ = (entry, curr_px, side, radar_progress, RADAR_STARTUP_PROFIT_PROGRESS)
     return "loss_shield"
 
 
@@ -1339,7 +1339,7 @@ class StartupReconcileMixin:
                 shield_audit = self._sync_binance_merged_stop(live_qty)
             else:
                 shield_audit = {}
-            if progress >= 1.0 or radar_active or consumed:
+            if radar_active or consumed:
                 radar_handoff = bool(self._handoff_shield_to_radar(live_qty, curr_px))
         else:
             shield_audit = self._on_adverse_startup_reconcile(live_qty, curr_px)

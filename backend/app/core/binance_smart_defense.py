@@ -754,7 +754,7 @@ class BinanceSmartDefenseMixin:
         curr_px = self._current_tp_price() if hasattr(self, "_current_tp_price") else 0.0
         if hasattr(self, "_radar_activation_reached") and not self._radar_activation_reached(curr_px):
             self._def_log(
-                f"⏸️ 雷达未达激活条件（待 TP1 成交或路径达 R{getattr(self, 'regime', 3)} 激活线），"
+                f"⏸️ 雷达未达激活条件（待 TP1 成交），"
                 f"跳过保本 STOP @ {float(dynamic_sl):.2f}",
             )
             return False

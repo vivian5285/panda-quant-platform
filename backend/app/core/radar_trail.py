@@ -10,9 +10,9 @@ FEE_BUFFER_PCT = 0.0015
 # Breakeven floor slack (ATR) — wider before TP1, tighter after TP1 lock-in
 RADAR_BREAKEVEN_ATR_BEFORE_TP1 = 0.55
 RADAR_BREAKEVEN_ATR_AFTER_TP1 = 0.25
-# Arm STOP only after TP1 fill, or path progress ≥ this (late trend lock)
-RADAR_PRE_TP1_ARM_PROGRESS = 0.96
-RADAR_STARTUP_PROFIT_PROGRESS = 0.96
+# Legacy constants kept for import compat — radar arms only on TP1 fill (no path pre-arm)
+RADAR_PRE_TP1_ARM_PROGRESS = 1.01  # unreachable — disables path-based pre-TP1 arming
+RADAR_STARTUP_PROFIT_PROGRESS = 1.01  # unreachable — startup profit-radar only after TP1 fill
 
 # Looser activation path + wider ATR trail vs legacy tight defaults
 REGIME_RADAR: dict[int, dict[str, float]] = {
@@ -83,18 +83,17 @@ def radar_may_arm(
 ) -> bool:
     """
     When to place/move breakeven radar STOP:
-    - TP1+ filled (primary — lock profit as slices exit)
+    - TP1+ filled (only — breathing room before TP1)
     - already armed and trailing
-    - or path progress ≥ regime activation ratio along entry→TP1
+    Path progress alone never arms (activation_ratio / progress ignored).
     """
     if radar_active:
         return True
     if tp1_consumed(consumed_tp_levels):
         return True
-    arm_at = float(activation_ratio or 0)
-    if arm_at <= 0:
-        arm_at = RADAR_PRE_TP1_ARM_PROGRESS
-    return float(progress or 0) >= arm_at
+    if any(int(x) in (2, 3) for x in (consumed_tp_levels or [])):
+        return True
+    return False
 
 
 def breakeven_floor(

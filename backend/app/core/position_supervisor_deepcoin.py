@@ -10,7 +10,10 @@ from typing import Callable, Optional
 
 from app.core.deepcoin_client import DeepcoinClient, CLIENT_VERSION
 from app.core.radar_trail import clamp_stop_market_safe, tp_path_progress
-from app.core.vps_radar_stages import compute_vps_radar_sl, detect_radar_stage
+from app.core.vps_radar_stages import (
+    compute_vps_radar_sl,
+    tp1_filled_from_consumed,
+)
 from app.core.tp_regime_ratios import build_regime_settings, enrich_tp_alert_detail
 from app.core.same_direction_policy import (
     SameDirAction,
@@ -71,9 +74,9 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 DEEPCOIN_SUPERVISOR_VERSION = "v13.4.6-flat-reconcile"
-SENTINEL_POLL_NORMAL = 4
-SENTINEL_POLL_ARMING = 2.5
-SENTINEL_POLL_RADAR = 1.5
+SENTINEL_POLL_NORMAL = 8.0
+SENTINEL_POLL_ARMING = 6.0
+SENTINEL_POLL_RADAR = 6.0
 DUST_ORPHAN_CONTRACTS = 1
 TP_COMPLETE_RESIDUAL_RATIO = 0.12
 FLAT_WAIT_TIMEOUT = 12.0
@@ -1417,7 +1420,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         curr_px = self._current_tp_price() if hasattr(self, "_current_tp_price") else 0.0
         if hasattr(self, "_radar_activation_reached") and not self._radar_activation_reached(curr_px):
             logger.info(
-                "⏸️ 雷达未达激活条件（待 TP1 成交或路径≥96%），跳过保本 STOP @ %.2f",
+                "⏸️ 雷达未达激活条件（待 TP1 成交），跳过保本 STOP @ %.2f",
                 float(sl_price),
             )
             return False
@@ -1463,6 +1466,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             hard_sl=float(getattr(self, "tv_sl", 0) or 0),
             clamp_fn=self._clamp_radar_sl_to_tv_floor,
             radar_latched=bool(getattr(self, "radar_latched", False)),
+            tp1_filled=tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
         )
         if radar.get("armed") and radar.get("radar_sl", 0) > 0:
             self.current_sl = float(radar["radar_sl"])
@@ -2400,12 +2404,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return 0.0
 
     def _sentinel_poll_sec(self, curr_px=0.0):
+        if hasattr(self, "_is_radar_engaged") and self._is_radar_engaged():
+            return SENTINEL_POLL_RADAR
         if self._is_radar_active():
             return SENTINEL_POLL_RADAR
-        if curr_px > 0 and self._radar_activation_progress(curr_px) >= 0.70:
+        if tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)):
             return SENTINEL_POLL_RADAR
-        if curr_px > 0 and self._radar_activation_progress(curr_px) >= 0.50:
-            return SENTINEL_POLL_ARMING
         return SENTINEL_POLL_NORMAL
 
     def _process_radar_trailing(self, real_amt, curr_px):
@@ -2424,6 +2428,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             hard_sl=float(getattr(self, "tv_sl", 0) or 0),
             clamp_fn=self._clamp_radar_sl_to_tv_floor,
             radar_latched=bool(getattr(self, "radar_latched", False)),
+            tp1_filled=tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
         )
         new_sl = float(radar.get("radar_sl") or 0)
         if new_sl <= 0:
@@ -2660,8 +2665,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         and self._scan_ticks % 5 == 0
                     ):
                         logger.info(
-                            f"📡 雷达预热: 进度 {progress:.0%} | 现价 {curr_px:.2f} | "
-                            f"轮询 {SENTINEL_POLL_ARMING}s"
+                            f"📡 TP1路径 {progress:.0%} | 现价 {curr_px:.2f} | "
+                            f"硬止损守护（雷达待TP1成交）"
                         )
                 finally:
                     self._lock.release()

@@ -17,8 +17,9 @@ def test_classify_loss_shield_when_underwater():
     assert classify_startup_pnl_track(2000.0, 1900.0, "LONG", radar_progress=0.2) == "loss_shield"
 
 
-def test_classify_profit_radar_when_progress_full():
-    assert classify_startup_pnl_track(2000.0, 2010.0, "LONG", radar_progress=1.0) == "profit_radar"
+def test_classify_loss_shield_even_when_path_full_before_tp1():
+    """TP1 path 100% without fill must stay on hard-SL track (breathing room)."""
+    assert classify_startup_pnl_track(2000.0, 2010.0, "LONG", radar_progress=1.0) == "loss_shield"
 
 
 def test_classify_loss_shield_when_profit_but_radar_not_active():
@@ -145,6 +146,8 @@ def test_unified_startup_loss_track_arms_shield():
 def test_unified_startup_profit_track_coexist_shield():
     probe = _StartupProbe()
     probe.adverse_sl_armed = True
+    probe.consumed_tp_levels = [1]
+    probe.current_sl = 2002.0
     with patch.object(probe, "_startup_wait_live_book", lambda: None), patch.object(
         probe, "_sync_binance_merged_stop", return_value={"aligned": True, "merged": True},
     ) as merged, patch.object(probe, "_handoff_shield_to_radar", return_value=True):

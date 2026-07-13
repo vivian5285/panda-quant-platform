@@ -7,14 +7,13 @@ from typing import Any
 
 from app.core.position_qty_tolerance import qty_drift_tolerance
 from app.core.radar_trail import (
-    RADAR_STARTUP_PROFIT_PROGRESS,
     clamp_stop_market_safe,
     stop_would_trigger_immediately,
     tp1_distance,
     tp_path_progress,
 )
 from app.core.vps_hard_sl import compute_hard_sl_limit_price, compute_vps_hard_sl
-from app.core.vps_radar_stages import compute_vps_radar_sl, detect_radar_stage
+from app.core.vps_radar_stages import compute_vps_radar_sl, tp1_filled_from_consumed
 from app.core.symbol_precision import round_price, round_quantity
 
 logger = logging.getLogger(__name__)
@@ -717,21 +716,11 @@ class AdverseRadarMixin:
         self.adverse_sl_armed = True
 
     def _radar_activation_reached(self, curr_px: float) -> bool:
-        """True when 8-stage radar may arm (stage≥1, TP1 filled, or already trailing)."""
+        """True only after TP1 fill (or radar already latched/trailing). No path pre-arm."""
         if self._is_radar_engaged():
             return True
-        consumed = list(getattr(self, "consumed_tp_levels", []) or [])
-        if consumed:
-            return True
-        entry = float(getattr(self, "watched_entry", 0) or 0)
-        tps = list(getattr(self, "tv_tps", []) or [])
-        tp1 = float(tps[0] or 0) if tps else 0.0
-        tp2 = float(tps[1] or 0) if len(tps) > 1 else 0.0
-        tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
-        stage = detect_radar_stage(
-            entry, curr_px, getattr(self, "current_side", None), tp1, tp2, tp3,
-        )
-        return stage >= 1
+        from app.core.vps_radar_stages import tp1_filled_from_consumed
+        return tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None))
 
     def _has_live_adverse_shield(self) -> bool:
         """Exchange-first: any 10% hard stop still on book or marked armed."""
@@ -755,17 +744,13 @@ class AdverseRadarMixin:
         return {"cancelled": 0, "skipped": "route_a_coexist", "reason": reason}
 
     def _handoff_shield_to_radar(self, live_qty: float, curr_px: float) -> bool:
-        """After shield disarm: activate radar breakeven trail when TP1 distance is met."""
+        """Activate radar breakeven trail only after TP1 fill (or already trailing)."""
         if curr_px <= 0:
             return False
-        progress = (
-            self._radar_activation_progress(curr_px)
-            if hasattr(self, "_radar_activation_progress")
-            else 0.0
-        )
+        from app.core.vps_radar_stages import tp1_filled_from_consumed
         consumed = list(getattr(self, "consumed_tp_levels", []) or [])
         radar_mem = bool(hasattr(self, "_is_radar_active") and self._is_radar_active())
-        if progress < 1.0 and not radar_mem and not consumed:
+        if not radar_mem and not tp1_filled_from_consumed(consumed) and not self._is_radar_engaged():
             return False
         live_qty = self._resolve_adverse_live_qty(live_qty)
         if hasattr(self, "_refresh_radar_state_on_recover"):
@@ -1603,6 +1588,7 @@ class AdverseRadarMixin:
             hard_sl=float(getattr(self, "tv_sl", 0) or 0),
             clamp_fn=getattr(self, "_clamp_radar_sl_to_tv_floor", lambda x: x),
             radar_latched=bool(getattr(self, "radar_latched", False)),
+            tp1_filled=tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
         )
         if radar.get("armed") and radar.get("radar_sl", 0) > 0:
             self.current_sl = float(radar["radar_sl"])
@@ -1656,7 +1642,7 @@ class AdverseRadarMixin:
 
         if progress >= 0.5 and getattr(self, "_scan_ticks", 0) % 5 == 0:
             logger.info(
-                "[User %s] 📡 雷达预热: 进度 %.0f%% | 现价 %.2f | TV底线守护中",
+                "[User %s] 📡 TP1路径 %.0f%% | 现价 %.2f | 硬止损守护中（雷达待TP1成交激活）",
                 self.user_id, progress * 100, curr_px,
             )
 

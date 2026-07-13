@@ -36,14 +36,15 @@ def test_trail_distance_uses_tp1_floor_when_atr_tight():
 def test_radar_may_arm_after_tp1_only():
     assert radar_may_arm(consumed_tp_levels=[1], progress=0.5, activation_ratio=0.85) is True
     assert radar_may_arm(consumed_tp_levels=[], progress=0.84, activation_ratio=0.85) is False
-    assert radar_may_arm(consumed_tp_levels=[], progress=0.85, activation_ratio=0.85) is True
+    assert radar_may_arm(consumed_tp_levels=[], progress=0.85, activation_ratio=0.85) is False
     assert radar_may_arm(
-        consumed_tp_levels=[], progress=0.97, activation_ratio=0.85,
-    ) is True
+        consumed_tp_levels=[], progress=0.99, activation_ratio=0.85,
+    ) is False
     assert radar_may_arm(
-        consumed_tp_levels=[], progress=0.97, activation_ratio=0.85,
+        consumed_tp_levels=[], progress=0.99, activation_ratio=0.85,
         radar_active=True,
     ) is True
+    assert radar_may_arm(consumed_tp_levels=[2], progress=0.0, activation_ratio=0.85) is True
 
 
 def test_tp_path_progress_reaches_one_at_tp1():
@@ -53,8 +54,9 @@ def test_tp_path_progress_reaches_one_at_tp1():
     assert tp_path_progress(1818.0, 1833.84, 1836.0, "LONG") == pytest.approx(0.88, rel=0.01)
 
 
-def test_radar_pre_tp1_arm_threshold_is_96pct():
-    assert RADAR_PRE_TP1_ARM_PROGRESS == 0.96
+def test_radar_pre_tp1_arm_disabled():
+    """Path progress alone must never arm — breathing room until TP1 fills."""
+    assert RADAR_PRE_TP1_ARM_PROGRESS > 1.0
 
 
 def test_breakeven_floor_wider_before_tp1():

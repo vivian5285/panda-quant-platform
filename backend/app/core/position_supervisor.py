@@ -25,7 +25,11 @@ from app.core.binance_smart_defense import BinanceSmartDefenseMixin
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.position_manager import PositionManager
 from app.core.radar_trail import clamp_stop_market_safe, tp_path_progress
-from app.core.vps_radar_stages import compute_vps_radar_sl, detect_radar_stage
+from app.core.vps_radar_stages import (
+    compute_vps_radar_sl,
+    detect_radar_stage,
+    tp1_filled_from_consumed,
+)
 from app.core.tp_regime_ratios import build_regime_settings, enrich_tp_alert_detail
 from app.core.regime_utils import clamp_regime
 from app.core.same_direction_policy import (
@@ -69,9 +73,9 @@ CANCEL_VERIFY_ROUNDS = 5
 HEAL_PLACE_ROUNDS = 2
 SIGNAL_QUEUE_TTL = 120.0
 SIGNAL_LOCK_SLICE = 5.0
-SENTINEL_POLL_NORMAL = 4
-SENTINEL_POLL_ARMING = 2.5
-SENTINEL_POLL_RADAR = 1.5
+SENTINEL_POLL_NORMAL = 8.0
+SENTINEL_POLL_ARMING = 6.0
+SENTINEL_POLL_RADAR = 6.0
 DUST_QTY_ETH = 0.004
 TP_COMPLETE_RESIDUAL_RATIO = 0.12
 RADAR_SL_MIN_MOVE = 1.0
@@ -2064,6 +2068,7 @@ class PositionSupervisor(
             hard_sl=float(getattr(self, "tv_sl", 0) or 0),
             clamp_fn=self._clamp_radar_sl_to_tv_floor,
             radar_latched=bool(getattr(self, "radar_latched", False)),
+            tp1_filled=tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
         )
         if radar.get("armed") and radar.get("radar_sl", 0) > 0:
             self.current_sl = float(radar["radar_sl"])
@@ -2091,6 +2096,9 @@ class PositionSupervisor(
         tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
         stage = detect_radar_stage(
             float(self.watched_entry or 0), curr_px, self.current_side, tp1, tp2, tp3,
+            peak_px=float(self.best_price or 0) or None,
+            tp1_filled=tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None))
+            or bool(getattr(self, "radar_latched", False)),
         )
         vps_meta = getattr(self, "_vps_hard_sl_meta", None) or {}
         detail = {
@@ -2112,14 +2120,10 @@ class PositionSupervisor(
         return detail
 
     def _sentinel_poll_sec(self, curr_px: float = 0.0) -> float:
-        if self._breakeven_sl_active():
+        if self._breakeven_sl_active() or self._is_radar_engaged():
             return SENTINEL_POLL_RADAR
-        if curr_px > 0:
-            progress = self._radar_activation_progress(curr_px)
-            if progress >= 0.70:
-                return SENTINEL_POLL_RADAR
-            if progress >= 0.50:
-                return SENTINEL_POLL_ARMING
+        if curr_px > 0 and tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)):
+            return SENTINEL_POLL_RADAR
         return SENTINEL_POLL_NORMAL
 
     def _process_radar_trailing(self, real_amt: float, curr_px: float) -> bool:
@@ -2141,6 +2145,7 @@ class PositionSupervisor(
             hard_sl=float(getattr(self, "tv_sl", 0) or 0),
             clamp_fn=self._clamp_radar_sl_to_tv_floor,
             radar_latched=bool(getattr(self, "radar_latched", False)),
+            tp1_filled=tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
         )
         new_sl = float(radar.get("radar_sl") or 0)
         if new_sl <= 0:
@@ -2423,8 +2428,8 @@ class PositionSupervisor(
                             and self._scan_ticks % 5 == 0
                         ):
                             logger.info(
-                                f"[User {self.user_id}] 📡 雷达预热: 进度 {progress:.0%} | "
-                                f"现价 {curr_px:.2f}"
+                                f"[User {self.user_id}] 📡 TP1路径 {progress:.0%} | "
+                                f"现价 {curr_px:.2f} | 硬止损守护（雷达待TP1成交）"
                             )
 
                     self._sentinel_error_notified = False

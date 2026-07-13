@@ -474,7 +474,7 @@ def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
     if detail.get("adopted_manual"):
         lines.append(_line("接管类型", "人工/外部持仓 · 按最新 TV 补挂"))
         if detail.get("radar_permitted") is False and not detail.get("breakeven_active"):
-            lines.append(_line("雷达状态", "待 TP1 成交或路径达档位激活线后启动"))
+            lines.append(_line("雷达状态", "待 TP1 成交后启动移动保本"))
     if detail.get("shield_stop_price") or detail.get("tv_sl"):
         stop_px = detail.get("shield_stop_price") or detail.get("tv_sl")
         if detail.get("breakeven_active"):
