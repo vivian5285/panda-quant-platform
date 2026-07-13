@@ -369,6 +369,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     if side == open_action:
                         reconcile["tv_close"] = False
                         notes.append("TV CLOSE 但实盘同向 → 接管补挂不 flatten")
+                elif last_open and (last_open.get("side") or "").upper() == side:
+                    reconcile["tv_close"] = False
+                    self.last_tv_side = side
+                    notes.append("TV CLOSE 但开仓日志同向 → 接管补挂不 flatten")
                 elif side == self.last_tv_side:
                     reconcile["tv_close"] = False
                     notes.append("TV CLOSE 但实盘与 last_tv_side 同向 → 接管")
@@ -381,6 +385,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             open_qty = self._safe_qty(last_open.get("qty") or 0)
             if open_qty > 0:
                 reconcile["open_log_qty"] = open_qty
+            if open_side:
+                reconcile["open_log_side"] = str(open_side).upper()
             if open_side and side != open_side:
                 notes.append(f"开仓日志方向 {open_side} ≠ 实盘 {side}")
             open_entry = float(last_open.get("entry", 0) or 0)
@@ -622,7 +628,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.add_count = 0
         self.current_side = None
         self._save_state()
-        self.client.cancel_all_open_orders(self.symbol)
+        self._purge_defense_orders_on_flat("dust_sweep", notify=True)
         self._report_flat_close(reason, swept_dust=True)
 
     def _scan_and_sweep_dust_on_startup(self):
@@ -633,7 +639,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if not self.current_side:
             self.current_side = "LONG" if pos.get("posSide") == "long" else "SHORT"
         real_amt = self._safe_qty(pos["size"])
-        if not self._is_dust_qty(real_amt) and not self._should_finalize_tp_victory(real_amt):
+        if not self._is_dust_qty(real_amt):
             return False
         if self._safe_qty(self.initial_qty) > 0 or self._safe_qty(self.watched_qty) > 0:
             reason = "仓位归零 (止盈吃单 / 人工全平 / TV 强制平仓)"
@@ -2731,7 +2737,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         qty_snapshot = float(self.watched_qty or 0)
         side_snapshot = self.current_side
         trade_id_snapshot = self.current_trade_id
-        self.client.cancel_all_open_orders(self.symbol)
+        self._purge_defense_orders_on_flat("code_close_all", notify=False)
         time.sleep(0.5)
         closed_successfully = False
 
@@ -2778,7 +2784,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.add_count = 0
         self.current_side = None
         self._save_state()
-        self.client.cancel_all_open_orders(self.symbol)
+        self._purge_defense_orders_on_flat("flat_reset", notify=True)
 
         if reason and closed_successfully:
             if force_align:
@@ -2858,11 +2864,21 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 self.current_side = side
 
                 if reconcile.get("tv_close"):
-                    logger.warning("🔄 [重启] TV 最新为平仓指令，执行清场")
-                    self._close_all(
-                        f"🔄 重启对账: TV已发{(self.last_tv_signal or {}).get('action', 'CLOSE')}，执行清场"
-                    )
-                    return
+                    from app.core.startup_reconcile import should_skip_startup_tv_close_flatten
+                    skip_flat, skip_reason = should_skip_startup_tv_close_flatten(self, reconcile)
+                    if skip_flat:
+                        reconcile["tv_close"] = False
+                        reconcile_notes.append(f"跳过 TV CLOSE 清场 ({skip_reason})")
+                        logger.info(
+                            "🔄 [重启] TV CLOSE 但实盘同向 → 接管补挂不 flatten (%s)",
+                            skip_reason,
+                        )
+                    else:
+                        logger.warning("🔄 [重启] TV 最新为平仓指令，执行清场")
+                        self._close_all(
+                            f"🔄 重启对账: TV已发{(self.last_tv_signal or {}).get('action', 'CLOSE')}，执行清场"
+                        )
+                        return
 
                 saved_initial = self._safe_qty(self.initial_qty)
                 open_log_qty = self._safe_qty(reconcile.get("open_log_qty") or 0)

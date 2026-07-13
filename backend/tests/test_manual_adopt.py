@@ -7,8 +7,10 @@ import pytest
 from app.core.startup_reconcile import (
     StartupReconcileMixin,
     finalize_recovery_tv_params,
+    live_matches_entry_direction,
     live_matches_tv_direction,
     prepare_manual_adopt,
+    should_skip_startup_tv_close_flatten,
     should_skip_tv_close_for_manual,
 )
 
@@ -18,6 +20,33 @@ def test_live_matches_tv_direction_uses_entry_tv():
         {"latest_entry_tv_action": "LONG", "latest_tv_action": "CLOSE"},
         "LONG",
     )
+
+
+def test_live_matches_entry_direction_ignores_stale_latest_tv():
+    assert live_matches_entry_direction(
+        {"state_last_tv_side": "SHORT", "latest_tv_action": "LONG"},
+        "SHORT",
+    )
+    assert not live_matches_entry_direction(
+        {"latest_tv_action": "LONG"},
+        "SHORT",
+    )
+
+
+def test_should_skip_startup_tv_close_flatten_same_direction():
+    class Sup:
+        current_side = "SHORT"
+        last_tv_side = "SHORT"
+        adopted_manual = False
+        current_trade_id = 99
+        watched_qty = 0.4
+
+    skip, reason = should_skip_startup_tv_close_flatten(
+        Sup(),
+        {"state_last_tv_side": "SHORT", "latest_tv_action": "CLOSE_STOPLOSS"},
+    )
+    assert skip is True
+    assert reason == "live_matches_entry_direction"
 
 
 def test_finalize_recovery_derives_missing_tp3():

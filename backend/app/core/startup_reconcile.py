@@ -117,6 +117,36 @@ def live_matches_tv_direction(reconcile: dict | None, live_side: str | None) -> 
     return False
 
 
+def live_matches_entry_direction(reconcile: dict | None, live_side: str | None) -> bool:
+    """True when live matches entry/open-log/state direction — ignores stale latest TV OPEN/CLOSE."""
+    live = (live_side or "").upper()
+    if live not in ("LONG", "SHORT"):
+        return False
+    reconcile = reconcile or {}
+    for key in ("state_last_tv_side", "latest_entry_tv_action", "open_log_side"):
+        val = (reconcile.get(key) or "").upper()
+        if val == live:
+            return True
+    return False
+
+
+def should_skip_startup_tv_close_flatten(
+    supervisor,
+    reconcile: dict | None = None,
+) -> tuple[bool, str]:
+    """Never flatten on restart when live still matches the opening TV direction."""
+    reconcile = reconcile or {}
+    live_side = getattr(supervisor, "current_side", None)
+    if live_side not in ("LONG", "SHORT"):
+        return False, ""
+    if live_matches_entry_direction(reconcile, live_side):
+        return True, "live_matches_entry_direction"
+    skip, reason = should_skip_tv_close_for_manual(supervisor)
+    if skip:
+        return True, reason
+    return False, ""
+
+
 def finalize_recovery_tv_params(supervisor, report: dict, recovery: dict | None) -> None:
     """Merge TP123 / TV SL from all recovery sources; derive missing TPs from regime+ATR."""
     entry_tv = recovery_section(recovery, "latest_entry_tv")
@@ -341,6 +371,13 @@ def adopt_live_tv_side(
     if live == tv_side:
         result["realigned"] = prev != tv_side
         result["reason"] = "trust_live_manual" if adopted_manual else "latest_tv_matches_live"
+        return result
+
+    if live_matches_entry_direction(reconcile, live):
+        supervisor.last_tv_side = live
+        result["tv_side"] = live
+        result["realigned"] = prev != live
+        result["reason"] = "trust_live_entry_direction_over_latest_tv"
         return result
 
     result["conflict"] = True
@@ -789,15 +826,16 @@ class StartupReconcileMixin:
         return {"status": "skipped", "reason": "manual_skip_tv_open_reopen", "action": action, "detail": detail}
 
     def _purge_defense_orders_on_flat(self, trigger: str = "flat", *, notify: bool = True) -> dict:
-        """Immediately tear down TP123 + STOP/algo when exchange position is flat."""
+        """Immediately tear down TP123 + STOP/algo/conditional when exchange position is flat."""
         sym = getattr(self, "symbol", None)
         detail: dict[str, Any] = {
             "trigger": trigger,
             "prev_side": getattr(self, "current_side", None),
             "prev_watched_qty": float(getattr(self, "watched_qty", 0) or 0),
             "cancelled_tp": 0,
-            "cancelled_stops": False,
+            "cancelled_stops": 0,
             "cancelled_all": False,
+            "disarmed_stops": 0,
         }
         if not sym:
             return detail
@@ -818,10 +856,16 @@ class StartupReconcileMixin:
 
         stop_fn = getattr(self, "_cancel_binance_all_close_stops", None)
         if stop_fn:
-            detail["cancelled_stops"] = bool(stop_fn())
+            detail["cancelled_stops"] = int(stop_fn() or 0)
+        elif hasattr(self, "_cancel_stop_orders"):
+            detail["cancelled_stops"] = int(self._cancel_stop_orders() or 0)
         elif hasattr(self, "_cancel_radar_stop_orders"):
-            self._cancel_radar_stop_orders()
-            detail["cancelled_stops"] = True
+            detail["cancelled_stops"] = int(self._cancel_radar_stop_orders() or 0)
+
+        if hasattr(self, "_disarm_adverse_staged_stops"):
+            disarm = self._disarm_adverse_staged_stops(reason=trigger, notify=False)
+            detail["disarmed_stops"] = int(disarm.get("cancelled", 0) or 0)
+            detail["cancelled_stops"] += detail["disarmed_stops"]
 
         if hasattr(self.client, "cancel_all_open_orders"):
             self.client.cancel_all_open_orders(sym)
@@ -830,21 +874,34 @@ class StartupReconcileMixin:
         if hasattr(self, "_flat_purge_side"):
             delattr(self, "_flat_purge_side")
 
-        if notify and (detail["cancelled_tp"] > 0 or detail["cancelled_all"]):
+        total_cancelled = (
+            detail["cancelled_tp"]
+            + detail["cancelled_stops"]
+            + (1 if detail["cancelled_all"] else 0)
+        )
+        if notify and total_cancelled > 0:
             prev_s = detail["prev_side"] or "?"
             prev_q = detail["prev_watched_qty"]
+            parts = []
+            if detail["cancelled_tp"] > 0:
+                parts.append(f"TP×{detail['cancelled_tp']}")
+            if detail["cancelled_stops"] > 0:
+                parts.append(f"止损×{detail['cancelled_stops']}")
+            if detail["cancelled_all"]:
+                parts.append("全撤")
+            cancel_desc = " ".join(parts) or "挂单"
             if hasattr(self, "_log"):
                 self._log(
                     "FLAT_PURGE",
-                    f"平仓撤单: {prev_s} {prev_q} → 撤 TP×{detail['cancelled_tp']}",
+                    f"平仓撤单: {prev_s} {prev_q} → {cancel_desc}",
                     detail,
                 )
             if hasattr(self, "_alert"):
                 self._alert(
-                    "warning" if detail["cancelled_tp"] > 0 else "info",
+                    "warning" if detail["cancelled_tp"] > 0 or detail["cancelled_stops"] > 0 else "info",
                     "MANUAL_FLAT_TP_PURGE",
-                    "平仓后撤销止盈挂单",
-                    f"实盘已平 {prev_s} {prev_q}，已撤 TP/止损 {detail['cancelled_tp']} 张",
+                    "平仓后撤销残留挂单",
+                    f"实盘已平 {prev_s} {prev_q}，已撤 {cancel_desc}",
                     detail,
                 )
         return detail

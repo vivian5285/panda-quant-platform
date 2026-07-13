@@ -16,6 +16,7 @@ from app.core.startup_reconcile import (
     format_startup_defense_summary,
     is_manual_same_direction_position,
     is_tv_close_action,
+    live_matches_entry_direction,
     prepare_manual_adopt,
     recovery_section,
     should_skip_tv_close_for_manual,
@@ -1085,6 +1086,7 @@ class PositionSupervisor(
                 )
             elif tv_action.startswith("CLOSE"):
                 report["warnings"].append("tv_close_while_position")
+                report["latest_tv_action"] = tv_action
                 if entry_tv and (entry_tv.get("action") or "").upper() in ("LONG", "SHORT"):
                     report["latest_entry_tv_action"] = entry_tv.get("action")
                     if not tv_conflicts_state:
@@ -1933,7 +1935,7 @@ class PositionSupervisor(
         self.current_trade_id = None
         self.trade_opened_at = None
         self._save_state()
-        self.client.cancel_all_open_orders(self.symbol)
+        self._purge_defense_orders_on_flat("dust_sweep", notify=True)
 
     def _scan_and_sweep_dust_on_startup(self) -> bool:
         pos = self._get_active_position()
@@ -1941,7 +1943,7 @@ class PositionSupervisor(
             return False
         if not self.current_side:
             self.current_side = pos["side"]
-        if not self._is_dust_qty(pos["size"]) and not self._should_finalize_tp_victory(pos["size"]):
+        if not self._is_dust_qty(pos["size"]):
             return False
         reason = (
             "仓位归零 (止盈吃单 / 人工全平 / TV 强制平仓)"
@@ -2570,7 +2572,7 @@ class PositionSupervisor(
         self.current_trade_id = None
         self.trade_opened_at = None
         self._save_state()
-        self._purge_defense_orders_on_flat("flat_reset", notify=False)
+        self._purge_defense_orders_on_flat("flat_reset", notify=True)
 
     def _trigger_settlement_on_flat(self) -> None:
         """Profitable cycle awaiting flat: bill immediately after position closes."""
@@ -2699,7 +2701,10 @@ class PositionSupervisor(
 
             side_sync = self._try_force_align_opposite_to_tv(
                 reconcile,
-                adopted_manual=bool(audit.get("adopted_manual")),
+                adopted_manual=bool(
+                    audit.get("adopted_manual")
+                    or live_matches_entry_direction(reconcile, self.current_side)
+                ),
                 trigger="startup",
             )
             audit["tv_side_sync"] = side_sync

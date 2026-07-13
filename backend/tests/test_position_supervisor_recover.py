@@ -276,6 +276,53 @@ def test_recover_realigns_stale_tv_side_not_flat(supervisor, monkeypatch):
     assert audit["direction_aligned"] is True
 
 
+def test_recover_factory_short_not_flat_when_state_matches_live(supervisor, monkeypatch):
+    """Factory SHORT + persisted state SHORT must not flatten on stale opposite latest TV."""
+    monkeypatch.setattr("app.core.position_supervisor.threading.Thread.start", lambda self: None)
+    supervisor.last_tv_side = "SHORT"
+    supervisor.client.get_current_price.return_value = 3650.0
+    supervisor.leverage = 15
+    supervisor.initial_principal = 700.0
+    supervisor.client.get_available_balance.return_value = 1000.0
+
+    with patch.object(
+        supervisor.position_manager,
+        "get_position",
+        return_value={"positionAmt": "-0.42", "entryPrice": "3620.0"},
+    ), patch.object(supervisor, "_unified_startup_defense_reconcile") as ensure, patch.object(
+        supervisor, "_close_all",
+    ) as close_all:
+        ensure.return_value = {
+            "tp_defense": {"matched": 3, "expected": 3},
+            "defenses_rebuilt": True,
+            "tp_matched": 3,
+            "tp_expected": 3,
+            "shield": {"aligned": True},
+            "startup_summary": "浮亏/防护轨 | TP3/3",
+            "pnl_track": "loss_shield",
+        }
+        audit = supervisor.recover_on_startup(
+            open_trade_id=88,
+            recovery_context={
+                "trade": {"id": 88, "side": "SHORT", "quantity": 0.42},
+                "open_log": {"side": "SHORT", "entry": 3620, "qty": 0.42},
+                "state_last_tv_side": "SHORT",
+                "latest_tv": {
+                    "action": "LONG",
+                    "tv_sl": 3550.0,
+                    "tv_tps": [3680.0, 3720.0, 3780.0],
+                },
+                "checks": [],
+            },
+        )
+
+    close_all.assert_not_called()
+    ensure.assert_called_once()
+    assert audit.get("force_aligned") is not True
+    assert audit["has_position"] is True
+    assert supervisor.last_tv_side == "SHORT"
+
+
 def test_recover_opposite_manual_position_force_flats(supervisor, monkeypatch):
     """Live SHORT vs TV LONG → FORCE_ALIGN 强平，不对齐实盘."""
     monkeypatch.setattr("app.core.position_supervisor.threading.Thread.start", lambda self: None)

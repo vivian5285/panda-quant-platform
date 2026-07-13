@@ -68,6 +68,16 @@ def supervisor(tmp_path, monkeypatch):
     return sup
 
 
+def test_purge_defense_orders_on_flat_cancels_stops_and_alerts(supervisor):
+    supervisor._alert = MagicMock()
+    with patch.object(supervisor, "_cancel_binance_all_close_stops", return_value=2):
+        detail = supervisor._purge_defense_orders_on_flat("flat_reset", notify=True)
+    assert detail["cancelled_stops"] >= 2
+    supervisor._alert.assert_called_once()
+    msg = supervisor._alert.call_args[0][3]
+    assert "止损" in msg
+
+
 def test_purge_defense_orders_on_flat_cancels_tp123(supervisor):
     supervisor._alert = MagicMock()
     detail = supervisor._purge_defense_orders_on_flat("manual_flat", notify=True)

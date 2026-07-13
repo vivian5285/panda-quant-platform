@@ -302,8 +302,46 @@ class GateClient:
         contract = symbol or self.trading_symbol
         rows = self._request("GET", "/futures/usdt/orders", {"contract": contract, "status": "open"})
         if not isinstance(rows, list):
-            return []
-        return [self._normalize_order(row) for row in rows]
+            rows = []
+        orders = [self._normalize_order(row) for row in rows]
+        price_rows = self._request(
+            "GET", "/futures/usdt/price_orders",
+            {"contract": contract, "status": "open"},
+        )
+        if isinstance(price_rows, list):
+            for row in price_rows:
+                if not isinstance(row, dict):
+                    continue
+                initial = row.get("initial") if isinstance(row.get("initial"), dict) else {}
+                trigger = float(initial.get("price") or row.get("trigger_price") or 0)
+                orders.append({
+                    "orderId": row.get("id") or row.get("order_id"),
+                    "type": "STOP",
+                    "stopPrice": trigger,
+                    "price": float(initial.get("price") or 0),
+                    "side": "SELL" if float(initial.get("size") or 0) < 0 else "BUY",
+                    "isPriceOrder": True,
+                })
+        return orders
+
+    def cancel_all_price_orders(self, symbol: str | None = None) -> None:
+        contract = symbol or self.trading_symbol
+        rows = self._request(
+            "GET", "/futures/usdt/price_orders",
+            {"contract": contract, "status": "open"},
+        )
+        if not isinstance(rows, list):
+            return
+        for row in rows:
+            oid = row.get("id") or row.get("order_id")
+            if oid is None:
+                continue
+            self._request("DELETE", f"/futures/usdt/price_orders/{oid}")
+
+    def cancel_all_open_orders(self, symbol: str | None = None) -> None:
+        contract = symbol or self.trading_symbol
+        self._request("DELETE", "/futures/usdt/orders", {"contract": contract})
+        self.cancel_all_price_orders(contract)
 
     def place_market_order(self, side, quantity, symbol: str | None = None, reduce_only: bool = False):
         contract = symbol or self.trading_symbol
@@ -399,10 +437,6 @@ class GateClient:
         contract = symbol or self.trading_symbol
         res = self._request("DELETE", f"/futures/usdt/orders/{order_id}", {"contract": contract})
         return res is not None
-
-    def cancel_all_open_orders(self, symbol: str | None = None) -> None:
-        contract = symbol or self.trading_symbol
-        self._request("DELETE", "/futures/usdt/orders", {"contract": contract})
 
     def futures_activity_summary(self) -> dict:
         orders = self.get_open_orders(self.trading_symbol)
