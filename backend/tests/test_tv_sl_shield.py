@@ -76,104 +76,53 @@ def test_merged_stop_price_long():
     assert probe._merged_stop_price() == 2050.0
 
 
-def test_update_sl_still_applies_when_radar_active():
+def test_update_sl_ignored_vps_self_managed():
     class Probe(AdverseRadarMixin):
         exchange_id = "binance"
         symbol = "ETHUSDT"
         user_id = 1
         current_side = "LONG"
-        watched_entry = 1819.0
-        current_sl = 2050.0
-        tv_sl = 1787.0
+        tv_sl = 1766.0
         regime = 2
         current_atr = 16.65
-        client = type("C", (), {"get_current_price": lambda _s, _sym: 2050.0})()
+        logs = []
+
+        def _log(self, *a, **k):
+            self.logs.append(a)
 
         def _get_active_position(self):
             return {"size": 0.5, "side": "LONG", "entry_price": 1819.0}
-
-        def _is_radar_active(self):
-            return True
-
-        def _uses_dual_stop_track(self):
-            return False
-
-        def _sync_binance_merged_stop(self, live_qty, **kwargs):
-            return {"aligned": True, "stop_price": 2050.0, "merged": True, "placed": 0}
-
-        def _sync_adverse_shield_from_exchange(self, live_qty):
-            return {"aligned": False}
-
-        def _log(self, *a, **k):
-            pass
-
-        def _alert(self, *a, **k):
-            pass
-
-        def _save_state(self):
-            pass
-
-        def _hard_stop_label(self):
-            return "VPS硬止损"
 
     probe = Probe()
     probe._init_adverse_radar_fields()
     result = probe._handle_update_sl({
         "side": "LONG", "regime": 2, "atr": 16.65, "tv_sl": 1800.0,
     })
-    assert result["status"] == "ok"
-    assert probe.tv_sl == pytest.approx(1787.53, rel=0.01)
+    assert result["status"] == "skipped"
+    assert result["reason"] == "update_sl_ignored"
+    assert result["detail"]["ignored"] is True
+    assert probe.tv_sl == 1766.0
 
 
-def test_update_sl_allowed_before_radar():
+def test_update_sl_ignored_without_position():
     class Probe(AdverseRadarMixin):
         exchange_id = "binance"
-        symbol = "ETHUSDT"
         user_id = 1
-        current_side = "LONG"
-        watched_entry = 1819.0
-        current_sl = 1819.0
-        tv_sl = 1787.0
+        tv_sl = 1766.0
         regime = 2
         current_atr = 16.65
-        adverse_sl_armed = True
-        adverse_sl_prices = [1787.0]
-        client = type("C", (), {"get_current_price": lambda _s, _sym: 1820.0})()
-
-        def _get_active_position(self):
-            return {"size": 0.5, "side": "LONG", "entry_price": 1819.0}
 
         def _log(self, *a, **k):
             pass
 
-        def _save_state(self):
-            pass
-
-        def _uses_dual_stop_track(self):
-            return False
-
-        def _sync_binance_merged_stop(self, live_qty, **kwargs):
-            return {"armed": True, "placed": 1, "stop_price": 1787.5, "label": "VPS硬止损", "aligned": True}
-
-        def _sync_adverse_shield_from_exchange(self, live_qty):
-            return {"aligned": False}
-
-        def _alert(self, *a, **k):
-            pass
-
-        def _is_radar_active(self):
-            return False
-
-        def _hard_stop_label(self):
-            return "VPS硬止损"
+        def _get_active_position(self):
+            return None
 
     probe = Probe()
     probe._init_adverse_radar_fields()
-    result = probe._handle_update_sl({
-        "side": "LONG", "regime": 2, "atr": 16.65, "tv_sl": 1800.0,
-    })
-    assert result["status"] == "ok"
-    assert probe.tv_sl == pytest.approx(1787.53, rel=0.01)
+    result = probe._handle_update_sl({"side": "LONG", "tv_sl": 1800.0})
+    assert result["status"] == "skipped"
+    assert result["reason"] == "update_sl_ignored"
 
 
 def test_entry_payload_accepts_tv_sl():

@@ -151,15 +151,16 @@ def test_disarm_when_live_stop_even_if_flag_false():
     assert probe._should_disarm_adverse_for_recovery(2045.0) is False
 
 
-def test_arm_at_open_places_single_stop_market():
+def test_arm_at_open_places_stop_limit():
     probe = _AdverseProbe()
     with patch("app.core.adverse_radar_guard.time.sleep", lambda *_: None):
         result = probe._arm_adverse_shield_at_open(0.6)
     assert result["armed"] is True
     assert result["placed"] == 1
-    probe.client.place_stop_market_order.assert_called_once()
-    _, kwargs = probe.client.place_stop_market_order.call_args
-    assert kwargs.get("quantity") is None
+    probe.client.place_stop_limit_order.assert_called_once()
+    args = probe.client.place_stop_limit_order.call_args[0]
+    assert args[1] == pytest.approx(1900.0, rel=0.001)
+    assert args[2] < args[1]  # LONG limit below trigger
 
 
 def test_arm_aligned_with_close_position_stop():
@@ -167,27 +168,28 @@ def test_arm_aligned_with_close_position_stop():
     plan = probe._compute_adverse_stop_plan(0.6)
     probe.client.get_open_orders.return_value = [
         {
-            "type": "STOP_MARKET",
+            "type": "STOP",
             "orderId": 1,
             "stopPrice": str(plan[0]["stop_price"]),
-            "origQty": "0",
-            "closePosition": True,
+            "price": str(plan[0]["stop_price"] - 0.5),
+            "origQty": str(plan[0]["qty"]),
             "side": "SELL",
         }
     ]
     result = probe._arm_adverse_shield_at_open(0.6)
     assert result.get("skipped") == "live_already_aligned"
-    probe.client.place_stop_market_order.assert_not_called()
+    probe.client.place_stop_limit_order.assert_not_called()
 
 
 def test_verify_retries_finds_delayed_stop():
     probe = _AdverseProbe()
     plan = probe._compute_adverse_stop_plan(0.6)
     stop_order = {
-        "type": "STOP_MARKET",
+        "type": "STOP",
         "orderId": 1,
         "stopPrice": str(plan[0]["stop_price"]),
-        "closePosition": True,
+        "price": str(plan[0]["stop_price"] - 0.5),
+        "origQty": str(plan[0]["qty"]),
         "side": "SELL",
     }
     responses = [[], [], [stop_order]]
@@ -286,8 +288,8 @@ def test_sync_merged_stop_clamps_hot_radar_stop():
     ):
         result = probe._sync_binance_merged_stop(0.6, radar_sl=1791.0)
     assert result.get("stop_price", 0) < 1785.0
-    probe.client.place_stop_market_order.assert_called_once()
-    placed_px = probe.client.place_stop_market_order.call_args[0][1]
+    probe.client.place_stop_limit_order.assert_called_once()
+    placed_px = probe.client.place_stop_limit_order.call_args[0][1]
     assert placed_px < 1785.0
 
 
@@ -296,16 +298,17 @@ def test_arm_skips_when_already_aligned():
     plan = probe._compute_adverse_stop_plan(0.6)
     probe.client.get_open_orders.return_value = [
         {
-            "type": "STOP_MARKET",
+            "type": "STOP",
             "orderId": 1,
             "stopPrice": str(plan[0]["stop_price"]),
+            "price": str(plan[0]["stop_price"] - 0.5),
             "origQty": str(plan[0]["qty"]),
             "side": "SELL",
         }
     ]
     result = probe._arm_adverse_shield_at_open(0.6)
     assert result.get("skipped") == "live_already_aligned"
-    probe.client.place_stop_market_order.assert_not_called()
+    probe.client.place_stop_limit_order.assert_not_called()
 
 
 def test_orchestrate_radar_coexist_route_a():

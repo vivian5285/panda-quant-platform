@@ -58,7 +58,7 @@ rules:
   - 反方向 TV 信号：一律先平后开（cancel all → 市价全平 → 再开仓）
   - PYRAMID / PROFIT_ADD：同向追加，数量 = base_qty × TV qty_ratio；**加仓后核武重挂 TP123（新价格×新总头寸）+ TV SL + 雷达**
   - 开仓后挂限价止盈 TP1/2/3（reduceOnly）+ **VPS 自主硬止损**（regime×ATR 呼吸空间，TV tv_sl 仅参考）+ **8 阶段雷达移动保本**
-  - **硬止损**：`距离 = ATR × sl_m × 档位倍数`（R4≈100U@ATR16.65）；**雷达**：TP1 路径 70%/85% → TP1 → TP2 25/50/75% → TP2 → TP3 80% 共 8 阶段锁润
+  - **硬止损**：`距离 = ATR × sl_m × 档位倍数`（R1~R4 约 30/50/70/100U@ATR16）；**Stop-Limit** 缓冲执行；**忽略 TV UPDATE_SL**
   - 禁止与 TV 反向持仓：哨兵 / 重启 / 空闲巡检 → FORCE_ALIGN 全平
   - 人工/外部同向仓：manual adopt 后保留仓位，TV CLOSE 不强制全平，补挂 TP123 + **VPS 硬止损**（雷达按 8 阶段路径激活）
   - **人工/外部全平**：哨兵/空闲巡检检测到实盘归零 → **立即撤销 TP123 + STOP**（不等待平仓确认），防止孤儿止盈反向开仓
@@ -71,7 +71,7 @@ rules:
 tv_actions: [LONG, SHORT, CLOSE, CLOSE_PROTECT, CLOSE_TP3]
 entry_fields: [action, secret, price, regime, atr, tv_tp1, tv_tp2, tv_tp3, tv_sl?, entry_type?]
 close_fields: [action, secret, regime, price, atr, side, reason, pnl_pct?]
-extra_actions: [UPDATE_SL]   # 仅更新 TV 硬止损底线，不撤雷达
+extra_actions: [UPDATE_SL]   # VPS 忽略，仅记录日志；硬止损由 regime+ATR 自主计算
 note: TP1/TP2 策略内部记账不发 TV 警报；仅 TP3 与保护性全平各发一条
 
 # 密钥与配置优先级（重要）
@@ -424,7 +424,7 @@ TradingView POST /gemini/webhook
   → _execute_signal()
        ├─ LONG / SHORT / PYRAMID / PROFIT_ADD → _handle_tv_entry()
        ├─ CLOSE / CLOSE_PROTECT / CLOSE_TP3 → 全平（manual adopt 同向可跳过）
-       └─ UPDATE_SL → 同步 TV 硬止损底线
+       └─ UPDATE_SL → 记录日志并忽略（VPS 自主管理硬止损）
   → set_leverage(25×) → 市价开/平 → 挂 TP123 + TV SL + 雷达 → 启动哨兵
 ```
 
@@ -468,7 +468,21 @@ TradingView POST /gemini/webhook
 
 #### UPDATE_SL
 
-仅更新 `tv_sl` 并同步硬止损；不撤雷达。Binance 类合并单槽取 `max/min(tv_sl, radar)`。
+**VPS 忽略** — 硬止损由 `regime + atr` 自主计算；雷达本地管理。仅写 `UPDATE_SL` 日志。
+
+#### VPS 硬止损（四档均匀递增）
+
+```
+硬止损距离 = ATR × sl_m × 档位倍数
+Regime  sl_m   档位倍数  最终倍数  呼吸空间(ATR≈16)
+  1     0.9     2.0      1.80×    ≈ 30 U
+  2     1.05    3.0      3.15×    ≈ 50 U
+  3     1.10    4.0      4.40×    ≈ 70 U
+  4     1.25    5.0      6.25×    ≈100 U
+```
+
+执行：**Stop-Limit** 缓冲单（触发价=止损价；限价=触发价 ±0.5U）。  
+优先级：`CLOSE_STOPLOSS` 立即市价全平 > VPS 缓冲止损触发 > 忽略 `UPDATE_SL`。
 
 ---
 
@@ -498,12 +512,12 @@ qty             = position_value / price   （DeepCoin 换算为合约张）
 ### 五、统一防线 · Route A
 
 ```
-① TV 底线 (tv_sl)     Pine 硬止损，UPDATE_SL 可热更新
-② 雷达保本 (radar)    TP1 后 / 96% 路径激活，ATR 追踪（**人工接管首挂不提前激活**）
+① VPS 硬止损          regime×ATR 四档呼吸空间，Stop-Limit 缓冲执行
+② 雷达保本 (radar)    TP1 后 / 96% 路径激活，8 阶段 ATR 追踪
 ③ TP123               regime 比例 reduceOnly 限价
 ```
 
-- **合并止损（Binance/OKX/Gate）：** LONG `max(tv_sl, radar)` / SHORT `min(...)`，单张 closePosition STOP
+- **合并止损（Binance/OKX/Gate）：** LONG `max(vps_sl, radar)` / SHORT `min(...)`，Stop-Limit 优先
 - **DeepCoin 双轨：** TV SL 与雷达条件单并行
 - **STOP 安全钳制：** `clamp_stop_market_safe()` 防止 SL 高于 mark 瞬间全平
 - 雷达激活 **不撤** TV SL（Route A 共存）
@@ -592,7 +606,7 @@ https://twinstar.pro/gemini/webhook
 | `CLOSE` | 换防清场全平（manual adopt 同向可跳过） | 可选 |
 | `CLOSE_PROTECT` | 保护性全平（带 reason、pnl_pct） | ✅ |
 | `CLOSE_TP3` | TP3 终极收网全平 | ✅ |
-| `UPDATE_SL` | 仅更新 TV 硬止损 `tv_sl` | 可选 |
+| `UPDATE_SL` | TV 紧止损参考（VPS **忽略**，仅日志） | 可选 |
 
 ### 开仓 JSON（v6.9.45）
 

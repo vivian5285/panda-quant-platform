@@ -13,7 +13,7 @@ from app.core.radar_trail import (
     tp1_distance,
     tp_path_progress,
 )
-from app.core.vps_hard_sl import compute_vps_hard_sl
+from app.core.vps_hard_sl import compute_hard_sl_limit_price, compute_vps_hard_sl
 from app.core.vps_radar_stages import compute_vps_radar_sl, detect_radar_stage
 from app.core.symbol_precision import round_price, round_quantity
 
@@ -648,97 +648,25 @@ class AdverseRadarMixin:
         )
 
     def _handle_update_sl(self, payload: dict) -> dict[str, Any]:
-        """UPDATE_SL: recompute VPS hard SL from regime+ATR and sync to exchange."""
+        """UPDATE_SL ignored — VPS computes hard SL from regime+ATR; radar managed locally."""
         self._init_adverse_radar_fields()
-        side = str(payload.get("side") or "").upper().strip()
-        if payload.get("regime") is not None:
-            self.regime = int(payload.get("regime") or self.regime)
-        if payload.get("atr"):
-            self.current_atr = float(payload.get("atr") or self.current_atr)
-
-        pos = self._get_active_position() if hasattr(self, "_get_active_position") else None
-        if not pos or float(pos.get("size", 0) or 0) <= 0:
-            meta = self._recompute_vps_hard_sl(payload=payload, side=side or None)
-            self._save_state() if hasattr(self, "_save_state") else None
-            return {
-                "status": "skipped",
-                "reason": "no_position",
-                "vps_sl": meta.get("stop_price"),
-                **meta,
-            }
-
-        live_side = str(pos.get("side") or self.current_side or "").upper()
-        if side and live_side and side != live_side:
-            self._log(
-                "WARN",
-                f"UPDATE_SL 方向 {side} 与实盘 {live_side} 不一致（按实盘更新止损）",
-                {"tv_side": side, "live_side": live_side},
-            )
-
-        entry = float(pos.get("entry_price") or getattr(self, "watched_entry", 0) or 0)
-        meta = self._recompute_vps_hard_sl(entry_px=entry, payload=payload, side=live_side)
-        tv_sl = float(meta.get("stop_price") or 0)
-        if tv_sl <= 0:
-            return {"status": "skipped", "reason": "invalid_vps_sl", **meta}
-
-        old_sl = float(getattr(self, "tv_sl", 0) or 0)
-        live_qty = float(pos.get("size", 0))
-
-        if old_sl > 0 and abs(old_sl - tv_sl) <= ADVERSE_STOP_TOLERANCE:
-            audit = self._sync_adverse_shield_from_exchange(live_qty)
-            if audit.get("aligned"):
-                detail = {
-                    "vps_sl": tv_sl,
-                    "side": live_side,
-                    "skipped": "idempotent",
-                    "label": self._hard_stop_label(),
-                    "radar_active": bool(
-                        hasattr(self, "_is_radar_active") and self._is_radar_active()
-                    ),
-                    **meta,
-                }
-                verify_msg = f"UPDATE_SL 核实成功 | VPS硬止损 @{tv_sl:.2f} | 盘口已对齐"
-                self._log("UPDATE_SL", verify_msg, detail)
-                self._alert("info", "UPDATE_SL", "UPDATE_SL · 核实成功", verify_msg, detail)
-                return {"status": "ok", "action": "UPDATE_SL", "detail": detail}
-
-        if self._uses_dual_stop_track():
-            result = self._sync_tv_hard_stop(live_qty, force_replace=True)
-            if self._is_radar_active() and float(getattr(self, "current_sl", 0) or 0) > 0:
-                radar_sl = self._clamp_radar_sl_to_tv_floor(float(self.current_sl))
-                if hasattr(self, "_ensure_radar_sl"):
-                    result["radar_verified"] = bool(self._ensure_radar_sl(live_qty, radar_sl))
-        else:
-            radar = self._effective_radar_sl_for_merge() or None
-            result = self._sync_binance_merged_stop(
-                live_qty, radar_sl=radar, force_replace=True,
-            )
-
-        result["vps_sl"] = tv_sl
-        result["side"] = live_side
-        result["label"] = self._hard_stop_label()
-        result["radar_active"] = bool(
-            hasattr(self, "_is_radar_active") and self._is_radar_active()
-        )
-        result.update({k: v for k, v in meta.items() if k not in result})
-        msg = f"{result['label']} 更新 @{tv_sl:.2f} | 呼吸空间 {meta.get('sl_distance')}U"
-        if result.get("merged"):
-            msg += f" | Binance合并 @{result.get('stop_price', 0):.2f}"
-        elif self._uses_dual_stop_track():
-            msg += " | Deepcoin TV底线+雷达双轨"
-        if result.get("placed", 0) > 0:
-            msg += f" | 已同步 {result['placed']} 笔"
-        elif result.get("skipped"):
-            msg += f" | {result['skipped']}"
-        self._log("UPDATE_SL", msg, result)
-        if result.get("aligned") or result.get("placed", 0) > 0:
-            verify_msg = f"UPDATE_SL 核实成功 | {msg}"
-            self._alert("info", "UPDATE_SL", "UPDATE_SL · 核实成功", verify_msg, result)
-        else:
-            self._alert("info", "UPDATE_SL", f"{result['label']} · 已同步", msg, result)
-        if hasattr(self, "_save_state"):
-            self._save_state()
-        return {"status": "ok", "action": "UPDATE_SL", "detail": result}
+        detail: dict[str, Any] = {
+            "action": "UPDATE_SL",
+            "ignored": True,
+            "reason": "vps_self_managed",
+            "note": "VPS 自主计算硬止损与雷达，忽略 TV UPDATE_SL",
+            "tv_sl_reference": parse_tv_sl(payload.get("tv_sl")),
+            "vps_sl": float(getattr(self, "tv_sl", 0) or 0),
+            "regime": getattr(self, "regime", None),
+            "atr": getattr(self, "current_atr", None),
+        }
+        self._log("UPDATE_SL", "忽略 TV UPDATE_SL — VPS 自主管理硬止损", detail)
+        return {
+            "status": "skipped",
+            "reason": "update_sl_ignored",
+            "action": "UPDATE_SL",
+            "detail": detail,
+        }
 
     def _mark_adverse_tier_consumed(self, tier_pct: float) -> None:
         t = round(float(tier_pct), 4)
@@ -887,8 +815,13 @@ class AdverseRadarMixin:
             return "sell" if self.current_side == "LONG" else "buy"
         return self._close_order_side()
 
+    def _hard_sl_limit_price(self, stop_price: float) -> float:
+        return compute_hard_sl_limit_price(
+            stop_price, getattr(self, "current_side", None),
+        )
+
     def _place_adverse_stop_slice(self, stop_price: float, qty: float) -> bool:
-        """Place 10% hard stop — prefer stop-market full close."""
+        """Place buffer hard stop — prefer Stop-Limit (trigger + limit offset)."""
         close_side = self._adverse_close_side()
         symbol = getattr(self, "symbol", None)
         client = self.client
@@ -905,8 +838,16 @@ class AdverseRadarMixin:
             )
             return order is not None
 
+        limit_px = self._hard_sl_limit_price(stop_price)
+        if hasattr(client, "place_stop_limit_order"):
+            order = client.place_stop_limit_order(
+                close_side, stop_price, limit_px, symbol,
+                quantity=qty, reduce_only=True,
+            )
+            if order:
+                return True
+
         if hasattr(client, "place_stop_market_order"):
-            # Full-position 10% hard stop — closePosition avoids origQty=0 verify false negatives.
             order = client.place_stop_market_order(
                 close_side, stop_price, symbol, quantity=None,
             )
@@ -919,12 +860,6 @@ class AdverseRadarMixin:
                         pending.append(aid_int)
                     self._pending_adverse_algo_ids = pending[-8:]
                 return True
-        limit_px = round_price(stop_price)
-        if hasattr(client, "place_stop_limit_order"):
-            order = client.place_stop_limit_order(
-                close_side, stop_price, limit_px, symbol, quantity=qty, reduce_only=True,
-            )
-            return order is not None
         return False
 
     def _is_adverse_stop_order(self, o: dict, tier_prices: set[float]) -> bool:

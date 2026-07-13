@@ -1,4 +1,4 @@
-"""VPS-computed hard stop — regime × ATR breathing space (v6.9.103 spec)."""
+"""VPS-computed hard stop — regime × ATR breathing space (四档均匀递增版)."""
 
 from __future__ import annotations
 
@@ -7,13 +7,16 @@ from typing import Any
 from app.core.regime_utils import clamp_regime
 from app.core.symbol_precision import round_price
 
-# sl_m × regime_multiplier → final multiplier (Regime 4 ≈ 100U @ ATR=16.65)
+# sl_m × regime_multiplier → final multiplier (Regime 4 ≈ 100U @ ATR≈16)
 REGIME_HARD_SL: dict[int, dict[str, float]] = {
-    1: {"sl_m": 0.9, "regime_multiplier": 1.0},   # 0.90×
-    2: {"sl_m": 1.05, "regime_multiplier": 1.8},  # 1.89×
-    3: {"sl_m": 1.10, "regime_multiplier": 3.0},  # 3.30×
-    4: {"sl_m": 1.25, "regime_multiplier": 4.8},  # 6.00×
+    1: {"sl_m": 0.9, "regime_multiplier": 2.0},   # 1.80× ≈ 30 U
+    2: {"sl_m": 1.05, "regime_multiplier": 3.0},  # 3.15× ≈ 50 U
+    3: {"sl_m": 1.10, "regime_multiplier": 4.0},  # 4.40× ≈ 70 U
+    4: {"sl_m": 1.25, "regime_multiplier": 5.0},  # 6.25× ≈ 100 U
 }
+
+# Stop-Limit buffer: limit worse than trigger by 0.5~1 U to absorb gaps
+HARD_SL_STOP_LIMIT_OFFSET = 0.5
 
 
 def hard_sl_final_multiplier(regime: int) -> float:
@@ -82,4 +85,24 @@ def compute_vps_hard_sl(
         meta["stop_price"] = round_price(entry_f - dist)
     else:
         meta["stop_price"] = round_price(entry_f + dist)
+    meta["limit_price"] = compute_hard_sl_limit_price(meta["stop_price"], side_u)
     return meta
+
+
+def compute_hard_sl_limit_price(
+    stop_price: float,
+    side: str | None,
+    *,
+    offset: float = HARD_SL_STOP_LIMIT_OFFSET,
+) -> float:
+    """
+    Stop-Limit execution price for buffer hard stop.
+    LONG: limit = trigger − offset; SHORT: limit = trigger + offset.
+    """
+    sp = float(stop_price or 0)
+    if sp <= 0 or side not in ("LONG", "SHORT"):
+        return round_price(sp)
+    off = max(float(offset or 0), 0.0)
+    if side == "LONG":
+        return round_price(sp - off)
+    return round_price(sp + off)

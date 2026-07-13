@@ -117,14 +117,14 @@ def test_unified_startup_loss_track_arms_shield():
         return {"orderId": 1}
 
     probe.client.get_open_orders.side_effect = _open_orders
-    probe.client.place_stop_market_order.side_effect = _place_stop
+    probe.client.place_stop_limit_order.side_effect = _place_stop
     with patch.object(probe, "_startup_wait_live_book", lambda: None), patch(
         "app.core.adverse_radar_guard.time.sleep", lambda *_: None,
     ), patch("app.core.binance_smart_defense.time.sleep", lambda *_: None):
         result = probe._unified_startup_defense_reconcile(0.6, 2000.0, 1900.0)
     assert result["pnl_track"] == "loss_shield"
     assert result["tp_expected"] == 3
-    probe.client.place_stop_market_order.assert_called()
+    probe.client.place_stop_limit_order.assert_called()
 
 
 def test_unified_startup_profit_track_coexist_shield():
