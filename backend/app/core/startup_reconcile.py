@@ -1250,7 +1250,10 @@ class StartupReconcileMixin:
 
         progress = self._startup_radar_progress(curr_px)
         consumed = list(getattr(self, "consumed_tp_levels", []) or [])
-        radar_active = bool(hasattr(self, "_is_radar_active") and self._is_radar_active())
+        radar_active = bool(
+            getattr(self, "radar_latched", False)
+            or (hasattr(self, "_is_radar_active") and self._is_radar_active())
+        )
         pnl_track = classify_startup_pnl_track(
             entry, curr_px, side,
             radar_progress=progress,

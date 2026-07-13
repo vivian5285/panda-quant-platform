@@ -226,6 +226,8 @@ class AdverseRadarMixin:
             self.adverse_arm_dingtalk_sent = False
         if not hasattr(self, "_pending_adverse_algo_ids"):
             self._pending_adverse_algo_ids = []
+        if not hasattr(self, "radar_latched"):
+            self.radar_latched = False
 
     def _reset_adverse_radar(self, *, keep_tv_sl: bool = True) -> None:
         preserved = float(getattr(self, "tv_sl", 0) or 0) if keep_tv_sl else 0.0
@@ -235,7 +237,38 @@ class AdverseRadarMixin:
         self._adverse_last_repair_ts = 0.0
         self.adverse_arm_dingtalk_sent = False
         self._pending_adverse_algo_ids = []
+        self.radar_latched = False
         self.tv_sl = preserved
+
+    def _latch_radar(self) -> None:
+        """Once radar arms, never revert to hard-only defense until flat."""
+        self._init_adverse_radar_fields()
+        if not self.radar_latched:
+            self.radar_latched = True
+            logger.info(
+                "[User %s] 📌 雷达已锁定 — 回调不回退硬止损",
+                getattr(self, "user_id", "?"),
+            )
+
+    def _is_radar_engaged(self) -> bool:
+        """Radar active or latched — must stay on radar track until position closes."""
+        self._init_adverse_radar_fields()
+        if self.radar_latched:
+            return True
+        if hasattr(self, "_is_radar_active") and self._is_radar_active():
+            return True
+        return False
+
+    def _infer_radar_latched_from_state(self) -> None:
+        """Backward compat: restore latch from persisted SL / best_price."""
+        if getattr(self, "radar_latched", False):
+            return
+        if hasattr(self, "_is_radar_active") and self._is_radar_active():
+            self.radar_latched = True
+            return
+        consumed = list(getattr(self, "consumed_tp_levels", []) or [])
+        if consumed:
+            self.radar_latched = True
 
     def _hard_stop_label(self) -> str:
         return "VPS硬止损"
@@ -353,8 +386,10 @@ class AdverseRadarMixin:
         return getattr(self, "exchange_id", "") == "deepcoin"
 
     def _effective_radar_sl_for_merge(self) -> float:
-        if hasattr(self, "_is_radar_active") and self._is_radar_active():
-            return float(getattr(self, "current_sl", 0) or 0)
+        if self._is_radar_engaged():
+            sl = float(getattr(self, "current_sl", 0) or 0)
+            if sl > 0:
+                return sl
         return 0.0
 
     def _merged_stop_price(self, radar_sl: float | None = None) -> float:
@@ -683,7 +718,7 @@ class AdverseRadarMixin:
 
     def _radar_activation_reached(self, curr_px: float) -> bool:
         """True when 8-stage radar may arm (stage≥1, TP1 filled, or already trailing)."""
-        if hasattr(self, "_is_radar_active") and self._is_radar_active():
+        if self._is_radar_engaged():
             return True
         consumed = list(getattr(self, "consumed_tp_levels", []) or [])
         if consumed:
@@ -754,9 +789,15 @@ class AdverseRadarMixin:
                 placed = bool(self._ensure_radar_sl(sl_px, live_qty)) or placed
 
         if sl_px > 0 and hasattr(self, "_has_stop_sl_near"):
+            if self._has_stop_sl_near(sl_px):
+                self._latch_radar()
             return bool(self._has_stop_sl_near(sl_px))
         if sl_px > 0 and hasattr(self, "_has_trigger_sl_near"):
+            if self._has_trigger_sl_near(sl_px):
+                self._latch_radar()
             return bool(self._has_trigger_sl_near(sl_px))
+        if placed:
+            self._latch_radar()
         return placed
 
     def _classify_tp_reduction(self, old_qty: float, new_qty: float) -> str | None:
@@ -1512,7 +1553,7 @@ class AdverseRadarMixin:
             if hasattr(self, "_radar_activation_progress")
             else 0.0
         )
-        if progress >= 1.0 or (hasattr(self, "_is_radar_active") and self._is_radar_active()):
+        if progress >= 1.0 or self._is_radar_engaged():
             return False
 
         audit = self._sync_adverse_shield_from_exchange(live_qty)
@@ -1561,9 +1602,11 @@ class AdverseRadarMixin:
             old_sl=float(getattr(self, "current_sl", 0) or 0),
             hard_sl=float(getattr(self, "tv_sl", 0) or 0),
             clamp_fn=getattr(self, "_clamp_radar_sl_to_tv_floor", lambda x: x),
+            radar_latched=bool(getattr(self, "radar_latched", False)),
         )
         if radar.get("armed") and radar.get("radar_sl", 0) > 0:
             self.current_sl = float(radar["radar_sl"])
+            self._latch_radar()
 
         if hasattr(self, "_realign_radar_defenses"):
             self._realign_radar_defenses(live_qty, entry, self.current_sl)

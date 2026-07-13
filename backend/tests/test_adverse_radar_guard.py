@@ -311,6 +311,29 @@ def test_arm_skips_when_already_aligned():
     probe.client.place_stop_limit_order.assert_not_called()
 
 
+def test_orchestrate_skips_hard_sl_when_radar_latched_on_rebound():
+    """Latched radar must not fall back to adverse hard-stop repair on price rebound."""
+    probe = _AdverseProbe()
+    probe.current_side = "SHORT"
+    probe.watched_entry = 1800.0
+    probe.tv_sl = 1870.0
+    probe.current_sl = 1798.2
+    probe.best_price = 1770.0
+    probe.radar_latched = True
+    probe.tv_tps = [1780.0, 1770.0, 1760.0]
+    rebound_px = 1790.0
+    with patch.object(probe, "_process_adverse_radar_guard", return_value=True) as guard, patch.object(
+        probe, "_process_radar_trailing", return_value=False,
+    ) as trail, patch.object(
+        probe, "_sync_binance_merged_stop", return_value={"aligned": True},
+    ) as merged:
+        probe._orchestrate_defense_monitoring(0.6, rebound_px)
+    trail.assert_called_once()
+    guard.assert_not_called()
+    if merged.called:
+        assert merged.call_args.kwargs.get("radar_sl") == pytest.approx(1798.2, rel=0.001)
+
+
 def test_orchestrate_radar_coexist_route_a():
     probe = _AdverseProbe()
     probe.adverse_sl_armed = True

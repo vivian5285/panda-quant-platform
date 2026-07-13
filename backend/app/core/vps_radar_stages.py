@@ -69,28 +69,27 @@ def interval_path_progress(
     return 0.0
 
 
-def detect_radar_stage(
+def _detect_radar_stage_at_px(
     entry: float,
-    curr_px: float,
+    px: float,
     side: str | None,
     tp1: float,
     tp2: float,
     tp3: float,
 ) -> int:
-    """Highest stage reached by current price (0–8)."""
-    if curr_px <= 0 or entry <= 0 or tp1 <= 0:
+    if px <= 0 or entry <= 0 or tp1 <= 0:
         return 0
-    p_tp1 = tp_path_progress(entry, curr_px, tp1, side)
+    p_tp1 = tp_path_progress(entry, px, tp1, side)
     if p_tp1 < 0.70:
         return 0
     if p_tp1 < 0.85:
         return 1
-    if not _reached_level(curr_px, tp1, side):
+    if not _reached_level(px, tp1, side):
         return 2
     if tp2 <= 0:
         return 3
-    if not _reached_level(curr_px, tp2, side):
-        p12 = interval_path_progress(curr_px, tp1, tp2, side)
+    if not _reached_level(px, tp2, side):
+        p12 = interval_path_progress(px, tp1, tp2, side)
         if p12 < 0.25:
             return 3
         if p12 < 0.50:
@@ -100,10 +99,40 @@ def detect_radar_stage(
         return 6
     if tp3 <= 0:
         return 7
-    p23 = interval_path_progress(curr_px, tp2, tp3, side)
+    p23 = interval_path_progress(px, tp2, tp3, side)
     if p23 < 0.80:
         return 7
     return 8
+
+
+def detect_radar_stage(
+    entry: float,
+    curr_px: float,
+    side: str | None,
+    tp1: float,
+    tp2: float,
+    tp3: float,
+    *,
+    peak_px: float | None = None,
+) -> int:
+    """Highest stage reached by price (0–8). peak_px preserves stage after pullbacks."""
+    stage = _detect_radar_stage_at_px(entry, curr_px, side, tp1, tp2, tp3)
+    if peak_px is not None and float(peak_px or 0) > 0:
+        stage = max(stage, _detect_radar_stage_at_px(entry, peak_px, side, tp1, tp2, tp3))
+    return stage
+
+
+def is_favorable_radar_sl(old_sl: float, entry: float, side: str | None) -> bool:
+    """True when old_sl is a locked profit / breakeven stop (not the wide hard SL)."""
+    old_sl = float(old_sl or 0)
+    entry = float(entry or 0)
+    if old_sl <= 0 or entry <= 0:
+        return False
+    if side == "LONG":
+        return old_sl > entry
+    if side == "SHORT":
+        return old_sl < entry
+    return False
 
 
 def compute_stage_radar_sl(
@@ -166,13 +195,29 @@ def compute_vps_radar_sl(
     old_sl: float,
     hard_sl: float,
     clamp_fn,
+    radar_latched: bool = False,
 ) -> dict[str, Any]:
     """Full radar evaluation: stage detect → SL compute → floor → direction."""
-    stage = detect_radar_stage(entry, curr_px, side, tp1, tp2, tp3)
+    peak_px = best_price if radar_latched else None
+    stage = detect_radar_stage(
+        entry, curr_px, side, tp1, tp2, tp3, peak_px=peak_px,
+    )
+    if radar_latched and stage <= 0 and is_favorable_radar_sl(old_sl, entry, side):
+        stage = 1
+
     raw = compute_stage_radar_sl(
         stage, entry=entry, best_price=best_price, atr=atr, side=side,
     )
     if stage <= 0 or raw <= 0:
+        if radar_latched and is_favorable_radar_sl(old_sl, entry, side):
+            return {
+                "stage": 1,
+                "stage_label": RADAR_STAGE_LABELS[1],
+                "radar_sl": float(old_sl),
+                "tp1_progress": round(tp_path_progress(entry, curr_px, tp1, side), 4) if tp1 > 0 else 0.0,
+                "armed": True,
+                "latched_hold": True,
+            }
         return {
             "stage": 0,
             "stage_label": RADAR_STAGE_LABELS[0],
@@ -195,5 +240,6 @@ def compute_vps_radar_sl(
         "raw_sl": raw,
         "tp1_progress": round(tp_path_progress(entry, curr_px, tp1, side), 4) if tp1 > 0 else 0.0,
         "armed": True,
+        "latched": radar_latched,
         "atr_mult": RADAR_STAGE_ATR_MULT.get(stage),
     }

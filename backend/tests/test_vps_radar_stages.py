@@ -6,6 +6,7 @@ from app.core.vps_radar_stages import (
     detect_radar_stage,
     compute_vps_radar_sl,
     apply_radar_sl_direction,
+    is_favorable_radar_sl,
 )
 
 
@@ -54,3 +55,38 @@ def test_compute_radar_stage1_breakeven():
     )
     assert radar["stage"] == 1
     assert radar["radar_sl"] > ENTRY
+
+
+def test_stage_uses_peak_px_after_pullback():
+    """Price rebound must not drop stage when peak_px preserves prior progress."""
+    entry = 1800.0
+    tp1 = 1780.0
+    tp2 = 1770.0
+    tp3 = 1760.0
+    best = 1770.0
+    rebound = 1790.0
+    assert detect_radar_stage(entry, rebound, "SHORT", tp1, tp2, tp3) == 0
+    assert detect_radar_stage(entry, rebound, "SHORT", tp1, tp2, tp3, peak_px=best) >= 1
+
+
+def test_short_rebound_holds_latched_radar_sl():
+    """SHORT: after radar arms, rebound toward entry must not revert SL to hard stop."""
+    entry = 1800.0
+    tp1 = 1780.0
+    tp2 = 1770.0
+    tp3 = 1760.0
+    best = 1770.0
+    rebound = 1790.0
+    breakeven_sl = entry * (1.0 - 0.001)
+    hard_sl = 1870.0
+    radar = compute_vps_radar_sl(
+        entry=entry, curr_px=rebound, best_price=best, atr=16.0, side="SHORT",
+        tp1=tp1, tp2=tp2, tp3=tp3,
+        old_sl=breakeven_sl, hard_sl=hard_sl,
+        clamp_fn=lambda x: x,
+        radar_latched=True,
+    )
+    assert radar["armed"] is True
+    assert radar["radar_sl"] < entry
+    assert radar["radar_sl"] <= breakeven_sl
+    assert is_favorable_radar_sl(radar["radar_sl"], entry, "SHORT")

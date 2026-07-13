@@ -448,6 +448,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "adverse_last_repair_ts": float(getattr(self, "_adverse_last_repair_ts", 0) or 0),
                     "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
                     "adopted_manual": bool(getattr(self, "adopted_manual", False)),
+                    "radar_latched": bool(getattr(self, "radar_latched", False)),
                 }, f)
         except Exception as e:
             logger.error(f"保存状态失败: {e}")
@@ -1455,9 +1456,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             old_sl=float(self.current_sl or 0),
             hard_sl=float(getattr(self, "tv_sl", 0) or 0),
             clamp_fn=self._clamp_radar_sl_to_tv_floor,
+            radar_latched=bool(getattr(self, "radar_latched", False)),
         )
         if radar.get("armed") and radar.get("radar_sl", 0) > 0:
             self.current_sl = float(radar["radar_sl"])
+            self._latch_radar()
             logger.info(
                 f"📡 重启雷达恢复: {radar.get('stage_label')} | "
                 f"best={self.best_price:.2f} | SL={self.current_sl:.2f}"
@@ -2414,9 +2417,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             old_sl=float(self.current_sl or 0),
             hard_sl=float(getattr(self, "tv_sl", 0) or 0),
             clamp_fn=self._clamp_radar_sl_to_tv_floor,
+            radar_latched=bool(getattr(self, "radar_latched", False)),
         )
         new_sl = float(radar.get("radar_sl") or 0)
         if new_sl <= 0:
+            if self._is_radar_engaged():
+                hold_sl = float(self.current_sl or 0)
+                if hold_sl > 0 and not self._has_trigger_sl_near(hold_sl):
+                    return bool(self._ensure_radar_sl(real_amt, hold_sl))
             return False
         if curr_px > 0:
             new_sl = clamp_stop_market_safe(new_sl, curr_px, self.current_side)
@@ -2434,6 +2442,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             if should_trail or should_arm:
                 first_arm = should_arm and not should_trail
                 self.current_sl = new_sl
+                self._latch_radar()
                 self._save_state()
                 placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
                 if not placed and not on_book:
@@ -2463,6 +2472,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             if should_trail or should_arm:
                 first_arm = should_arm and not should_trail
                 self.current_sl = new_sl
+                self._latch_radar()
                 self._save_state()
                 placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
                 if not placed and not on_book:
@@ -2640,7 +2650,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         not self.adverse_sl_armed
                         and not self.adverse_consumed_tiers
                         and progress >= 0.5
-                        and not self._is_radar_active()
+                        and not self._is_radar_engaged()
                         and self._scan_ticks % 5 == 0
                     ):
                         logger.info(
@@ -2828,6 +2838,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.adverse_arm_dingtalk_sent = bool(s.get("adverse_arm_dingtalk_sent", False))
                     self.tv_sl = float(s.get("tv_sl", 0) or 0)
                     self.adopted_manual = bool(s.get("adopted_manual", False))
+                    self.radar_latched = bool(s.get("radar_latched", False))
+                    self._infer_radar_latched_from_state()
 
             if self._scan_and_sweep_dust_on_startup():
                 return
