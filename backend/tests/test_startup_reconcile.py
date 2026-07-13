@@ -52,6 +52,8 @@ class _StartupProbe(StartupReconcileMixin, AdverseRadarMixin, BinanceSmartDefens
     }
     tv_tps = [2050.0, 2100.0, 2150.0]
     tv_sl = 1900.0
+    current_side = "LONG"
+    tv_sl = 1900.0
     current_atr = 30.0
     current_sl = 2000.0
     best_price = 2000.0
@@ -60,10 +62,23 @@ class _StartupProbe(StartupReconcileMixin, AdverseRadarMixin, BinanceSmartDefens
     adverse_consumed_tiers = []
     adverse_arm_dingtalk_sent = False
 
+    def _recompute_vps_hard_sl(self, entry_px=None, *, payload=None, side=None):
+        from app.core.vps_hard_sl import compute_vps_hard_sl
+        meta = compute_vps_hard_sl(
+            float(entry_px or self.watched_entry),
+            side or self.current_side,
+            self.current_atr,
+            self.regime,
+            tv_sl_reference=float((payload or {}).get("tv_sl") or 0) or None,
+        )
+        self.tv_sl = float(meta.get("stop_price") or 0)
+        return meta
+
     def __init__(self):
         self.client = MagicMock()
         self.client.get_open_orders.return_value = []
         self.client.place_stop_market_order.return_value = {"orderId": 1}
+        self.client.place_stop_limit_order.return_value = {"orderId": 1}
         self.client.place_limit_order.return_value = {"orderId": 2}
 
     def _close_order_side(self):

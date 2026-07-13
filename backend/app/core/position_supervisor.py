@@ -1095,9 +1095,9 @@ class PositionSupervisor(
                 self.last_tv_side = entry_action
 
         if tv_conflicts_state:
-            apply_tv_sl_from_sources(self, open_log, trade, entry_tv)
+            pass  # tv_sl recomputed in finalize_recovery_tv_params
         else:
-            apply_tv_sl_from_sources(self, latest_tv, entry_tv, open_log, trade)
+            pass
 
         finalize_recovery_tv_params(self, report, recovery)
 
@@ -2642,6 +2642,12 @@ class PositionSupervisor(
                     self.add_count = min(max(inferred, 0), self._max_add_times())
             self.watched_entry = float(pos["entryPrice"])
             self.current_trade_id = open_trade_id
+            if hasattr(self, "_recompute_vps_hard_sl") and self.current_side in ("LONG", "SHORT"):
+                from app.core.startup_reconcile import recompute_vps_hard_sl_on_recovery
+                sl_meta = recompute_vps_hard_sl_on_recovery(
+                    self, entry_px=self.watched_entry, side=self.current_side,
+                )
+                audit["vps_hard_sl_meta"] = sl_meta
             if not open_trade_id and not trade_ctx:
                 audit["adopted_manual"] = True
                 audit["adopt_source"] = "live_position+latest_tv"

@@ -449,7 +449,9 @@ class AdverseRadarMixin:
             _order_stop_price(open_stops[0]) if open_stops else 0.0
         )
         if live_stop_px > 0 and effective > 0:
-            if side == "LONG" and effective > live_stop_px + ADVERSE_STOP_TOLERANCE:
+            if abs(effective - live_stop_px) > ADVERSE_STOP_TOLERANCE:
+                force_replace = True
+            elif side == "LONG" and effective > live_stop_px + ADVERSE_STOP_TOLERANCE:
                 force_replace = True
             elif side == "SHORT" and effective < live_stop_px - ADVERSE_STOP_TOLERANCE:
                 force_replace = True
@@ -1177,11 +1179,57 @@ class AdverseRadarMixin:
         return audit
 
     def _on_adverse_startup_reconcile(self, live_qty: float, curr_px: float) -> dict[str, Any]:
-        """Restart: read live stops first, purge duplicates, never blind re-arm."""
+        """Restart: recompute VPS SL, purge stale tight stops, re-arm if needed."""
         self._init_adverse_radar_fields()
         self._adverse_last_repair_ts = time.time()
+
+        entry = float(getattr(self, "watched_entry", 0) or 0)
+        side = getattr(self, "current_side", None)
+        if live_qty > 0 and entry > 0 and side in ("LONG", "SHORT"):
+            from app.core.startup_reconcile import recompute_vps_hard_sl_on_recovery
+            recompute_vps_hard_sl_on_recovery(self, entry_px=entry, side=side)
+
         audit = self._sync_adverse_shield_from_exchange(live_qty)
         plan = audit.get("plan") or []
+        expected_px = float(plan[0]["stop_price"]) if plan else 0.0
+        open_stops = self._collect_adverse_stop_orders()
+        if not open_stops and hasattr(self.client, "get_open_orders"):
+            close_side = str(self._adverse_close_side() or "").upper()
+            symbol = getattr(self, "symbol", None)
+            for o in self.client.get_open_orders(symbol) or []:
+                if str(o.get("side", "")).upper() != close_side:
+                    continue
+                if _is_stop_market_like(o) or _order_stop_price(o) > 0:
+                    open_stops.append(o)
+        live_px = _order_stop_price(open_stops[0]) if open_stops else 0.0
+
+        if (
+            expected_px > 0
+            and live_px > 0
+            and abs(live_px - expected_px) > ADVERSE_STOP_TOLERANCE
+        ):
+            cancelled = 0
+            symbol = getattr(self, "symbol", None)
+            for o in open_stops:
+                oid = o.get("algoId") or o.get("orderId")
+                if oid and symbol:
+                    self.client.cancel_order(symbol, int(oid))
+                    cancelled += 1
+                    time.sleep(0.2)
+            cancelled += self._cancel_adverse_stop_orders()
+            logger.info(
+                "[User %s] 重启升级硬止损: 撤旧单 @ %.2f → 新目标 %.2f (撤 %s 笔)",
+                self.user_id, live_px, expected_px, cancelled,
+            )
+            repair = self._arm_adverse_staged_stops(live_qty, 0.0, repair=True)
+            audit = {**audit, **repair}
+            audit["startup_stale_stop"] = True
+            audit["stale_stop_px"] = live_px
+            audit["expected_stop_px"] = expected_px
+            audit["startup_purged"] = cancelled
+            audit["adverse_pct"] = round(self._adverse_move_pct(curr_px) * 100, 2)
+            return audit
+
         purged = 0
         if audit.get("needs_purge_only") and plan:
             purged = self._purge_excess_adverse_stops(plan)

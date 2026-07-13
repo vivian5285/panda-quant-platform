@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 from app.core.adverse_radar_guard import (
+    ADVERSE_STOP_TOLERANCE,
     ADVERSE_VERIFY_RETRIES,
     ADVERSE_VERIFY_RETRY_DELAY_SEC,
     adverse_move_pct,
@@ -35,17 +36,63 @@ def recovery_section(ctx: dict | None, key: str) -> dict:
     return val if isinstance(val, dict) else {}
 
 
-def apply_tv_sl_from_sources(target, *sources: dict | None) -> float:
-    """Apply first valid tv_sl from recovery sources (latest TV preferred for manual adopt)."""
+def extract_tv_sl_reference(*sources: dict | None) -> float:
+    """First valid TV tv_sl from recovery sources (reference-only, not authoritative)."""
     for src in sources:
         if not src:
             continue
         sl = float(src.get("tv_sl") or 0)
         if sl > 0:
-            if hasattr(target, "tv_sl"):
-                target.tv_sl = sl
             return sl
-    return float(getattr(target, "tv_sl", 0) or 0)
+    return 0.0
+
+
+def apply_tv_sl_from_sources(target, *sources: dict | None) -> float:
+    """Deprecated: sets tv_sl from TV reference. Use recompute_vps_hard_sl_on_recovery instead."""
+    ref = extract_tv_sl_reference(*sources)
+    if ref > 0 and hasattr(target, "tv_sl"):
+        target.tv_sl = ref
+    return ref if ref > 0 else float(getattr(target, "tv_sl", 0) or 0)
+
+
+def recompute_vps_hard_sl_on_recovery(
+    supervisor,
+    *,
+    entry_px: float | None = None,
+    side: str | None = None,
+    tv_sl_reference: float | None = None,
+) -> dict:
+    """Recompute authoritative VPS hard SL from regime×ATR (never trust persisted/TV tv_sl)."""
+    if not hasattr(supervisor, "_recompute_vps_hard_sl"):
+        return {}
+    entry = float(
+        entry_px
+        or getattr(supervisor, "watched_entry", 0)
+        or getattr(supervisor, "tv_price", 0)
+        or 0
+    )
+    side_u = (
+        (side or "").upper()
+        or getattr(supervisor, "current_side", None)
+        or getattr(supervisor, "last_tv_side", None)
+    )
+    if entry <= 0 or side_u not in ("LONG", "SHORT"):
+        return {"error": "missing_entry_or_side", "entry": entry, "side": side_u}
+
+    prev_sl = float(getattr(supervisor, "tv_sl", 0) or 0)
+    ref = float(tv_sl_reference or 0)
+    payload: dict = {
+        "regime": int(getattr(supervisor, "regime", 3) or 3),
+        "atr": float(getattr(supervisor, "current_atr", 0) or 30.0),
+    }
+    if ref > 0:
+        payload["tv_sl"] = ref
+    meta = supervisor._recompute_vps_hard_sl(entry_px=entry, side=side_u, payload=payload)
+    new_sl = float(meta.get("stop_price") or 0)
+    if prev_sl > 0 and new_sl > 0:
+        meta["prev_sl"] = prev_sl
+        meta["sl_changed"] = abs(new_sl - prev_sl) > ADVERSE_STOP_TOLERANCE
+    return meta
 
 
 def live_matches_tv_direction(reconcile: dict | None, live_side: str | None) -> bool:
@@ -86,10 +133,10 @@ def finalize_recovery_tv_params(supervisor, report: dict, recovery: dict | None)
     if tp_sources:
         supervisor.tv_tps = merge_tv_targets(*tp_sources)
 
-    apply_tv_sl_from_sources(supervisor, latest_tv, entry_tv, open_log, trade)
-
+    tv_sl_ref = extract_tv_sl_reference(latest_tv, entry_tv, open_log, trade)
     side = (
-        getattr(supervisor, "last_tv_side", None)
+        getattr(supervisor, "current_side", None)
+        or getattr(supervisor, "last_tv_side", None)
         or report.get("open_log_side")
         or (entry_tv or {}).get("action")
     )
@@ -101,6 +148,17 @@ def finalize_recovery_tv_params(supervisor, report: dict, recovery: dict | None)
         or (latest_tv or {}).get("price")
         or 0
     )
+    sl_meta = recompute_vps_hard_sl_on_recovery(
+        supervisor,
+        entry_px=entry_px if entry_px > 0 else None,
+        side=str(side or "").upper() or None,
+        tv_sl_reference=tv_sl_ref if tv_sl_ref > 0 else None,
+    )
+    if sl_meta:
+        report["vps_hard_sl_meta"] = sl_meta
+    if tv_sl_ref > 0:
+        report["tv_sl_reference"] = tv_sl_ref
+
     atr = float(getattr(supervisor, "current_atr", 0) or 0)
     regime = int(getattr(supervisor, "regime", 3) or 3)
     if sum(1 for t in supervisor.tv_tps if t > 0) < 3 and str(side or "").upper() in ("LONG", "SHORT"):
@@ -1172,6 +1230,20 @@ class StartupReconcileMixin:
         entry = float(entry or getattr(self, "watched_entry", 0) or 0)
         curr_px = float(curr_px or entry or 0)
         side = getattr(self, "current_side", None)
+
+        if live_qty > 0 and entry > 0 and side in ("LONG", "SHORT"):
+            sl_meta = recompute_vps_hard_sl_on_recovery(
+                self, entry_px=entry, side=side,
+            )
+            if sl_meta.get("sl_changed"):
+                logger.info(
+                    "[User %s] 重启重算 VPS 硬止损: %.2f → %.2f (%s R%s)",
+                    getattr(self, "user_id", "?"),
+                    sl_meta.get("prev_sl", 0),
+                    sl_meta.get("stop_price", 0),
+                    side,
+                    sl_meta.get("regime", "?"),
+                )
 
         if hasattr(self, "_refresh_radar_state_on_recover") and curr_px > 0:
             self._refresh_radar_state_on_recover(curr_px, entry)

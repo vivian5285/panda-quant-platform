@@ -935,7 +935,6 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     report["latest_entry_tv_action"] = entry_tv.get("action")
                     self.last_tv_side = (entry_tv.get("action") or "").upper()
 
-        apply_tv_sl_from_sources(self, latest_tv, entry_tv, open_log, trade)
         finalize_recovery_tv_params(self, report, recovery)
 
         report["last_tv_side"] = self.last_tv_side
@@ -2859,6 +2858,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         inferred = int(round((real_amt - self.base_qty) / (self.base_qty * ratio)))
                         self.add_count = min(max(inferred, 0), self._max_add_times())
                 self.watched_entry = float(pos["entry_price"])
+                if hasattr(self, "_recompute_vps_hard_sl"):
+                    from app.core.startup_reconcile import recompute_vps_hard_sl_on_recovery
+                    recompute_vps_hard_sl_on_recovery(
+                        self, entry_px=self.watched_entry, side=self.current_side,
+                    )
                 qty_change = reconcile.get("qty_manual_change")
 
                 side_sync = self._try_force_align_opposite_to_tv(

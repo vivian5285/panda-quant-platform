@@ -25,13 +25,26 @@ def test_finalize_recovery_derives_missing_tp3():
         tv_tps = [2050.0, 2100.0, 0.0]
         tv_sl = 0.0
         last_tv_side = "LONG"
+        current_side = "LONG"
         watched_entry = 2000.0
         tv_price = 2000.0
         current_atr = 30.0
         regime = 3
 
+        def _recompute_vps_hard_sl(self, entry_px=None, *, payload=None, side=None):
+            from app.core.vps_hard_sl import compute_vps_hard_sl
+            meta = compute_vps_hard_sl(
+                float(entry_px or self.watched_entry),
+                side or self.current_side or self.last_tv_side,
+                self.current_atr,
+                self.regime,
+                tv_sl_reference=float((payload or {}).get("tv_sl") or 0) or None,
+            )
+            self.tv_sl = float(meta.get("stop_price") or 0)
+            return meta
+
     sup = Sup()
-    report: dict = {"open_log_entry": 2000.0}
+    report: dict = {"open_log_entry": 2000.0, "open_log_side": "LONG"}
     recovery = {
         "latest_tv": {"action": "CLOSE", "tv_tps": [2050.0, 2100.0, 0.0]},
         "latest_entry_tv": {
@@ -45,7 +58,8 @@ def test_finalize_recovery_derives_missing_tp3():
     }
     finalize_recovery_tv_params(sup, report, recovery)
     assert sup.tv_tps[2] > 0
-    assert sup.tv_sl == pytest.approx(1900.0)
+    assert sup.tv_sl == pytest.approx(1868.0, rel=0.01)
+    assert report.get("tv_sl_reference") == pytest.approx(1900.0)
     assert "tv_tps_derived_from_regime" in report.get("warnings", [])
 
 
