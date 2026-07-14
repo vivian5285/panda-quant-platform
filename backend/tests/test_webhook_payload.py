@@ -122,3 +122,28 @@ def test_v6975_update_sl():
     assert err is None
     assert data["action"] == "UPDATE_SL"
     assert data["tv_sl"] == 64500
+
+
+def test_v69108_update_tp_validates():
+    raw = (
+        '{"action":"UPDATE_TP","secret":"528586","side":"LONG",'
+        '"tv_tp1":1900.50,"tv_tp2":1930.00,"tv_tp3":1970.00}'
+    )
+    data, err = parse_webhook_payload(raw)
+    assert err is None
+    assert data["action"] == "UPDATE_TP"
+    ok, msg = validate_signal_payload(data)
+    assert ok, msg
+    assert data["tv_tp1"] == 1900.50
+
+
+def test_v69108_update_tp_requires_tps():
+    ok, msg = validate_signal_payload({
+        "action": "UPDATE_TP",
+        "side": "LONG",
+        "tv_tp1": 1900,
+        "tv_tp2": 0,
+        "tv_tp3": 1970,
+    })
+    assert not ok
+    assert "tv_tp2" in msg

@@ -101,6 +101,7 @@ ALERT_TYPE_TAGS = {
     "CAP_ALIGN_FAIL": "叠仓减仓失败",
     "CAP_ALIGN_OVERTRIM": "叠仓过度减仓",
     "UPDATE_SL": "VPS硬止损更新",
+    "UPDATE_TP": "动能止盈升级",
     "SIGNAL_RECV": "TV信号接收",
     "ADVERSE_SL": "TV硬止损",
     "ADVERSE_SL_DISARM": "防护盾撤销·雷达接管",
@@ -146,6 +147,7 @@ ADMIN_DINGTALK_KEY_TYPES = frozenset({
     "CAP_ALIGN_FAIL",
     "CAP_ALIGN_OVERTRIM",
     "UPDATE_SL",
+    "UPDATE_TP",
     "ADVERSE_SL",
     "ADVERSE_SL_DISARM",
     "ADVERSE_SL_HIT",
@@ -542,6 +544,31 @@ def format_admin_detail_lines(
         return format_force_align_detail_cn(detail, ex) if detail.get("live_side") else format_startup_detail_cn(detail, ex)
     if alert_type in ("OPEN", "PYRAMID", "PROFIT_ADD") or detail.get("sizing_mode") in ("vps_open", "vps_add"):
         return format_vps_entry_detail_cn(detail, ex)
+    if alert_type == "UPDATE_TP":
+        theme = resolve_exchange_theme(ex)
+        side = detail.get("side")
+        side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(side or "").upper(), side or "—")
+        lines = [
+            _line("交易所", theme["label"]),
+            _line("方向", side_txt),
+        ]
+        if detail.get("qty") is not None:
+            lines.append(_line("数量", f"{float(detail['qty']):.4f} {theme['qty_unit']}"))
+        if detail.get("mark_price"):
+            lines.append(_line("市价", f"{float(detail['mark_price']):.2f}"))
+        old_tps = detail.get("old_tv_tps")
+        new_tps = detail.get("new_tv_tps") or detail.get("tv_tps")
+        if old_tps is not None and new_tps is not None:
+            lines.append(_line("TP 升级", f"{old_tps} → {new_tps}"))
+        elif new_tps is not None:
+            lines.append(_line("新 TP", str(new_tps)))
+        if detail.get("cancelled_tp") is not None:
+            lines.append(_line("撤销止盈", str(detail["cancelled_tp"])))
+        if detail.get("placed_tp") is not None:
+            lines.append(_line("新挂止盈", str(detail["placed_tp"])))
+        lines.append(_line("硬止损", "未改动" if detail.get("hard_sl_untouched") else "—"))
+        lines.append(_line("雷达", "未改动" if detail.get("radar_untouched") else "—"))
+        return "\n".join(lines)
 
     theme = resolve_exchange_theme(ex)
     lines = [_line("交易所", theme["label"])]

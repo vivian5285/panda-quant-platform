@@ -330,6 +330,11 @@ class PositionSupervisor(
         }
         self._log("SIGNAL_RECV", f"TV → {payload.get('action')}", signal_detail)
         raw_action = str(payload.get("action", "")).upper()
+
+        # UPDATE_TP before mutating regime/atr/tv_sl — only replaces TP limits.
+        if raw_action == "UPDATE_TP":
+            return self._handle_update_tp(payload)
+
         held_regime = self.regime
         held_atr = self.current_atr
         prev_tv_tps = list(self.tv_tps)

@@ -9,7 +9,8 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 VALID_ACTIONS = frozenset({
-    "LONG", "SHORT", "CLOSE", "CLOSE_PROTECT", "CLOSE_TP3", "CLOSE_STOPLOSS", "UPDATE_SL",
+    "LONG", "SHORT", "CLOSE", "CLOSE_PROTECT", "CLOSE_TP3", "CLOSE_STOPLOSS",
+    "UPDATE_SL", "UPDATE_TP",
 })
 ENTRY_ACTIONS = frozenset({"LONG", "SHORT"})
 
@@ -111,5 +112,16 @@ def validate_signal_payload(data: dict) -> tuple[bool, str]:
                 return False, "UPDATE_SL requires tv_sl > 0"
         except (TypeError, ValueError):
             return False, "Invalid tv_sl for UPDATE_SL"
+
+    if action == "UPDATE_TP":
+        side = str(data.get("side") or "").upper().strip()
+        if side not in ("LONG", "SHORT"):
+            return False, "UPDATE_TP requires side LONG or SHORT"
+        for field in ("tv_tp1", "tv_tp2", "tv_tp3"):
+            try:
+                if float(data.get(field) or 0) <= 0:
+                    return False, f"UPDATE_TP requires {field} > 0"
+            except (TypeError, ValueError):
+                return False, f"Invalid {field} for UPDATE_TP"
 
     return True, ""

@@ -710,6 +710,226 @@ class AdverseRadarMixin:
             "detail": detail,
         }
 
+    def _live_side_from_pos(self, pos: dict | None) -> str | None:
+        if not pos:
+            return None
+        side = str(pos.get("side") or "").upper().strip()
+        if side in ("LONG", "SHORT"):
+            return side
+        ps = str(pos.get("posSide") or "").lower().strip()
+        if ps == "long":
+            return "LONG"
+        if ps == "short":
+            return "SHORT"
+        cur = str(getattr(self, "current_side", "") or "").upper().strip()
+        return cur if cur in ("LONG", "SHORT") else None
+
+    def _place_updated_tp_orders(self, live_qty: float, entry: float) -> int:
+        """Re-place remaining TP limits only — never touches hard SL / radar stops."""
+        if getattr(self, "exchange_id", "") == "deepcoin" and hasattr(self, "_rebuild_defenses"):
+            return int(self._rebuild_defenses(live_qty, entry, dynamic_sl=None) or 0)
+        if hasattr(self, "_rebuild_tp_limit_orders"):
+            return int(self._rebuild_tp_limit_orders(live_qty, entry, dynamic_sl=None) or 0)
+        if hasattr(self, "_rebuild_defenses"):
+            result = self._rebuild_defenses(live_qty, entry, dynamic_sl=None)
+            if isinstance(result, dict):
+                return int(result.get("matched") or result.get("placed") or 0)
+            return int(result or 0)
+        return 0
+
+    def _handle_update_tp(self, payload: dict) -> dict[str, Any]:
+        """TV v6.9.108 动能升级：只替换 TP123 限价，绝不触碰硬止损 / 雷达."""
+        from app.core.symbol_precision import normalize_tv_targets
+        from app.core.tp_defense_reconcile import tp_price_matches
+        from app.services.trading_alerts import resolve_exchange_theme
+
+        side = str(payload.get("side") or "").upper().strip()
+        new_tps = normalize_tv_targets([
+            payload.get("tv_tp1", 0),
+            payload.get("tv_tp2", 0),
+            payload.get("tv_tp3", 0),
+        ])
+        old_tps = list(getattr(self, "tv_tps", []) or [0.0, 0.0, 0.0])
+        theme = resolve_exchange_theme(getattr(self, "exchange_id", "binance"))
+        detail: dict[str, Any] = {
+            "action": "UPDATE_TP",
+            "side": side,
+            "old_tv_tps": old_tps,
+            "new_tv_tps": list(new_tps),
+            "exchange": getattr(self, "exchange_id", None),
+            "hard_sl_untouched": True,
+            "radar_untouched": True,
+            "vps_sl": float(getattr(self, "tv_sl", 0) or 0),
+            "radar_sl": float(getattr(self, "current_sl", 0) or 0),
+        }
+
+        if side not in ("LONG", "SHORT"):
+            msg = "UPDATE_TP 忽略：side 无效"
+            self._log("UPDATE_TP", msg, detail)
+            return {"status": "skipped", "reason": "invalid_side", "action": "UPDATE_TP", "detail": detail}
+
+        if not all(float(t or 0) > 0 for t in new_tps[:3]):
+            msg = "UPDATE_TP 忽略：缺少有效新 TP 价格"
+            self._log("UPDATE_TP", msg, detail)
+            return {"status": "skipped", "reason": "invalid_tps", "action": "UPDATE_TP", "detail": detail}
+
+        pos = self._get_active_position() if hasattr(self, "_get_active_position") else None
+        live_side = self._live_side_from_pos(pos)
+        if not pos or not live_side:
+            msg = "UPDATE_TP 忽略：当前无持仓"
+            self._log("UPDATE_TP", msg, detail)
+            return {"status": "skipped", "reason": "no_position", "action": "UPDATE_TP", "detail": detail}
+
+        if live_side != side:
+            detail["live_side"] = live_side
+            msg = f"UPDATE_TP 忽略：方向不匹配 TV={side} 实盘={live_side}"
+            self._log("UPDATE_TP", msg, detail)
+            return {"status": "skipped", "reason": "side_mismatch", "action": "UPDATE_TP", "detail": detail}
+
+        if hasattr(self, "_safe_qty"):
+            live_qty = float(self._safe_qty(pos.get("size", 0)))
+        else:
+            live_qty = float(pos.get("size") or 0)
+        entry = float(pos.get("entry_price") or getattr(self, "watched_entry", 0) or 0)
+        detail["qty"] = live_qty
+        detail["entry"] = entry
+
+        curr_px = 0.0
+        if hasattr(self, "_defense_mark_price"):
+            try:
+                curr_px = float(self._defense_mark_price() or 0)
+            except (TypeError, ValueError):
+                curr_px = 0.0
+        if curr_px <= 0 and hasattr(self, "_current_tp_price"):
+            try:
+                curr_px = float(self._current_tp_price() or 0)
+            except (TypeError, ValueError):
+                curr_px = 0.0
+        detail["mark_price"] = curr_px
+
+        tp1 = float(new_tps[0] or 0)
+        if curr_px > 0:
+            if side == "LONG" and tp1 <= curr_px:
+                msg = f"UPDATE_TP 忽略：多头新TP1={tp1:.2f} ≤ 市价 {curr_px:.2f}"
+                self._log("UPDATE_TP", msg, {**detail, "reject": "tp1_not_above_mark"})
+                self._alert(
+                    "warning", "UPDATE_TP", f"{theme['accent']} 动能止盈升级拒绝", msg, detail,
+                )
+                return {
+                    "status": "skipped",
+                    "reason": "tp1_not_above_mark",
+                    "action": "UPDATE_TP",
+                    "detail": detail,
+                }
+            if side == "SHORT" and tp1 >= curr_px:
+                msg = f"UPDATE_TP 忽略：空头新TP1={tp1:.2f} ≥ 市价 {curr_px:.2f}"
+                self._log("UPDATE_TP", msg, {**detail, "reject": "tp1_not_below_mark"})
+                self._alert(
+                    "warning", "UPDATE_TP", f"{theme['accent']} 动能止盈升级拒绝", msg, detail,
+                )
+                return {
+                    "status": "skipped",
+                    "reason": "tp1_not_below_mark",
+                    "action": "UPDATE_TP",
+                    "detail": detail,
+                }
+
+        same = True
+        for i in range(3):
+            old = float(old_tps[i] if i < len(old_tps) else 0)
+            new = float(new_tps[i] if i < len(new_tps) else 0)
+            if not tp_price_matches(old, new):
+                same = False
+                break
+        if same:
+            msg = f"UPDATE_TP 幂等跳过：TP 未变 {new_tps}"
+            self._log("UPDATE_TP", msg, {**detail, "idempotent": True})
+            return {
+                "status": "ok",
+                "reason": "idempotent",
+                "action": "UPDATE_TP",
+                "detail": detail,
+            }
+
+        # Apply new TP targets only after validation (hard SL / radar untouched).
+        self.tv_tps = list(new_tps)
+        self.current_side = side
+        if live_qty > 0:
+            self.watched_qty = live_qty
+        if entry > 0:
+            self.watched_entry = entry
+
+        if not hasattr(self, "_cancel_all_tp_limit_orders"):
+            msg = "UPDATE_TP 失败：缺少撤销止盈能力"
+            self._log("UPDATE_TP", msg, detail)
+            self.tv_tps = old_tps
+            return {"status": "error", "reason": "no_cancel_tp", "action": "UPDATE_TP", "detail": detail}
+
+        try:
+            cancelled = int(self._cancel_all_tp_limit_orders() or 0)
+        except Exception as exc:
+            detail["cancel_error"] = str(exc)
+            msg = f"UPDATE_TP 取消旧止盈失败，未挂新单: {exc}"
+            self._log("UPDATE_TP", msg, detail)
+            self.tv_tps = old_tps
+            self._alert("error", "UPDATE_TP", f"{theme['accent']} 动能止盈升级失败", msg, detail)
+            return {"status": "error", "reason": "cancel_failed", "action": "UPDATE_TP", "detail": detail}
+
+        detail["cancelled_tp"] = cancelled
+        time.sleep(0.25)
+
+        placed = 0
+        last_err = None
+        for attempt in range(3):
+            try:
+                placed = self._place_updated_tp_orders(live_qty, entry)
+                if placed > 0:
+                    break
+            except Exception as exc:
+                last_err = str(exc)
+                logger.warning("UPDATE_TP place attempt %s failed: %s", attempt + 1, exc)
+            time.sleep(0.2)
+
+        detail["placed_tp"] = placed
+        if last_err:
+            detail["place_error"] = last_err
+
+        if placed <= 0:
+            msg = f"UPDATE_TP 挂新止盈失败（已撤旧单 {cancelled}）"
+            self._log("UPDATE_TP", msg, detail)
+            self._alert("error", "UPDATE_TP", f"{theme['accent']} 动能止盈升级失败", msg, detail)
+            if hasattr(self, "_save_state"):
+                self._save_state()
+            return {"status": "error", "reason": "place_failed", "action": "UPDATE_TP", "detail": detail}
+
+        if getattr(self, "current_trade_id", None) and hasattr(self, "on_trade_update_targets"):
+            try:
+                self.on_trade_update_targets(
+                    self.current_trade_id,
+                    tv_tps=list(self.tv_tps),
+                    regime=getattr(self, "regime", None),
+                    atr=getattr(self, "current_atr", None),
+                )
+            except Exception as exc:
+                logger.warning("UPDATE_TP trade target update failed: %s", exc)
+
+        if hasattr(self, "_save_state"):
+            self._save_state()
+
+        msg = (
+            f"动能止盈升级成功 {side} | "
+            f"{old_tps} → {new_tps} | 撤 {cancelled} 挂 {placed}"
+        )
+        self._log("UPDATE_TP", msg, detail)
+        self._alert(
+            "info",
+            "UPDATE_TP",
+            f"{theme['accent']} 动能止盈升级 · {theme['label']}",
+            msg,
+            detail,
+        )
+        return {"status": "ok", "action": "UPDATE_TP", "detail": detail}
+
     def _mark_adverse_tier_consumed(self, tier_pct: float) -> None:
         t = round(float(tier_pct), 4)
         if t not in self._adverse_consumed_set():

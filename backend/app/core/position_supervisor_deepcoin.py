@@ -1855,6 +1855,19 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             atr=self.current_atr,
         )
         raw_action = str(payload.get("action", "")).strip().upper()
+
+        # UPDATE_TP before mutating regime/atr/tv_sl — only replaces TP limits.
+        if raw_action == "UPDATE_TP":
+            if not self._lock.acquire(timeout=120.0):
+                logger.error("⏱️ 锁等待 120s 超时，信号 UPDATE_TP 重新入队")
+                self._signal_queue.put(payload)
+                return
+            try:
+                self._record_tv_signal(payload, raw_action)
+                return self._handle_update_tp(payload)
+            finally:
+                self._lock.release()
+
         held_regime = self.regime
         held_atr = self.current_atr
         prev_tv_tps = list(self.tv_tps)
@@ -1889,7 +1902,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if not raw_action:
             logger.warning("TV 信号缺少 action，已忽略")
             return
-        if raw_action in ("LONG", "SHORT", "CLOSE", "CLOSE_PROTECT", "CLOSE_TP3", "UPDATE_SL") or \
+        if raw_action in ("LONG", "SHORT", "CLOSE", "CLOSE_PROTECT", "CLOSE_TP3", "UPDATE_SL", "UPDATE_TP") or \
                 raw_action.startswith("CLOSE"):
             self._record_tv_signal(payload, raw_action)
 
