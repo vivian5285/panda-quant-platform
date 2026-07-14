@@ -2154,6 +2154,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if shield:
             detail["shield"] = shield
             detail["tv_sl"] = self.tv_sl
+            vps_meta = getattr(self, "_vps_hard_sl_meta", None) or {}
+            if vps_meta.get("hard_sl_pct_display"):
+                detail["hard_sl_pct_display"] = vps_meta["hard_sl_pct_display"]
+            if vps_meta.get("tv_sl_reference"):
+                detail["tv_sl_reference"] = vps_meta["tv_sl_reference"]
         if tp_heal:
             detail["tp_realign"] = tp_heal
         if defense.get("summary"):
@@ -2302,6 +2307,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             shield = self._sync_tv_hard_stop(real_qty, force_replace=True)
             detail["tv_sl"] = self.tv_sl
             detail["shield"] = shield
+            vps_meta = getattr(self, "_vps_hard_sl_meta", None) or {}
+            if vps_meta.get("hard_sl_pct_display"):
+                detail["hard_sl_pct_display"] = vps_meta["hard_sl_pct_display"]
+            if vps_meta.get("tv_sl_reference"):
+                detail["tv_sl_reference"] = vps_meta["tv_sl_reference"]
         self._save_state()
 
     def _open_position(self, action, curr_px):

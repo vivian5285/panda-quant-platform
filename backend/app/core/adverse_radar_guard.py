@@ -279,7 +279,7 @@ class AdverseRadarMixin:
         payload: dict | None = None,
         side: str | None = None,
     ) -> dict:
-        """Authoritative hard SL from regime × ATR (TV tv_sl reference-only)."""
+        """Authoritative hard SL from entry × regime % (TV tv_sl reference-only)."""
         from app.config import get_settings
 
         self._init_adverse_radar_fields()
@@ -318,18 +318,19 @@ class AdverseRadarMixin:
             self.tv_sl = float(meta["stop_price"])
             self._vps_hard_sl_meta = meta
         logger.info(
-            "VPS硬止损计算: entry=%.2f side=%s regime=%s atr=%.2f → stop=%.2f | %s",
+            "VPS硬止损计算: entry=%.2f side=%s regime=%s pct=%s → stop=%.2f dist=%.2f | %s",
             entry,
             side_u,
             regime,
-            atr,
+            meta.get("hard_sl_pct_display"),
             float(meta.get("stop_price") or 0),
+            float(meta.get("sl_distance") or 0),
             meta,
         )
         return meta
 
     def _apply_tv_sl_from_payload(self, payload: dict | None) -> float | None:
-        """Compute VPS hard SL from regime+ATR; TV tv_sl stored as reference only."""
+        """Compute VPS hard SL from entry × regime %; TV tv_sl stored as reference only."""
         if not payload:
             return None
         meta = self._recompute_vps_hard_sl(payload=payload)

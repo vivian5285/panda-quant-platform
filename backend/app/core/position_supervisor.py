@@ -611,6 +611,11 @@ class PositionSupervisor(
         if shield:
             detail["shield"] = shield
             detail["tv_sl"] = self.tv_sl
+            vps_meta = getattr(self, "_vps_hard_sl_meta", None) or {}
+            if vps_meta.get("hard_sl_pct_display"):
+                detail["hard_sl_pct_display"] = vps_meta["hard_sl_pct_display"]
+            if vps_meta.get("tv_sl_reference"):
+                detail["tv_sl_reference"] = vps_meta["tv_sl_reference"]
         if tp_heal:
             detail["tp_realign"] = tp_heal
         if defense.get("summary"):
@@ -867,6 +872,11 @@ class PositionSupervisor(
                 verify_note += f" | {sl_label} @{shield.get('stop_price', 0):.2f}"
             if float(getattr(self, "tv_sl", 0) or 0) > 0:
                 detail["tv_sl"] = self.tv_sl
+            vps_meta = getattr(self, "_vps_hard_sl_meta", None) or {}
+            if vps_meta.get("hard_sl_pct_display"):
+                detail["hard_sl_pct_display"] = vps_meta["hard_sl_pct_display"]
+            if vps_meta.get("tv_sl_reference"):
+                detail["tv_sl_reference"] = vps_meta["tv_sl_reference"]
             if shield:
                 detail["shield"] = shield
             slices = (
@@ -2110,7 +2120,9 @@ class PositionSupervisor(
             "consumed_tp_levels": list(getattr(self, "consumed_tp_levels", []) or []),
             "vps_hard_sl": float(getattr(self, "tv_sl", 0) or 0),
             "sl_distance": vps_meta.get("sl_distance"),
-            "final_multiplier": vps_meta.get("final_multiplier"),
+            "hard_sl_pct": vps_meta.get("hard_sl_pct"),
+            "hard_sl_pct_display": vps_meta.get("hard_sl_pct_display"),
+            "final_multiplier": vps_meta.get("final_multiplier") or vps_meta.get("hard_sl_pct"),
             "entry": float(self.watched_entry or 0),
             "tp1": tp1,
             "curr_px": curr_px,

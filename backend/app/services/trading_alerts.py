@@ -369,7 +369,15 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
         if detail.get("margin_usd") is not None:
             lines.append(_line("保证金", f"{float(detail['margin_usd']):.2f} USDT"))
         if detail.get("tv_sl"):
-            lines.append(_line("TV 止损", f"{float(detail['tv_sl']):.2f}"))
+            pct = detail.get("hard_sl_pct_display") or detail.get("vps_hard_sl_pct")
+            if pct:
+                lines.append(_line("VPS 硬止损", f"@{float(detail['tv_sl']):.2f}（开仓价×{pct}）"))
+            else:
+                lines.append(_line("VPS 硬止损", f"@{float(detail['tv_sl']):.2f}"))
+        if detail.get("tv_sl_reference"):
+            lines.append(_line("TV 止损参考", f"{float(detail['tv_sl_reference']):.2f}"))
+        elif detail.get("tv_sl_ref"):
+            lines.append(_line("TV 止损参考", f"{float(detail['tv_sl_ref']):.2f}"))
         slices = detail.get("tp_slices") or []
         if slices:
             parts = []
@@ -480,7 +488,11 @@ def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
         if detail.get("breakeven_active"):
             lines.append(_line("雷达止损", f"@{float(stop_px):.2f}（已激活）"))
         else:
-            lines.append(_line("VPS 硬止损", f"@{float(stop_px):.2f}（雷达未激活）"))
+            pct = detail.get("hard_sl_pct_display")
+            suffix = f" · 开仓价×{pct}" if pct else ""
+            lines.append(_line("VPS 硬止损", f"@{float(stop_px):.2f}（雷达未激活）{suffix}"))
+        if detail.get("tv_sl_reference"):
+            lines.append(_line("TV 止损参考", f"{float(detail['tv_sl_reference']):.2f}"))
     if detail.get("force_aligned"):
         lines.append(_line("逆势处理", "已强平对齐 TV 方向"))
     if detail.get("startup_summary"):
