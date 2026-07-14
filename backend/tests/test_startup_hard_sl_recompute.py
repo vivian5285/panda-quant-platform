@@ -29,7 +29,7 @@ def test_recompute_overwrites_tight_tv_sl():
     host._init_adverse_radar_fields()
     meta = recompute_vps_hard_sl_on_recovery(host, entry_px=1819.0, side="LONG", tv_sl_reference=1787.0)
     assert meta.get("sl_changed") is True
-    assert host.tv_sl == pytest.approx(1766.55, rel=0.01)
+    assert host.tv_sl == pytest.approx(1819.0 * (1 - 0.039), rel=0.01)
     assert meta["prev_sl"] == pytest.approx(1787.0)
 
 
@@ -60,7 +60,7 @@ def test_finalize_recovery_recomputes_not_tv_sl():
         "open_log": {"entry": 1819.0, "side": "LONG"},
     }
     finalize_recovery_tv_params(sup, report, recovery)
-    assert sup.tv_sl == pytest.approx(1766.55, rel=0.01)
+    assert sup.tv_sl == pytest.approx(1819.0 * (1 - 0.039), rel=0.01)
     assert report.get("tv_sl_reference") == pytest.approx(1787.0)
     assert report["vps_hard_sl_meta"]["sl_changed"] is True
 
@@ -125,8 +125,8 @@ def test_startup_reconcile_upgrades_stale_stop_on_book():
     new_stop = {
         "type": "STOP",
         "orderId": 2,
-        "stopPrice": "1766.55",
-        "price": "1766.05",
+        "stopPrice": "1748.06",
+        "price": "1745.44",
         "origQty": "0.6",
         "side": "SELL",
     }
