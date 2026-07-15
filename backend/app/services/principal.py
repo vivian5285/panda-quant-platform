@@ -91,3 +91,76 @@ def reset_after_settlement_confirmed(db: Session, user: User, settlement_id: int
         equity=equity,
         note=f"结算 #{settlement_id} 确认到账，新周期初始本金",
     )
+
+
+def maybe_rebase_principal_on_divergence(
+    db: Session,
+    user: User,
+    reconcile: dict,
+    *,
+    force: bool = False,
+) -> PrincipalSnapshot | None:
+    """When equity gap is explained by withdraw/other-symbol PnL, rebase initial_principal.
+
+    Does NOT reset settlement_cycle_start or high_water_mark — performance fees stay
+    based on closed platform Trade PnL under HWM.
+    """
+    if not reconcile or not (force or reconcile.get("should_rebase_principal") or reconcile.get("transfer_suspected")):
+        return None
+
+    suggested = float(reconcile.get("suggested_principal") or 0)
+    old = float(user.initial_principal or 0)
+    warn = float(reconcile.get("divergence_warn_usd") or settings.PROFIT_DIVERGENCE_WARN_USD or 10)
+    if suggested <= 0 or abs(suggested - old) < warn:
+        return None
+
+    cooldown_h = float(getattr(settings, "PRINCIPAL_REBASE_COOLDOWN_HOURS", 6) or 6)
+    if cooldown_h > 0:
+        latest = (
+            db.query(PrincipalSnapshot)
+            .filter(
+                PrincipalSnapshot.user_id == user.id,
+                PrincipalSnapshot.snapshot_type == "cashflow_rebase",
+            )
+            .order_by(PrincipalSnapshot.created_at.desc())
+            .first()
+        )
+        if latest and latest.created_at:
+            age_h = (datetime.utcnow() - latest.created_at).total_seconds() / 3600.0
+            if age_h < cooldown_h and abs(float(latest.amount or 0) - suggested) < warn:
+                logger.info(
+                    "[Principal] skip rebase user=%s cooldown=%.1fh last=%.2f suggested=%.2f",
+                    user.id, age_h, float(latest.amount or 0), suggested,
+                )
+                return None
+
+    hy = ",".join(reconcile.get("hypotheses") or []) or "equity_divergence"
+    note = (
+        f"对账校正本金 {old:.2f}→{suggested:.2f} | "
+        f"权益 {float(reconcile.get('live_equity') or 0):.2f} | "
+        f"合约盈亏 {float(reconcile.get('trade_cycle_pnl') or 0):.2f} | "
+        f"划转净额 {float(reconcile.get('estimated_net_transfer') or 0):.2f} | "
+        f"{hy} | 结算仍以交易订单盈亏为准"
+    )
+    user.initial_principal = suggested
+    user.initial_principal_at = datetime.utcnow()
+    snap = PrincipalSnapshot(
+        user_id=user.id,
+        amount=suggested,
+        snapshot_type="cashflow_rebase",
+        note=note,
+        live_equity=float(reconcile.get("live_equity") or 0),
+        trade_pnl_cycle=float(reconcile.get("trade_cycle_pnl") or 0),
+        trade_pnl_total=float(reconcile.get("trade_pnl_total") or 0),
+        equity_delta=float(reconcile.get("equity_delta") or 0),
+    )
+    db.add(snap)
+    logger.warning(
+        "[Principal] cashflow_rebase user=%s exchange=%s %.2f → %.2f | %s",
+        user.id,
+        user.exchange,
+        old,
+        suggested,
+        hy,
+    )
+    return snap

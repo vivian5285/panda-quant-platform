@@ -1480,6 +1480,7 @@ export default {
       api_bind: "API 绑定",
       settlement_reset: "结算重置",
       supervisor_restart: "重启同步",
+      cashflow_rebase: "划转/对账校正",
       manual: "手动",
       dual_audit: "双重审计"
     }

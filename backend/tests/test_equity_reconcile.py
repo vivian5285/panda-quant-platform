@@ -60,3 +60,22 @@ def test_no_false_alarm_when_aligned():
     assert r["estimated_net_transfer"] == 0.0
     assert r["transfer_suspected"] is False
     assert r["cycle_pnl"] == 5.0
+    assert r["should_rebase_principal"] is False
+
+
+def test_suggested_principal_realigns_equity_to_trade():
+    from app.services.equity_reconcile import compute_rebased_principal
+
+    # Principal 100, withdrew ~17, ETH trade -2.5 → equity 80.56
+    suggested = compute_rebased_principal(80.56, -2.5, 0.0)
+    assert suggested == 83.06
+    r = build_reconcile_snapshot(
+        live_equity=80.56,
+        initial_principal=100.0,
+        trade_cycle_pnl=-2.5,
+        exchange_net_transfer=None,
+    )
+    assert r["should_rebase_principal"] is True
+    assert r["suggested_principal"] == 83.06
+    # After rebase, equity − new_principal == trade pnl
+    assert round(80.56 - suggested, 2) == -2.5

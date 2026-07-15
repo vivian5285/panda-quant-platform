@@ -1,4 +1,6 @@
 from datetime import date, datetime, timedelta
+import logging
+
 from sqlalchemy.orm import Session
 from app.models import User, Trade, Settlement, ReferralReward, PaymentStatus, ApiStatus
 from app.services.wallet import credit_reward
@@ -6,6 +8,7 @@ from app.services.dispatcher import supervisor_pool
 from app.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 _UNSETTLED_STATUSES = (PaymentStatus.PENDING.value, PaymentStatus.PAID.value)
 
@@ -76,7 +79,10 @@ def calculate_settlement(
         f"trade_profit={audit['trade_profit']};"
         f"binance_fill_pnl={audit['binance_fill_pnl']};"
         f"equity_delta={audit['equity_delta']};"
-        f"divergence={audit['divergence']}"
+        f"divergence={audit['divergence']};"
+        f"estimated_net_transfer={audit.get('estimated_net_transfer')};"
+        f"transfer_suspected={audit.get('transfer_suspected')};"
+        f"fee_basis=closed_trade_realized_pnl_hwm"
     )
 
     settlement = Settlement(
@@ -262,6 +268,23 @@ def build_settlement_cycle_status(db: Session, user: User, today: date | None = 
 def process_user_settlement_cycle(db: Session, user: User, today: date | None = None) -> Settlement | None:
     today = today or date.today()
     _ensure_cycle_started(user, today)
+
+    # Keep principal aligned with live equity when cashflow/other-symbol gap is large.
+    try:
+        from app.services.profit_audit import build_dual_profit_report
+        from app.services.principal import maybe_rebase_principal_on_divergence
+
+        report = build_dual_profit_report(db, user)
+        if report.get("should_rebase_principal") or report.get("transfer_suspected"):
+            snap = maybe_rebase_principal_on_divergence(db, user, report)
+            if snap:
+                db.commit()
+                logger.info(
+                    "[Settlement] principal rebased user=%s → %.2f before cycle check",
+                    user.id, float(snap.amount),
+                )
+    except Exception:
+        logger.exception("[Settlement] principal rebase skipped user=%s", user.id)
 
     if get_pending_settlement(db, user.id):
         return None

@@ -1480,6 +1480,7 @@ export default {
       api_bind: "API bind",
       settlement_reset: "Settlement reset",
       supervisor_restart: "Restart sync",
+      cashflow_rebase: "Cashflow rebase",
       manual: "Manual",
       dual_audit: "Dual audit"
     }

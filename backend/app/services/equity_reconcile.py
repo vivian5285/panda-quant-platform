@@ -52,6 +52,36 @@ OKX_TRANSFER_BILL_TYPES = frozenset({
 })
 
 
+def compute_rebased_principal(
+    live_equity: float,
+    trade_cycle_pnl: float,
+    unrealized_pnl: float = 0.0,
+) -> float:
+    """New baseline so equity − principal ≈ platform contract cycle PnL (+ UPL)."""
+    equity = float(live_equity or 0)
+    if equity <= 0:
+        return 0.0
+    return round(max(0.0, equity - float(trade_cycle_pnl or 0) - float(unrealized_pnl or 0)), 2)
+
+
+def enrich_hypotheses_for_residual(
+    hypotheses: list[str],
+    *,
+    residual: float,
+    net_transfer: float,
+    transfer_source: str,
+    warn_usd: float,
+) -> list[str]:
+    out = list(hypotheses or [])
+    if abs(residual) >= warn_usd and transfer_source == "exchange_api":
+        if "likely_other_symbol_or_external_pnl" not in out:
+            out.append("likely_other_symbol_or_external_pnl")
+    if abs(net_transfer) >= warn_usd and abs(residual) < warn_usd:
+        if "cashflow_explains_equity_gap" not in out:
+            out.append("cashflow_explains_equity_gap")
+    return out
+
+
 def cycle_start_ms(period_start: date | None) -> int | None:
     if not period_start:
         return None
@@ -125,6 +155,22 @@ def build_reconcile_snapshot(
     if cashflow_source in ("unavailable", "error", "unsupported") and abs(profit_divergence) >= warn_usd:
         hypotheses.append("exchange_cashflow_api_unavailable_use_inference")
 
+    hypotheses = enrich_hypotheses_for_residual(
+        hypotheses,
+        residual=residual,
+        net_transfer=net_transfer,
+        transfer_source=transfer_source,
+        warn_usd=warn_usd,
+    )
+
+    # Suggested new principal to re-align monitoring (does not affect settlement trade PnL).
+    suggested_principal = compute_rebased_principal(equity, trade_cycle, upl)
+    should_rebase = bool(
+        transfer_suspected
+        and suggested_principal > 0
+        and abs(suggested_principal - initial) >= warn_usd
+    )
+
     note_parts = [
         f"本金 ${initial:.2f}",
         f"权益 ${equity:.2f}",
@@ -133,13 +179,15 @@ def build_reconcile_snapshot(
     ]
     if upl:
         note_parts.append(f"浮盈 ${upl:.2f}")
-    note_parts.append(f"划转净额(${transfer_source}) ${net_transfer:.2f}")
+    note_parts.append(f"划转净额({transfer_source}) ${net_transfer:.2f}")
     if funding:
         note_parts.append(f"资金费 ${funding:.4f}")
     if commission:
         note_parts.append(f"手续费 ${commission:.4f}")
     if residual:
         note_parts.append(f"残差 ${residual:.2f}")
+    if should_rebase:
+        note_parts.append(f"建议校正本金 ${suggested_principal:.2f}")
     if hypotheses:
         note_parts.append("推断: " + ",".join(hypotheses))
 
@@ -162,6 +210,8 @@ def build_reconcile_snapshot(
         "transfer_suspected": transfer_suspected,
         "divergence_warn_usd": warn_usd,
         "hypotheses": hypotheses,
+        "suggested_principal": suggested_principal,
+        "should_rebase_principal": should_rebase,
         "reconcile_note": " · ".join(note_parts),
         # Admin primary cycle metric = true contract PnL (not equity change).
         "cycle_pnl": trade_cycle,

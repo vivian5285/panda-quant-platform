@@ -147,6 +147,8 @@ def build_dual_profit_report(
         "residual": reconcile["residual"],
         "hypotheses": reconcile["hypotheses"],
         "reconcile_note": reconcile["reconcile_note"],
+        "suggested_principal": reconcile.get("suggested_principal"),
+        "should_rebase_principal": reconcile.get("should_rebase_principal"),
         "cashflow_source": reconcile["cashflow_source"],
         "cashflow_count": reconcile["cashflow_count"],
         "exchange_funding": reconcile["exchange_funding"],
@@ -163,7 +165,10 @@ def settlement_profit_from_trades(
     period_start: date,
     period_end: date,
 ) -> tuple[float, dict]:
-    """Authoritative settlement profit = closed platform trades in period."""
+    """Authoritative settlement profit = closed platform trades in period.
+
+    Equity / transfers / other-symbol PnL never change the billed amount.
+    """
     trade_profit = sum_closed_trade_pnl(db, user.id, period_start, period_end)
     fill_profit = sum_binance_fill_pnl(db, user.id, period_start, period_end)
     equity = 0.0
@@ -180,9 +185,30 @@ def settlement_profit_from_trades(
         "trade_profit": trade_profit,
         "binance_fill_pnl": fill_profit,
         "live_equity": round(equity, 2),
+        "initial_principal": round(initial, 2),
         "equity_delta": equity_delta,
         "divergence": round(equity_delta - trade_profit, 2) if initial > 0 else 0.0,
+        "fee_basis": "closed_trade_realized_pnl_hwm",
+        "note": "绩效费仅按平台记录的合约交易盈亏（高水位）计算；用户划转/他币盈亏不影响应收",
     }
+    # Attach light reconcile (inference only — no extra cashflow API on every bill)
+    try:
+        from app.services.equity_reconcile import build_reconcile_snapshot
+
+        reconcile = build_reconcile_snapshot(
+            live_equity=equity,
+            initial_principal=initial,
+            trade_cycle_pnl=trade_profit,
+            exchange_net_transfer=None,
+            cashflow_source="inferred_settlement",
+            exchange=user.exchange or "binance",
+        )
+        audit["estimated_net_transfer"] = reconcile["estimated_net_transfer"]
+        audit["transfer_suspected"] = reconcile["transfer_suspected"]
+        audit["hypotheses"] = reconcile["hypotheses"]
+        audit["suggested_principal"] = reconcile.get("suggested_principal")
+    except Exception:
+        pass
     return trade_profit, audit
 
 
@@ -210,7 +236,7 @@ def record_dual_snapshot(
 
 
 def run_startup_dual_audit(db: Session, user: User) -> dict:
-    """On supervisor (re)start: sync fills, snapshot equity, reconcile transfers."""
+    """On supervisor (re)start: sync fills, snapshot equity, reconcile + rebase principal."""
     sync_result = sync_user_binance_fills(db, user, days=180)
     report = build_dual_profit_report(db, user)
     report["binance_sync"] = sync_result
@@ -229,6 +255,21 @@ def run_startup_dual_audit(db: Session, user: User) -> dict:
 
     record_dual_snapshot(db, user, report, snapshot_type="supervisor_restart", note=note)
 
+    rebase_snap = None
+    if report.get("should_rebase_principal") or warn:
+        from app.services.principal import maybe_rebase_principal_on_divergence
+
+        rebase_snap = maybe_rebase_principal_on_divergence(db, user, report)
+        if rebase_snap:
+            report["principal_rebased"] = True
+            report["principal_after_rebase"] = float(rebase_snap.amount)
+            note += f" | REBASE principal→${float(rebase_snap.amount):.2f}"
+            # Refresh dual fields after rebase for logging clarity
+            report["initial_principal"] = float(rebase_snap.amount)
+            report["equity_delta"] = round(
+                float(report["live_equity"]) - float(rebase_snap.amount), 2
+            )
+
     from app.services.trade_logger import TradeLogger
     TradeLogger(db).log_event(
         user.id,
@@ -239,10 +280,14 @@ def run_startup_dual_audit(db: Session, user: User) -> dict:
             f"划转净额 ${float(report.get('estimated_net_transfer') or 0):.2f}"
             f"({report.get('transfer_source')}) · "
             f"权益变动 ${report['equity_delta']:.2f}"
+            + (
+                f" · 本金已校正→${float(report.get('principal_after_rebase') or 0):.2f}"
+                if rebase_snap else ""
+            )
         ),
         report,
     )
-    if abs(float(report.get("estimated_net_transfer") or 0)) >= 0.01:
+    if abs(float(report.get("estimated_net_transfer") or 0)) >= 0.01 or rebase_snap:
         TradeLogger(db).log_event(
             user.id,
             "EQUITY_RECONCILE",
@@ -255,34 +300,59 @@ def run_startup_dual_audit(db: Session, user: User) -> dict:
                 "equity_delta": report.get("equity_delta"),
                 "trade_cycle_pnl": report.get("trade_pnl_cycle"),
                 "exchange": report.get("exchange"),
+                "suggested_principal": report.get("suggested_principal"),
+                "principal_rebased": bool(rebase_snap),
+                "principal_after_rebase": report.get("principal_after_rebase"),
             },
         )
+        if rebase_snap:
+            TradeLogger(db).log_event(
+                user.id,
+                "PRINCIPAL_REBASE",
+                (
+                    f"对账校正初始本金 → ${float(rebase_snap.amount):.2f} "
+                    f"（划转/他币盈亏不计入平台操作亏损；绩效费仍按合约交易盈亏结算）"
+                ),
+                {
+                    "amount": float(rebase_snap.amount),
+                    "snapshot_id": rebase_snap.id,
+                    "hypotheses": report.get("hypotheses"),
+                    "trade_cycle_pnl": report.get("trade_pnl_cycle"),
+                    "live_equity": report.get("live_equity"),
+                },
+            )
 
     db.commit()
 
-    if warn:
+    if warn or rebase_snap:
         notify_admin(
             user.id,
             "warning",
             "PROFIT_DIVERGENCE",
-            "账户对账：疑似资金划转",
+            "账户对账：疑似资金划转/他币盈亏" + (" · 本金已校正" if rebase_snap else ""),
             (
                 f"合约交易PnL ${report['trade_pnl_cycle']:.2f} · "
                 f"权益变动 ${report['equity_delta']:.2f} · "
                 f"划转净额 ${float(report.get('estimated_net_transfer') or 0):.2f} "
-                f"({report.get('transfer_source')}) — 结算仍以交易订单为准"
+                f"({report.get('transfer_source')})"
+                + (
+                    f" · 新本金 ${float(report.get('principal_after_rebase') or 0):.2f}"
+                    if rebase_snap else ""
+                )
+                + " — 结算仍以交易订单为准"
             ),
             report,
         )
         logger.warning(
             "[DualAudit] user=%s exchange=%s trade_cycle=%.2f equity_delta=%.2f "
-            "net_transfer=%.2f source=%s hypotheses=%s",
+            "net_transfer=%.2f source=%s rebase=%s hypotheses=%s",
             user.id,
             report.get("exchange"),
             report["trade_pnl_cycle"],
             report["equity_delta"],
             float(report.get("estimated_net_transfer") or 0),
             report.get("transfer_source"),
+            bool(rebase_snap),
             report.get("hypotheses"),
         )
     else:
