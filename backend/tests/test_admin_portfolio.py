@@ -51,11 +51,13 @@ def test_user_trade_stats_sums_closed(db):
 
 def test_portfolio_summary():
     rows = [
-        {"has_position": True, "balance": 100, "unrealized_pnl": 5, "cumulative_trade_pnl": 20},
-        {"has_position": False, "balance": 50, "unrealized_pnl": 0, "cumulative_trade_pnl": -5, "snapshot_error": "timeout"},
+        {"has_position": True, "balance": 100, "unrealized_pnl": 5, "cumulative_trade_pnl": 20, "trade_cycle_pnl": 3, "equity_delta": -5, "transfer_suspected": True},
+        {"has_position": False, "balance": 50, "unrealized_pnl": 0, "cumulative_trade_pnl": -5, "trade_cycle_pnl": -2, "equity_delta": -10, "snapshot_error": "timeout"},
     ]
     s = portfolio_summary(rows)
     assert s["account_count"] == 2
     assert s["with_position"] == 1
     assert s["total_balance"] == 150.0
     assert s["snapshot_errors"] == 1
+    assert s["total_trade_cycle_pnl"] == 1.0
+    assert s["transfer_suspected_count"] == 1

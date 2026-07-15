@@ -526,6 +526,60 @@ class OkxClient:
     def get_funding_fees(self, symbol: str | None = None, start_time_ms: int | None = None) -> float:
         return 0.0
 
+    def get_futures_cashflows(
+        self,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """OKX SWAP account bills → normalized cashflow rows (transfer / funding / …)."""
+        from app.services.equity_reconcile import OKX_TRANSFER_BILL_TYPES
+
+        params: dict[str, Any] = {
+            "instType": "SWAP",
+            "ccy": "USDT",
+            "limit": str(min(int(limit or 100), 100)),
+        }
+        if start_time_ms:
+            params["begin"] = str(int(start_time_ms))
+        if end_time_ms:
+            params["end"] = str(int(end_time_ms))
+        rows = self._data_list(self._request("GET", "/account/bills", params))
+        if not rows:
+            # Archive for older cycle windows
+            rows = self._data_list(self._request("GET", "/account/bills-archive", params)) or []
+
+        out: list[dict] = []
+        for r in rows:
+            bill_type = str(r.get("type") or "")
+            try:
+                amount = float(r.get("balChg") or r.get("pnl") or 0)
+            except (TypeError, ValueError):
+                continue
+            if abs(amount) < 1e-12:
+                continue
+            if bill_type in OKX_TRANSFER_BILL_TYPES:
+                kind = "transfer"
+            elif bill_type == "8":
+                kind = "funding"
+            elif bill_type in ("2", "5", "9"):
+                # trade / liquidation / ADL — leave for trade ledger; skip as transfer
+                kind = "realized_pnl" if bill_type == "2" else "other"
+            else:
+                kind = "other"
+            out.append({
+                "exchange": "okx",
+                "kind": kind,
+                "income_type": bill_type,
+                "amount": amount,
+                "asset": r.get("ccy") or "USDT",
+                "symbol": r.get("instId") or "",
+                "time_ms": int(r.get("ts") or 0),
+                "tran_id": str(r.get("billId") or ""),
+                "info": str(r.get("subType") or ""),
+            })
+        return out
+
     def get_account_trades(
         self,
         symbol: str | None = None,

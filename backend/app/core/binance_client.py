@@ -658,6 +658,61 @@ class BinanceClient:
             logger.warning(f"[User {self.user_id}] funding fee fetch failed: {e}")
             return 0.0
 
+    def get_futures_cashflows(
+        self,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+        limit: int = 1000,
+    ) -> list[dict]:
+        """Normalize USDT-M income into transfer / funding / commission / realized rows."""
+        from app.services.equity_reconcile import (
+            BINANCE_FEE_INCOME_TYPES,
+            BINANCE_TRANSFER_INCOME_TYPES,
+        )
+
+        try:
+            params: dict = {"limit": min(int(limit or 1000), 1000)}
+            if start_time_ms:
+                params["startTime"] = int(start_time_ms)
+            if end_time_ms:
+                params["endTime"] = int(end_time_ms)
+            raw = self.client.futures_income_history(**params) or []
+        except Exception as e:
+            logger.warning(f"[User {self.user_id}] futures cashflow fetch failed: {e}")
+            return []
+
+        out: list[dict] = []
+        for r in raw:
+            income_type = str(r.get("incomeType") or "").upper()
+            try:
+                amount = float(r.get("income") or 0)
+            except (TypeError, ValueError):
+                continue
+            if abs(amount) < 1e-12:
+                continue
+            if income_type in BINANCE_TRANSFER_INCOME_TYPES:
+                kind = "transfer"
+            elif income_type == "FUNDING_FEE":
+                kind = "funding"
+            elif income_type in BINANCE_FEE_INCOME_TYPES:
+                kind = "commission"
+            elif income_type == "REALIZED_PNL":
+                kind = "realized_pnl"
+            else:
+                kind = "other"
+            out.append({
+                "exchange": "binance",
+                "kind": kind,
+                "income_type": income_type,
+                "amount": amount,
+                "asset": r.get("asset") or "USDT",
+                "symbol": r.get("symbol") or "",
+                "time_ms": int(r.get("time") or 0),
+                "tran_id": str(r.get("tranId") or r.get("tradeId") or ""),
+                "info": str(r.get("info") or ""),
+            })
+        return out
+
     def get_account_trades(
         self,
         symbol: str = "ETHUSDT",

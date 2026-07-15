@@ -63,17 +63,36 @@ def build_dashboard_stats(db: Session, user: User) -> DashboardStats:
         position = {"has_position": False}
 
     initial = float(user.initial_principal or 0)
-    cycle_pnl = round(equity - initial, 2) if initial > 0 and equity > 0 else 0.0
+    equity_delta = round(equity - initial, 2) if initial > 0 and equity > 0 else 0.0
 
     trade_cycle_pnl = 0.0
     profit_divergence = 0.0
+    estimated_net_transfer = 0.0
+    transfer_suspected = False
     try:
         from app.services.profit_audit import sum_closed_trade_pnl, cycle_bounds
+        from app.services.equity_reconcile import build_reconcile_snapshot
+
         period_start, period_end = cycle_bounds(user)
         trade_cycle_pnl = sum_closed_trade_pnl(db, user.id, period_start, period_end)
-        profit_divergence = round(cycle_pnl - trade_cycle_pnl, 2) if initial > 0 else 0.0
+        reconcile = build_reconcile_snapshot(
+            live_equity=equity,
+            initial_principal=initial,
+            trade_cycle_pnl=trade_cycle_pnl,
+            unrealized_pnl=unrealized,
+            exchange_net_transfer=None,
+            cashflow_source="inferred_list",
+            exchange=user.exchange or "binance",
+        )
+        equity_delta = reconcile["equity_delta"]
+        profit_divergence = reconcile["profit_divergence"]
+        estimated_net_transfer = reconcile["estimated_net_transfer"]
+        transfer_suspected = reconcile["transfer_suspected"]
+        # Keep cycle_pnl as equity_delta for dashboard "周期权益变动" card.
+        cycle_pnl = equity_delta
     except Exception:
         logger.exception("trade cycle pnl failed user=%s", user.id)
+        cycle_pnl = equity_delta
 
     today = date.today()
     week_start = today - timedelta(days=today.weekday())
@@ -121,6 +140,9 @@ def build_dashboard_stats(db: Session, user: User) -> DashboardStats:
         cycle_pnl=cycle_pnl,
         trade_cycle_pnl=trade_cycle_pnl,
         profit_divergence=profit_divergence,
+        estimated_net_transfer=estimated_net_transfer,
+        transfer_suspected=transfer_suspected,
+        equity_delta=equity_delta,
         initial_principal_at=user.initial_principal_at,
         open_position=open_position,
         settlement_blocked=pending is not None,

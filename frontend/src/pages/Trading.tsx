@@ -50,7 +50,7 @@ export default function Trading() {
         <StatCard label={t('dashboard.balance')} countUp={{ end: dash?.balance || 0, prefix: '$', decimals: 2 }} />
         <StatCard label={t('dashboard.unrealized')} countUp={{ end: dash?.unrealized_pnl || 0, pnl: true, decimals: 2 }} />
         <StatCard label={t('trading.leverage')} value={leverage} />
-        <StatCard label={t('dashboard.cyclePnl')} countUp={{ end: dash?.cycle_pnl || 0, pnl: true, decimals: 2 }} />
+        <StatCard label={t('dashboard.tradeCyclePnl')} countUp={{ end: dash?.trade_cycle_pnl || 0, pnl: true, decimals: 2 }} />
       </div>
 
       <GlassCard className="p-4 trading-chart-card section-mb-lg">

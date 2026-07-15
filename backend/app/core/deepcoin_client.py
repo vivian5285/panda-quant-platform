@@ -740,3 +740,18 @@ class DeepcoinClient:
             "unrealized_pnl": 0.0,
             "can_trade": True,
         }
+
+    def get_futures_cashflows(
+        self,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Deepcoin has no stable public cashflow ledger — rely on equity↔trade inference."""
+        logger.info(
+            "[User %s] Deepcoin cashflow API unavailable; net transfer will be inferred "
+            "(start_ms=%s)",
+            self.user_id,
+            start_time_ms,
+        )
+        return []

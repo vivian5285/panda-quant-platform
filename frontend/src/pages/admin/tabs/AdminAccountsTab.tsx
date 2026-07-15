@@ -16,7 +16,14 @@ type ManagedAccount = {
   balance?: number
   unrealized_pnl?: number
   cycle_pnl?: number
+  trade_cycle_pnl?: number
+  equity_delta?: number
+  estimated_net_transfer?: number
+  transfer_suspected?: boolean
+  profit_divergence?: number
+  reconcile_note?: string
   cumulative_trade_pnl?: number
+  initial_principal?: number
   has_position?: boolean
   position_side?: string
   position_qty?: number
@@ -191,6 +198,10 @@ export default function AdminAccountsTab() {
           <StatCard label={t('admin.accountsTotalBalance')} value={`$${(summary.total_balance ?? 0).toFixed(2)}`} />
           <StatCard label={t('admin.accountsTotalUnrealized')} value={`$${(summary.total_unrealized ?? 0).toFixed(2)}`} />
           <StatCard label={t('admin.cols.cumulativePnl')} value={`$${(summary.total_cumulative_pnl ?? 0).toFixed(2)}`} />
+          <StatCard label={t('dashboard.tradeCyclePnl')} value={`$${(summary.total_trade_cycle_pnl ?? 0).toFixed(2)}`} />
+          {(summary.transfer_suspected_count ?? 0) > 0 && (
+            <StatCard label={t('admin.accountsTransferSuspected')} value={String(summary.transfer_suspected_count)} />
+          )}
           {snapshotErrors > 0 && (
             <StatCard label={t('admin.accountsSnapshotErrors')} value={String(snapshotErrors)} />
           )}
@@ -219,7 +230,9 @@ export default function AdminAccountsTab() {
               <th>{t('api.exchangeLabel')}</th>
               <th>{t('dashboard.balance')}</th>
               <th>{t('dashboard.floatingPnl')}</th>
-              <th>{t('dashboard.cyclePnl')}</th>
+              <th>{t('dashboard.tradeCyclePnl')}</th>
+              <th>{t('dashboard.equityCyclePnl')}</th>
+              <th>{t('admin.accountsNetTransfer')}</th>
               <th>{t('admin.cols.cumulativePnl')}</th>
               <th>{t('dashboard.currentPosition')}</th>
               <th>{t('admin.tradeCount')}</th>
@@ -245,8 +258,18 @@ export default function AdminAccountsTab() {
                   <td className={pnlClass(row.unrealized_pnl ?? 0)}>
                     ${(row.unrealized_pnl ?? 0).toFixed(2)}
                   </td>
-                  <td className={pnlClass(row.cycle_pnl ?? 0)}>
-                    ${(row.cycle_pnl ?? 0).toFixed(2)}
+                  <td className={pnlClass(row.cycle_pnl ?? row.trade_cycle_pnl ?? 0)}>
+                    <div>${(row.cycle_pnl ?? row.trade_cycle_pnl ?? 0).toFixed(2)}</div>
+                    <div className="text-muted text-xs">{t('admin.accountsTradePnlHint')}</div>
+                  </td>
+                  <td className={pnlClass(row.equity_delta ?? 0)}>
+                    ${(row.equity_delta ?? 0).toFixed(2)}
+                  </td>
+                  <td className={pnlClass(row.estimated_net_transfer ?? 0)}>
+                    <div>${(row.estimated_net_transfer ?? 0).toFixed(2)}</div>
+                    {row.transfer_suspected && (
+                      <div className="text-amber text-xs">{t('admin.accountsTransferSuspectedBadge')}</div>
+                    )}
                   </td>
                   <td className={pnlClass(row.cumulative_trade_pnl ?? 0)}>
                     ${(row.cumulative_trade_pnl ?? 0).toFixed(2)}

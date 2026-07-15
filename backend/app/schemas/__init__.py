@@ -349,6 +349,9 @@ class DashboardStats(BaseModel):
     cycle_pnl: float = 0.0
     trade_cycle_pnl: float = 0.0
     profit_divergence: float = 0.0
+    estimated_net_transfer: float = 0.0
+    transfer_suspected: bool = False
+    equity_delta: float = 0.0
     initial_principal_at: Optional[datetime] = None
     open_position: Optional[dict] = None
     settlement_blocked: bool = False
@@ -370,6 +373,11 @@ class ReferralUserOut(BaseModel):
     live_equity: float = 0.0
     available_balance: float = 0.0
     cycle_pnl: float = 0.0
+    trade_cycle_pnl: float = 0.0
+    equity_delta: float = 0.0
+    estimated_net_transfer: float = 0.0
+    transfer_suspected: bool = False
+    profit_divergence: float = 0.0
     unrealized_pnl: float = 0.0
     has_open_position: bool = False
     position_side: Optional[str] = None
@@ -935,8 +943,17 @@ class AdminManagedAccountOut(BaseModel):
     supervisor_active: bool = False
     trading_paused: bool = False
     balance: float = 0.0
+    live_equity: float = 0.0
     unrealized_pnl: float = 0.0
     cycle_pnl: float = 0.0
+    trade_cycle_pnl: float = 0.0
+    equity_delta: float = 0.0
+    estimated_net_transfer: float = 0.0
+    transfer_source: Optional[str] = None
+    transfer_suspected: bool = False
+    profit_divergence: float = 0.0
+    reconcile_note: Optional[str] = None
+    hypotheses: list[str] = []
     initial_principal: float = 0.0
     today_pnl: float = 0.0
     week_pnl: float = 0.0
@@ -961,6 +978,9 @@ class AdminPortfolioSummaryOut(BaseModel):
     total_balance: float = 0.0
     total_unrealized: float = 0.0
     total_cumulative_pnl: float = 0.0
+    total_trade_cycle_pnl: float = 0.0
+    total_equity_delta: float = 0.0
+    transfer_suspected_count: int = 0
     snapshot_errors: int = 0
 
 

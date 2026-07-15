@@ -59,6 +59,36 @@ def build_downline_stats(db: Session, user: User) -> dict:
         Trade.user_id == user.id, Trade.status == "closed"
     ).scalar() or 0
 
+    trade_cycle_pnl = 0.0
+    equity_delta = cycle_pnl
+    estimated_net_transfer = 0.0
+    transfer_suspected = False
+    profit_divergence = 0.0
+    try:
+        from app.services.profit_audit import sum_closed_trade_pnl, cycle_bounds
+        from app.services.equity_reconcile import build_reconcile_snapshot
+
+        period_start, period_end = cycle_bounds(user)
+        trade_cycle_pnl = sum_closed_trade_pnl(db, user.id, period_start, period_end)
+        reconcile = build_reconcile_snapshot(
+            live_equity=equity,
+            initial_principal=initial,
+            trade_cycle_pnl=trade_cycle_pnl,
+            trade_pnl_total=float(total_pnl),
+            unrealized_pnl=unrealized,
+            exchange_net_transfer=None,
+            cashflow_source="inferred_list",
+            exchange=user.exchange or "binance",
+        )
+        # Promoter-facing cycle PnL = real contract trades (settlement basis).
+        cycle_pnl = reconcile["cycle_pnl"]
+        equity_delta = reconcile["equity_delta"]
+        estimated_net_transfer = reconcile["estimated_net_transfer"]
+        transfer_suspected = reconcile["transfer_suspected"]
+        profit_divergence = reconcile["profit_divergence"]
+    except Exception:
+        pass
+
     pending = get_pending_settlement(db, user.id)
     settlement_status = pending.payment_status if pending else "none"
     pending_perf_fee = 0.0
@@ -87,6 +117,11 @@ def build_downline_stats(db: Session, user: User) -> dict:
         "live_equity": round(equity, 2),
         "available_balance": round(balance, 2),
         "cycle_pnl": cycle_pnl,
+        "trade_cycle_pnl": round(trade_cycle_pnl, 2),
+        "equity_delta": round(equity_delta, 2),
+        "estimated_net_transfer": round(estimated_net_transfer, 2),
+        "transfer_suspected": transfer_suspected,
+        "profit_divergence": round(profit_divergence, 2),
         "total_pnl": round(float(total_pnl), 2),
         "unrealized_pnl": round(unrealized, 2),
         "has_open_position": has_position,

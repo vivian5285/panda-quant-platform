@@ -89,8 +89,9 @@ class Settings(BaseSettings):
     DEPOSIT_SWEEP_MIN_USDT: float = 1.0
     DEPOSIT_SWEEP_INTERVAL_SEC: int = 3600
 
-    # Dual profit monitor: warn when |equity_delta - trade_pnl| exceeds this (USD)
-    PROFIT_DIVERGENCE_WARN_USD: float = 50.0
+    # Dual profit monitor: warn when |equity_delta - trade_pnl| exceeds this (USD).
+    # Also escalates at 5% of principal (see equity_reconcile.divergence_warn_threshold).
+    PROFIT_DIVERGENCE_WARN_USD: float = 10.0
     WITHDRAW_AUTO_MAX_USD: float = 100.0
     WITHDRAW_REVIEW_MIN_USD: float = 500.0
     WITHDRAW_MIN_USD: float = 10.0

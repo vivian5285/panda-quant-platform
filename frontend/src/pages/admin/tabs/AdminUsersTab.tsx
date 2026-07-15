@@ -48,7 +48,8 @@ export default function AdminUsersTab() {
           <h3 className="text-md-strong mb-sm">{t('admin.userDetail')} · {userDetail.profile?.uid}</h3>
           <div className="stat-grid section-mb-sm">
             <StatCard label={t('dashboard.balance')} value={`$${userDetail.dashboard?.balance?.toFixed(2) ?? '0'}`} />
-            <StatCard label={t('dashboard.cyclePnl')} value={`$${userDetail.dashboard?.cycle_pnl?.toFixed(2) ?? '0'}`} />
+            <StatCard label={t('dashboard.tradeCyclePnl')} value={`$${userDetail.dashboard?.trade_cycle_pnl?.toFixed(2) ?? '0'}`} />
+            <StatCard label={t('dashboard.equityCyclePnl')} value={`$${userDetail.dashboard?.cycle_pnl?.toFixed(2) ?? '0'}`} />
             <StatCard label={t('admin.tradeCount')} value={String(userDetail.trade_count ?? 0)} />
             <StatCard label={t('admin.logCount')} value={String(userDetail.log_count ?? 0)} />
           </div>

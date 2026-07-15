@@ -191,9 +191,9 @@ export default function Dashboard() {
         </div>
       )}
 
-      {!loading && Math.abs(data?.profit_divergence || 0) >= 50 && (
+      {!loading && (data?.transfer_suspected || Math.abs(data?.profit_divergence || 0) >= 10) && (
         <GlassCard className="p-4 section-mb-md admin-alert-banner">
-          <p className="text-sm">{t('dashboard.divergenceWarn', { amount: Math.abs(data?.profit_divergence || 0).toFixed(2) })}</p>
+          <p className="text-sm">{t('dashboard.divergenceWarn', { amount: Math.abs(data?.estimated_net_transfer ?? data?.profit_divergence || 0).toFixed(2) })}</p>
           <Link to="/snapshots" className="text-sm link-inline section-mt-xs">{t('dashboard.viewSnapshots')}</Link>
         </GlassCard>
       )}

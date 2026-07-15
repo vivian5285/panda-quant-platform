@@ -460,6 +460,65 @@ class GateClient:
     def get_funding_fees(self, symbol: str | None = None, start_time_ms: int | None = None) -> float:
         return 0.0
 
+    def get_futures_cashflows(
+        self,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Gate USDT futures account book — type=dnw is deposit/withdraw."""
+        params: dict[str, Any] = {"limit": min(int(limit or 100), 1000)}
+        if start_time_ms:
+            params["from"] = int(start_time_ms // 1000)
+        if end_time_ms:
+            params["to"] = int(end_time_ms // 1000)
+        # Prefer deposit/withdraw book; fall back to full book filtered client-side.
+        rows = self._request("GET", "/futures/usdt/account_book", {**params, "type": "dnw"})
+        if not isinstance(rows, list):
+            rows = self._request("GET", "/futures/usdt/account_book", params)
+        if not isinstance(rows, list):
+            logger.warning("[User %s] Gate cashflow fetch returned non-list", self.user_id)
+            return []
+
+        out: list[dict] = []
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            book_type = str(r.get("type") or "").lower()
+            try:
+                amount = float(r.get("change") or 0)
+            except (TypeError, ValueError):
+                continue
+            if abs(amount) < 1e-12:
+                continue
+            if book_type in ("dnw", "deposit", "withdraw", "transfer"):
+                kind = "transfer"
+            elif book_type in ("fund", "funding"):
+                kind = "funding"
+            elif book_type in ("fee", "point_dnw"):
+                kind = "commission"
+            elif book_type in ("pnl", "realized_pnl"):
+                kind = "realized_pnl"
+            else:
+                kind = "other"
+            time_raw = r.get("time")
+            try:
+                time_ms = int(float(time_raw) * 1000) if time_raw is not None else 0
+            except (TypeError, ValueError):
+                time_ms = 0
+            out.append({
+                "exchange": "gate",
+                "kind": kind,
+                "income_type": book_type,
+                "amount": amount,
+                "asset": "USDT",
+                "symbol": r.get("contract") or "",
+                "time_ms": time_ms,
+                "tran_id": str(r.get("id") or ""),
+                "info": str(r.get("text") or ""),
+            })
+        return out
+
     def get_account_trades(
         self,
         symbol: str | None = None,
