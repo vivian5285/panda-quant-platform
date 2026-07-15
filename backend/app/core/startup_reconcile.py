@@ -240,6 +240,37 @@ def is_tv_close_action(action: str | None) -> bool:
     return a in TV_CLOSE_ACTIONS or a.startswith("CLOSE")
 
 
+# Bare TV CLOSE right after OPEN often is a regime/chart chase alert, not SL/TP.
+OPEN_BARE_CLOSE_GRACE_SEC = 60.0
+
+
+def should_ignore_bare_close_after_open(supervisor, action: str | None) -> tuple[bool, str]:
+    """
+    Ignore only bare action=CLOSE within grace after a factory OPEN.
+    CLOSE_STOPLOSS / CLOSE_TP3 / CLOSE_PROTECT always pass through.
+    """
+    a = (action or "").upper().strip()
+    if a != "CLOSE":
+        return False, ""
+    opened = float(getattr(supervisor, "trade_opened_at", 0) or 0)
+    if opened <= 0:
+        return False, ""
+    age = time.time() - opened
+    if age < 0 or age > OPEN_BARE_CLOSE_GRACE_SEC:
+        return False, ""
+    live_side, live_qty = resolve_supervisor_live_side(supervisor)
+    if live_side not in ("LONG", "SHORT") or live_qty <= 0:
+        return False, ""
+    if bool(getattr(supervisor, "adopted_manual", False)):
+        return False, ""
+    if not getattr(supervisor, "current_trade_id", None):
+        return False, ""
+    return True, (
+        f"开仓后 {OPEN_BARE_CLOSE_GRACE_SEC:.0f}s 内忽略裸 CLOSE"
+        f"（已持仓 {age:.1f}s，防 TV 换防误杀；止损/TP3/保护仍放行）"
+    )
+
+
 def resolve_supervisor_live_side(supervisor) -> tuple[str | None, float]:
     """Exchange-first live side/qty for TV close skip decisions."""
     side = getattr(supervisor, "current_side", None)

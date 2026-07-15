@@ -19,6 +19,7 @@ from app.core.startup_reconcile import (
     live_matches_entry_direction,
     prepare_manual_adopt,
     recovery_section,
+    should_ignore_bare_close_after_open,
     should_skip_tv_close_for_manual,
 )
 from app.core.binance_smart_defense import BinanceSmartDefenseMixin
@@ -371,6 +372,21 @@ class PositionSupervisor(
                 return self._preserve_manual_on_tv_close(
                     raw_action, skip_reason=skip_reason, tv_reason=tv_reason,
                 )
+            ignore, ignore_reason = should_ignore_bare_close_after_open(self, raw_action)
+            if ignore:
+                self._log("SIGNAL", f"⏭️ {ignore_reason}", {"action": raw_action, "tv_reason": tv_reason})
+                self._alert(
+                    "info",
+                    "CLOSE_DEFER",
+                    "开仓保护期 · 忽略裸 CLOSE",
+                    ignore_reason,
+                    {"action": raw_action, "tv_reason": tv_reason, "regime": self.regime},
+                )
+                return {
+                    "status": "skipped",
+                    "reason": "open_grace_bare_close",
+                    "message": ignore_reason,
+                }
 
         def _tv_close_kwargs() -> dict:
             return {
@@ -797,6 +813,10 @@ class PositionSupervisor(
         leverage = self._resolve_entry_leverage()
         self.client.set_leverage(self.symbol, leverage=leverage)
         self.client.cancel_all_open_orders(self.symbol)
+        if hasattr(self, "_cancel_binance_all_close_stops"):
+            purged = int(self._cancel_binance_all_close_stops() or 0)
+            if purged:
+                self._log("SIGNAL", f"🧹 开仓前清残留硬止损/条件单 ×{purged}")
         time.sleep(0.4)
         qty, sizing_meta = self._resolve_entry_qty(curr_px)
         if qty <= 0:
@@ -1616,7 +1636,8 @@ class PositionSupervisor(
     def _protect_and_monitor(self, qty: float, entry_price: float):
         self._reset_adverse_radar()
         self._recompute_vps_hard_sl(entry_px=entry_price)
-        self.current_sl = entry_price
+        # 雷达未激活时不要把 current_sl 写成入场价（避免合并单槽误用紧止损）
+        self.current_sl = 0.0
         self.best_price = entry_price
         self.watched_qty = qty
         self.watched_entry = entry_price
@@ -1624,6 +1645,8 @@ class PositionSupervisor(
         self._ensure_price_ws()
         pos = self._get_active_position()
         if pos:
+            if hasattr(self, "_cancel_binance_all_close_stops"):
+                self._cancel_binance_all_close_stops()
             result = self._smart_realign_defenses(
                 pos["size"],
                 pos["entry_price"],
@@ -1644,7 +1667,7 @@ class PositionSupervisor(
                     f"{self.current_side} {pos['size']} ETH | 仅 {result['matched']}/{result['expected']} 档 | {summary}",
                     result,
                 )
-            shield = self._sync_tv_hard_stop(pos["size"], at_open=True)
+            shield = self._sync_tv_hard_stop(pos["size"], at_open=True, force_replace=True)
             self._last_shield_result = shield
             sl_label = shield.get("label") or self._hard_stop_label()
             shield_note = ""

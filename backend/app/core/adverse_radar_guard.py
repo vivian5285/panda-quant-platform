@@ -474,6 +474,10 @@ class AdverseRadarMixin:
         if live_qty <= 0:
             return {"armed": False, "reason": "no_live_position", "live_qty": 0}
 
+        # 开仓必须换掉残留条件单，禁止 live_already_aligned 保留旧紧止损
+        if at_open:
+            force_replace = True
+
         effective = self._merged_stop_price(radar_sl)
         if effective <= 0:
             return {"armed": False, "reason": "no_tv_sl_or_radar"}

@@ -57,6 +57,7 @@ from app.core.startup_reconcile import (
     is_tv_close_action,
     prepare_manual_adopt,
     recovery_section,
+    should_ignore_bare_close_after_open,
     should_skip_tv_close_for_manual,
 )
 from app.config import get_settings
@@ -1931,6 +1932,17 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     return self._preserve_manual_on_tv_close(
                         raw_action, skip_reason=skip_reason, tv_reason=tv_reason,
                     )
+                ignore, ignore_reason = should_ignore_bare_close_after_open(self, raw_action)
+                if ignore:
+                    logger.info("⏭️ %s", ignore_reason)
+                    self._alert(
+                        "info",
+                        "CLOSE_DEFER",
+                        "开仓保护期 · 忽略裸 CLOSE",
+                        ignore_reason,
+                        {"action": raw_action, "tv_reason": tv_reason, "regime": self.regime},
+                    )
+                    return
 
             self.monitoring = False
             if raw_action == "CLOSE_PROTECT" or raw_action.startswith("CLOSE_PROTECT"):
@@ -2376,13 +2388,20 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self.base_qty = real_qty
             self.initial_qty = real_qty
             self.add_count = 0
+            self.consumed_tp_levels = []
+            self.current_trade_id = self.on_trade_open(
+                self.user_id, action, real_qty, entry_price or float(pos.get("entry_price", 0) or 0),
+                self.regime, self.tv_tps,
+            )
+            self.trade_opened_at = time.time()
             self._protect_and_monitor(real_qty, entry_price or pos['entry_price'])
 
     def _protect_and_monitor(self, qty, entry_price):
         self._reset_adverse_radar()
         self._recompute_vps_hard_sl(entry_px=entry_price)
         tp_pxs = self.tv_tps
-        self.current_sl = entry_price
+        # 雷达未激活时不要把 current_sl 写成入场价
+        self.current_sl = 0.0
         self.best_price = entry_price
         self.watched_qty, self.watched_entry, self.monitoring = qty, entry_price, True
         self._save_state()
@@ -2417,7 +2436,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     f"{self.current_side} {verified['size']}张 | 仅 {matched}/{expected} 档 | "
                     f"{self._format_audit_summary(audit)}",
                 )
-            shield = self._sync_tv_hard_stop(self._safe_qty(verified["size"]), at_open=True)
+            shield = self._sync_tv_hard_stop(
+                self._safe_qty(verified["size"]), at_open=True, force_replace=True,
+            )
             if shield.get("placed", 0) > 0:
                 label = shield.get("label") or self._hard_stop_label()
                 logger.info(
