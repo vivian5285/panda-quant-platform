@@ -90,7 +90,7 @@ def infer_filled_tp_levels(
     """
     Infer consumed TP tiers from:
     - persisted consumed_tp_levels
-    - initial_qty vs live_qty prefix match (longest prefix wins)
+    - qty reduction vs open (match reduced amount to TP prefix — never mark fills on full open size)
     - price crossed ONLY for the single next tier after prefix, with qty confirmation
     """
     filled = set(int(x) for x in (consumed_tp_levels or []) if int(x) in (1, 2, 3))
@@ -99,18 +99,22 @@ def infer_filled_tp_levels(
         return filled
 
     tol = qty_tol if qty_tol is not None else tp_slice_qty_tolerance(anchor)
+    live_qty = float(live_qty or 0)
 
     all_slices = compute_tp_slices(
         anchor, regime, tv_tps, regime_settings, exclude_levels=set(),
     )
-    best_prefix: set[int] = set()
-    for prefix_len in range(1, len(all_slices) + 1):
-        prefix = all_slices[:prefix_len]
-        consumed_qty = sum(q for _, q, _ in prefix)
-        expected_live = round_quantity(anchor - consumed_qty)
-        if abs(live_qty - expected_live) <= tol:
-            best_prefix = {level for level, _, _ in prefix}
-    filled |= best_prefix
+    # Critical: R4 TP1≈5% can be ≤ qty tol (~8%). Matching remaining live≈anchor to
+    # "after TP1" would false-arm radar on every fresh OPEN. Match reduction only.
+    reduced = round_quantity(anchor - live_qty)
+    if reduced > tol:
+        best_prefix: set[int] = set()
+        for prefix_len in range(1, len(all_slices) + 1):
+            prefix = all_slices[:prefix_len]
+            consumed_qty = sum(q for _, q, _ in prefix)
+            if abs(reduced - consumed_qty) <= tol:
+                best_prefix = {level for level, _, _ in prefix}
+        filled |= best_prefix
 
     if curr_px <= 0 or side not in ("LONG", "SHORT"):
         return filled
@@ -126,8 +130,8 @@ def infer_filled_tp_levels(
             break
         prefix = [s for s in all_slices if s[0] <= level]
         consumed_qty = sum(q for _, q, _ in prefix)
-        expected_live = round_quantity(anchor - consumed_qty)
-        if abs(live_qty - expected_live) > tol:
+        # Need a real reduction matching this prefix — not full open size
+        if abs(reduced - consumed_qty) > tol:
             break
         crossed = (
             (side == "LONG" and curr_px >= price)

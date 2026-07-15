@@ -382,6 +382,15 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             lines.append(_line("TV 止损参考", f"{float(detail['tv_sl_reference']):.2f}"))
         elif detail.get("tv_sl_ref"):
             lines.append(_line("TV 止损参考", f"{float(detail['tv_sl_ref']):.2f}"))
+        # Explicit: radar does not trail until TP1 fill (all exchanges)
+        if detail.get("radar_armed") or detail.get("radar_active"):
+            radar_sl = detail.get("radar_sl") or detail.get("current_sl")
+            if radar_sl:
+                lines.append(_line("雷达状态", f"已激活 @{float(radar_sl):.2f}"))
+            else:
+                lines.append(_line("雷达状态", "已激活"))
+        else:
+            lines.append(_line("雷达状态", "待命 · 待 TP1 成交后启动保本追踪"))
         slices = detail.get("tp_slices") or []
         if slices:
             parts = []

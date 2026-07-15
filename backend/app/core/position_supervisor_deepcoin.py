@@ -810,10 +810,24 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
     def _sync_consumed_tp_levels(self, live_qty, curr_px):
         anchor = float(self._safe_qty(self.initial_qty or live_qty))
+        live = float(self._safe_qty(live_qty))
         tol = tp_slice_qty_tolerance(anchor, is_contracts=True)
+        # Full open size cannot imply TP fills
+        if abs(live - anchor) <= tol:
+            if self.consumed_tp_levels:
+                logger.warning(
+                    "清除虚报 TP 成交 %s（实盘仍满仓 %s≈开仓锚 %s）",
+                    self.consumed_tp_levels, live, anchor,
+                )
+            self.consumed_tp_levels = []
+            if hasattr(self, "radar_latched"):
+                self.radar_latched = False
+            if hasattr(self, "_save_state"):
+                self._save_state()
+            return []
         open_prices = [float(o.get("price", 0)) for o in self._collect_tp_limit_orders()]
         inferred = infer_filled_tp_levels(
-            float(live_qty),
+            live,
             float(curr_px or 0),
             self.current_side,
             initial_qty=anchor,

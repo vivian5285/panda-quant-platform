@@ -17,3 +17,19 @@ def test_open_detail_shows_pine_tp_ratio_pct():
     )
     assert "止盈比例" in body
     assert "25/35/40" in body
+
+
+def test_open_detail_radar_standby_until_tp1():
+    body = format_vps_entry_detail_cn(
+        {
+            "entry_type": "OPEN",
+            "side": "LONG",
+            "regime": 4,
+            "qty": 1.5,
+            "entry": 1935.0,
+            "radar_armed": False,
+        },
+        "binance",
+    )
+    assert "雷达状态" in body
+    assert "待 TP1" in body

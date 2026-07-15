@@ -259,15 +259,27 @@ class AdverseRadarMixin:
         return False
 
     def _infer_radar_latched_from_state(self) -> None:
-        """Backward compat: restore latch from persisted SL / best_price."""
+        """Backward compat: restore latch only when TP1+ actually filled (qty-backed)."""
         if getattr(self, "radar_latched", False):
             return
         if hasattr(self, "_is_radar_active") and self._is_radar_active():
             self.radar_latched = True
             return
+        from app.core.vps_radar_stages import tp1_filled_from_consumed
         consumed = list(getattr(self, "consumed_tp_levels", []) or [])
-        if consumed:
-            self.radar_latched = True
+        if not tp1_filled_from_consumed(consumed):
+            return
+        # Guard: do not latch if position still looks like full open (stale/false consume)
+        anchor = float(getattr(self, "initial_qty", 0) or getattr(self, "watched_qty", 0) or 0)
+        live = float(getattr(self, "watched_qty", 0) or 0)
+        if anchor > 0 and live > 0:
+            from app.core.position_qty_tolerance import tp_slice_qty_tolerance
+            is_dc = getattr(self, "exchange_id", "") == "deepcoin"
+            if abs(live - anchor) <= tp_slice_qty_tolerance(anchor, is_contracts=is_dc):
+                self.consumed_tp_levels = []
+                self.radar_latched = False
+                return
+        self.radar_latched = True
 
     def _hard_stop_label(self) -> str:
         return "VPS硬止损"

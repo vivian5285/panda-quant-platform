@@ -67,6 +67,54 @@ def test_infer_tp1_from_price_cross_without_order():
     assert filled == {1}
 
 
+def test_r4_full_position_does_not_false_infer_tp1():
+    """R4 TP1≈5% ≤ 8% qty tol — full open must NOT mark TP1 (was false-arming radar)."""
+    from app.core.tp_regime_ratios import build_regime_settings
+
+    rs = build_regime_settings()
+    anchor = 1.584
+    tps = [1968.8, 1999.13, 2036.77]
+    tol = tp_slice_qty_tolerance(anchor)
+    filled = infer_filled_tp_levels(
+        anchor,
+        1935.0,
+        "LONG",
+        initial_qty=anchor,
+        consumed_tp_levels=[],
+        regime=4,
+        tv_tps=tps,
+        regime_settings=rs,
+        open_tp_prices=tps,
+        qty_tol=tol,
+    )
+    assert filled == set()
+
+
+def test_r4_true_tp1_reduction_still_infers():
+    from app.core.tp_regime_ratios import build_regime_settings
+
+    rs = build_regime_settings()
+    anchor = 1.584
+    tps = [1968.8, 1999.13, 2036.77]
+    slices = compute_tp_slices(anchor, 4, tps, rs)
+    tp1_qty = slices[0][1]
+    live = round(anchor - tp1_qty, 3)
+    tol = tp_slice_qty_tolerance(anchor)
+    filled = infer_filled_tp_levels(
+        live,
+        1970.0,
+        "LONG",
+        initial_qty=anchor,
+        consumed_tp_levels=[],
+        regime=4,
+        tv_tps=tps,
+        regime_settings=rs,
+        open_tp_prices=[1999.13, 2036.77],
+        qty_tol=tol,
+    )
+    assert filled == {1}
+
+
 def test_infer_does_not_mark_all_tps_when_price_crossed_but_qty_only_tp1():
     """Restart bug: price above all TPs must not consume TP2/3 if live qty only reflects TP1."""
     tol = tp_slice_qty_tolerance(INITIAL)

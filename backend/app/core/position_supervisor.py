@@ -911,6 +911,8 @@ class PositionSupervisor(
             )
             if slices:
                 detail["tp_slices"] = slices
+            detail["radar_armed"] = False
+            detail["radar_active"] = False
             detail = enrich_tp_alert_detail(detail, regime=self.regime)
             enrich_suffix = ""
             enrich_note = getattr(self, "_last_enrich_note", "") or ""
@@ -968,11 +970,25 @@ class PositionSupervisor(
         return prices
 
     def _sync_consumed_tp_levels(self, live_qty: float, curr_px: float) -> list[int]:
-        """Exchange-first: merge persisted + initial-qty + price-cross inference."""
+        """Exchange-first: merge persisted + qty-reduction + price-cross inference."""
         anchor = float(self.initial_qty or live_qty)
+        live = float(live_qty or 0)
         tol = tp_slice_qty_tolerance(anchor, is_contracts=self.exchange_id == "deepcoin")
+        # Full open size cannot imply TP fills (R4 TP1≈5% ≤ qty-tol false-armed radar)
+        if abs(live - anchor) <= tol:
+            if self.consumed_tp_levels or getattr(self, "radar_latched", False):
+                logger.warning(
+                    "[User %s] 清除虚报 TP/雷达锁 %s（实盘仍满仓 %s≈开仓锚 %s）",
+                    self.user_id, self.consumed_tp_levels, live, anchor,
+                )
+            self.consumed_tp_levels = []
+            if hasattr(self, "radar_latched"):
+                self.radar_latched = False
+            if hasattr(self, "_save_state"):
+                self._save_state()
+            return []
         inferred = infer_filled_tp_levels(
-            live_qty,
+            live,
             curr_px,
             self.current_side,
             initial_qty=anchor,
@@ -987,7 +1003,7 @@ class PositionSupervisor(
         if merged != sorted(self.consumed_tp_levels or []):
             logger.info(
                 "[User %s] TP 已成交档位更新: %s → %s | 实盘 %s",
-                self.user_id, self.consumed_tp_levels, merged, live_qty,
+                self.user_id, self.consumed_tp_levels, merged, live,
             )
         self.consumed_tp_levels = merged
         if hasattr(self, "_save_state"):
@@ -2246,10 +2262,11 @@ class PositionSupervisor(
                 self._log("TRAIL", f"{label} → SL {new_sl}", trail_detail)
                 if sl_placed or first_arm:
                     alert_type = "RADAR_ARM" if first_arm else "TRAIL"
-                    title = "雷达激活·保本" if first_arm else f"雷达·{label}"
+                    title = "雷达激活·TP1成交保本" if first_arm else f"雷达·{label}"
                     self._alert(
                         "info", alert_type, title,
-                        f"阶段{radar.get('stage')} SL {new_sl} | 进度 {trail_detail.get('radar_progress', 0):.0%}",
+                        f"TP1已成交触发 | 阶段{radar.get('stage')} SL {new_sl} | "
+                        f"进度 {trail_detail.get('radar_progress', 0):.0%}",
                         trail_detail,
                     )
                 if hasattr(self, "_cancel_obsolete_tp_after_radar_move"):
@@ -2293,10 +2310,10 @@ class PositionSupervisor(
                 self._log("TRAIL", f"{label} → SL {new_sl}", trail_detail)
                 if sl_placed or first_arm:
                     alert_type = "RADAR_ARM" if first_arm else "TRAIL"
-                    title = "雷达激活·保本" if first_arm else f"雷达·{label}"
+                    title = "雷达激活·TP1成交保本" if first_arm else f"雷达·{label}"
                     self._alert(
                         "info", alert_type, title,
-                        f"阶段{radar.get('stage')} SL {new_sl}",
+                        f"TP1已成交触发 | 阶段{radar.get('stage')} SL {new_sl}",
                         trail_detail,
                     )
                 if hasattr(self, "_cancel_obsolete_tp_after_radar_move"):
