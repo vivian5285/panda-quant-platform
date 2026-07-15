@@ -953,11 +953,50 @@ class AdverseRadarMixin:
         self.adverse_sl_armed = True
 
     def _radar_activation_reached(self, curr_px: float) -> bool:
-        """True only after TP1 fill (or radar already latched/trailing). No path pre-arm."""
+        """
+        True only after confirmed TP1 fill (or radar already latched/trailing).
+
+        Re-checks live book: if TP1 limit is still hanging, refuse to arm radar even
+        when consumed_tp_levels is stale/wrong.
+        """
         if self._is_radar_engaged():
+            # Still block if TP1 limit is clearly still on book (false latch cleanup)
+            if self._tp1_limit_still_live_on_book():
+                self.radar_latched = False
+                if 1 in (getattr(self, "consumed_tp_levels", []) or []):
+                    self.consumed_tp_levels = [
+                        x for x in self.consumed_tp_levels if int(x) != 1
+                    ]
+                return False
             return True
         from app.core.vps_radar_stages import tp1_filled_from_consumed
-        return tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None))
+        if not tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)):
+            return False
+        if self._tp1_limit_still_live_on_book():
+            return False
+        return True
+
+    def _tp1_limit_still_live_on_book(self) -> bool:
+        """Exchange-first: open TP1 limit still present → TP1 not filled."""
+        tps = list(getattr(self, "tv_tps", []) or [])
+        if not tps:
+            return False
+        tp1 = float(tps[0] or 0)
+        if tp1 <= 0:
+            return False
+        from app.core.tp_slice_guard import tp_limit_still_on_book
+        prices: list[float] = []
+        if hasattr(self, "_open_tp_prices_on_book"):
+            prices = list(self._open_tp_prices_on_book() or [])
+        elif hasattr(self, "_collect_tp_limit_orders"):
+            for o in self._collect_tp_limit_orders() or []:
+                try:
+                    px = float(o.get("price") or o.get("px") or 0)
+                except (TypeError, ValueError):
+                    px = 0.0
+                if px > 0:
+                    prices.append(px)
+        return tp_limit_still_on_book(tp1, prices)
 
     def _has_live_adverse_shield(self) -> bool:
         """Exchange-first: any 10% hard stop still on book or marked armed."""

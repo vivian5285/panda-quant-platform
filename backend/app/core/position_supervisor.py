@@ -970,16 +970,30 @@ class PositionSupervisor(
         return prices
 
     def _sync_consumed_tp_levels(self, live_qty: float, curr_px: float) -> list[int]:
-        """Exchange-first: merge persisted + qty-reduction + price-cross inference."""
+        """Exchange-first: qty+book+price evidence merge (never mark TP1 on full open)."""
+        from app.core.tp_slice_guard import compute_tp_slices, tp_fill_qty_tolerance
+
         anchor = float(self.initial_qty or live_qty)
         live = float(live_qty or 0)
-        tol = tp_slice_qty_tolerance(anchor, is_contracts=self.exchange_id == "deepcoin")
-        # Full open size cannot imply TP fills (R4 TP1≈5% ≤ qty-tol false-armed radar)
-        if abs(live - anchor) <= tol:
+        is_dc = self.exchange_id == "deepcoin"
+        tol = tp_slice_qty_tolerance(anchor, is_contracts=is_dc)
+        slices = compute_tp_slices(
+            anchor, self.regime, self.tv_tps, self.regime_settings, exclude_levels=set(),
+        )
+        reduced = abs(anchor - live)
+        tp1_slice = float(slices[0][1]) if slices else 0.0
+        # Sub-TP1 noise / still-full → clear false consume (do NOT use whole-pos 8% band)
+        min_reduce = 0.0
+        if tp1_slice > 0:
+            min_reduce = max(
+                tp1_slice * 0.5,
+                tp_fill_qty_tolerance(tp1_slice, is_contracts=is_dc) * 0.5,
+            )
+        if tp1_slice <= 0 or reduced < min_reduce:
             if self.consumed_tp_levels or getattr(self, "radar_latched", False):
                 logger.warning(
-                    "[User %s] 清除虚报 TP/雷达锁 %s（实盘仍满仓 %s≈开仓锚 %s）",
-                    self.user_id, self.consumed_tp_levels, live, anchor,
+                    "[User %s] 清除虚报 TP/雷达锁 %s（减仓 %.4f < TP1门槛 %.4f | 实盘 %s 锚 %s）",
+                    self.user_id, self.consumed_tp_levels, reduced, min_reduce, live, anchor,
                 )
             self.consumed_tp_levels = []
             if hasattr(self, "radar_latched"):
@@ -998,12 +1012,13 @@ class PositionSupervisor(
             regime_settings=self.regime_settings,
             open_tp_prices=self._open_tp_prices_on_book(),
             qty_tol=tol,
+            is_contracts=is_dc,
         )
         merged = sorted({int(x) for x in (self.consumed_tp_levels or [])} | inferred)
         if merged != sorted(self.consumed_tp_levels or []):
             logger.info(
-                "[User %s] TP 已成交档位更新: %s → %s | 实盘 %s",
-                self.user_id, self.consumed_tp_levels, merged, live,
+                "[User %s] TP 已成交档位更新: %s → %s | 实盘 %s | 开仓锚 %s | 减仓 %.4f",
+                self.user_id, self.consumed_tp_levels, merged, live, anchor, reduced,
             )
         self.consumed_tp_levels = merged
         if hasattr(self, "_save_state"):
@@ -1025,6 +1040,7 @@ class PositionSupervisor(
             regime_settings=self.regime_settings,
             open_tp_prices=self._open_tp_prices_on_book(),
             qty_tol=tol,
+            is_contracts=self.exchange_id == "deepcoin",
         )
 
     def _active_tp_exclude_levels(self, qty: float, curr_px: float) -> set[int]:

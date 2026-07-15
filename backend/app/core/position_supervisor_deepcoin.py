@@ -809,15 +809,27 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         )
 
     def _sync_consumed_tp_levels(self, live_qty, curr_px):
+        from app.core.tp_slice_guard import compute_tp_slices, tp_fill_qty_tolerance
+
         anchor = float(self._safe_qty(self.initial_qty or live_qty))
         live = float(self._safe_qty(live_qty))
         tol = tp_slice_qty_tolerance(anchor, is_contracts=True)
-        # Full open size cannot imply TP fills
-        if abs(live - anchor) <= tol:
+        slices = compute_tp_slices(
+            anchor, self.regime, self.tv_tps, self.regime_settings, exclude_levels=set(),
+        )
+        reduced = abs(anchor - live)
+        tp1_slice = float(slices[0][1]) if slices else 0.0
+        min_reduce = 0.0
+        if tp1_slice > 0:
+            min_reduce = max(
+                tp1_slice * 0.5,
+                tp_fill_qty_tolerance(tp1_slice, is_contracts=True) * 0.5,
+            )
+        if tp1_slice <= 0 or reduced < min_reduce:
             if self.consumed_tp_levels:
                 logger.warning(
-                    "清除虚报 TP 成交 %s（实盘仍满仓 %s≈开仓锚 %s）",
-                    self.consumed_tp_levels, live, anchor,
+                    "清除虚报 TP 成交 %s（减仓 %.4f < TP1门槛 %.4f）",
+                    self.consumed_tp_levels, reduced, min_reduce,
                 )
             self.consumed_tp_levels = []
             if hasattr(self, "radar_latched"):
@@ -837,6 +849,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             regime_settings=self.regime_settings,
             open_tp_prices=open_prices,
             qty_tol=tol,
+            is_contracts=True,
         )
         merged = sorted({int(x) for x in (self.consumed_tp_levels or [])} | inferred)
         self.consumed_tp_levels = merged

@@ -33,3 +33,4 @@ def test_open_detail_radar_standby_until_tp1():
     )
     assert "雷达状态" in body
     assert "待 TP1" in body
+    assert "数量对账" in body or "限价" in body

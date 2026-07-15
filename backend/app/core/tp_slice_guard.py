@@ -1,10 +1,18 @@
-"""TP slice planning — exclude consumed tiers and redistribute remaining qty."""
+"""TP slice planning + evidence-based fill detection for radar/TP reconciliation."""
 
 from __future__ import annotations
 
 from app.core.symbol_precision import round_quantity
-from app.core.position_qty_tolerance import tp_slice_qty_tolerance
+from app.core.position_qty_tolerance import (
+    qty_drift_tolerance,
+    tp_slice_qty_tolerance,
+)
 from app.core.tp_defense_reconcile import tp_price_matches
+
+# Mark-price proximity for "price reached TP" (tight — not a substitute for fill)
+TP_REACH_PRICE_TOL_PCT = 0.0008
+# Fill qty match: must track the slice itself, never the whole-position drift band
+TP_FILL_SLICE_FRAC = 0.35
 
 
 def compute_tp_slices(
@@ -57,7 +65,6 @@ def match_qty_reduction_to_tp_level(
     anchor = float(initial_qty or 0)
     if anchor <= 0 or reduced_qty <= 0:
         return None
-    tol = qty_tol if qty_tol is not None else tp_slice_qty_tolerance(anchor)
     slices = compute_tp_slices(
         anchor,
         regime,
@@ -68,9 +75,118 @@ def match_qty_reduction_to_tp_level(
     if not slices:
         return None
     level, slice_qty, _ = slices[0]
+    tol = qty_tol if qty_tol is not None else tp_fill_qty_tolerance(slice_qty)
     if abs(float(reduced_qty) - float(slice_qty)) <= tol:
         return level
     return None
+
+
+def tp_fill_qty_tolerance(slice_qty: float, *, is_contracts: bool = False) -> float:
+    """
+    Tight tolerance for claiming a fill equals a TP slice.
+    Always ≤ ~35% of the slice — never the whole-position 8% band (that falsely
+    matched R4 TP1≈5% on a full open).
+    """
+    sq = max(abs(float(slice_qty)), 1e-9)
+    if is_contracts:
+        return max(1.0, sq * TP_FILL_SLICE_FRAC)
+    return max(0.002, sq * TP_FILL_SLICE_FRAC)
+
+
+def price_reached_tp(
+    curr_px: float,
+    tp_price: float,
+    side: str | None,
+    *,
+    tol_pct: float = TP_REACH_PRICE_TOL_PCT,
+) -> bool:
+    """True when mark has reached / crossed the TP limit price."""
+    px = float(curr_px or 0)
+    tp = float(tp_price or 0)
+    if px <= 0 or tp <= 0 or side not in ("LONG", "SHORT"):
+        return False
+    slack = max(tp * float(tol_pct), 0.05)
+    if side == "LONG":
+        return px + slack >= tp
+    return px - slack <= tp
+
+
+def tp_limit_still_on_book(
+    tp_price: float,
+    open_tp_prices: list[float] | None,
+    *,
+    price_tol: float = 0.02,
+) -> bool:
+    """True when the exchange still has a limit order near this TP price."""
+    tp = float(tp_price or 0)
+    if tp <= 0:
+        return False
+    for px in open_tp_prices or []:
+        try:
+            if tp_price_matches(float(px), tp, price_tol):
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def confirm_tp_tier_fill(
+    *,
+    level: int,
+    slice_qty: float,
+    tp_price: float,
+    reduced: float,
+    prefix_consumed_qty: float,
+    curr_px: float,
+    side: str | None,
+    open_tp_prices: list[float] | None,
+    is_contracts: bool = False,
+    price_tol: float = 0.02,
+    require_price: bool = True,
+) -> dict:
+    """
+    Triple-gate evidence that a TP tier truly filled:
+
+    1. Qty — realized reduction matches the expected prefix / slice (tight band)
+    2. Book — that TP limit is gone from the exchange open orders
+    3. Price — mark reached TP (required when curr_px>0; restart may omit)
+
+    Any missing gate → not filled. Prevents mark-noise / R4 small-slice false radar.
+    """
+    detail = {
+        "level": int(level),
+        "slice_qty": float(slice_qty),
+        "tp_price": float(tp_price),
+        "reduced": float(reduced),
+        "qty_ok": False,
+        "book_cleared": False,
+        "price_ok": False,
+        "confirmed": False,
+    }
+    fill_tol = tp_fill_qty_tolerance(slice_qty, is_contracts=is_contracts)
+    qty_ok = abs(float(reduced) - float(prefix_consumed_qty)) <= fill_tol
+    if not qty_ok:
+        qty_ok = abs(float(reduced) - float(slice_qty)) <= fill_tol and float(reduced) > fill_tol
+    noise = qty_drift_tolerance(float(prefix_consumed_qty) or float(slice_qty), 0.0)
+    if float(reduced) <= max(noise * 0.5, 1e-9) and float(reduced) < float(slice_qty) * 0.5:
+        qty_ok = False
+    detail["qty_ok"] = bool(qty_ok)
+    detail["fill_tol"] = fill_tol
+
+    book_cleared = not tp_limit_still_on_book(tp_price, open_tp_prices, price_tol=price_tol)
+    detail["book_cleared"] = book_cleared
+
+    if float(curr_px or 0) > 0:
+        price_ok = price_reached_tp(curr_px, tp_price, side)
+        detail["price_ok"] = price_ok
+        if require_price and not price_ok:
+            return detail
+    else:
+        detail["price_ok"] = True
+        price_ok = True
+
+    detail["confirmed"] = bool(qty_ok and book_cleared and price_ok)
+    return detail
 
 
 def infer_filled_tp_levels(
@@ -86,60 +202,83 @@ def infer_filled_tp_levels(
     open_tp_prices: list[float],
     qty_tol: float | None = None,
     price_tol: float = 0.02,
+    is_contracts: bool = False,
 ) -> set[int]:
     """
-    Infer consumed TP tiers from:
-    - persisted consumed_tp_levels
-    - qty reduction vs open (match reduced amount to TP prefix — never mark fills on full open size)
-    - price crossed ONLY for the single next tier after prefix, with qty confirmation
+    Infer consumed TP tiers with exchange-grade evidence.
+
+    Persisted levels are kept only if they still pass book/qty sanity.
+    Newly inferred levels require: qty reduction match + TP limit gone + price reached.
+    Never mark fills on a still-full open (ignores mark-price noise on ETH size).
     """
-    filled = set(int(x) for x in (consumed_tp_levels or []) if int(x) in (1, 2, 3))
+    persisted = set(int(x) for x in (consumed_tp_levels or []) if int(x) in (1, 2, 3))
     anchor = float(initial_qty or live_qty)
     if anchor <= 0:
-        return filled
+        return set()
 
-    tol = qty_tol if qty_tol is not None else tp_slice_qty_tolerance(anchor)
     live_qty = float(live_qty or 0)
-
     all_slices = compute_tp_slices(
         anchor, regime, tv_tps, regime_settings, exclude_levels=set(),
     )
-    # Critical: R4 TP1≈5% can be ≤ qty tol (~8%). Matching remaining live≈anchor to
-    # "after TP1" would false-arm radar on every fresh OPEN. Match reduction only.
     reduced = round_quantity(anchor - live_qty)
-    if reduced > tol:
-        best_prefix: set[int] = set()
-        for prefix_len in range(1, len(all_slices) + 1):
-            prefix = all_slices[:prefix_len]
-            consumed_qty = sum(q for _, q, _ in prefix)
-            if abs(reduced - consumed_qty) <= tol:
-                best_prefix = {level for level, _, _ in prefix}
-        filled |= best_prefix
+    if not all_slices:
+        return set()
 
-    if curr_px <= 0 or side not in ("LONG", "SHORT"):
-        return filled
+    tp1_slice = float(all_slices[0][1])
+    # Full / sub-TP1 noise: require at least half a TP1 slice reduced (not 8% position band)
+    if reduced < max(tp1_slice * 0.5, tp_fill_qty_tolerance(tp1_slice, is_contracts=is_contracts) * 0.5):
+        return set()
 
-    next_after = max(filled) if filled else 0
-    for level, _slice_qty, price in all_slices:
-        if level <= next_after:
+    by_level = {lvl: (q, px) for lvl, q, px in all_slices}
+    filled: set[int] = set()
+
+    # Sanitize persisted: drop levels whose limit is still hanging or qty denies
+    for level in sorted(persisted):
+        if level not in by_level:
             continue
-        if price <= 0:
-            continue
-        has_order = any(tp_price_matches(px, price, price_tol) for px in open_tp_prices)
-        if has_order:
-            break
-        prefix = [s for s in all_slices if s[0] <= level]
-        consumed_qty = sum(q for _, q, _ in prefix)
-        # Need a real reduction matching this prefix — not full open size
-        if abs(reduced - consumed_qty) > tol:
-            break
-        crossed = (
-            (side == "LONG" and curr_px >= price)
-            or (side == "SHORT" and curr_px <= price)
+        slice_qty, tp_price = by_level[level]
+        prefix_qty = sum(by_level[l][0] for l in by_level if l <= level)
+        ev = confirm_tp_tier_fill(
+            level=level,
+            slice_qty=slice_qty,
+            tp_price=tp_price,
+            reduced=reduced,
+            prefix_consumed_qty=prefix_qty,
+            curr_px=curr_px,
+            side=side,
+            open_tp_prices=open_tp_prices,
+            is_contracts=is_contracts,
+            price_tol=price_tol,
+            require_price=False,
         )
-        if crossed:
+        if ev["qty_ok"] and ev["book_cleared"]:
             filled.add(level)
-        break
+
+    # Discover next unfilled tier with full triple gate
+    next_level = (max(filled) + 1) if filled else 1
+    for level, slice_qty, tp_price in all_slices:
+        if level < next_level:
+            continue
+        if level > next_level:
+            break
+        prefix_qty = sum(q for lvl, q, _ in all_slices if lvl <= level)
+        ev = confirm_tp_tier_fill(
+            level=level,
+            slice_qty=slice_qty,
+            tp_price=tp_price,
+            reduced=reduced,
+            prefix_consumed_qty=prefix_qty,
+            curr_px=curr_px,
+            side=side,
+            open_tp_prices=open_tp_prices,
+            is_contracts=is_contracts,
+            price_tol=price_tol,
+            require_price=True,
+        )
+        if not ev["confirmed"]:
+            break
+        filled.add(level)
+        next_level = level + 1
 
     return filled
 

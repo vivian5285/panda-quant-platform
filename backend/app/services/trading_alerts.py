@@ -390,7 +390,7 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             else:
                 lines.append(_line("雷达状态", "已激活"))
         else:
-            lines.append(_line("雷达状态", "待命 · 待 TP1 成交后启动保本追踪"))
+            lines.append(_line("雷达状态", "待命 · 待 TP1 限价成交后启动（数量对账+盘口撤单+价格到达）"))
         slices = detail.get("tp_slices") or []
         if slices:
             parts = []
