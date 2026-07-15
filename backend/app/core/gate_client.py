@@ -472,11 +472,19 @@ class GateClient:
             params["from"] = int(start_time_ms // 1000)
         if end_time_ms:
             params["to"] = int(end_time_ms // 1000)
-        # Prefer deposit/withdraw book; fall back to full book filtered client-side.
-        rows = self._request("GET", "/futures/usdt/account_book", {**params, "type": "dnw"})
-        if not isinstance(rows, list):
-            rows = self._request("GET", "/futures/usdt/account_book", params)
-        if not isinstance(rows, list):
+        # Prefer deposit/withdraw book; also merge pnl book for realized closes.
+        rows_dnw = self._request("GET", "/futures/usdt/account_book", {**params, "type": "dnw"})
+        rows_pnl = self._request("GET", "/futures/usdt/account_book", {**params, "type": "pnl"})
+        rows: list = []
+        if isinstance(rows_dnw, list):
+            rows.extend(rows_dnw)
+        if isinstance(rows_pnl, list):
+            rows.extend(rows_pnl)
+        if not rows:
+            fallback = self._request("GET", "/futures/usdt/account_book", params)
+            if isinstance(fallback, list):
+                rows = fallback
+        if not rows:
             logger.warning("[User %s] Gate cashflow fetch returned non-list", self.user_id)
             return []
 
@@ -530,3 +538,20 @@ class GateClient:
         params: dict[str, Any] = {"contract": contract, "limit": min(limit, 100)}
         rows = self._request("GET", "/futures/usdt/my_trades", params)
         return rows if isinstance(rows, list) else []
+
+    def get_position_close_history(
+        self,
+        symbol: str | None = None,
+        start_time_ms: int | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """GET /futures/usdt/position_close — closed position PnL history (ETH)."""
+        contract = symbol or self.trading_symbol
+        params: dict[str, Any] = {"contract": contract, "limit": min(int(limit or 100), 100)}
+        if start_time_ms:
+            params["from"] = int(start_time_ms // 1000)
+        rows = self._request("GET", "/futures/usdt/position_close", params)
+        if not isinstance(rows, list):
+            logger.warning("[User %s] Gate position_close returned non-list", self.user_id)
+            return []
+        return rows

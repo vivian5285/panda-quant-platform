@@ -958,7 +958,7 @@ export default {
     accountsNetTransfer: "Inferred net transfer",
     accountsTransferSuspected: "Transfer-suspected accounts",
     accountsTransferSuspectedBadge: "Transfer suspected",
-    accountsTradePnlHint: "Contract trade PnL",
+    accountsTradePnlHint: "Exchange ETH fills",
     accountsPeriodTrades: "Trades in range",
     accountsWinRate: "Win rate",
     accountsPeriodPnl: "Realized PnL (range)",

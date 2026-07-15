@@ -82,7 +82,7 @@ def calculate_settlement(
         f"divergence={audit['divergence']};"
         f"estimated_net_transfer={audit.get('estimated_net_transfer')};"
         f"transfer_suspected={audit.get('transfer_suspected')};"
-        f"fee_basis=closed_trade_realized_pnl_hwm"
+        f"fee_basis=exchange_eth_fill_realized_pnl_hwm"
     )
 
     settlement = Settlement(

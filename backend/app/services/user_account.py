@@ -70,11 +70,13 @@ def build_dashboard_stats(db: Session, user: User) -> DashboardStats:
     estimated_net_transfer = 0.0
     transfer_suspected = False
     try:
-        from app.services.profit_audit import sum_closed_trade_pnl, cycle_bounds
+        from app.services.profit_audit import cycle_trade_pnl_authoritative, cycle_bounds
         from app.services.equity_reconcile import build_reconcile_snapshot
 
         period_start, period_end = cycle_bounds(user)
-        trade_cycle_pnl = sum_closed_trade_pnl(db, user.id, period_start, period_end)
+        trade_cycle_pnl, _meta = cycle_trade_pnl_authoritative(
+            db, user, period_start, period_end, sync=False,
+        )
         reconcile = build_reconcile_snapshot(
             live_equity=equity,
             initial_principal=initial,

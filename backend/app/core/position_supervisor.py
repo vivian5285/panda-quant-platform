@@ -1788,6 +1788,7 @@ class PositionSupervisor(
             return
         pnl = 0.0
         live_pnl_pct = None
+        pnl_source = "mark_estimate"
         if self.watched_entry and exit_price:
             diff = exit_price - self.watched_entry
             if self.current_side == "SHORT":
@@ -1797,6 +1798,19 @@ class PositionSupervisor(
                 live_pnl_pct = round(diff / self.watched_entry * 100, 2)
 
         start_ms = int(self.trade_opened_at * 1000) if self.trade_opened_at else None
+        # Prefer exchange fill realized PnL (ETH contract) when available.
+        try:
+            from app.services.exchange_fill_sync import fetch_live_eth_fills, sum_realized_from_fills
+            fills = fetch_live_eth_fills(
+                self.client, getattr(self, "exchange_id", "binance"), start_time_ms=start_ms,
+            )
+            fill_pnl = sum_realized_from_fills(fills, start_ms=start_ms)
+            if fills:
+                pnl = float(fill_pnl)
+                pnl_source = "exchange_fills"
+        except Exception as exc:
+            logging.getLogger(__name__).warning("close fill pnl lookup failed: %s", exc)
+
         funding_fee = self.client.get_funding_fees(self.symbol, start_ms)
         display_reason = tv_reason or reason
         verify_note = build_verify_note(
@@ -1825,6 +1839,7 @@ class PositionSupervisor(
         )
         if extra_detail:
             close_detail.update(extra_detail)
+        close_detail["pnl_source"] = pnl_source
         if tv_side:
             close_detail["tv_side"] = tv_side
         if tv_pnl_pct is not None:

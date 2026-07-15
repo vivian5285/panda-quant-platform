@@ -8,14 +8,13 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import ApiStatus, Trade, User
-from app.services.admin_user_stats import user_cumulative_pnl
 from app.services.dispatcher import supervisor_pool
 from app.services.equity_reconcile import build_reconcile_snapshot
 from app.services.position_snapshot import (
     get_user_live_snapshot,
     position_fields_from_status,
 )
-from app.services.profit_audit import cycle_bounds, sum_closed_trade_pnl
+from app.services.profit_audit import cycle_bounds, cycle_trade_pnl_authoritative
 from app.services.query_filters import apply_trade_date_filter, parse_date_param
 from app.services.trading_control import get_user_control
 
@@ -26,7 +25,6 @@ def build_managed_account_row(db: Session, user: User) -> dict:
     snapshot_error: str | None = None
     try:
         ctrl = get_user_control(db, user.id)
-        cumulative = user_cumulative_pnl(db, user.id)
         supervisor = supervisor_pool.get(user.id)
 
         position, summary = get_user_live_snapshot(db, user)
@@ -38,7 +36,12 @@ def build_managed_account_row(db: Session, user: User) -> dict:
         initial = float(user.initial_principal or 0)
 
         period_start, period_end = cycle_bounds(user)
-        trade_cycle = sum_closed_trade_pnl(db, user.id, period_start, period_end)
+        trade_cycle, pnl_meta = cycle_trade_pnl_authoritative(
+            db, user, period_start, period_end, sync=True,
+        )
+        cumulative, cum_meta = cycle_trade_pnl_authoritative(
+            db, user, None, None, sync=False,
+        )
         # List view: infer transfers from equity − trade − UPL (no per-row cashflow API spam).
         reconcile = build_reconcile_snapshot(
             live_equity=equity,
@@ -120,6 +123,9 @@ def build_managed_account_row(db: Session, user: User) -> dict:
             "week_pnl": round(week_pnl, 2),
             "total_pnl": float(cumulative),
             "cumulative_trade_pnl": cumulative,
+            "pnl_source": pnl_meta.get("source"),
+            "platform_trade_pnl_cycle": pnl_meta.get("platform_trade_pnl"),
+            "platform_vs_exchange_delta": pnl_meta.get("platform_vs_exchange_delta"),
             "trade_count": trade_count,
             "closed_trade_count": closed_count,
             "snapshot_error": snapshot_error,
@@ -157,7 +163,8 @@ def build_managed_account_row(db: Session, user: User) -> dict:
             "today_pnl": 0.0,
             "week_pnl": 0.0,
             "total_pnl": 0.0,
-            "cumulative_trade_pnl": user_cumulative_pnl(db, user.id),
+            "cumulative_trade_pnl": 0.0,
+            "pnl_source": "error",
             "has_position": False,
             "position_side": None,
             "position_qty": 0.0,

@@ -963,7 +963,7 @@ export default {
     accountsNetTransfer: "推断划转净额",
     accountsTransferSuspected: "疑似划转账户",
     accountsTransferSuspectedBadge: "疑似划转",
-    accountsTradePnlHint: "合约实盘成交",
+    accountsTradePnlHint: "交易所ETH成交",
     accountsPeriodTrades: "区间成交笔数",
     accountsWinRate: "胜率",
     accountsPeriodPnl: "区间已实现盈亏",

@@ -555,6 +555,18 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             pnl = diff * qty
             live_pnl_pct = round(diff / entry * 100, 2)
 
+        pnl_source = "mark_estimate"
+        try:
+            from app.services.exchange_fill_sync import fetch_live_eth_fills, sum_realized_from_fills
+            start_ms = int(self.trade_opened_at * 1000) if getattr(self, "trade_opened_at", None) else None
+            fills = fetch_live_eth_fills(self.client, "deepcoin", start_time_ms=start_ms)
+            fill_pnl = sum_realized_from_fills(fills, start_ms=start_ms)
+            if fills:
+                pnl = float(fill_pnl)
+                pnl_source = "exchange_fills"
+        except Exception as exc:
+            logger.warning("deepcoin close fill pnl lookup failed: %s", exc)
+
         verify_note = build_verify_note(
             exit_price=exit_price if exit_price > 0 else None,
             live_pnl_pct=live_pnl_pct,
@@ -593,6 +605,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         )
         if tv_side:
             close_detail["tv_side"] = tv_side
+        close_detail["pnl_source"] = pnl_source
         if tv_pnl_pct is not None:
             close_detail["tv_pnl_pct"] = round(float(tv_pnl_pct), 2)
         if tv_side and side and tv_side != side:

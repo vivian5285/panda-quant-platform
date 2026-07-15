@@ -755,3 +755,69 @@ class DeepcoinClient:
             start_time_ms,
         )
         return []
+
+    def get_orders_history_pnl(
+        self,
+        symbol: str | None = None,
+        start_time_ms: int | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """GET /trade/orders-history — filled SWAP orders with pnl field."""
+        inst = symbol or getattr(self, "trading_symbol", None) or "ETH-USDT-SWAP"
+        params = {
+            "instType": "SWAP",
+            "instId": inst,
+            "state": "filled",
+            "limit": str(min(int(limit or 100), 100)),
+        }
+        res = self._request("GET", "/trade/orders-history", params)
+        rows = []
+        if isinstance(res, dict):
+            data = res.get("data")
+            if isinstance(data, list):
+                rows = data
+            elif isinstance(data, dict) and isinstance(data.get("data"), list):
+                rows = data["data"]
+        elif isinstance(res, list):
+            rows = res
+        out = []
+        for r in rows or []:
+            if not isinstance(r, dict):
+                continue
+            ts = 0
+            for key in ("uTime", "cTime", "fillTime", "ts"):
+                try:
+                    ts = int(float(r.get(key) or 0))
+                    if ts:
+                        break
+                except (TypeError, ValueError):
+                    continue
+            if start_time_ms and ts and ts < int(start_time_ms):
+                continue
+            out.append(r)
+        return out
+
+    def get_account_trades(
+        self,
+        symbol: str | None = None,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """GET /trade/fills — granular fills (fee); PnL usually on orders-history."""
+        inst = symbol or getattr(self, "trading_symbol", None) or "ETH-USDT-SWAP"
+        params = {
+            "instType": "SWAP",
+            "instId": inst,
+            "limit": str(min(int(limit or 100), 100)),
+        }
+        if start_time_ms:
+            params["begin"] = str(int(start_time_ms))
+        if end_time_ms:
+            params["end"] = str(int(end_time_ms))
+        res = self._request("GET", "/trade/fills", params)
+        if isinstance(res, dict):
+            data = res.get("data")
+            if isinstance(data, list):
+                return data
+        return res if isinstance(res, list) else []

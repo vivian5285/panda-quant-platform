@@ -959,6 +959,9 @@ class AdminManagedAccountOut(BaseModel):
     week_pnl: float = 0.0
     total_pnl: float = 0.0
     cumulative_trade_pnl: float = 0.0
+    pnl_source: Optional[str] = None
+    platform_trade_pnl_cycle: Optional[float] = None
+    platform_vs_exchange_delta: Optional[float] = None
     has_position: bool = False
     position_side: Optional[str] = None
     position_qty: float = 0.0

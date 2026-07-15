@@ -58,27 +58,23 @@ def sum_binance_fill_pnl(
     period_start: date | None = None,
     period_end: date | None = None,
 ) -> float:
-    rows = db.query(TradeLog).filter(
-        TradeLog.user_id == user_id,
-        TradeLog.event_type == "BINANCE_FILL",
-    ).all()
-    total = 0.0
-    for row in rows:
-        if not row.detail_json:
-            continue
-        try:
-            detail = json.loads(row.detail_json)
-        except json.JSONDecodeError:
-            continue
-        ts = detail.get("time_ms") or (row.created_at.timestamp() * 1000 if row.created_at else None)
-        if ts:
-            d = datetime.utcfromtimestamp(ts / 1000).date()
-            if period_start and d < period_start:
-                continue
-            if period_end and d > period_end:
-                continue
-        total += float(detail.get("realized_pnl", 0))
-    return round(total, 4)
+    from app.services.exchange_fill_sync import sum_synced_fill_pnl
+    return sum_synced_fill_pnl(db, user_id, period_start, period_end)
+
+
+def cycle_trade_pnl_authoritative(
+    db: Session,
+    user: User,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    *,
+    sync: bool = True,
+) -> tuple[float, dict]:
+    """ETH contract realized PnL for billing/admin — exchange fills first."""
+    from app.services.exchange_fill_sync import authoritative_eth_cycle_pnl
+    return authoritative_eth_cycle_pnl(
+        db, user, period_start, period_end, sync=sync,
+    )
 
 
 def _load_cashflow_bundle(user: User, period_start: date | None) -> dict:
@@ -105,10 +101,15 @@ def build_dual_profit_report(
     period_start, period_end = cycle_bounds(user)
     equity = float(live_equity) if live_equity is not None else fetch_live_equity(user)
     initial = float(user.initial_principal or 0)
-    trade_cycle = sum_closed_trade_pnl(db, user.id, period_start, period_end)
-    trade_total = sum_closed_trade_pnl(db, user.id)
-    fill_cycle = sum_binance_fill_pnl(db, user.id, period_start, period_end)
-    fill_total = sum_binance_fill_pnl(db, user.id)
+    trade_cycle, fill_meta = cycle_trade_pnl_authoritative(
+        db, user, period_start, period_end, sync=True,
+    )
+    trade_total, total_meta = cycle_trade_pnl_authoritative(
+        db, user, None, None, sync=False,
+    )
+    fill_cycle = float(fill_meta.get("live_fill_pnl") or fill_meta.get("logged_fill_pnl") or trade_cycle)
+    fill_total = float(total_meta.get("live_fill_pnl") or total_meta.get("logged_fill_pnl") or trade_total)
+    platform_cycle = float(fill_meta.get("platform_trade_pnl") or sum_closed_trade_pnl(db, user.id, period_start, period_end))
 
     cash = _load_cashflow_bundle(user, period_start)
     summary = cash["summary"]
@@ -137,6 +138,9 @@ def build_dual_profit_report(
         "trade_pnl_cycle": trade_cycle,
         "trade_pnl_total": trade_total,
         "trade_cycle_pnl": trade_cycle,
+        "platform_trade_pnl_cycle": platform_cycle,
+        "pnl_source": fill_meta.get("source"),
+        "pnl_meta": fill_meta,
         "binance_fill_pnl_cycle": fill_cycle,
         "binance_fill_pnl_total": fill_total,
         "divergence_equity_vs_trades": reconcile["profit_divergence"],
@@ -165,12 +169,15 @@ def settlement_profit_from_trades(
     period_start: date,
     period_end: date,
 ) -> tuple[float, dict]:
-    """Authoritative settlement profit = closed platform trades in period.
+    """Authoritative settlement profit = ETH contract realized PnL from exchange fills.
 
+    Falls back to platform Trade.realized_pnl only when fills are unavailable.
     Equity / transfers / other-symbol PnL never change the billed amount.
     """
-    trade_profit = sum_closed_trade_pnl(db, user.id, period_start, period_end)
-    fill_profit = sum_binance_fill_pnl(db, user.id, period_start, period_end)
+    trade_profit, fill_meta = cycle_trade_pnl_authoritative(
+        db, user, period_start, period_end, sync=True,
+    )
+    fill_profit = float(fill_meta.get("live_fill_pnl") or fill_meta.get("logged_fill_pnl") or trade_profit)
     equity = 0.0
     equity_delta = 0.0
     initial = float(user.initial_principal or 0)
@@ -181,17 +188,18 @@ def settlement_profit_from_trades(
         pass
 
     audit = {
-        "profit_source": "trades",
+        "profit_source": fill_meta.get("source") or "trades",
         "trade_profit": trade_profit,
         "binance_fill_pnl": fill_profit,
+        "platform_trade_pnl": fill_meta.get("platform_trade_pnl"),
+        "pnl_meta": fill_meta,
         "live_equity": round(equity, 2),
         "initial_principal": round(initial, 2),
         "equity_delta": equity_delta,
         "divergence": round(equity_delta - trade_profit, 2) if initial > 0 else 0.0,
-        "fee_basis": "closed_trade_realized_pnl_hwm",
-        "note": "绩效费仅按平台记录的合约交易盈亏（高水位）计算；用户划转/他币盈亏不影响应收",
+        "fee_basis": "exchange_eth_fill_realized_pnl_hwm",
+        "note": "绩效费按交易所 ETH 合约已实现盈亏（高水位）计算；用户划转/他币盈亏不影响应收",
     }
-    # Attach light reconcile (inference only — no extra cashflow API on every bill)
     try:
         from app.services.equity_reconcile import build_reconcile_snapshot
 
