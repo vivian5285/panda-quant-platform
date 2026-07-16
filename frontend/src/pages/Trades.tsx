@@ -11,6 +11,7 @@ import { userApi, type LogQueryParams, type TradeQueryParams } from '../api'
 import { useI18n, localeDate } from '../i18n'
 import { downloadCsv } from '../utils/exportCsv'
 import { toast } from '../store/toast'
+import { isExchangeFillEvent, qtyUnitForSymbol, shortSymbol } from '../utils/symbolDisplay'
 
 type TradeRow = {
   id: number
@@ -40,7 +41,7 @@ type LogRow = {
   created_at: string
 }
 
-const TIME_RANGES = ['all', '7d', '30d', '90d', 'custom'] as const
+const TIME_RANGES = ['since', 'all', '7d', '30d', '90d', 'custom'] as const
 type TimeRange = (typeof TIME_RANGES)[number]
 
 function parseDetail(raw?: string): Record<string, unknown> {
@@ -48,14 +49,23 @@ function parseDetail(raw?: string): Record<string, unknown> {
   try { return JSON.parse(raw) } catch { return {} }
 }
 
-function resolveRange(timeFilter: TimeRange, dateFrom: string, dateTo: string): TradeQueryParams {
+function resolveRange(
+  timeFilter: TimeRange,
+  dateFrom: string,
+  dateTo: string,
+  tradingSince?: string | null,
+): TradeQueryParams {
   const fmt = (d: Date) => d.toISOString().slice(0, 10)
   const today = new Date()
   if (timeFilter === 'custom') {
     if (!dateFrom) return { limit: 300 }
     return { start: dateFrom, end: dateTo || dateFrom, limit: 300 }
   }
-  if (timeFilter === 'all') return { limit: 300 }
+  if (timeFilter === 'since') {
+    const start = tradingSince ? String(tradingSince).slice(0, 10) : undefined
+    return start ? { start, end: fmt(today), limit: 500 } : { limit: 500 }
+  }
+  if (timeFilter === 'all') return { limit: 500 }
   const days = timeFilter === '7d' ? 7 : timeFilter === '30d' ? 30 : 90
   const start = new Date(today)
   start.setDate(start.getDate() - days)
@@ -84,11 +94,13 @@ export default function Trades() {
   const [view, setView] = useState<'executions' | 'logs'>(initialTab)
   const [trades, setTrades] = useState<TradeRow[]>([])
   const [logs, setLogs] = useState<LogRow[]>([])
+  const [tradingSince, setTradingSince] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState('all')
-  const [timeFilter, setTimeFilter] = useState<TimeRange>('30d')
+  const [timeFilter, setTimeFilter] = useState<TimeRange>('since')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [regimeFilter, setRegimeFilter] = useState('all')
+  const [symbolFilter, setSymbolFilter] = useState('all')
   const [expanded, setExpanded] = useState<number | null>(null)
   const [expandedLog, setExpandedLog] = useState<number | null>(null)
   const [syncing, setSyncing] = useState(false)
@@ -99,9 +111,20 @@ export default function Trades() {
     if (searchParams.get('tab') === 'logs') setView('logs')
   }, [searchParams])
 
+  useEffect(() => {
+    userApi.dashboard().then((d: any) => {
+      const since = d?.initial_principal_at || d?.trading_since || null
+      if (since) setTradingSince(String(since))
+    }).catch(() => {})
+  }, [])
+
   const queryParams = useMemo(
-    () => ({ ...resolveRange(timeFilter, dateFrom, dateTo), limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
-    [timeFilter, dateFrom, dateTo, page],
+    () => ({
+      ...resolveRange(timeFilter, dateFrom, dateTo, tradingSince),
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
+    }),
+    [timeFilter, dateFrom, dateTo, page, tradingSince],
   )
 
   const load = useCallback((syncExchange = false) => {
@@ -114,7 +137,7 @@ export default function Trades() {
 
   useEffect(() => {
     setPage(0)
-  }, [timeFilter, dateFrom, dateTo, statusFilter, regimeFilter])
+  }, [timeFilter, dateFrom, dateTo, statusFilter, regimeFilter, symbolFilter])
 
   useEffect(() => {
     load()
@@ -155,17 +178,40 @@ export default function Trades() {
     return Array.from(set).sort((a, b) => a - b)
   }, [trades])
 
+  const symbols = useMemo(() => {
+    const set = new Set(trades.map(tr => shortSymbol(tr.symbol)))
+    return Array.from(set).sort()
+  }, [trades])
+
   const rows = useMemo(() => {
     return trades.filter(tr => {
       if (statusFilter !== 'all' && tradeStatus(tr, logs) !== statusFilter) return false
       if (regimeFilter !== 'all' && String(tr.regime) !== regimeFilter) return false
+      if (symbolFilter !== 'all' && shortSymbol(tr.symbol) !== symbolFilter) return false
       return true
     })
-  }, [trades, logs, statusFilter, regimeFilter])
+  }, [trades, logs, statusFilter, regimeFilter, symbolFilter])
 
-  const platformLogs = useMemo(() => logs.filter(l => l.event_type !== 'BINANCE_FILL'), [logs])
-  const exchangeLogs = useMemo(() => logs.filter(l => l.event_type === 'BINANCE_FILL'), [logs])
+  const platformLogs = useMemo(
+    () => logs.filter(l => !isExchangeFillEvent(l.event_type)),
+    [logs],
+  )
+  const exchangeLogs = useMemo(
+    () => logs.filter(l => isExchangeFillEvent(l.event_type)),
+    [logs],
+  )
   const displayLogs = view === 'logs' ? logs : platformLogs
+
+  const periodStats = useMemo(() => {
+    const closed = rows.filter(tr => tr.status === 'closed' || (tr.realized_pnl != null && tr.exit_price != null))
+    const pnl = closed.reduce((s, tr) => s + Number(tr.realized_pnl || 0), 0)
+    const bySym: Record<string, number> = {}
+    closed.forEach(tr => {
+      const s = shortSymbol(tr.symbol)
+      bySym[s] = (bySym[s] || 0) + Number(tr.realized_pnl || 0)
+    })
+    return { count: rows.length, closed: closed.length, pnl, bySym }
+  }, [rows])
 
   const getSlippage = (tr: TradeRow) => {
     if (typeof tr.slippage === 'number') return tr.slippage
@@ -208,10 +254,12 @@ export default function Trades() {
       const funding = getFunding(tr)
       return {
         time: localeDate(tr.created_at, locale),
+        symbol: shortSymbol(tr.symbol),
         signal: tr.action || tr.side,
         side: tr.side,
         requested: tr.quantity,
         filled: getFilled(tr),
+        unit: qtyUnitForSymbol(tr.symbol),
         slippage: slip ?? '',
         funding: funding ?? '',
         entry: tr.entry_price,
@@ -229,7 +277,7 @@ export default function Trades() {
         time: localeDate(l.created_at, locale),
         type: l.event_type,
         message: l.message,
-        symbol: d.symbol ?? 'ETHUSDT',
+        symbol: shortSymbol(String(d.symbol || d.canonical_symbol || '')),
         side: d.side ?? '',
         qty: d.qty ?? '',
         price: d.price ?? '',
@@ -256,6 +304,7 @@ export default function Trades() {
           <label className="trades-filter">
             <span className="text-muted">{t('trades.filterTime')}</span>
             <select value={timeFilter} onChange={e => setTimeFilter(e.target.value as TimeRange)}>
+              <option value="since">{t('trades.filterSinceActivation')}</option>
               <option value="all">{t('trades.filterAll')}</option>
               <option value="7d">{t('trades.filterTime7d')}</option>
               <option value="30d">{t('trades.filterTime30d')}</option>
@@ -277,6 +326,15 @@ export default function Trades() {
           )}
           {view === 'executions' && (
             <>
+              <label className="trades-filter">
+                <span className="text-muted">{t('trades.filterSymbol')}</span>
+                <select value={symbolFilter} onChange={e => setSymbolFilter(e.target.value)}>
+                  <option value="all">{t('trades.filterAll')}</option>
+                  {symbols.map(s => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </label>
               <label className="trades-filter">
                 <span className="text-muted">{t('trades.filterStatus')}</span>
                 <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
@@ -324,12 +382,28 @@ export default function Trades() {
         </p>
       )}
 
+      {view === 'executions' && (
+        <p className="text-muted text-sm section-mb-sm">
+          {t('trades.periodStats', {
+            count: periodStats.count,
+            closed: periodStats.closed,
+            pnl: periodStats.pnl.toFixed(2),
+            eth: (periodStats.bySym.ETHUSDT ?? 0).toFixed(2),
+            xau: (periodStats.bySym.XAUUSDT ?? 0).toFixed(2),
+          })}
+          {timeFilter === 'since' && tradingSince
+            ? ` · ${t('trades.sinceLabel', { date: String(tradingSince).slice(0, 10) })}`
+            : ''}
+        </p>
+      )}
+
       {view === 'executions' ? (
         <GlassCard className="p-0 table-wrap">
           <table className="data-table trades-table">
             <thead>
               <tr>
                 <th>{t('common.time')}</th>
+                <th>{t('trades.symbol')}</th>
                 <th>{t('trades.signal')}</th>
                 <th>{t('trades.side')}</th>
                 <th>{t('trades.qty')}</th>
@@ -342,20 +416,22 @@ export default function Trades() {
             </thead>
             <tbody>
               {rows.length === 0 ? (
-                <tr><td colSpan={9} className="empty-cell">{t('trades.empty')}</td></tr>
+                <tr><td colSpan={10} className="empty-cell">{t('trades.empty')}</td></tr>
               ) : rows.map(tr => {
                 const st = tradeStatus(tr, logs)
                 const slip = getSlippage(tr)
                 const funding = getFunding(tr)
                 const isOpen = expanded === tr.id
                 const related = logByTrade.get(tr.id) || []
+                const sym = shortSymbol(tr.symbol)
                 return (
                   <Fragment key={tr.id}>
                     <tr className="trades-row" onClick={() => setExpanded(isOpen ? null : tr.id)}>
                       <td>{localeDate(tr.created_at, locale)}</td>
+                      <td><span className="badge badge-gray">{sym}</span></td>
                       <td><span className="badge badge-gray">{tr.action || '—'}</span></td>
                       <td><span className={`badge ${tr.side === 'LONG' ? 'badge-green' : 'badge-red'}`}>{tr.side}</span></td>
-                      <td>{tr.quantity}</td>
+                      <td>{tr.quantity} <span className="text-muted text-xs">{qtyUnitForSymbol(sym)}</span></td>
                       <td>{getFilled(tr)}</td>
                       <td className={slip != null && slip <= 0 ? 'text-green' : slip != null ? 'text-red' : ''}>
                         {slip != null ? `${slip >= 0 ? '+' : ''}${slip.toFixed(2)}` : t('common.none')}

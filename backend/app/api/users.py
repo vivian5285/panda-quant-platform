@@ -499,13 +499,24 @@ def sync_exchange_logs(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Pull ETHUSDT perpetual fills from Binance into execution logs."""
+    """Pull enabled perpetual fills (ETHUSDT + XAUUSDT) into execution logs."""
     return sync_user_binance_fills(db, user, days=min(max(days, 1), 180))
 
 
 @router.get("/analytics", response_model=UserAnalyticsOut)
-def analytics(days: int = 90, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return build_user_analytics(db, user.id, days=min(max(days, 7), 365))
+def analytics(
+    days: int = 90,
+    since_activation: bool = True,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """User P&L analytics for ETH+XAU. Default window = since API/principal activation."""
+    since = None
+    if since_activation and user.initial_principal_at:
+        since = user.initial_principal_at.date()
+    return build_user_analytics(
+        db, user.id, days=min(max(days, 7), 365), since=since,
+    )
 
 
 @router.get("/signals", response_model=SignalStatsOut)

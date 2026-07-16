@@ -384,6 +384,9 @@ class ReferralUserOut(BaseModel):
     position_qty: float = 0.0
     position_entry: float = 0.0
     position_mark: float = 0.0
+    position_symbol: Optional[str] = None
+    all_positions: list = []
+    trading_since: Optional[str] = None
     settlement_status: str = "none"
     api_status: str = "none"
     exchange: str = "binance"
@@ -1123,6 +1126,13 @@ class AnalyticsRegimePoint(BaseModel):
     pnl: float
 
 
+class AnalyticsSymbolPoint(BaseModel):
+    symbol: str
+    pnl: float
+    trades: int = 0
+    win_rate: float = 0.0
+
+
 class UserAnalyticsOut(BaseModel):
     win_rate: float
     profit_factor: float
@@ -1143,6 +1153,9 @@ class UserAnalyticsOut(BaseModel):
     week_labels: list[str]
     week_values: list[float]
     pnl_by_regime: list[AnalyticsRegimePoint]
+    pnl_by_symbol: list[AnalyticsSymbolPoint] = []
+    window_start: Optional[str] = None
+    since_activation: bool = False
 
 
 class SignalLogItem(BaseModel):

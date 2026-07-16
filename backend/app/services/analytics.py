@@ -78,12 +78,21 @@ def _monte_carlo(daily: list[float], simulations: int = 500, bins: int = 10) -> 
     }
 
 
-def build_user_analytics(db: Session, user_id: int, days: int = 90) -> dict:
-    start = date.today() - timedelta(days=days - 1)
+def build_user_analytics(db: Session, user_id: int, days: int = 90, *, since: date | None = None) -> dict:
+    """Build analytics. If since is set, window starts at that date (API activation); else last N days."""
+    if since is not None:
+        start = since
+    else:
+        start = date.today() - timedelta(days=days - 1)
 
     closed = (
         db.query(Trade)
-        .filter(Trade.user_id == user_id, Trade.status == "closed")
+        .filter(
+            Trade.user_id == user_id,
+            Trade.status == "closed",
+            Trade.closed_at.isnot(None),
+            func.date(Trade.closed_at) >= start,
+        )
         .order_by(Trade.closed_at.asc())
         .all()
     )
@@ -137,6 +146,23 @@ def build_user_analytics(db: Session, user_id: int, days: int = 90) -> dict:
         for k, v in sorted(regime_map.items(), key=lambda x: x[0])
     ]
 
+    symbol_map: dict[str, dict] = defaultdict(lambda: {"pnl": 0.0, "trades": 0, "wins": 0})
+    for t in closed:
+        sym = (t.symbol or "ETHUSDT").upper()
+        symbol_map[sym]["pnl"] += float(t.realized_pnl or 0)
+        symbol_map[sym]["trades"] += 1
+        if (t.realized_pnl or 0) > 0:
+            symbol_map[sym]["wins"] += 1
+    pnl_by_symbol = [
+        {
+            "symbol": k,
+            "pnl": round(v["pnl"], 2),
+            "trades": v["trades"],
+            "win_rate": round(v["wins"] / v["trades"] * 100, 1) if v["trades"] else 0.0,
+        }
+        for k, v in sorted(symbol_map.items(), key=lambda x: x[0])
+    ]
+
     week_labels: list[str] = []
     week_values: list[float] = []
     for i in range(6, -1, -1):
@@ -164,6 +190,9 @@ def build_user_analytics(db: Session, user_id: int, days: int = 90) -> dict:
         "week_labels": week_labels,
         "week_values": week_values,
         "pnl_by_regime": pnl_by_regime,
+        "pnl_by_symbol": pnl_by_symbol,
+        "window_start": start.isoformat(),
+        "since_activation": since is not None,
     }
 
 

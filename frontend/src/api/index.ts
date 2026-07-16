@@ -78,7 +78,8 @@ export const userApi = {
   trades: (params?: TradeQueryParams) => api.get('/users/trades', { params }).then(r => r.data),
   logs: (params?: LogQueryParams) => api.get('/users/logs', { params }).then(r => r.data),
   syncExchangeLogs: (days = 90) => api.post('/users/sync-exchange-logs', null, { params: { days } }).then(r => r.data),
-  analytics: (days = 90) => api.get('/users/analytics', { params: { days } }).then(r => r.data),
+  analytics: (days = 90, sinceActivation = true) =>
+    api.get('/users/analytics', { params: { days, since_activation: sinceActivation } }).then(r => r.data),
   signals: (limit = 100) => api.get('/users/signals', { params: { limit } }).then(r => r.data),
   verifyApi: (payload: {
     api_key: string

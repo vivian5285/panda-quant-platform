@@ -5,6 +5,7 @@ import TradeLogDetailPanel from './TradeLogDetailPanel'
 import TabBar from './TabBar'
 import { referralApi } from '../api'
 import { useI18n, localeDate } from '../i18n'
+import { qtyUnitForSymbol, shortSymbol } from '../utils/symbolDisplay'
 
 type Props = {
   userId: number | null
@@ -48,6 +49,18 @@ export default function DownlineLogsModal({ userId, displayName, onClose }: Prop
   if (!userId) return null
 
   const acc = account?.account
+  const positions: any[] = acc?.all_positions?.length
+    ? acc.all_positions
+    : (acc?.has_open_position
+      ? [{
+          symbol: acc.position_symbol,
+          side: acc.position_side,
+          qty: acc.position_qty,
+          entry_price: acc.position_entry,
+          mark_price: acc.position_mark,
+          unrealized_pnl: acc.unrealized_pnl,
+        }]
+      : [])
 
   return (
     <div className="confirm-modal-overlay" onClick={onClose} role="presentation">
@@ -97,21 +110,29 @@ export default function DownlineLogsModal({ userId, displayName, onClose }: Prop
                     </div>
                   </div>
 
-                  {acc.has_open_position ? (
-                    <div className="admin-live-position-banner">
-                      <span className={`badge ${acc.position_side === 'LONG' ? 'badge-green' : 'badge-red'}`}>
-                        {acc.position_side}
-                      </span>
-                      <span>{Number(acc.position_qty || 0).toFixed(4)} ETH</span>
-                      <span className="text-muted">
-                        {t('referrals.positionEntry')} ${Number(acc.position_entry || 0).toFixed(2)}
-                      </span>
-                      {(acc.position_mark ?? 0) > 0 && (
-                        <span className="text-muted">
-                          {t('referrals.positionMark')} ${Number(acc.position_mark).toFixed(2)}
-                        </span>
-                      )}
-                    </div>
+                  {positions.length > 0 ? (
+                    positions.map((pos, idx) => {
+                      const sym = shortSymbol(pos.symbol)
+                      return (
+                        <div key={`${sym}-${idx}`} className="admin-live-position-banner section-mb-sm">
+                          <span className="badge badge-gray">{sym}</span>
+                          <span className={`badge ${pos.side === 'LONG' ? 'badge-green' : 'badge-red'}`}>
+                            {pos.side}
+                          </span>
+                          <span>
+                            {Number(pos.qty || 0).toFixed(4)} {qtyUnitForSymbol(sym)}
+                          </span>
+                          <span className="text-muted">
+                            {t('referrals.positionEntry')} ${Number(pos.entry_price || 0).toFixed(2)}
+                          </span>
+                          {(pos.mark_price ?? 0) > 0 && (
+                            <span className="text-muted">
+                              {t('referrals.positionMark')} ${Number(pos.mark_price).toFixed(2)}
+                            </span>
+                          )}
+                        </div>
+                      )
+                    })
                   ) : (
                     <p className="text-muted text-sm">{t('admin.accountsFlat')}</p>
                   )}
@@ -121,6 +142,10 @@ export default function DownlineLogsModal({ userId, displayName, onClose }: Prop
                     <span>{t('referrals.principal')}: ${(acc.initial_principal ?? 0).toFixed(2)}</span>
                     <span>{t('referrals.available')}: ${(acc.available_balance ?? 0).toFixed(2)}</span>
                     <span>{t('referrals.apiStatus')}: {acc.api_status || '—'}</span>
+                    <span>
+                      {t('referrals.tradingSince')}:{' '}
+                      {acc.trading_since ? String(acc.trading_since).slice(0, 10) : '—'}
+                    </span>
                     <span>{t('referrals.pendingPerfFee')}: {(acc.pending_perf_fee ?? 0) > 0 ? `$${acc.pending_perf_fee.toFixed(2)}` : '—'}</span>
                     <span>{t('referrals.expectedReward')}: {(acc.expected_reward ?? 0) > 0 ? `$${acc.expected_reward.toFixed(2)}` : '—'}</span>
                     <span>{t('referrals.settlementStatus')}: {acc.settlement_status || 'none'}{acc.settlement_period ? ` (${acc.settlement_period})` : ''}</span>
@@ -171,6 +196,7 @@ export default function DownlineLogsModal({ userId, displayName, onClose }: Prop
                     <thead>
                       <tr>
                         <th>{t('common.time')}</th>
+                        <th>{t('trades.symbol')}</th>
                         <th>{t('trades.side')}</th>
                         <th>{t('trades.qty')}</th>
                         <th>{t('trades.entry')}</th>
@@ -180,21 +206,25 @@ export default function DownlineLogsModal({ userId, displayName, onClose }: Prop
                       </tr>
                     </thead>
                     <tbody>
-                      {trades.map(tr => (
-                        <tr key={tr.id}>
-                          <td>{localeDate(tr.closed_at || tr.created_at, locale)}</td>
-                          <td>{tr.side}</td>
-                          <td>{tr.quantity}</td>
-                          <td>{tr.entry_price}</td>
-                          <td>{tr.exit_price ?? '—'}</td>
-                          <td className={pnlClass(tr.realized_pnl ?? 0)}>
-                            {tr.realized_pnl != null ? tr.realized_pnl.toFixed(2) : '—'}
-                          </td>
-                          <td>{tr.status}</td>
-                        </tr>
-                      ))}
+                      {trades.map(tr => {
+                        const sym = shortSymbol(tr.symbol)
+                        return (
+                          <tr key={tr.id}>
+                            <td>{localeDate(tr.closed_at || tr.created_at, locale)}</td>
+                            <td><span className="badge badge-gray">{sym}</span></td>
+                            <td>{tr.side}</td>
+                            <td>{tr.quantity} <span className="text-muted text-xs">{qtyUnitForSymbol(sym)}</span></td>
+                            <td>{tr.entry_price}</td>
+                            <td>{tr.exit_price ?? '—'}</td>
+                            <td className={pnlClass(tr.realized_pnl ?? 0)}>
+                              {tr.realized_pnl != null ? tr.realized_pnl.toFixed(2) : '—'}
+                            </td>
+                            <td>{tr.status}</td>
+                          </tr>
+                        )
+                      })}
                       {!trades.length && (
-                        <tr><td colSpan={7} className="text-muted">{t('common.noData')}</td></tr>
+                        <tr><td colSpan={8} className="text-muted">{t('common.noData')}</td></tr>
                       )}
                     </tbody>
                   </table>

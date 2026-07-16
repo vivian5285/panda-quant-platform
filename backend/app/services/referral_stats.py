@@ -31,6 +31,8 @@ def build_downline_stats(db: Session, user: User) -> dict:
     position_qty = 0.0
     position_entry = 0.0
     position_mark = 0.0
+    position_symbol = None
+    all_positions: list = []
 
     try:
         position, summary = get_user_live_snapshot(db, user)
@@ -42,6 +44,8 @@ def build_downline_stats(db: Session, user: User) -> dict:
         position_qty = pf["position_qty"]
         position_entry = pf["position_entry"]
         position_mark = pf["position_mark"]
+        position_symbol = pf.get("position_symbol")
+        all_positions = list(pf.get("all_positions") or [])
         unrealized = pf["position_unrealized"] if has_position else 0.0
     except Exception:
         if user.api_key_enc and user.api_status == ApiStatus.ACTIVE.value:
@@ -129,6 +133,9 @@ def build_downline_stats(db: Session, user: User) -> dict:
         "position_qty": position_qty,
         "position_entry": position_entry,
         "position_mark": position_mark,
+        "position_symbol": position_symbol,
+        "all_positions": all_positions,
+        "trading_since": user.initial_principal_at.isoformat() if user.initial_principal_at else None,
         "settlement_status": settlement_status,
         "pending_perf_fee": pending_perf_fee,
         "pending_net_profit": pending_net_profit,

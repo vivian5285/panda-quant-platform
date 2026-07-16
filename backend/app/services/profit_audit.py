@@ -169,10 +169,10 @@ def settlement_profit_from_trades(
     period_start: date,
     period_end: date,
 ) -> tuple[float, dict]:
-    """Authoritative settlement profit = ETH contract realized PnL from exchange fills.
+    """Authoritative settlement profit = ETH+XAU contract realized PnL from exchange fills.
 
     Falls back to platform Trade.realized_pnl only when fills are unavailable.
-    Equity / transfers / other-symbol PnL never change the billed amount.
+    Equity / transfers / non-trading cashflows never change the billed amount.
     """
     trade_profit, fill_meta = cycle_trade_pnl_authoritative(
         db, user, period_start, period_end, sync=True,
@@ -197,8 +197,8 @@ def settlement_profit_from_trades(
         "initial_principal": round(initial, 2),
         "equity_delta": equity_delta,
         "divergence": round(equity_delta - trade_profit, 2) if initial > 0 else 0.0,
-        "fee_basis": "exchange_eth_fill_realized_pnl_hwm",
-        "note": "绩效费按交易所 ETH 合约已实现盈亏（高水位）计算；用户划转/他币盈亏不影响应收",
+        "fee_basis": "exchange_trading_fill_realized_pnl_hwm",
+        "note": "绩效费按交易所已启用永续合约（ETHUSDT+XAUUSDT）已实现盈亏合计（高水位）计算；用户划转不影响应收",
     }
     try:
         from app.services.equity_reconcile import build_reconcile_snapshot

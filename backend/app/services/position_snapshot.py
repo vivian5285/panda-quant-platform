@@ -584,7 +584,7 @@ def ensure_open_trade_from_snapshot(
 
 
 def position_fields_from_status(status: dict | None) -> dict[str, Any]:
-    """Flatten position status for admin/referral list rows."""
+    """Flatten position status for admin/referral list rows (multi-symbol aware)."""
     if not status or not status.get("has_position"):
         return {
             "has_position": False,
@@ -593,9 +593,35 @@ def position_fields_from_status(status: dict | None) -> dict[str, Any]:
             "position_entry": 0.0,
             "position_mark": 0.0,
             "position_unrealized": 0.0,
+            "position_symbol": None,
+            "all_positions": [],
             "snapshot_source": status.get("snapshot_source") if status else None,
             "snapshot_degraded": bool(status.get("api_degraded")) if status else False,
         }
+
+    raw_all = status.get("all_positions") or []
+    all_positions: list[dict[str, Any]] = []
+    for p in raw_all:
+        if not p or not p.get("has_position"):
+            continue
+        all_positions.append({
+            "symbol": p.get("symbol") or status.get("symbol"),
+            "side": p.get("side"),
+            "qty": float(p.get("qty") or 0),
+            "entry_price": float(p.get("entry_price") or 0),
+            "mark_price": float(p.get("mark_price") or 0),
+            "unrealized_pnl": float(p.get("unrealized_pnl") or 0),
+        })
+    if not all_positions:
+        all_positions = [{
+            "symbol": status.get("symbol"),
+            "side": status.get("side"),
+            "qty": float(status.get("qty") or 0),
+            "entry_price": float(status.get("entry_price") or 0),
+            "mark_price": float(status.get("mark_price") or 0),
+            "unrealized_pnl": float(status.get("unrealized_pnl") or 0),
+        }]
+
     return {
         "has_position": True,
         "position_side": status.get("side"),
@@ -603,6 +629,8 @@ def position_fields_from_status(status: dict | None) -> dict[str, Any]:
         "position_entry": float(status.get("entry_price") or 0),
         "position_mark": float(status.get("mark_price") or 0),
         "position_unrealized": float(status.get("unrealized_pnl") or 0),
+        "position_symbol": status.get("symbol") or (all_positions[0].get("symbol") if all_positions else None),
+        "all_positions": all_positions,
         "snapshot_source": status.get("snapshot_source"),
         "snapshot_degraded": bool(status.get("api_degraded")),
     }

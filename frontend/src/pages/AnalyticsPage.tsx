@@ -24,7 +24,7 @@ export default function Analytics() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    userApi.analytics(90).then(setA).finally(() => setLoading(false))
+    userApi.analytics(90, true).then(setA).finally(() => setLoading(false))
   }, [])
 
   const isDark = theme === 'dark'
@@ -269,6 +269,40 @@ export default function Analytics() {
           )}
         </GlassCard>
       </div>
+      {(a?.pnl_by_symbol?.length > 0) && (
+        <GlassCard className="p-6 section-mb-lg">
+          <h3 className="card-heading">{t('analytics.pnlBySymbol')}</h3>
+          {a?.window_start && (
+            <p className="text-muted text-sm section-mb-sm">
+              {a.since_activation
+                ? t('analytics.sinceActivationHint', { date: a.window_start })
+                : t('analytics.windowHint', { date: a.window_start })}
+            </p>
+          )}
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>{t('trades.symbol')}</th>
+                  <th>{t('trades.pnl')}</th>
+                  <th>{t('analytics.totalTrades')}</th>
+                  <th>{t('analytics.winRate')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {a.pnl_by_symbol.map((row: { symbol: string; pnl: number; trades: number; win_rate: number }) => (
+                  <tr key={row.symbol}>
+                    <td><span className="badge badge-gray">{row.symbol}</span></td>
+                    <td className={row.pnl >= 0 ? 'text-green' : 'text-red'}>{fmt(row.pnl)}</td>
+                    <td>{row.trades}</td>
+                    <td>{row.win_rate}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </GlassCard>
+      )}
       <GlassCard className="p-6 dash-heatmap-card mt-xs">
         <h3 className="card-heading">{t('dashboard.heatmap')}</h3>
         {loading ? <Skeleton height={220} /> : (

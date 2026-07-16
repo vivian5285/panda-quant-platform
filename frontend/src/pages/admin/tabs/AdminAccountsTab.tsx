@@ -277,16 +277,27 @@ export default function AdminAccountsTab() {
                   <td>
                     {row.has_position ? (
                       <div className="admin-position-cell">
-                        <span className={`badge ${row.position_side === 'LONG' ? 'badge-green' : 'badge-red'}`}>
-                          {row.position_side}
-                        </span>
-                        <span className="text-sm">{Number(row.position_qty ?? 0).toFixed(4)}</span>
-                        <span className="text-muted text-xs">
-                          @ ${Number(row.position_entry ?? 0).toFixed(2)}
-                          {(row.position_mark ?? 0) > 0 && (
-                            <> · {t('admin.accountsMarkPrice')} ${Number(row.position_mark).toFixed(2)}</>
-                          )}
-                        </span>
+                        {(row.all_positions?.length ? row.all_positions : [{
+                          symbol: row.position_symbol,
+                          side: row.position_side,
+                          qty: row.position_qty,
+                          entry_price: row.position_entry,
+                          mark_price: row.position_mark,
+                        }]).map((pos: any, idx: number) => (
+                          <div key={`${pos.symbol || idx}`} className="admin-position-line">
+                            <span className="badge badge-gray">{String(pos.symbol || row.position_symbol || 'ETHUSDT').replace(/USDT$/i, '')}</span>
+                            <span className={`badge ${pos.side === 'LONG' ? 'badge-green' : 'badge-red'}`}>
+                              {pos.side}
+                            </span>
+                            <span className="text-sm">{Number(pos.qty ?? 0).toFixed(4)}</span>
+                            <span className="text-muted text-xs">
+                              @ ${Number(pos.entry_price ?? 0).toFixed(2)}
+                              {(pos.mark_price ?? 0) > 0 && (
+                                <> · {t('admin.accountsMarkPrice')} ${Number(pos.mark_price).toFixed(2)}</>
+                              )}
+                            </span>
+                          </div>
+                        ))}
                       </div>
                     ) : (
                       <span className="text-muted">{t('admin.accountsFlat')}</span>
@@ -335,22 +346,34 @@ export default function AdminAccountsTab() {
                     <td colSpan={11} className="admin-account-detail-cell">
                       <GlassCard className="p-4 section-mt-sm">
                         {row.has_position && (
-                          <div className="admin-live-position-banner section-mb-sm">
-                            <span className={`badge ${row.position_side === 'LONG' ? 'badge-green' : 'badge-red'}`}>
-                              {row.position_side}
-                            </span>
-                            <span>{Number(row.position_qty ?? 0).toFixed(4)} ETH</span>
-                            <span className="text-muted">
-                              {t('referrals.positionEntry')} ${Number(row.position_entry ?? 0).toFixed(2)}
-                            </span>
-                            {(row.position_mark ?? 0) > 0 && (
-                              <span className="text-muted">
-                                {t('referrals.positionMark')} ${Number(row.position_mark).toFixed(2)}
-                              </span>
-                            )}
-                            <span className={pnlClass(row.position_unrealized ?? row.unrealized_pnl ?? 0)}>
-                              {t('dashboard.floatingPnl')} ${Number(row.position_unrealized ?? row.unrealized_pnl ?? 0).toFixed(2)}
-                            </span>
+                          <div className="section-mb-sm">
+                            {(row.all_positions?.length ? row.all_positions : [{
+                              symbol: row.position_symbol,
+                              side: row.position_side,
+                              qty: row.position_qty,
+                              entry_price: row.position_entry,
+                              mark_price: row.position_mark,
+                              unrealized_pnl: row.position_unrealized ?? row.unrealized_pnl,
+                            }]).map((pos: any, idx: number) => (
+                              <div key={`${pos.symbol || idx}`} className="admin-live-position-banner section-mb-sm">
+                                <span className="badge badge-gray">{pos.symbol || row.position_symbol || 'ETHUSDT'}</span>
+                                <span className={`badge ${pos.side === 'LONG' ? 'badge-green' : 'badge-red'}`}>
+                                  {pos.side}
+                                </span>
+                                <span>{Number(pos.qty ?? 0).toFixed(4)}</span>
+                                <span className="text-muted">
+                                  {t('referrals.positionEntry')} ${Number(pos.entry_price ?? 0).toFixed(2)}
+                                </span>
+                                {(pos.mark_price ?? 0) > 0 && (
+                                  <span className="text-muted">
+                                    {t('referrals.positionMark')} ${Number(pos.mark_price).toFixed(2)}
+                                  </span>
+                                )}
+                                <span className={pnlClass(pos.unrealized_pnl ?? 0)}>
+                                  {t('dashboard.floatingPnl')} ${Number(pos.unrealized_pnl ?? 0).toFixed(2)}
+                                </span>
+                              </div>
+                            ))}
                           </div>
                         )}
 
@@ -398,6 +421,7 @@ export default function AdminAccountsTab() {
                                 <thead>
                                   <tr>
                                     <th>{t('common.time')}</th>
+                                    <th>{t('trades.symbol')}</th>
                                     <th>{t('trades.side')}</th>
                                     <th>{t('trades.qty')}</th>
                                     <th>{t('trades.entry')}</th>
@@ -410,6 +434,7 @@ export default function AdminAccountsTab() {
                                   {detailTrades.map(tr => (
                                     <tr key={tr.id}>
                                       <td>{localeDate(tr.closed_at || tr.created_at, locale)}</td>
+                                      <td>{tr.symbol || 'ETHUSDT'}</td>
                                       <td>{tr.side}</td>
                                       <td>{tr.quantity}</td>
                                       <td>{tr.entry_price}</td>
@@ -421,7 +446,7 @@ export default function AdminAccountsTab() {
                                     </tr>
                                   ))}
                                   {!detailTrades.length && (
-                                    <tr><td colSpan={7} className="text-muted">{t('common.noData')}</td></tr>
+                                    <tr><td colSpan={8} className="text-muted">{t('common.noData')}</td></tr>
                                   )}
                                 </tbody>
                               </table>
