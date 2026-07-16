@@ -165,6 +165,10 @@ def compute_vps_open_qty(
     from app.core.symbol_registry import normalize_canonical_symbol
 
     sizing_base, sizing_source = resolve_principal_sizing_base(live_balance, initial_principal)
+    # Checklist: OPEN uses realtime TOTAL_EQUITY (total margin balance), not availableBalance
+    if float(live_balance or 0) > 0:
+        sizing_base = float(live_balance)
+        sizing_source = "total_equity"
     lev = max(int(leverage or 1), 1)
     price_f = float(price or 0)
     tv_sl_f = float(tv_sl or 0)

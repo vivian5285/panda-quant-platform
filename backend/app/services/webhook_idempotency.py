@@ -25,8 +25,11 @@ def compute_fingerprint(payload: dict) -> str:
         return f"id:{explicit}"
 
     action = str(payload.get("action", "")).upper()
+    from app.core.symbol_registry import extract_payload_symbol
+
     core = {
         "action": action,
+        "symbol": extract_payload_symbol(payload, require=False) or "UNKNOWN",
         "regime": payload.get("regime"),
         "price": round_price(payload.get("price") or 0),
         "atr": round(float(payload.get("atr") or 0), 4),

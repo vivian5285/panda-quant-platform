@@ -259,7 +259,26 @@ class SignalDispatcher:
 
         action = str(payload.get("action", "")).upper().strip()
         is_close = is_close_signal(action)
-        signal_symbol = extract_payload_symbol(payload)
+        signal_symbol = extract_payload_symbol(payload, require=True)
+        if not signal_symbol:
+            raw_sym = None
+            for k in ("symbol", "ticker", "pair", "market"):
+                if payload.get(k):
+                    raw_sym = payload.get(k)
+                    break
+            logger.warning("Signal rejected: unknown_symbol raw=%s", raw_sym)
+            notify_system(
+                "warning", "UNKNOWN_SYMBOL",
+                "未知/缺失交易品种",
+                f"收到 {payload.get('action', '?')} 但无法路由品种（raw={raw_sym!r}），已拒绝",
+                {"payload_action": payload.get("action"), "raw_symbol": raw_sym, "reason": "unknown_symbol"},
+            )
+            return {
+                "dispatched": 0,
+                "results": [],
+                "reason": "unknown_symbol",
+                "raw_symbol": raw_sym,
+            }
         routed_payload = {**payload, "symbol": signal_symbol}
 
         if is_globally_paused() and not is_close:

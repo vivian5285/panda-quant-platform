@@ -876,20 +876,39 @@ class PositionSupervisor(
         qty, sizing_meta = self._resolve_entry_qty(curr_px)
         if qty <= 0:
             err = sizing_meta.get("error", "insufficient_balance")
+            alert_type = (
+                "NOTIONAL_CAP"
+                if err in ("combined_notional_exceeded", "total_nominal_exceeded")
+                else "INSUFFICIENT_BALANCE"
+            )
+            title = "总名义敞口超限" if alert_type == "NOTIONAL_CAP" else "开仓失败"
+            unit = getattr(self, "qty_unit", "ETH")
             self._log("ERROR", f"开仓失败: {err} | meta={sizing_meta}")
             self._alert(
-                "warning", "INSUFFICIENT_BALANCE", "开仓失败",
-                f"用户 {self.user_id} 无法开仓: {err} | "
-                f"order={sizing_meta.get('order_amount')} sl_dist={sizing_meta.get('sl_distance')}",
-                sizing_meta,
+                "warning", alert_type, title,
+                f"用户 {self.user_id} {getattr(self, 'canonical_symbol', '')} 无法开仓: {err} | "
+                f"名义={sizing_meta.get('proposed_notional') or sizing_meta.get('order_amount')} "
+                f"上限={sizing_meta.get('notional_cap')} "
+                f"unit={unit}",
+                {
+                    **sizing_meta,
+                    "symbol": getattr(self, "canonical_symbol", None),
+                    "qty_unit": unit,
+                },
             )
-            return {"status": "error", "reason": err, "message": "无法开仓，请检查 tv_sl 与 VPS 风险参数"}
+            return {
+                "status": "error",
+                "reason": err,
+                "message": "无法开仓（名义超限或余额/参数不足）",
+            }
 
         open_side = "BUY" if action == "LONG" else "SELL"
         entry_type = getattr(self, "_entry_type", "OPEN")
+        unit = getattr(self, "qty_unit", "ETH")
         self._log(
             "SIGNAL",
-            f"🚀 [VPS开仓] {open_side} {qty} ETH | {entry_type} R{self.regime} | "
+            f"🚀 [VPS开仓] {open_side} {qty} {unit} | {getattr(self, 'canonical_symbol', '')} "
+            f"{entry_type} R{self.regime} | "
             f"名义{sizing_meta.get('order_amount')}U / sl_dist={sizing_meta.get('sl_distance')} "
             f"({sizing_meta.get('sizing_source')})",
         )

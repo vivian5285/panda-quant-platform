@@ -54,6 +54,15 @@ def validate_signal_payload(data: dict) -> tuple[bool, str]:
     if action not in VALID_ACTIONS and not action.startswith("CLOSE"):
         return False, f"Unsupported action: {action}"
 
+    from app.core.symbol_registry import extract_payload_symbol
+
+    can = extract_payload_symbol(data, require=True)
+    if not can:
+        raw = data.get("symbol") or data.get("ticker") or data.get("pair")
+        if raw:
+            return False, f"Unsupported symbol: {raw}"
+        return False, "Missing symbol (ETHUSDT / XAUUSDT required)"
+
     if action in ENTRY_ACTIONS:
         if data.get("price") is None or float(data.get("price") or 0) <= 0:
             return False, f"Missing required field for {action}: price"

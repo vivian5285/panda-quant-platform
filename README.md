@@ -10,7 +10,7 @@
 |----------|---------------------------------------------|
 | **TV Webhook（Gemini）** | `https://twinstar.pro/gemini/webhook` |
 | 仓库 | [github.com/vivian5285/panda-quant-platform](https://github.com/vivian5285/panda-quant-platform) |
-| 默认交易对 | ETH 永续（Binance `ETHUSDT` / OKX·Gate·DeepCoin 各所符号见 `.env`） |
+| 默认交易对 | **ETH + XAU** 永续双品种（`TRADING_SYMBOLS=ETHUSDT,XAUUSDT`；各所 native 符号见 `symbol_registry.py`） |
 
 > **Gemini 多用户** 支持 Binance / OKX / Gate.io U 本位永续 + DeepCoin SWAP 内测。  
 > 同机可共存 **legacy 单账户** 服务：币安大脑 `:5003`、深币 `:5004`，与 Gemini `:6010` **端口与路径互不冲突**。
@@ -57,22 +57,24 @@ rules:
   - 永远一手、单向持仓 One-Way；工厂 OPEN 同向已有仓 → 先平后开（人工接管同向仓除外）
   - 反方向 TV 信号：一律先平后开（cancel all → 市价全平 → 再开仓）
   - PYRAMID / PROFIT_ADD：同向追加，数量 = base_qty × TV qty_ratio；**加仓后核武重挂 TP123（新价格×新总头寸）+ TV SL + 雷达**
-  - 开仓后挂限价止盈 TP1/2/3（reduceOnly）+ **VPS 自主硬止损**（regime×ATR 呼吸空间，TV tv_sl 仅参考）+ **8 阶段雷达移动保本**
-  - **硬止损**：`距离 = ATR × sl_m × 档位倍数`（R1~R4 约 30/50/70/100U@ATR16）；**Stop-Limit** 缓冲执行；**忽略 TV UPDATE_SL**
+  - 开仓后挂限价止盈 TP1/2/3（reduceOnly）+ **VPS 自主硬止损**（开仓价×档位%，TV tv_sl 仅参考）+ **6 阶段雷达移动保本（TP1 三重验证后启动）**
+  - **硬止损**：`距离 = 开仓价 × 档位%`（R1~R4：2.78/3.89/5.56/8.33%）；**Stop-Limit** 缓冲执行；**忽略 TV UPDATE_SL**
   - 禁止与 TV 反向持仓：哨兵 / 重启 / 空闲巡检 → FORCE_ALIGN 全平
-  - 人工/外部同向仓：manual adopt 后保留仓位，TV CLOSE 不强制全平，补挂 TP123 + **VPS 硬止损**（雷达按 8 阶段路径激活）
+  - 人工/外部同向仓：manual adopt 后保留仓位，TV CLOSE 不强制全平，补挂 TP123 + **VPS 硬止损**（雷达 TP1 确认后按 6 阶段激活）
   - **人工/外部全平**：哨兵/空闲巡检检测到实盘归零 → **立即撤销 TP123 + STOP**（不等待平仓确认），防止孤儿止盈反向开仓
   - **雷达越过 TP1/TP2**：雷达止损有效上移后，若 SL ≥ TP1（多）或 SL ≤ TP1（空），主动撤销过时 TP1/TP2 限价单（`TP_ORPHAN_PURGE`）
   - **加仓合并**：PYRAMID/PROFIT_ADD → 加权均价重置雷达、硬止损取更宽（多取低/空取高）、TV 新 TP123 替换旧限价
-  - **三层止损**：TV `CLOSE_STOPLOSS` = 第一指令立即全平；VPS 宽硬止损 = 限价保险；8 阶段雷达 = 动态锁利
+  - **三层止损**：TV `CLOSE_STOPLOSS` = 第一指令立即全平；VPS 宽硬止损 = 限价保险；6 阶段雷达 = 动态锁利（TP1 三重验证后）
   - 未结清绩效账单 / 用户暂停 / 全局暂停 → 跳过建仓；平仓类信号在暂停时仍放行
 
 # 策略对接（Pine v6.9.45 双系统）
 tv_actions: [LONG, SHORT, CLOSE, CLOSE_PROTECT, CLOSE_TP3]
 entry_fields: [action, secret, price, regime, atr, tv_tp1, tv_tp2, tv_tp3, tv_sl?, entry_type?]
 close_fields: [action, secret, regime, price, atr, side, reason, pnl_pct?]
-extra_actions: [UPDATE_SL]   # VPS 忽略，仅记录日志；硬止损由 regime+ATR 自主计算
+extra_actions: [UPDATE_SL]   # VPS 忽略，仅记录日志；硬止损由 开仓价×档位% 自主计算
 note: TP1/TP2 策略内部记账不发 TV 警报；仅 TP3 与保护性全平各发一条
+dual_symbol: ETHUSDT + XAUUSDT 独立 supervisor；symbol 字段必填（.P 后缀支持）
+vps_checklist: docs/VPS_LIVE_CHECKLIST.md   # Cursor 实盘自查清单
 
 # 密钥与配置优先级（重要）
 webhook_secret: platform_runtime.json webhook.secret（管理后台）> .env WEBHOOK_SECRET
@@ -131,7 +133,8 @@ self_check: production_check.sh + backend/scripts/check_system.py
 21. [运维自检与测试命令](#运维自检与测试命令)
 22. [故障排查手册](#故障排查手册)
 23. [生产就绪清单](#生产就绪清单)
-24. [技术栈与路线图](#技术栈与路线图)
+24. [VPS 实盘自查清单](#vps-实盘自查清单)
+25. [技术栈与路线图](#技术栈与路线图)
 
 ---
 
@@ -406,7 +409,7 @@ exchange_factory.create_supervisor(user, client)
 | **极速响应 TV** | 网关校验通过后 **立即 HTTP 200**，下单在后台线程异步执行 |
 | **永远一手** | 单向 One-Way；工厂 OPEN 同向已有仓 → **先平后开**（人工 adopt 同向仓除外） |
 | **策略价格由 TV 指挥** | `price/regime/atr/tv_tp1~3/tv_sl` 由 Pine 下发；VPS 执行、挂单、雷达、对齐 |
-| **VPS 独立 sizing** | OPEN 由 VPS 公式计算（忽略 TV `qty_ratio`）；ADD = `base_qty × TV qty_ratio`；`tv_sl` 仅用于止损 |
+| **VPS 独立 sizing** | OPEN：`margin = total_equity × REGIME_MARGIN` × 25×；忽略 TV `qty_ratio`；ADD = `base_qty × TV qty_ratio`；`tv_sl` **仅日志** |
 | **逆势零容忍** | 实盘方向 ≠ `last_tv_side` → 哨兵/重启/空闲巡检 `FORCE_ALIGN` |
 | **人工仓保护** | manual adopt 后：TV CLOSE 不强制全平；补挂 TP123 + TV SL + 雷达 |
 | **全链路可审计** | 所有决策写 `trade_logs.detail_json`；关键动作钉钉 |
@@ -449,7 +452,7 @@ TradingView POST /gemini/webhook
 
 | 场景 | 四所行为 |
 |------|----------|
-| 空仓 | VPS sizing 开仓 → TP123 + TV SL + 哨兵 |
+| 空仓 | VPS sizing 开仓 → TP123 + VPS 硬止损 + 哨兵 |
 | 已有仓 · **工厂单** | **先平后开** |
 | 已有仓 · **人工 adopt 同向** | 保留仓位，刷新 TP/雷达 |
 | 反方向 | **先平后开** |
@@ -468,59 +471,63 @@ TradingView POST /gemini/webhook
 
 #### UPDATE_SL
 
-**VPS 忽略** — 硬止损由 `regime + atr` 自主计算；雷达本地管理。仅写 `UPDATE_SL` 日志。
+**VPS 忽略** — 硬止损由 **开仓价 × 档位%** 自主计算；雷达本地管理。仅写 `UPDATE_SL` 日志。
 
-#### VPS 硬止损（四档均匀递增）
+#### VPS 硬止损（四档 · 占开仓价百分比）
 
 ```
-硬止损距离 = ATR × sl_m × 档位倍数
-Regime  sl_m   档位倍数  最终倍数  呼吸空间(ATR≈16)
-  1     0.9     2.0      1.80×    ≈ 30 U
-  2     1.05    3.0      3.15×    ≈ 50 U
-  3     1.10    4.0      4.40×    ≈ 70 U
-  4     1.25    5.0      6.25×    ≈100 U
+硬止损距离 = 开仓价 × regime_pct
+Regime  pct      示例（ETH@1800 多）
+  1     2.78%    ≈ 1700
+  2     3.89%    ≈ 1730
+  3     5.56%    ≈ 1700
+  4     8.33%    ≈ 1650
 ```
 
-执行：**Stop-Limit** 缓冲单（触发价=止损价；限价=触发价 ±0.5U）。  
+TV `tv_sl`（ATR 紧止损）**仅记录日志**，实盘挂单用上表。  
+执行：**Stop-Limit** 缓冲单（触发价=止损价；限价=触发价 ±0.15%）。  
 优先级：`CLOSE_STOPLOSS` 立即市价全平 > VPS 缓冲止损触发 > 忽略 `UPDATE_SL`。
 
 ---
 
-### 四、统一开仓 Sizing（VPS · 四所相同）
+### 四、统一开仓 Sizing（VPS · 四所相同 · ETH+XAU）
 
-实现：`tv_entry_sizing.py`
+实现：`tv_entry_sizing.py` · 品种精度：`symbol_registry.py`
 
 ```
-effective_risk% = VPS_RISK_PCT × REGIME_SCALE × GLOBAL_SCALE
-margin_usd      = sizing_base × effective_risk% × SIZING_MARGIN_LEVERAGE（默认 5）
-position_value  = margin_usd × exchange_leverage（默认 25×）
-qty             = position_value / price   （DeepCoin 换算为合约张）
+margin_usd      = total_equity × REGIME_MARGIN_{1~4}   # R1 5% / R2 10% / R3 15% / R4 18%
+notional_usd    = margin_usd × exchange_leverage（25×）
+qty             = notional_usd / price   （DeepCoin 换算为合约张）
+双品种硬顶       = (ETH名义 + XAU名义) ≤ total_equity × 9
 ```
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
 | `LEVERAGE` / `OKX_*` / `GATE_*` / `DEEPCOIN_*` | **25** | 实盘杠杆 + 钉钉 `#币安25x` |
-| `SIZING_MARGIN_LEVERAGE` | 5 | 保证金预算系数（与交易所杠杆解耦） |
-| `VPS_RISK_PCT` | 3.0% | 基础风险 |
+| `REGIME_MARGIN_1~4` | 5/10/15/18% | OPEN 保证金占 **总本金** 比例 |
+| `MAX_COMBINED_NOTIONAL_MULT` | **9.0** | ETH+XAU 合计名义上限 |
+| `TRADING_SYMBOLS` | ETHUSDT,XAUUSDT | 启用品种 |
 | `ADD_RATIO_REG1~4` | 0 / 0.3 / 0.5 / 0.7 | TV 未传 qty_ratio 时的档位默认 |
 | `MAX_ADD_TIMES_REG1~4` | 1 / 2 / 2 / 3 | 各档位最大加仓次数 |
 
-`tv_sl` **不参与**张数计算，仅挂 STOP。
+`tv_sl` **不参与**张数计算，**不参与**硬止损挂单（仅日志参考）。
 
 ---
 
 ### 五、统一防线 · Route A
 
 ```
-① VPS 硬止损          regime×ATR 四档呼吸空间，Stop-Limit 缓冲执行
-② 雷达保本 (radar)    TP1 后 / 96% 路径激活，8 阶段 ATR 追踪
+① VPS 硬止损          开仓价×档位% 四档呼吸空间，Stop-Limit 缓冲执行（忽略 TV tv_sl）
+② 雷达保本 (radar)    TP1 三重验证后激活，6 阶段 ATR 追踪（Stage 0~5）
 ③ TP123               regime 比例 reduceOnly 限价
 ```
 
+- **TP1 三重验证**（`tp_slice_guard.confirm_tp_tier_fill`）：价格达到 + TP 限价消失 + 数量减仓匹配；防止 R4 小切片误判
 - **合并止损（Binance/OKX/Gate）：** LONG `max(vps_sl, radar)` / SHORT `min(...)`，Stop-Limit 优先
 - **DeepCoin 双轨：** TV SL 与雷达条件单并行
 - **STOP 安全钳制：** `clamp_stop_market_safe()` 防止 SL 高于 mark 瞬间全平
-- 雷达激活 **不撤** TV SL（Route A 共存）
+
+> 完整自查清单：**[`docs/VPS_LIVE_CHECKLIST.md`](docs/VPS_LIVE_CHECKLIST.md)**
 
 ---
 
@@ -1119,13 +1126,33 @@ bash backend/scripts/backup_data.sh
 
 - [ ] HD 助记词 + RPC（管理后台）+ 扫描健康绿色
 - [ ] 绩效缴纳链上自动确认或申诉流程通
-- [ ] 钉钉收到 OPEN/CLOSE/STARTUP，不被 TRAIL 刷屏
+- [ ] 钉钉收到 OPEN/CLOSE/RADAR_ARM/STARTUP
 
 ### 基础设施
 
 - [ ] `bash production_check.sh` 通过
 - [ ] `backend/data` `backend/state` 卷持久化
 - [ ] HTTPS 证书有效；6379 不暴露
+
+---
+
+## VPS 实盘自查清单
+
+Cursor 开发与 VPS 上线前，按 **[`docs/VPS_LIVE_CHECKLIST.md`](docs/VPS_LIVE_CHECKLIST.md)** 逐项对照：
+
+| 模块 | 优先级 | 要点 |
+|------|--------|------|
+| Webhook + ETH/XAU 路由 | 🔴 P0 | `symbol` 必填，绝不串单 |
+| OPEN sizing + 9× 名义 cap | 🔴 P0 | 总本金 × 档位% × 25× |
+| VPS 硬止损 | 🔴 P0 | 忽略 TV `tv_sl` |
+| TP1 三重验证 + 雷达 | 🟡 P1 | 价格主判 + 订单辅判 + 仓位参考 |
+| 钉钉 | 🟢 P2 | 开/平/雷达/风控拦截 |
+
+自动化验收（`backend/`）：
+
+```bash
+py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/test_tp_slice_guard.py tests/test_vps_hard_sl.py -q
+```
 
 ---
 
@@ -1147,7 +1174,9 @@ bash backend/scripts/backup_data.sh
 - [x] **统一交易工厂**：四所共享 Mixin 栈 + Route A 防线 + VPS sizing + manual adopt
 - [x] 多交易所多用户执行（Binance/OKX/Gate/DeepCoin）
 - [x] **25× 杠杆**全所统一；保证金预算与交易所杠杆解耦
-- [x] TV `tv_sl` 硬止损 + 雷达保本 + STOP 安全钳制
+- [x] **ETH + XAU 双品种**：独立 supervisor + 9× 名义 cap + 品种路由
+- [x] **VPS 硬止损**：开仓价×档位%（非 TV ATR 紧止损）
+- [x] **TP1 三重验证 + 6 阶段雷达**（TP1 成交后启动）
 - [x] manual adopt：TV CLOSE 不误平同向人工仓；空闲巡检 10s
 - [x] TV v6.9.45 字段解析 + 网关极速 200
 - [x] 管理后台 Webhook/RPC/钉钉 可视化配置
@@ -1159,7 +1188,6 @@ bash backend/scripts/backup_data.sh
 
 - [ ] Bybit 多用户
 - [ ] Regime 参数后台可配置
-- [ ] 多交易对
 
 ---
 

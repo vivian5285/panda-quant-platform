@@ -22,7 +22,12 @@ def test_normalize_xau_aliases():
 def test_extract_payload_symbol():
     assert extract_payload_symbol({"symbol": "XAUUSDT", "action": "LONG"}) == CANONICAL_XAU
     assert extract_payload_symbol({"ticker": "BINANCE:ETHUSDT"}) == CANONICAL_ETH
-    assert extract_payload_symbol({"action": "CLOSE"}) == CANONICAL_ETH
+    assert extract_payload_symbol({"symbol": "ETHUSDT.P"}) == CANONICAL_ETH
+    assert extract_payload_symbol({"symbol": "XAUUSDT.P"}) == CANONICAL_XAU
+    # require=True (default): missing symbol must reject — never silent ETH fallback on OPEN
+    assert extract_payload_symbol({"action": "CLOSE"}) is None
+    assert extract_payload_symbol({"action": "CLOSE"}, require=False) == CANONICAL_ETH
+    assert extract_payload_symbol({"symbol": "BTCUSDT"}) is None
 
 
 def test_exchange_native_symbols():

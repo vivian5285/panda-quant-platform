@@ -58,13 +58,18 @@ SYMBOL_PRECISION: dict[str, dict[str, Any]] = {
 # Aliases TV / Pine / exchanges may send
 _SYMBOL_ALIASES: dict[str, str] = {
     "ETHUSDT": CANONICAL_ETH,
+    "ETHUSDT.P": CANONICAL_ETH,
+    "ETHUSDT.PERP": CANONICAL_ETH,
     "ETH-USDT": CANONICAL_ETH,
     "ETH-USDT-SWAP": CANONICAL_ETH,
     "ETH_USDT": CANONICAL_ETH,
     "ETHUSD": CANONICAL_ETH,
     "ETH": CANONICAL_ETH,
     "XAUUSDT": CANONICAL_XAU,
+    "XAUUSDT.P": CANONICAL_XAU,
+    "XAUUSDT.PERP": CANONICAL_XAU,
     "XAUUSD": CANONICAL_XAU,
+    "XAUUSD.P": CANONICAL_XAU,
     "XAU-USDT": CANONICAL_XAU,
     "XAU-USDT-SWAP": CANONICAL_XAU,
     "XAU_USDT": CANONICAL_XAU,
@@ -74,20 +79,35 @@ _SYMBOL_ALIASES: dict[str, str] = {
 }
 
 
+def _strip_tv_symbol(raw: str) -> str:
+    """Normalize TV tickers: BINANCE:ETHUSDT.P → ETHUSDT."""
+    key = str(raw).strip().upper().replace(" ", "")
+    if ":" in key:
+        key = key.split(":")[-1]
+    for suffix in (".PERP", ".P", "PERP"):
+        if key.endswith(suffix):
+            key = key[: -len(suffix)]
+            break
+    return key
+
+
 def normalize_canonical_symbol(raw: str | None, *, default: str | None = DEFAULT_CANONICAL) -> str | None:
-    """Map any TV/exchange ticker to canonical ETHUSDT / XAUUSDT."""
+    """Map any TV/exchange ticker to canonical ETHUSDT / XAUUSDT.
+
+    Pass ``default=None`` to reject unknown/unsupported symbols (no silent ETH fallback).
+    """
     if raw is None or str(raw).strip() == "":
         return default
-    key = str(raw).strip().upper().replace(" ", "")
+    key = _strip_tv_symbol(str(raw))
     if key in SUPPORTED_CANONICAL:
         return key
     mapped = _SYMBOL_ALIASES.get(key)
     if mapped:
         return mapped
-    # Loose contains
+    # Loose contains (only for known dual-symbol tokens)
     if "XAU" in key or "GOLD" in key or "PAXG" in key:
         return CANONICAL_XAU
-    if "ETH" in key:
+    if key.startswith("ETH") or "ETHUSDT" in key:
         return CANONICAL_ETH
     return default
 
@@ -120,13 +140,23 @@ def label_for_symbol(canonical: str | None) -> str:
     return str(symbol_meta(canonical).get("label") or canonical or "ETH")
 
 
-def extract_payload_symbol(payload: dict | None) -> str:
-    """Pull symbol from TV webhook (symbol / ticker / pair). Default ETH for legacy alerts."""
+def extract_payload_symbol(payload: dict | None, *, require: bool = True) -> str | None:
+    """Pull symbol from TV webhook.
+
+    When ``require=True`` (default): missing / unknown → None (caller must reject).
+    Never silently route BTC/unknown to ETH.
+    """
     data = dict(payload or {})
     for key in ("symbol", "ticker", "pair", "market", "instId", "contract"):
         raw = data.get(key)
         if raw is not None and str(raw).strip():
-            return normalize_canonical_symbol(str(raw)) or DEFAULT_CANONICAL
+            can = normalize_canonical_symbol(str(raw), default=None)
+            if can:
+                return can
+            # Present but unsupported
+            return None
+    if require:
+        return None
     return DEFAULT_CANONICAL
 
 
