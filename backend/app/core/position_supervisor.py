@@ -631,7 +631,7 @@ class PositionSupervisor(
 
         self._log(
             "SIGNAL",
-            f"📈 [{entry_type}] 同向追加: {action} +{qty} ETH | "
+            f"📈 [{entry_type}] 同向追加: {action} +{qty} {getattr(self, 'qty_unit', 'ETH')} | "
             f"base={sizing_meta.get('base_qty')} × {sizing_meta.get('add_qty_ratio')}",
         )
         self.client.place_market_order(action, qty, self.symbol)
@@ -706,16 +706,17 @@ class PositionSupervisor(
             sl_label = shield.get("label") or self._hard_stop_label()
             verify_note = f" | {sl_label}已核实 @{shield.get('stop_price', 0):.2f}"
         add_label = "金字塔加仓" if entry_type == "PYRAMID" else "浮盈加仓"
+        unit = getattr(self, "qty_unit", "ETH")
         self._log(
             "OPEN",
-            f"📈 {add_label}：{action} +{add_qty:.4f} → 总 {real_qty} ETH @ {entry_price}{verify_note}",
+            f"📈 {add_label}：{action} +{add_qty:.4f} → 总 {real_qty} {unit} @ {entry_price}{verify_note}",
             detail,
         )
         self._alert(
             "info",
             entry_type,
             f"{theme['accent']} {add_label} · {theme['label']}",
-            f"{action} +{add_qty:.4f} ETH → 总 {real_qty} @ {entry_price} | "
+            f"{action} +{add_qty:.4f} {unit} → 总 {real_qty} @ {entry_price} | "
             f"首仓 {sizing_meta.get('base_qty')} × {sizing_meta.get('add_qty_ratio')} "
             f"= +{add_qty:.4f} ({self.add_count}/{self._max_add_times()}){verify_note}",
             detail,
@@ -997,11 +998,11 @@ class PositionSupervisor(
             if enrich_note:
                 enrich_suffix = f" | {enrich_note}"
             open_title = f"{theme['accent']} GEMINI开仓 · {theme['label']} 档位{self.regime}"
-            self._log("OPEN", f"🔶 战神出击：{action} {real_qty} ETH @ {entry_price} | 滑点 {slip:+.2f}{verify_note}{enrich_suffix}", detail)
+            self._log("OPEN", f"🔶 战神出击：{action} {real_qty} {unit} @ {entry_price} | 滑点 {slip:+.2f}{verify_note}{enrich_suffix}", detail)
             self._alert(
                 "info", "OPEN",
                 open_title,
-                f"{action} {real_qty} ETH @ {entry_price} | 滑点 {slip:+.2f} | "
+                f"{action} {real_qty} {unit} @ {entry_price} | 滑点 {slip:+.2f} | "
                 f"TP {self.tv_tps} | ATR {self.current_atr} | {theme['leverage']}×{verify_note}{enrich_suffix}",
                 detail,
             )
@@ -1028,7 +1029,8 @@ class PositionSupervisor(
             self.tv_tps,
             self.regime_settings,
             exclude_levels=exclude_levels or set(),
-            round_qty_fn=round_quantity,
+            round_qty_fn=self._round_qty,
+            min_qty=float(getattr(self, "min_order_qty", 0) or 0),
         )
 
     def _open_tp_prices_on_book(self) -> list[float]:
@@ -1774,7 +1776,7 @@ class PositionSupervisor(
                     "warning",
                     "DEFENSE",
                     "开仓后限价止盈未全部挂上",
-                    f"{self.current_side} {pos['size']} ETH | 仅 {result['matched']}/{result['expected']} 档 | {summary}",
+                    f"{self.current_side} {pos['size']} {getattr(self, 'qty_unit', 'ETH')} | 仅 {result['matched']}/{result['expected']} 档 | {summary}",
                     result,
                 )
             shield = self._sync_tv_hard_stop(pos["size"], at_open=True, force_replace=True)
@@ -2728,7 +2730,7 @@ class PositionSupervisor(
                 "critical",
                 "CLOSE_FAIL",
                 "清仓失败 · 请人工核查",
-                f"平台强平后仍剩 {residual_amt} ETH | {reason}",
+                f"平台强平后仍剩 {residual_amt} {getattr(self, 'qty_unit', 'ETH')} | {reason}",
                 fail_detail,
             )
 

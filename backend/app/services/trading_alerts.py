@@ -244,7 +244,8 @@ def _line(label: str, value: str) -> str:
 
 def format_cap_align_detail_cn(detail: dict, exchange: str | None = None) -> str:
     """叠仓纠偏 — 管理员一眼能看懂的中文明细."""
-    theme = resolve_exchange_theme(exchange or detail.get("exchange"))
+    sym = detail.get("symbol") or detail.get("canonical_symbol")
+    theme = resolve_exchange_theme(exchange or detail.get("exchange"), sym)
     unit = detail.get("qty_unit") or theme["qty_unit"]
     regime = detail.get("regime")
     regime_txt = f"R{regime}" if regime else "—"
@@ -292,8 +293,9 @@ def format_cap_align_detail_cn(detail: dict, exchange: str | None = None) -> str
 
 
 def format_adverse_sl_detail_cn(detail: dict, exchange: str | None = None) -> str:
-    theme = resolve_exchange_theme(exchange or detail.get("exchange"))
-    unit = qty_unit_for_exchange(exchange or detail.get("exchange"))
+    sym = detail.get("symbol") or detail.get("canonical_symbol")
+    theme = resolve_exchange_theme(exchange or detail.get("exchange"), sym)
+    unit = detail.get("qty_unit") or theme["qty_unit"]
     side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(detail.get("side", "")).upper(), "—")
     hard_pct = detail.get("hard_stop_pct", 10)
     lines = [
@@ -309,9 +311,12 @@ def format_adverse_sl_detail_cn(detail: dict, exchange: str | None = None) -> st
 
 
 def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
-    theme = resolve_exchange_theme(exchange or detail.get("exchange"))
-    unit = qty_unit_for_exchange(exchange or detail.get("exchange"))
+    sym = detail.get("symbol") or detail.get("canonical_symbol")
+    theme = resolve_exchange_theme(exchange or detail.get("exchange"), sym)
+    unit = detail.get("qty_unit") or theme["qty_unit"]
     lines = [_line("交易所", theme["label"])]
+    if sym:
+        lines.append(_line("合约", theme.get("symbol") or sym))
     if detail.get("side"):
         side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(detail["side"]).upper(), detail["side"])
         lines.append(_line("方向", side_txt))
@@ -358,8 +363,9 @@ def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
 
 def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str:
     """VPS 开仓/加仓 — 风险系数口径（非档位保证金百分比）."""
-    theme = resolve_exchange_theme(exchange or detail.get("exchange"))
-    unit = theme["qty_unit"]
+    sym = detail.get("symbol") or detail.get("canonical_symbol")
+    theme = resolve_exchange_theme(exchange or detail.get("exchange"), sym)
+    unit = detail.get("qty_unit") or theme["qty_unit"]
     entry_type = str(detail.get("entry_type") or "OPEN").upper()
     regime = detail.get("regime")
     regime_txt = f"R{regime}" if regime else "—"
@@ -465,8 +471,9 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
 
 
 def format_force_align_detail_cn(detail: dict, exchange: str | None = None) -> str:
-    theme = resolve_exchange_theme(exchange or detail.get("exchange"))
-    unit = theme["qty_unit"]
+    sym = detail.get("symbol") or detail.get("canonical_symbol")
+    theme = resolve_exchange_theme(exchange or detail.get("exchange"), sym)
+    unit = detail.get("qty_unit") or theme["qty_unit"]
     live = detail.get("live_side") or "—"
     tv = detail.get("tv_side") or detail.get("last_tv_side") or "—"
     live_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(live).upper(), str(live))
@@ -495,8 +502,9 @@ def format_force_align_detail_cn(detail: dict, exchange: str | None = None) -> s
 
 def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
     """VPS 重启接管 — TP123 / 硬止损 / 雷达进度."""
-    theme = resolve_exchange_theme(exchange or detail.get("exchange"))
-    unit = theme["qty_unit"]
+    sym = detail.get("symbol") or detail.get("canonical_symbol")
+    theme = resolve_exchange_theme(exchange or detail.get("exchange"), sym)
+    unit = detail.get("qty_unit") or theme["qty_unit"]
     side = detail.get("side") or detail.get("current_side") or "—"
     side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(side).upper(), str(side))
     lines = [
@@ -576,15 +584,16 @@ def format_admin_detail_lines(
     if alert_type in ("OPEN", "PYRAMID", "PROFIT_ADD") or detail.get("sizing_mode") in ("vps_open", "vps_add"):
         return format_vps_entry_detail_cn(detail, ex)
     if alert_type == "UPDATE_TP":
-        theme = resolve_exchange_theme(ex)
+        theme = resolve_exchange_theme(ex, detail.get("symbol") or detail.get("canonical_symbol"))
         side = detail.get("side")
         side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(side or "").upper(), side or "—")
         lines = [
             _line("交易所", theme["label"]),
+            _line("合约", theme["symbol"]),
             _line("方向", side_txt),
         ]
         if detail.get("qty") is not None:
-            lines.append(_line("数量", f"{float(detail['qty']):.4f} {theme['qty_unit']}"))
+            lines.append(_line("数量", f"{float(detail['qty']):.4f} {detail.get('qty_unit') or theme['qty_unit']}"))
         if detail.get("mark_price"):
             lines.append(_line("市价", f"{float(detail['mark_price']):.2f}"))
         old_tps = detail.get("old_tv_tps")
@@ -601,8 +610,8 @@ def format_admin_detail_lines(
         lines.append(_line("雷达", "未改动" if detail.get("radar_untouched") else "—"))
         return "\n".join(lines)
 
-    theme = resolve_exchange_theme(ex)
-    lines = [_line("交易所", theme["label"])]
+    theme = resolve_exchange_theme(ex, detail.get("symbol") or detail.get("canonical_symbol"))
+    lines = [_line("交易所", theme["label"]), _line("合约", theme["symbol"])]
     for key, label in (
         ("side", "方向"),
         ("regime", "档位"),

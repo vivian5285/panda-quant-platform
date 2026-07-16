@@ -598,7 +598,9 @@ class BinanceSmartDefenseMixin:
                     self.client.cancel_order(self.symbol, int(oid))
                     time.sleep(0.25)
             self._def_log(f"  + 补挂 TP @ {px:.2f} qty={q} ETH")
-            if self.client.place_limit_order(close_side, q, px, reduce_only=True):
+            if self.client.place_limit_order(
+                close_side, q, px, symbol=self.symbol, reduce_only=True
+            ):
                 placed += 1
             time.sleep(0.4)
         return placed
@@ -807,7 +809,7 @@ class BinanceSmartDefenseMixin:
 
         live_qty = self._resolve_live_qty(qty)
         if live_qty <= 0:
-            self._def_log(f"重建防线跳过：交易所无可用持仓 (传入 {qty} ETH)", logging.WARNING)
+            self._def_log(f"重建防线跳过：交易所无可用持仓 (传入 {qty} {getattr(self, 'qty_unit', '')})", logging.WARNING)
             return 0
 
         if abs(live_qty - qty) > 0.001:
@@ -825,7 +827,7 @@ class BinanceSmartDefenseMixin:
             f"TP{lv['level']}={lv['qty']}@{lv['price']:.2f}" for lv in levels if lv["qty"] > 0
         )
         self._def_log(
-            f"🕸️ 补挂剩余止盈: 持仓 {live_qty} ETH"
+            f"🕸️ 补挂剩余止盈: 持仓 {live_qty} {getattr(self, 'qty_unit', '')}"
             + (f" | 已成交TP{''.join(str(x) for x in consumed)}" if consumed else "")
             + f" → {level_desc or '无剩余档'}"
         )
@@ -833,7 +835,9 @@ class BinanceSmartDefenseMixin:
         for lv in levels:
             q, px = lv["qty"], lv["price"]
             if q > 0 and px > 0:
-                res = self.client.place_limit_order(close_side, q, px, reduce_only=True)
+                res = self.client.place_limit_order(
+                    close_side, q, px, symbol=self.symbol, reduce_only=True
+                )
                 if res:
                     placed += 1
                 time.sleep(0.35)
@@ -845,7 +849,7 @@ class BinanceSmartDefenseMixin:
         last_audit = self._audit_tp_levels(live_qty)
         for r in range(rounds):
             self._def_log(
-                f"☢️ 核武级止盈清场重挂 {r + 1}/{rounds} | 持仓 {live_qty} ETH | "
+                f"☢️ 核武级止盈清场重挂 {r + 1}/{rounds} | 持仓 {live_qty} {getattr(self, 'qty_unit', '')} | "
                 f"当前 {last_audit['matched_full']}/{last_audit['expected']} | "
                 f"{self._format_audit_summary(last_audit)}",
                 logging.WARNING,

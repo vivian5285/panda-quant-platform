@@ -53,7 +53,16 @@ class BinanceClient:
         self._pub_ws_symbol: str | None = None
         self._rest_price_min_interval = 30.0
         self._last_rest_price_fetch = 0.0
-        logger.info(f"[User {user_id}] Binance Client {CLIENT_VERSION} loaded")
+        logger.info(
+            f"[User {user_id}] Binance Client {CLIENT_VERSION} loaded ({self.trading_symbol})"
+        )
+
+    def _sym(self, symbol: str | None = None) -> str:
+        """Resolve order/query symbol — never silently fall back to ETHUSDT."""
+        return (symbol or self.trading_symbol or settings.SYMBOL).strip()
+
+    def _can_sym(self) -> str | None:
+        return getattr(self, "canonical_symbol", None) or self.trading_symbol
     def is_hedge_mode(self) -> bool | None:
         """True=双向持仓, False=单向, None=查询失败。"""
         try:
@@ -118,8 +127,9 @@ class BinanceClient:
             return px
         return None
 
-    def start_public_price_ws(self, symbol: str = "ETHUSDT") -> None:
+    def start_public_price_ws(self, symbol: str | None = None) -> None:
         """Subscribe markPrice@1s — radar uses WS push, REST only as fallback."""
+        symbol = self._sym(symbol)
         if self._pub_ws_running and self._pub_ws_symbol == symbol:
             return
         self._pub_ws_symbol = symbol
@@ -172,8 +182,9 @@ class BinanceClient:
             if self._pub_ws_running:
                 time.sleep(3)
 
-    def get_current_price(self, symbol="ETHUSDT", prefer_ws=True):
+    def get_current_price(self, symbol=None, prefer_ws=True):
         """Prefer WS cache; rate-limit REST when WS is active."""
+        symbol = self._sym(symbol)
         if prefer_ws:
             ws_px = self._get_ws_price(symbol)
             if ws_px:
@@ -232,7 +243,8 @@ class BinanceClient:
             "can_trade": bool(account.get("canTrade", True)),
         }
 
-    def get_position(self, symbol="ETHUSDT"):
+    def get_position(self, symbol=None):
+        symbol = self._sym(symbol)
         try:
             positions = self.client.futures_position_information(symbol=symbol)
             return positions[0] if positions else None
@@ -240,8 +252,9 @@ class BinanceClient:
             logger.error(f"[User {self.user_id}] get position failed: {e}")
             return None
 
-    def estimate_atr(self, symbol="ETHUSDT", period: int = 14) -> float:
+    def estimate_atr(self, symbol=None, period: int = 14) -> float:
         """Wilder ATR from recent 1h klines — fallback when TV webhook omits atr."""
+        symbol = self._sym(symbol)
         try:
             klines = self.client.futures_klines(
                 symbol=symbol, interval="1h", limit=period + 2,
@@ -328,8 +341,9 @@ class BinanceClient:
             logger.debug(f"[User {self.user_id}] get algo order {algo_id} failed: {e}")
             return None
 
-    def get_open_algo_orders(self, symbol="ETHUSDT") -> list[dict]:
+    def get_open_algo_orders(self, symbol=None) -> list[dict]:
         """Conditional STOP/TP orders live on the algo book after 2025-12 migration."""
+        symbol = self._sym(symbol)
         try:
             raw = self.client._request_futures_api(
                 "get", "openAlgoOrders", signed=True, data={"symbol": symbol},
@@ -346,7 +360,8 @@ class BinanceClient:
             logger.warning(f"[User {self.user_id}] get algo orders failed: {e}")
             return []
 
-    def get_open_orders(self, symbol="ETHUSDT"):
+    def get_open_orders(self, symbol=None):
+        symbol = self._sym(symbol)
         try:
             regular = self.client.futures_get_open_orders(symbol=symbol) or []
         except Exception as e:
@@ -375,10 +390,12 @@ class BinanceClient:
             logger.error(f"[User {self.user_id}] algo stop order failed: {e} params={params}")
             return None
 
-    def place_market_order(self, side, quantity, symbol="ETHUSDT", reduce_only=False):
+    def place_market_order(self, side, quantity, symbol=None, reduce_only=False):
+        symbol = self._sym(symbol)
+        can = self._can_sym()
         try:
             binance_side = "BUY" if side.upper() in ["BUY", "LONG"] else "SELL"
-            qty_str = format_quantity(quantity)
+            qty_str = format_quantity(quantity, can)
             if float(qty_str) <= 0:
                 logger.error(f"[User {self.user_id}] market order qty invalid: {quantity}")
                 return None
@@ -391,20 +408,24 @@ class BinanceClient:
             if reduce_only:
                 params["reduceOnly"] = "true"
             order = self.client.futures_create_order(**params)
-            logger.info(f"[User {self.user_id}] market {side} {qty_str} reduce={reduce_only}")
+            logger.info(
+                f"[User {self.user_id}] market {side} {qty_str} {symbol} reduce={reduce_only}"
+            )
             return order
         except Exception as e:
             logger.error(f"[User {self.user_id}] market order failed: {e}")
             return None
 
-    def place_limit_order(self, side, quantity, price, symbol="ETHUSDT", reduce_only=True):
+    def place_limit_order(self, side, quantity, price, symbol=None, reduce_only=True):
+        symbol = self._sym(symbol)
+        can = self._can_sym()
         try:
             binance_side = "BUY" if side.upper() in ["BUY", "LONG"] else "SELL"
-            qty_str = format_quantity(quantity)
-            price_str = format_price(price)
+            qty_str = format_quantity(quantity, can)
+            price_str = format_price(price, can)
             if float(qty_str) <= 0 or float(price_str) <= 0:
                 logger.error(
-                    f"[User {self.user_id}] limit order invalid qty={quantity} price={price}"
+                    f"[User {self.user_id}] limit order invalid qty={quantity} price={price} symbol={symbol}"
                 )
                 return None
             params = {
@@ -418,22 +439,28 @@ class BinanceClient:
             if reduce_only:
                 params["reduceOnly"] = "true"
             order = self.client.futures_create_order(**params)
-            logger.info(f"[User {self.user_id}] limit {side} {qty_str} @ {price_str} reduce={reduce_only}")
+            logger.info(
+                f"[User {self.user_id}] limit {side} {qty_str} @ {price_str} {symbol} reduce={reduce_only}"
+            )
             return order
         except Exception as e:
-            logger.error(f"[User {self.user_id}] limit order failed: {e} qty={quantity} price={price}")
+            logger.error(
+                f"[User {self.user_id}] limit order failed: {e} symbol={symbol} qty={quantity} price={price}"
+            )
             return None
 
     def place_stop_market_order(
         self,
         side,
         stop_price,
-        symbol="ETHUSDT",
+        symbol=None,
         quantity=None,
         reduce_only=False,
     ):
+        symbol = self._sym(symbol)
+        can = self._can_sym()
         binance_side = "BUY" if side.upper() in ["BUY", "LONG"] else "SELL"
-        stop_str = format_price(stop_price)
+        stop_str = format_price(stop_price, can)
         if float(stop_str) <= 0:
             logger.error(f"[User {self.user_id}] stop order invalid price: {stop_price}")
             return None
@@ -446,8 +473,8 @@ class BinanceClient:
             "triggerPrice": stop_str,
             "workingType": "CONTRACT_PRICE",
         }
-        if quantity is not None and float(format_quantity(quantity)) > 0:
-            algo_params["quantity"] = format_quantity(quantity)
+        if quantity is not None and float(format_quantity(quantity, can)) > 0:
+            algo_params["quantity"] = format_quantity(quantity, can)
             algo_params["reduceOnly"] = "true"
         else:
             algo_params["closePosition"] = "true"
@@ -465,14 +492,14 @@ class BinanceClient:
                 "stopPrice": stop_str,
                 "workingType": "CONTRACT_PRICE",
             }
-            if quantity is not None and float(format_quantity(quantity)) > 0:
-                params["quantity"] = format_quantity(quantity)
+            if quantity is not None and float(format_quantity(quantity, can)) > 0:
+                params["quantity"] = format_quantity(quantity, can)
                 params["reduceOnly"] = "true"
             else:
                 params["closePosition"] = "true"
             order = self.client.futures_create_order(**params)
             logger.info(
-                f"[User {self.user_id}] stop {side} @ {stop_str} "
+                f"[User {self.user_id}] stop {side} @ {stop_str} {symbol} "
                 f"qty={params.get('quantity', 'close-all')}"
             )
             return order
@@ -485,21 +512,23 @@ class BinanceClient:
         side,
         stop_price,
         limit_price,
-        symbol="ETHUSDT",
+        symbol=None,
         quantity=None,
         reduce_only=True,
     ):
         """STOP limit — trigger at stop_price, execute as limit at limit_price."""
+        symbol = self._sym(symbol)
+        can = self._can_sym()
         try:
             binance_side = "BUY" if side.upper() in ["BUY", "LONG"] else "SELL"
-            stop_str = format_price(stop_price)
-            limit_str = format_price(limit_price)
+            stop_str = format_price(stop_price, can)
+            limit_str = format_price(limit_price, can)
             if float(stop_str) <= 0 or float(limit_str) <= 0:
                 logger.error(
                     f"[User {self.user_id}] stop-limit invalid stop={stop_price} limit={limit_price}"
                 )
                 return None
-            if quantity is None or float(format_quantity(quantity)) <= 0:
+            if quantity is None or float(format_quantity(quantity, can)) <= 0:
                 logger.error(f"[User {self.user_id}] stop-limit requires quantity")
                 return None
             params: dict = {
@@ -509,14 +538,14 @@ class BinanceClient:
                 "stopPrice": stop_str,
                 "price": limit_str,
                 "timeInForce": "GTC",
-                "quantity": format_quantity(quantity),
+                "quantity": format_quantity(quantity, can),
                 "workingType": "CONTRACT_PRICE",
             }
             if reduce_only:
                 params["reduceOnly"] = "true"
             order = self.client.futures_create_order(**params)
             logger.info(
-                f"[User {self.user_id}] stop-limit {side} qty={params['quantity']} "
+                f"[User {self.user_id}] stop-limit {side} qty={params['quantity']} {symbol} "
                 f"trigger={stop_str} limit={limit_str}"
             )
             return order
@@ -526,7 +555,8 @@ class BinanceClient:
             )
             return None
 
-    def cancel_order(self, symbol: str, order_id: int) -> bool:
+    def cancel_order(self, symbol: str | None, order_id: int) -> bool:
+        symbol = self._sym(symbol)
         try:
             self.client.futures_cancel_order(symbol=symbol, orderId=int(order_id))
             logger.info(f"[User {self.user_id}] cancel order {order_id}")
@@ -544,7 +574,8 @@ class BinanceClient:
             logger.warning(f"[User {self.user_id}] cancel order {order_id} failed: {e}")
             return False
 
-    def cancel_all_open_orders(self, symbol="ETHUSDT"):
+    def cancel_all_open_orders(self, symbol=None):
+        symbol = self._sym(symbol)
         try:
             self.client.futures_cancel_all_open_orders(symbol=symbol)
         except Exception as e:
@@ -554,7 +585,7 @@ class BinanceClient:
                 "delete", "algoOpenOrders", signed=True, data={"symbol": symbol},
             )
         except Exception as e:
-            logger.warning(f"[User {self.user_id}] cancel algo orders failed: {e}")
+            logger.debug(f"[User {self.user_id}] cancel algo orders: {e}")
 
     def test_connection(self) -> bool:
         try:
@@ -653,8 +684,9 @@ class BinanceClient:
         except Exception as e:
             return {"ok": False, "error": str(e), "uid": None, "sub_accounts": []}
 
-    def get_funding_fees(self, symbol="ETHUSDT", start_time_ms: int | None = None) -> float:
+    def get_funding_fees(self, symbol=None, start_time_ms: int | None = None) -> float:
         """Sum FUNDING_FEE income since position open (negative = paid by user)."""
+        symbol = self._sym(symbol)
         try:
             params: dict = {"symbol": symbol, "incomeType": "FUNDING_FEE", "limit": 100}
             if start_time_ms:

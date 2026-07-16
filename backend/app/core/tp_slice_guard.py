@@ -23,8 +23,13 @@ def compute_tp_slices(
     *,
     exclude_levels: set[int] | None = None,
     round_qty_fn=round_quantity,
+    min_qty: float = 0.0,
 ) -> list[tuple[int, float, float]]:
-    """Regime-ratio slices for live qty; skip consumed levels and re-normalize."""
+    """Regime-ratio slices for live qty; skip consumed levels and re-normalize.
+
+    ``min_qty``: exchange lot-size floor. Undersized non-final slices are folded
+    into the next tier so small XAU positions still get placeable TP orders.
+    """
     exclude_levels = exclude_levels or set()
     ratios = regime_settings[regime]["ratios"]
     active: list[tuple[int, float, float]] = []
@@ -37,8 +42,9 @@ def compute_tp_slices(
     if not active or qty <= 0:
         return []
 
+    floor = max(float(min_qty or 0), 0.0)
     total_ratio = sum(r for _, r, _ in active)
-    slices: list[tuple[int, float, float]] = []
+    raw: list[tuple[int, float, float]] = []
     allocated = 0.0
     for idx, (level, ratio, price) in enumerate(active):
         if idx == len(active) - 1:
@@ -46,8 +52,32 @@ def compute_tp_slices(
         else:
             part_qty = round_qty_fn(qty * (ratio / total_ratio))
             allocated += part_qty
-        if part_qty > 0:
-            slices.append((level, part_qty, price))
+        raw.append((level, part_qty, price))
+
+    # Fold slices below min_qty into the next remaining tier (keep final remnant)
+    slices: list[tuple[int, float, float]] = []
+    carry = 0.0
+    for idx, (level, part_qty, price) in enumerate(raw):
+        q = round_qty_fn(part_qty + carry)
+        carry = 0.0
+        is_last = idx == len(raw) - 1
+        if not is_last and floor > 0 and q + 1e-12 < floor:
+            carry = q
+            continue
+        if q > 0:
+            slices.append((level, q, price))
+        elif carry > 0 and is_last:
+            # last chance: attach carry even if under floor (caller may skip)
+            pass
+    if carry > 0 and slices:
+        lvl, q, px = slices[-1]
+        slices[-1] = (lvl, round_qty_fn(q + carry), px)
+    elif carry > 0 and not slices and raw:
+        # Entire position too small to split — single TP at last active price
+        level, _, price = raw[-1]
+        q = round_qty_fn(qty)
+        if q > 0:
+            slices.append((level, q, price))
     return slices
 
 

@@ -843,6 +843,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self.regime_settings,
             exclude_levels=exclude_levels or set(),
             round_qty_fn=lambda x: float(max(self._safe_qty(x), 1)),
+            min_qty=1.0,
         )
 
     def _sync_consumed_tp_levels(self, live_qty, curr_px):
