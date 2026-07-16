@@ -30,6 +30,34 @@ def test_extract_payload_symbol():
     assert extract_payload_symbol({"symbol": "BTCUSDT"}) is None
 
 
+def test_close_protect_payload_routes_eth_not_xau():
+    """TV dual-alert ETHUSDT.P CLOSE_PROTECT must route only to ETH supervisor."""
+    from app.services.webhook_guard import validate_signal_payload
+
+    payload = {
+        "symbol": "ETHUSDT.P",
+        "action": "CLOSE_PROTECT",
+        "secret": "528586",
+        "regime": 4,
+        "price": 1882.85,
+        "atr": 13.1372332303,
+        "side": "SHORT",
+        "reason": "常规防守：大级别转多或动能衰竭",
+        "pnl_pct": 0.26,
+    }
+    ok, err = validate_signal_payload(payload)
+    assert ok, err
+    assert extract_payload_symbol(payload) == CANONICAL_ETH
+    xau = {
+        **payload,
+        "symbol": "XAUUSDT.P",
+        "price": 4020.5,
+    }
+    assert extract_payload_symbol(xau) == CANONICAL_XAU
+    ok2, err2 = validate_signal_payload(xau)
+    assert ok2, err2
+
+
 def test_exchange_native_symbols():
     assert exchange_native_symbol("binance", CANONICAL_XAU) == "XAUUSDT"
     assert exchange_native_symbol("okx", CANONICAL_XAU) == "XAU-USDT-SWAP"

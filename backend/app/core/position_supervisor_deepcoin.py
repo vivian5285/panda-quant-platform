@@ -504,6 +504,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
                     "adopted_manual": bool(getattr(self, "adopted_manual", False)),
                     "radar_latched": bool(getattr(self, "radar_latched", False)),
+                    "current_trade_id": getattr(self, "current_trade_id", None),
+                    "canonical_symbol": getattr(self, "canonical_symbol", None),
                 }, f)
         except Exception as e:
             logger.error(f"保存状态失败: {e}")
@@ -2000,7 +2002,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         try:
             if is_tv_close_action(raw_action):
-                skip, skip_reason = should_skip_tv_close_for_manual(self)
+                skip, skip_reason = should_skip_tv_close_for_manual(self, raw_action)
                 if skip:
                     return self._preserve_manual_on_tv_close(
                         raw_action, skip_reason=skip_reason, tv_reason=tv_reason,
@@ -2487,6 +2489,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 self.regime, self.tv_tps,
                 symbol=self.canonical_symbol,
             )
+            self.adopted_manual = False
             self.trade_opened_at = time.time()
             self._protect_and_monitor(real_qty, entry_price or pos['entry_price'])
 
@@ -2887,8 +2890,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         tv_side: str | None = None,
         tv_pnl_pct: float | None = None,
         tv_reason: str | None = None,
+        close_trigger: str | None = None,
+        attribution: dict | None = None,
     ):
         """三重把关之二：TV 全平/保护性全平 → 先撤单释放冻结仓位，6 轮阶梯强平至归零"""
+        _ = close_trigger, attribution  # accepted for mixin / Binance signature parity
         entry_snapshot = float(self.watched_entry or 0)
         qty_snapshot = float(self.watched_qty or 0)
         side_snapshot = self.current_side
@@ -3001,6 +3007,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.tv_sl = float(s.get("tv_sl", 0) or 0)
                     self.adopted_manual = bool(s.get("adopted_manual", False))
                     self.radar_latched = bool(s.get("radar_latched", False))
+                    tid = s.get("current_trade_id")
+                    if tid is not None:
+                        try:
+                            self.current_trade_id = int(tid)
+                        except (TypeError, ValueError):
+                            pass
                     self._infer_radar_latched_from_state()
 
             if self._scan_and_sweep_dust_on_startup():

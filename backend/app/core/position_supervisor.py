@@ -242,6 +242,8 @@ class PositionSupervisor(
                     "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
                     "adopted_manual": bool(getattr(self, "adopted_manual", False)),
                     "radar_latched": bool(getattr(self, "radar_latched", False)),
+                    "current_trade_id": getattr(self, "current_trade_id", None),
+                    "canonical_symbol": getattr(self, "canonical_symbol", None),
                 }, f)
         except Exception as e:
             logger.error(f"[User {self.user_id}] save state failed: {e}")
@@ -279,6 +281,12 @@ class PositionSupervisor(
                     self.tv_sl = float(s.get("tv_sl", 0) or 0)
                     self.adopted_manual = bool(s.get("adopted_manual", False))
                     self.radar_latched = bool(s.get("radar_latched", False))
+                    tid = s.get("current_trade_id")
+                    if tid is not None:
+                        try:
+                            self.current_trade_id = int(tid)
+                        except (TypeError, ValueError):
+                            pass
                     self._infer_radar_latched_from_state()
         except Exception as e:
             logger.error(f"[User {self.user_id}] load state failed: {e}")
@@ -414,7 +422,7 @@ class PositionSupervisor(
         tv_reason = tv_close.get("tv_reason") or close_reason
 
         if is_tv_close_action(raw_action):
-            skip, skip_reason = should_skip_tv_close_for_manual(self)
+            skip, skip_reason = should_skip_tv_close_for_manual(self, raw_action)
             if skip:
                 return self._preserve_manual_on_tv_close(
                     raw_action, skip_reason=skip_reason, tv_reason=tv_reason,
@@ -945,6 +953,7 @@ class PositionSupervisor(
                 self.user_id, action, real_qty, entry_price, self.regime, self.tv_tps,
                 symbol=self.canonical_symbol,
             )
+            self.adopted_manual = False
             self.trade_opened_at = time.time()
             slip = (entry_price - self.tv_price) if action == "LONG" else (self.tv_price - entry_price)
             theme = resolve_exchange_theme(self.exchange_id, self.canonical_symbol)

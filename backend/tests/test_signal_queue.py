@@ -13,6 +13,9 @@ from app.core.position_supervisor import PositionSupervisor, SIGNAL_QUEUE_TTL
 def supervisor(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     client = MagicMock()
+    client.exchange_id = "binance"
+    client.trading_symbol = "ETHUSDT"
+    client.canonical_symbol = "ETHUSDT"
     client.get_current_price.return_value = 3600.0
     client.cancel_all_open_orders.return_value = None
     client.get_funding_fees.return_value = 0.0

@@ -134,14 +134,20 @@ def should_skip_startup_tv_close_flatten(
     supervisor,
     reconcile: dict | None = None,
 ) -> tuple[bool, str]:
-    """Never flatten on restart when live still matches the opening TV direction."""
+    """Never flatten on restart when live still matches the opening TV direction.
+
+    Exception: latest TV is CLOSE_PROTECT / CLOSE_STOPLOSS / CLOSE_TP3 → always flatten.
+    """
     reconcile = reconcile or {}
+    latest = (reconcile.get("latest_tv_action") or "").upper().strip()
+    if is_hard_tv_close_action(latest):
+        return False, ""
     live_side = getattr(supervisor, "current_side", None)
     if live_side not in ("LONG", "SHORT"):
         return False, ""
     if live_matches_entry_direction(reconcile, live_side):
         return True, "live_matches_entry_direction"
-    skip, reason = should_skip_tv_close_for_manual(supervisor)
+    skip, reason = should_skip_tv_close_for_manual(supervisor, action=latest or None)
     if skip:
         return True, reason
     return False, ""
@@ -227,6 +233,9 @@ def prepare_manual_adopt(supervisor) -> None:
 
 TV_CLOSE_ACTIONS = frozenset({"CLOSE", "CLOSE_PROTECT", "CLOSE_TP3", "CLOSE_STOPLOSS"})
 
+# Hard exits — never deferred for manual/adopted positions (all exchanges)
+TV_HARD_CLOSE_ACTIONS = frozenset({"CLOSE_PROTECT", "CLOSE_TP3", "CLOSE_STOPLOSS"})
+
 
 def _safe_float(val, default: float = 0.0) -> float:
     try:
@@ -238,6 +247,18 @@ def _safe_float(val, default: float = 0.0) -> float:
 def is_tv_close_action(action: str | None) -> bool:
     a = (action or "").upper().strip()
     return a in TV_CLOSE_ACTIONS or a.startswith("CLOSE")
+
+
+def is_hard_tv_close_action(action: str | None) -> bool:
+    """CLOSE_PROTECT / CLOSE_STOPLOSS / CLOSE_TP3 — must always flatten live qty."""
+    a = (action or "").upper().strip()
+    if not a:
+        return False
+    if a in TV_HARD_CLOSE_ACTIONS:
+        return True
+    if a.startswith("CLOSE_PROTECT"):
+        return True
+    return False
 
 
 # Bare TV CLOSE right after OPEN often is a regime/chart chase alert, not SL/TP.
@@ -304,11 +325,16 @@ def resolve_supervisor_live_side(supervisor) -> tuple[str | None, float]:
     return None, 0.0
 
 
-def should_skip_tv_close_for_manual(supervisor) -> tuple[bool, str]:
+def should_skip_tv_close_for_manual(supervisor, action: str | None = None) -> tuple[bool, str]:
     """
-    TV CLOSE_* must not flatten manual / external positions aligned with entry direction.
-    Only factory-open trades (current_trade_id, not adopted_manual) honor TV CLOSE.
+    Bare TV CLOSE must not flatten manual / external positions aligned with entry.
+
+    CLOSE_PROTECT / CLOSE_STOPLOSS / CLOSE_TP3 are hard exits and always execute
+    (same priority as open-grace: only bare CLOSE may be deferred).
     """
+    if is_hard_tv_close_action(action):
+        return False, ""
+
     live_side, live_qty = resolve_supervisor_live_side(supervisor)
     if live_side not in ("LONG", "SHORT") or live_qty <= 0:
         return False, ""
@@ -316,6 +342,11 @@ def should_skip_tv_close_for_manual(supervisor) -> tuple[bool, str]:
     adopted = bool(getattr(supervisor, "adopted_manual", False))
     trade_id = getattr(supervisor, "current_trade_id", None)
     if trade_id and not adopted:
+        return False, ""
+
+    # Only bare CLOSE (or unspecified action from startup helpers) can skip
+    a = (action or "").upper().strip()
+    if a and a != "CLOSE":
         return False, ""
 
     last_tv = (getattr(supervisor, "last_tv_side", None) or "").upper()
@@ -1096,10 +1127,15 @@ class StartupReconcileMixin:
             entry_tv = recovery_section(ctx, "latest_entry_tv")
             if entry_tv:
                 reconcile["latest_entry_tv_action"] = entry_tv.get("action")
-            if factory_open and (trade.get("side") or "").upper() == (side or "").upper():
+            # Hard exits always flatten (ETH/XAU · all exchanges), even if adopted_manual
+            hard_exit = is_hard_tv_close_action(tv_action)
+            same_side = (trade.get("side") or "").upper() == (side or "").upper() if trade else False
+            if hard_exit or (factory_open and same_side):
                 self._close_all(
-                    f"空仓巡检: TV已发{tv_action}，工厂持仓清场",
+                    f"空仓巡检: TV已发{tv_action}，"
+                    + ("硬平仓清场" if hard_exit else "工厂持仓清场"),
                     close_trigger="idle_patrol_tv_close",
+                    close_action=tv_action if hard_exit else None,
                 )
                 return
             if side in ("LONG", "SHORT"):

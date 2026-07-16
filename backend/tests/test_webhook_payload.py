@@ -48,7 +48,7 @@ def test_tv_screenshot_close_protect_payload():
 
 
 def test_v6975_minimal_entry_after_enrich_validates():
-    raw = '{"action":"LONG","secret":"528586","price":3500}'
+    raw = '{"action":"LONG","secret":"528586","symbol":"ETHUSDT.P","price":3500}'
     data, err = parse_webhook_payload(raw)
     assert err is None
     ok, msg = validate_signal_payload(data)
@@ -126,7 +126,7 @@ def test_v6975_update_sl():
 
 def test_v69108_update_tp_validates():
     raw = (
-        '{"action":"UPDATE_TP","secret":"528586","side":"LONG",'
+        '{"action":"UPDATE_TP","secret":"528586","symbol":"ETHUSDT.P","side":"LONG",'
         '"tv_tp1":1900.50,"tv_tp2":1930.00,"tv_tp3":1970.00}'
     )
     data, err = parse_webhook_payload(raw)
@@ -140,6 +140,7 @@ def test_v69108_update_tp_validates():
 def test_v69108_update_tp_requires_tps():
     ok, msg = validate_signal_payload({
         "action": "UPDATE_TP",
+        "symbol": "ETHUSDT",
         "side": "LONG",
         "tv_tp1": 1900,
         "tv_tp2": 0,

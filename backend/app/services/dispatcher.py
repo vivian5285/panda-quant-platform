@@ -298,13 +298,33 @@ class SignalDispatcher:
         ]
         if not supervisors:
             logger.warning("No active supervisors for symbol %s", signal_symbol)
+            available = sorted({
+                getattr(s, "canonical_symbol", None) or DEFAULT_CANONICAL
+                for s in self.pool.get_all()
+            })
             notify_system(
-                "warning", "DISPATCH_EMPTY",
-                "信号广播无接收者",
-                f"收到 {payload.get('action', '?')} · {signal_symbol}，但无活跃 Supervisor",
-                {"payload_action": payload.get("action"), "symbol": signal_symbol},
+                "warning" if not is_close else "critical",
+                "DISPATCH_EMPTY",
+                f"信号无接收者 · {signal_symbol}",
+                (
+                    f"收到 {payload.get('action', '?')} · {signal_symbol}，"
+                    f"但无该品种活跃 Supervisor（在线品种: {', '.join(available) or '无'}）。"
+                    + (" 硬平仓未执行！" if is_close else "")
+                ),
+                {
+                    "payload_action": payload.get("action"),
+                    "symbol": signal_symbol,
+                    "available_symbols": available,
+                    "is_close": is_close,
+                },
             )
-            return {"dispatched": 0, "results": [], "symbol": signal_symbol}
+            return {
+                "dispatched": 0,
+                "results": [],
+                "symbol": signal_symbol,
+                "reason": "no_supervisor_for_symbol",
+                "available_symbols": available,
+            }
 
         db = SessionLocal()
         try:

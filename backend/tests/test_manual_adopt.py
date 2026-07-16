@@ -41,9 +41,10 @@ def test_should_skip_startup_tv_close_flatten_same_direction():
         current_trade_id = 99
         watched_qty = 0.4
 
+    # Bare CLOSE + live matches entry → skip flatten on restart
     skip, reason = should_skip_startup_tv_close_flatten(
         Sup(),
-        {"state_last_tv_side": "SHORT", "latest_tv_action": "CLOSE_STOPLOSS"},
+        {"state_last_tv_side": "SHORT", "latest_tv_action": "CLOSE"},
     )
     assert skip is True
     assert reason == "live_matches_entry_direction"
@@ -178,9 +179,48 @@ def test_should_skip_tv_close_for_manual_position():
         symbol = "ETHUSDT"
         position_manager = None
 
-    skip, reason = should_skip_tv_close_for_manual(Sup())
+    skip, reason = should_skip_tv_close_for_manual(Sup(), "CLOSE")
     assert skip is True
     assert "manual" in reason
+
+
+def test_hard_close_never_skipped_for_manual_adopt():
+    """CLOSE_PROTECT / STOPLOSS / TP3 always flatten — even adopted_manual (ETH/XAU)."""
+    from app.core.startup_reconcile import is_hard_tv_close_action
+
+    class Sup:
+        adopted_manual = True
+        current_trade_id = None
+        current_side = "SHORT"
+        watched_qty = 0.42
+        last_tv_side = "SHORT"
+        symbol = "ETHUSDT"
+        position_manager = None
+
+    assert is_hard_tv_close_action("CLOSE_PROTECT")
+    assert is_hard_tv_close_action("CLOSE_STOPLOSS")
+    assert is_hard_tv_close_action("CLOSE_TP3")
+    assert not is_hard_tv_close_action("CLOSE")
+
+    for action in ("CLOSE_PROTECT", "CLOSE_STOPLOSS", "CLOSE_TP3"):
+        skip, _ = should_skip_tv_close_for_manual(Sup(), action)
+        assert skip is False, action
+
+
+def test_tv_screenshot_close_protect_not_skipped():
+    """Exact TV payload from 2026-07-16 23:00 ETHUSDT.P protect alert."""
+    class Sup:
+        adopted_manual = True
+        current_trade_id = None
+        current_side = "SHORT"
+        watched_qty = 1.2
+        last_tv_side = "SHORT"
+        symbol = "ETHUSDT"
+        position_manager = None
+
+    payload_action = "CLOSE_PROTECT"
+    skip, _ = should_skip_tv_close_for_manual(Sup(), payload_action)
+    assert skip is False
 
 
 def test_should_not_skip_tv_close_for_factory_trade():
@@ -191,7 +231,26 @@ def test_should_not_skip_tv_close_for_factory_trade():
         watched_qty = 0.5
         last_tv_side = "LONG"
 
-    skip, _ = should_skip_tv_close_for_manual(Sup())
+    skip, _ = should_skip_tv_close_for_manual(Sup(), "CLOSE")
+    assert skip is False
+
+
+def test_startup_hard_close_not_skipped():
+    class Sup:
+        current_side = "SHORT"
+        last_tv_side = "SHORT"
+        adopted_manual = True
+        current_trade_id = None
+        watched_qty = 0.4
+
+    skip, _ = should_skip_startup_tv_close_flatten(
+        Sup(),
+        {
+            "state_last_tv_side": "SHORT",
+            "latest_tv_action": "CLOSE_PROTECT",
+            "latest_entry_tv_action": "SHORT",
+        },
+    )
     assert skip is False
 
 
@@ -236,6 +295,55 @@ def test_execute_signal_skips_close_for_manual_adopt():
     preserve.assert_called_once()
     assert result["status"] == "skipped"
     sup.client.place_market_order.assert_not_called()
+
+
+def test_execute_signal_close_protect_flattens_manual_adopt():
+    """Regression: TV CLOSE_PROTECT must not be swallowed by adopted_manual."""
+    from unittest.mock import MagicMock, patch
+
+    from app.core.position_supervisor import PositionSupervisor
+
+    client = MagicMock()
+    client.get_futures_account_summary.return_value = {"total_margin_balance": 1000.0}
+    client.get_current_price.return_value = 1882.85
+    client.trading_symbol = "ETHUSDT"
+    client.exchange_id = "binance"
+    client.trading_leverage = 25
+
+    sup = PositionSupervisor(user_id=1, client=client, initial_principal=1000.0)
+    sup.adopted_manual = True
+    sup.current_trade_id = None
+    sup.current_side = "SHORT"
+    sup.watched_qty = 1.2
+    sup.watched_entry = 1900.0
+    sup.last_tv_side = "SHORT"
+    sup.monitoring = True
+    sup.on_log = MagicMock()
+    sup.on_alert = MagicMock()
+    sup.position_manager = MagicMock()
+    sup.position_manager.get_position.return_value = {
+        "positionAmt": -1.2,
+        "entryPrice": 1900.0,
+    }
+
+    with patch.object(sup, "_close_all") as close_all, patch.object(
+        sup, "_preserve_manual_on_tv_close"
+    ) as preserve:
+        result = sup._execute_signal({
+            "symbol": "ETHUSDT.P",
+            "action": "CLOSE_PROTECT",
+            "secret": "528586",
+            "regime": 4,
+            "price": 1882.85,
+            "atr": 13.1372332303,
+            "side": "SHORT",
+            "reason": "常规防守：大级别转多或动能衰竭",
+            "pnl_pct": 0.26,
+        })
+    preserve.assert_not_called()
+    close_all.assert_called_once()
+    assert result["status"] == "ok"
+    assert result["action"] == "CLOSE_PROTECT"
 
 
 def test_idle_watch_does_not_flatten_manual_on_tv_close():
