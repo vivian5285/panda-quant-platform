@@ -8,6 +8,15 @@ import type { LogQueryParams, TradeQueryParams } from '../../../api'
 import { useI18n, localeDate } from '../../../i18n'
 import { toast } from '../../../store/toast'
 
+type PositionSnapshot = {
+  symbol?: string
+  side?: string
+  qty?: number
+  entry_price?: number
+  mark_price?: number
+  unrealized_pnl?: number
+}
+
 type ManagedAccount = {
   user_id: number
   uid?: string
@@ -30,6 +39,8 @@ type ManagedAccount = {
   position_entry?: number
   position_mark?: number
   position_unrealized?: number
+  position_symbol?: string | null
+  all_positions?: PositionSnapshot[]
   trade_count?: number
   closed_trade_count?: number
   supervisor_active?: boolean
