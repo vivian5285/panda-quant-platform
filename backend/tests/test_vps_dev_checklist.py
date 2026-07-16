@@ -26,16 +26,16 @@ from unittest.mock import MagicMock, patch
 
 
 CHECKLIST_OPEN_TABLE = [
-    (1, 1.031, 0.0),
-    (2, 1.406, 0.421),
-    (3, 1.781, 0.891),
-    (4, 2.5, 1.746),
+    (1, 0.625, 0.0),
+    (2, 1.25, 0.375),
+    (3, 1.875, 0.938),
+    (4, 2.25, 1.575),
 ]
 
 
 @pytest.mark.parametrize("regime,open_qty,add_qty", CHECKLIST_OPEN_TABLE)
 def test_checklist_open_and_add_table_1000u_2000(regime, open_qty, add_qty):
-    """对照清单三：1000U 本金，价格=2000，25×交易所杠杆，保证金预算×5."""
+    """对照清单：1000U 本金，价格=2000，REGIME_MARGIN × 25× 杠杆."""
     qty, meta = compute_vps_open_qty(
         live_balance=1000.0,
         initial_principal=1000.0,
@@ -92,6 +92,8 @@ def test_trading_factory_all_exchanges_25x_and_supervisor(exchange):
 
     user = User(id=1, exchange=exchange)
     client = MagicMock()
+    client.exchange_id = exchange
+    client.canonical_symbol = "ETHUSDT"
     client.trading_leverage = 25
     client.trading_symbol = "ETHUSDT"
 
@@ -104,7 +106,8 @@ def test_trading_factory_all_exchanges_25x_and_supervisor(exchange):
         assert hasattr(sup, "_resolve_entry_qty")
         assert hasattr(sup, "recover_on_startup")
     else:
-        sup = create_supervisor(user, client)
+        with patch.object(PositionSupervisor, "_start_idle_flat_patrol"):
+            sup = create_supervisor(user, client)
         assert isinstance(sup, PositionSupervisor)
         assert hasattr(sup, "_resolve_entry_qty")
         assert hasattr(sup, "recover_on_startup")
@@ -152,8 +155,8 @@ def test_config_matches_checklist_defaults():
     assert s.GATE_LEVERAGE == 25
 
 
-def test_r4_strongest_open_200u_margin_5000u_position_at_25x():
-    """R4 最强趋势：1000U 本金 ≈200U 保证金 ×25 杠杆 ≈5000U 头寸."""
+def test_r4_strongest_open_180u_margin_4500u_position_at_25x():
+    """R4 最强趋势：1000U 本金 18% 保证金 ×25 杠杆 = 4500U 名义."""
     qty, meta = compute_vps_open_qty(
         live_balance=1000.0,
         initial_principal=1000.0,
@@ -163,9 +166,9 @@ def test_r4_strongest_open_200u_margin_5000u_position_at_25x():
         leverage=25,
         round_fn=lambda x: round(x, 3),
     )
-    assert meta["margin_usd"] == pytest.approx(199.5, rel=0.02)
-    assert meta["position_value"] == pytest.approx(4987.5, rel=0.02)
-    assert qty == pytest.approx(2.494, rel=0.02)
+    assert meta["margin_usd"] == pytest.approx(180.0, rel=0.02)
+    assert meta["position_value"] == pytest.approx(4500.0, rel=0.02)
+    assert qty == pytest.approx(2.25, rel=0.02)
 
 
 def test_resolve_entry_qty_eth_open_uses_price_not_sl_distance():
@@ -180,7 +183,7 @@ def test_resolve_entry_qty_eth_open_uses_price_not_sl_distance():
         exchange_leverage=25,
         round_fn=lambda x: round(x, 3),
     )
-    assert qty == pytest.approx(2.494, rel=0.02)
+    assert qty == pytest.approx(2.25, rel=0.02)
     assert meta.get("error") is None
     assert "margin_usd" in meta
 
