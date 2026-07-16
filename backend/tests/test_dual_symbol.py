@@ -38,8 +38,9 @@ def test_exchange_native_symbols():
 
 
 def test_margin_coeff_and_open_qty_matches_spec():
-    # Spec example A: equity 1000, R4, ETH @ 1800 → qty 2.5
-    assert abs(regime_margin_coeff(4) - 0.18) < 1e-9
+    # Spec: equity 1000, R4 22%, ETH @ 1800 → qty ≈ 3.056 (5500/1800)
+    assert abs(regime_margin_coeff(1) - 0.06) < 1e-9
+    assert abs(regime_margin_coeff(4) - 0.22) < 1e-9
     qty, meta = compute_vps_open_qty(
         live_balance=1000,
         initial_principal=1000,
@@ -50,11 +51,11 @@ def test_margin_coeff_and_open_qty_matches_spec():
         round_fn=lambda x: round(x, 3),
         symbol=CANONICAL_ETH,
     )
-    assert abs(qty - 2.5) < 1e-6
-    assert abs(meta["margin_usd"] - 180) < 1e-6
-    assert abs(meta["notional_usd"] - 4500) < 1e-6
+    assert abs(qty - 3.056) < 1e-6
+    assert abs(meta["margin_usd"] - 220) < 1e-6
+    assert abs(meta["notional_usd"] - 5500) < 1e-6
 
-    # Spec example B: XAU @ 2500 → qty 1.8
+    # Spec: XAU @ 2500 → qty 2.2
     qty_x, meta_x = compute_vps_open_qty(
         live_balance=1000,
         initial_principal=1000,
@@ -65,8 +66,8 @@ def test_margin_coeff_and_open_qty_matches_spec():
         round_fn=lambda x: round(x, 2),
         symbol=CANONICAL_XAU,
     )
-    assert abs(qty_x - 1.8) < 1e-6
-    assert abs(meta_x["notional_usd"] - 4500) < 1e-6
+    assert abs(qty_x - 2.2) < 1e-6
+    assert abs(meta_x["notional_usd"] - 5500) < 1e-6
 
 
 def test_hard_sl_pct_table():
@@ -99,27 +100,27 @@ def test_combined_notional_cap(monkeypatch):
 
     class FakePool:
         def get_all_for_user(self, user_id):
-            return [FakeSup(CANONICAL_ETH, 2.5, 1800)]  # 4500 notional
+            return [FakeSup(CANONICAL_ETH, 5500 / 1800, 1800)]  # 5500 notional
 
     import app.services.dispatcher as disp
 
     monkeypatch.setattr(disp, "supervisor_pool", FakePool())
-    # Peer ETH 4500 + new XAU 4500 = 9000 == 9×1000 → allow
+    # Peer ETH 5500 + new XAU 5500 = 11000 == 11×1000 → allow
     ok, meta = cn.check_combined_notional_cap(
         user_id=1,
         canonical=CANONICAL_XAU,
         equity=1000,
-        new_notional=4500,
+        new_notional=5500,
     )
     assert ok is True
-    assert abs(meta["proposed_notional"] - 9000) < 1e-6
+    assert abs(meta["proposed_notional"] - 11000) < 1e-6
 
     # +1 over → reject
     ok2, meta2 = cn.check_combined_notional_cap(
         user_id=1,
         canonical=CANONICAL_XAU,
         equity=1000,
-        new_notional=4501,
+        new_notional=5501,
     )
     assert ok2 is False
     assert meta2.get("error") == "combined_notional_exceeded"

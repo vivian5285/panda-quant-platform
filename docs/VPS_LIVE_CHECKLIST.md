@@ -63,16 +63,16 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 | 2.4 | 杠杆 25×（四所统一） | ✅ | `config.exchange_leverage()` |
 | 2.5 | 名义头寸 = 保证金 × 杠杆 | ✅ | `compute_vps_open_qty()` |
 | 2.6 | 下单数量 = 名义 ÷ 开仓价（含精度） | ✅ | `symbol_precision` ETH 0.001 / XAU 0.01 |
-| 2.7 | 双品种总名义 ≤ 总本金 × 9 | ✅ | `combined_notional.check_combined_notional_cap()` |
+| 2.7 | 双品种总名义 ≤ 总本金 × 11 | ✅ | `combined_notional.check_combined_notional_cap()` |
 
-### 开仓金额系数
+### 开仓金额系数（45m ETH / 50m XAU 短周期权重）
 
 | 档位 | 保证金系数 | 1000U 本金示例（25×） |
 |------|-----------|----------------------|
-| R1 | 5% | 50U 保证金 → 1250U 名义 |
-| R2 | 10% | 100U → 2500U |
-| R3 | 15% | 150U → 3750U |
-| R4 | 18% | 180U → 4500U |
+| R1 | 6% | 60U 保证金 → 1500U 名义 |
+| R2 | 12% | 120U → 3000U |
+| R3 | 18% | 180U → 4500U |
+| R4 | 22% | 220U → 5500U |
 
 **公式**：`margin = equity × coeff` · `notional = margin × 25` · `qty = notional / price`
 
@@ -80,10 +80,10 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 
 | 场景 | VPS 预期 |
 |------|----------|
-| ETH R4 @1800，本金 1000U | qty ≈ 2.5 ETH，名义 4500U |
-| ETH R2 + XAU R4，本金 1000U | 2500 + 4500 = 7000U（7×，允许） |
-| ETH R4 + XAU R4 | 9000U = 9×（踩线允许） |
-| 已有 9×，再开新仓 | 拒绝，`combined_notional_exceeded` + 钉钉 |
+| ETH R4 @1800，本金 1000U | qty ≈ 3.06 ETH，名义 5500U |
+| ETH R2 + XAU R4，本金 1000U | 3000 + 5500 = 8500U（8.5×，允许） |
+| ETH R4 + XAU R4 | 11000U = 11×（踩线允许） |
+| 已有 11×，再开新仓 | 拒绝，`combined_notional_exceeded` + 钉钉 |
 | 浮盈后本金 1200U | 下次按 1200U × 系数自动放大 |
 
 **测试**：`test_dual_symbol.py::test_margin_coeff_and_open_qty_matches_spec`
@@ -186,11 +186,11 @@ confirm_tp_tier_fill 要求同时满足：
 
 ---
 
-## 模块五：全局风控（9× 名义硬顶）🔴 P0
+## 模块五：全局风控（11× 名义硬顶）🔴 P0
 
 | # | 检查项 | 状态 | 配置 |
 |---|--------|------|------|
-| 5.1 | ETH + XAU 名义 ≤ equity × 9 | ✅ | `MAX_COMBINED_NOTIONAL_MULT=9.0` |
+| 5.1 | ETH + XAU 名义 ≤ equity × 11 | ✅ | `MAX_COMBINED_NOTIONAL_MULT=11.0` |
 | 5.2 | 超标拒绝新开仓，不强平已有仓 | ✅ | `combined_notional_exceeded` |
 | 5.3 | 每日最大亏损熔断 | ⚙️ | TV `maxDailyLossPercent` 参考；VPS 可独立配置 |
 | 5.4 | 双品种盈亏叠加 vs 总权益 | ✅ | 绩效结算层 |
@@ -232,8 +232,8 @@ confirm_tp_tier_fill 要求同时满足：
 ### 场景 1：正常 TP1 → 雷达 → TP2/TP3
 
 ```
-1. ETH 1800，R3（15% 保证金，1000U 本金）
-2. VPS：margin 150U，名义 3750U，qty ≈ 2.08 ETH
+1. ETH 1800，R3（18% 保证金，1000U 本金）
+2. VPS：margin 180U，名义 4500U，qty = 2.5 ETH
 3. 硬止损：1800 × (1 − 5.56%) ≈ 1700
 4. 挂 TP1/2/3 限价（R3 比例 18/32/50%）
 5. 价格到 TP1，三重验证通过
@@ -254,8 +254,8 @@ confirm_tp_tier_fill 要求同时满足：
 ### 场景 3：双品种 R4 踩线
 
 ```
-1. 本金 1000U，ETH R4 4500U + XAU R4 4500U = 9000U = 9× → 允许
-2. ETH 浮盈后名义 5000U，XAU 新开 4500U → 9500U > 9× → 拒绝
+1. 本金 1000U，ETH R4 5500U + XAU R4 5500U = 11000U = 11× → 允许
+2. ETH 浮盈后名义 6000U，XAU 新开 5500U → 11500U > 11× → 拒绝
 ```
 
 ### 场景 4：TV 紧止损被忽略
@@ -277,7 +277,7 @@ confirm_tp_tier_fill 要求同时满足：
 | 三重 TP1 验证 | ✅ | ✅ | ✅ | ✅ |
 | 6 阶段雷达 | ✅ | ✅ | ✅ | ✅ |
 | ETH + XAU | ✅ | ✅ | ✅ | ✅ |
-| 9× 名义 cap | ✅ | ✅ | ✅ | ✅ |
+| 11× 名义 cap | ✅ | ✅ | ✅ | ✅ |
 | 价格 WebSocket | ✅ | ✅ | ✅ | ✅ |
 
 工厂入口：`exchange_factory.create_supervisor()`  
@@ -290,7 +290,7 @@ DeepCoin 差异：合约张、`face_value=0.1`、双轨 STOP（TV SL + 雷达条
 | 模块 | 优先级 | 改代码后必跑测试 |
 |------|--------|------------------|
 | Webhook + 品种路由 | 🔴 P0 | `test_dual_symbol` · `test_webhook_payload` |
-| OPEN sizing + 9× cap | 🔴 P0 | `test_dual_symbol` · `test_tv_v6985_sizing` |
+| OPEN sizing + 11× cap | 🔴 P0 | `test_dual_symbol` · `test_tv_v6985_sizing` |
 | VPS 硬止损 | 🔴 P0 | `test_vps_hard_sl` |
 | 三重 TP1 + 雷达 | 🟡 P1 | `test_tp_slice_guard` · `test_radar_trail` |
 | 钉钉 | 🟢 P2 | `test_vps_dev_checklist` |
@@ -312,7 +312,7 @@ backend/app/core/tv_entry_sizing.py      # OPEN/ADD  sizing
 backend/app/core/vps_hard_sl.py          # 硬止损公式
 backend/app/core/tp_slice_guard.py       # 三重 TP 验证
 backend/app/core/vps_radar_stages.py     # 雷达 6 阶段
-backend/app/core/combined_notional.py    # 9× 名义 cap
+backend/app/core/combined_notional.py    # 11× 名义 cap
 backend/app/services/dispatcher.py       # 按用户×品种分发
 backend/app/services/webhook_idempotency.py
 backend/app/services/trading_alerts.py   # 钉钉

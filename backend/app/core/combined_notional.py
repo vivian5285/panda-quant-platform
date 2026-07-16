@@ -68,7 +68,7 @@ def check_combined_notional_cap(
     When replace_own=True, current symbol's existing notional is excluded (re-open replaces it).
     """
     eq = max(float(equity or 0), 0.0)
-    mult = float(getattr(settings, "MAX_COMBINED_NOTIONAL_MULT", 9.0) or 9.0)
+    mult = float(getattr(settings, "MAX_COMBINED_NOTIONAL_MULT", 11.0) or 11.0)
     cap = eq * mult if eq > 0 else 0.0
     peers = peer_notional_excluding(user_id, canonical)
     proposed = peers + max(float(new_notional or 0), 0.0)

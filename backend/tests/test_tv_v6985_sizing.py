@@ -37,19 +37,19 @@ def test_regime_max_add_times_match_pine():
 
 
 def test_regime_margin_coeff_dual_symbol_spec():
-    assert regime_margin_coeff(1) == pytest.approx(0.05)
-    assert regime_margin_coeff(2) == pytest.approx(0.10)
-    assert regime_margin_coeff(3) == pytest.approx(0.15)
-    assert regime_margin_coeff(4) == pytest.approx(0.18)
+    assert regime_margin_coeff(1) == pytest.approx(0.06)
+    assert regime_margin_coeff(2) == pytest.approx(0.12)
+    assert regime_margin_coeff(3) == pytest.approx(0.18)
+    assert regime_margin_coeff(4) == pytest.approx(0.22)
 
 
 @pytest.mark.parametrize(
     "regime,price,expected_qty",
     [
-        (1, 2000.0, 0.625),   # 1000×5%×25 / 2000
-        (2, 2000.0, 1.25),    # 1000×10%×25 / 2000
-        (3, 2000.0, 1.875),   # 1000×15%×25 / 2000
-        (4, 2000.0, 2.25),    # 1000×18%×25 / 2000
+        (1, 2000.0, 0.75),    # 1000×6%×25 / 2000
+        (2, 2000.0, 1.5),     # 1000×12%×25 / 2000
+        (3, 2000.0, 2.25),    # 1000×18%×25 / 2000
+        (4, 2000.0, 2.75),    # 1000×22%×25 / 2000
     ],
 )
 def test_vps_open_table_1000u(regime, price, expected_qty):
@@ -157,7 +157,7 @@ def test_resolve_open_uses_margin_coeff():
     )
     assert qty > 0
     assert meta.get("sizing_mode") == "vps_open_margin_coeff"
-    assert meta.get("margin_coeff") == pytest.approx(0.05)
+    assert meta.get("margin_coeff") == pytest.approx(0.06)
 
 
 def test_resolve_add_requires_base_qty():

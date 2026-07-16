@@ -369,6 +369,8 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
     entry_type = str(detail.get("entry_type") or "OPEN").upper()
     regime = detail.get("regime")
     regime_txt = f"R{regime}" if regime else "—"
+    if detail.get("margin_coeff") is not None:
+        regime_txt = f"{regime_txt}（保证金 {_pct_text(detail.get('margin_coeff'))}）"
     side = detail.get("side") or "—"
     side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(side).upper(), str(side))
 
@@ -399,6 +401,17 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             lines.append(_line("头寸价值", f"{float(detail['order_amount']):.2f} USDT（{lev}×）"))
         if detail.get("margin_usd") is not None:
             lines.append(_line("保证金", f"{float(detail['margin_usd']):.2f} USDT"))
+        notional = detail.get("notional_usd") or detail.get("order_amount") or detail.get("position_value")
+        if notional is not None and detail.get("order_amount") is None:
+            lev = detail.get("leverage") or theme["leverage"]
+            lines.append(_line("名义头寸", f"{float(notional):.2f} USDT（{lev}×）"))
+        if detail.get("combined_notional") is not None or detail.get("proposed_notional") is not None:
+            total_n = detail.get("proposed_notional") or detail.get("combined_notional")
+            mult = detail.get("max_combined_mult") or detail.get("cap_mult")
+            if mult:
+                lines.append(_line("当前总敞口", f"{float(total_n):.2f} USDT（{float(mult):.0f}倍本金上限内）"))
+            else:
+                lines.append(_line("当前总敞口", f"{float(total_n):.2f} USDT"))
         if detail.get("tv_sl"):
             pct = detail.get("hard_sl_pct_display") or detail.get("vps_hard_sl_pct")
             if pct:
