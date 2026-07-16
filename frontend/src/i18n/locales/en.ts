@@ -220,7 +220,8 @@ export default {
     aiLastSignal: "Last Signal",
     aiSuccessRate: "Execution Success",
     aiPending: "Awaiting high-confidence AI opportunity",
-    equityCurve: "Cumulative Equity Curve"
+    equityCurve: "Cumulative Equity Curve",
+    dualSymbolHint: "ETHUSDT / XAUUSDT P&L by symbol (fees on combined total)",
   },
   trades: {
     title: "Executions",

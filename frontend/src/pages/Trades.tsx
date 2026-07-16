@@ -12,6 +12,7 @@ import { useI18n, localeDate } from '../i18n'
 import { downloadCsv } from '../utils/exportCsv'
 import { toast } from '../store/toast'
 import { isExchangeFillEvent, qtyUnitForSymbol, shortSymbol } from '../utils/symbolDisplay'
+import SymbolPnlStrip from '../components/SymbolPnlStrip'
 
 type TradeRow = {
   id: number
@@ -205,12 +206,28 @@ export default function Trades() {
   const periodStats = useMemo(() => {
     const closed = rows.filter(tr => tr.status === 'closed' || (tr.realized_pnl != null && tr.exit_price != null))
     const pnl = closed.reduce((s, tr) => s + Number(tr.realized_pnl || 0), 0)
-    const bySym: Record<string, number> = {}
+    const bySym: Record<string, { pnl: number; trades: number; wins: number }> = {}
     closed.forEach(tr => {
       const s = shortSymbol(tr.symbol)
-      bySym[s] = (bySym[s] || 0) + Number(tr.realized_pnl || 0)
+      if (!bySym[s]) bySym[s] = { pnl: 0, trades: 0, wins: 0 }
+      const p = Number(tr.realized_pnl || 0)
+      bySym[s].pnl += p
+      bySym[s].trades += 1
+      if (p > 0) bySym[s].wins += 1
     })
-    return { count: rows.length, closed: closed.length, pnl, bySym }
+    const symbolRows = Object.entries(bySym).map(([symbol, v]) => ({
+      symbol,
+      pnl: v.pnl,
+      trades: v.trades,
+      win_rate: v.trades ? Math.round((v.wins / v.trades) * 1000) / 10 : 0,
+    }))
+    return {
+      count: rows.length,
+      closed: closed.length,
+      pnl,
+      bySym: Object.fromEntries(Object.entries(bySym).map(([k, v]) => [k, v.pnl])),
+      symbolRows,
+    }
   }, [rows])
 
   const getSlippage = (tr: TradeRow) => {
@@ -383,18 +400,29 @@ export default function Trades() {
       )}
 
       {view === 'executions' && (
-        <p className="text-muted text-sm section-mb-sm">
-          {t('trades.periodStats', {
-            count: periodStats.count,
-            closed: periodStats.closed,
-            pnl: periodStats.pnl.toFixed(2),
-            eth: (periodStats.bySym.ETHUSDT ?? 0).toFixed(2),
-            xau: (periodStats.bySym.XAUUSDT ?? 0).toFixed(2),
-          })}
-          {timeFilter === 'since' && tradingSince
-            ? ` · ${t('trades.sinceLabel', { date: String(tradingSince).slice(0, 10) })}`
-            : ''}
-        </p>
+        <div className="section-mb-sm">
+          <p className="text-muted text-sm">
+            {t('trades.periodStats', {
+              count: periodStats.count,
+              closed: periodStats.closed,
+              pnl: periodStats.pnl.toFixed(2),
+              eth: (periodStats.bySym.ETHUSDT ?? 0).toFixed(2),
+              xau: (periodStats.bySym.XAUUSDT ?? 0).toFixed(2),
+            })}
+            {timeFilter === 'since' && tradingSince
+              ? ` · ${t('trades.sinceLabel', { date: String(tradingSince).slice(0, 10) })}`
+              : ''}
+          </p>
+          {periodStats.symbolRows.length > 0 && (
+            <GlassCard className="p-3 section-mt-xs">
+              <SymbolPnlStrip
+                title={t('analytics.pnlBySymbol')}
+                hint={t('dashboard.dualSymbolHint')}
+                rows={periodStats.symbolRows}
+              />
+            </GlassCard>
+          )}
+        </div>
       )}
 
       {view === 'executions' ? (

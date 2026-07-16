@@ -11,6 +11,7 @@ import { useTheme } from '../store/theme'
 import { CHART } from '../theme/chartColors'
 import { buildCalendarHeatmap } from '../utils/heatmapCalendar'
 import { mcBucketLabel } from '../utils/monteCarlo'
+import SymbolPnlStrip from '../components/SymbolPnlStrip'
 
 function fmt(n: number) {
   const prefix = n >= 0 ? '+$' : '-$'
@@ -271,36 +272,17 @@ export default function Analytics() {
       </div>
       {(a?.pnl_by_symbol?.length > 0) && (
         <GlassCard className="p-6 section-mb-lg">
-          <h3 className="card-heading">{t('analytics.pnlBySymbol')}</h3>
-          {a?.window_start && (
-            <p className="text-muted text-sm section-mb-sm">
-              {a.since_activation
-                ? t('analytics.sinceActivationHint', { date: a.window_start })
-                : t('analytics.windowHint', { date: a.window_start })}
-            </p>
-          )}
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>{t('trades.symbol')}</th>
-                  <th>{t('trades.pnl')}</th>
-                  <th>{t('analytics.totalTrades')}</th>
-                  <th>{t('analytics.winRate')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {a.pnl_by_symbol.map((row: { symbol: string; pnl: number; trades: number; win_rate: number }) => (
-                  <tr key={row.symbol}>
-                    <td><span className="badge badge-gray">{row.symbol}</span></td>
-                    <td className={row.pnl >= 0 ? 'text-green' : 'text-red'}>{fmt(row.pnl)}</td>
-                    <td>{row.trades}</td>
-                    <td>{row.win_rate}%</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <SymbolPnlStrip
+            title={t('analytics.pnlBySymbol')}
+            hint={
+              a?.window_start
+                ? (a.since_activation
+                  ? t('analytics.sinceActivationHint', { date: a.window_start })
+                  : t('analytics.windowHint', { date: a.window_start }))
+                : t('dashboard.dualSymbolHint')
+            }
+            rows={a.pnl_by_symbol}
+          />
         </GlassCard>
       )}
       <GlassCard className="p-6 dash-heatmap-card mt-xs">

@@ -7,6 +7,8 @@ import { adminApi } from '../../../api'
 import type { LogQueryParams, TradeQueryParams } from '../../../api'
 import { useI18n, localeDate } from '../../../i18n'
 import { toast } from '../../../store/toast'
+import SymbolPnlStrip from '../../../components/SymbolPnlStrip'
+import { shortSymbol } from '../../../utils/symbolDisplay'
 
 type PositionSnapshot = {
   symbol?: string
@@ -174,6 +176,25 @@ export default function AdminAccountsTab() {
   }
 
   const snapshotErrors = summary?.snapshot_errors ?? 0
+
+  const detailSymbolRows = useMemo(() => {
+    const map: Record<string, { pnl: number; trades: number; wins: number }> = {}
+    for (const tr of detailTrades) {
+      if (tr.realized_pnl == null) continue
+      const s = shortSymbol(tr.symbol)
+      if (!map[s]) map[s] = { pnl: 0, trades: 0, wins: 0 }
+      const p = Number(tr.realized_pnl || 0)
+      map[s].pnl += p
+      map[s].trades += 1
+      if (p > 0) map[s].wins += 1
+    }
+    return Object.entries(map).map(([symbol, v]) => ({
+      symbol,
+      pnl: v.pnl,
+      trades: v.trades,
+      win_rate: v.trades ? Math.round((v.wins / v.trades) * 1000) / 10 : 0,
+    }))
+  }, [detailTrades])
 
   return (
     <div>
@@ -424,6 +445,16 @@ export default function AdminAccountsTab() {
                                 <StatCard label={t('admin.accountsPeriodPnl')} value={`$${detailStats.realized_pnl.toFixed(2)}`} />
                                 <StatCard label={t('admin.accountsAvgPnl')} value={`$${detailStats.avg_pnl.toFixed(2)}`} />
                               </div>
+                            )}
+
+                            {detailSymbolRows.length > 0 && (
+                              <GlassCard className="p-3 section-mb-sm">
+                                <SymbolPnlStrip
+                                  title={t('analytics.pnlBySymbol')}
+                                  hint={t('dashboard.dualSymbolHint')}
+                                  rows={detailSymbolRows}
+                                />
+                              </GlassCard>
                             )}
 
                             <h4 className="text-sm-strong section-mb-sm">{t('admin.userTrades')}</h4>

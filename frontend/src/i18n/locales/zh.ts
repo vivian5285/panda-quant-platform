@@ -220,7 +220,8 @@ export default {
     aiLastSignal: "最近信号",
     aiSuccessRate: "执行成功率",
     aiPending: "等待 AI 高置信度机会",
-    equityCurve: "累计收益曲线"
+    equityCurve: "累计收益曲线",
+    dualSymbolHint: "ETHUSDT / XAUUSDT 分品种盈亏（绩效费按合计）",
   },
   trades: {
     title: "执行明细",

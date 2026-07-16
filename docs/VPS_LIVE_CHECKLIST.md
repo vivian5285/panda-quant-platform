@@ -151,6 +151,16 @@ confirm_tp_tier_fill 要求同时满足：
 
 > **注意**：R4 的 TP1 仅占 5%，仓位变化极微。浮盈/浮亏导致保证金变化 **≠** 数量变化，不可单凭头寸价值变化启动雷达。
 
+### TP 切片（min_qty · 尽量保留 TP123）
+
+| 条件 | 行为 |
+|------|------|
+| `qty ≥ N × min_qty`（N=活跃档位数） | 每档至少 `min_qty`，余量按档位比例分配 → **保留全部 N 档** |
+| `qty < N × min_qty` | 欠量档 fold 到后续档，至少挂出可成交的一档 |
+
+例：XAU `min_qty=0.01`，仓位 `0.04`，R2 三档 → 挂 3 个 TP（不再因 20%×0.04=0.008 丢掉 TP1）。  
+**测试**：`test_xau_symbol_routing.py::test_xau_tp_slices_keep_three_when_qty_allows`
+
 ### 雷达阶段（6 阶段 0~5）
 
 | Stage | 标签 |
@@ -209,9 +219,11 @@ confirm_tp_tier_fill 要求同时满足：
 | 7.4 | TP2/TP3 触发 | ✅ | `CLOSE` + TP 详情 |
 | 7.5 | TV 紧止损忽略 | 仅日志 | 不推送 |
 | 7.6 | 名义超标拒绝 | ✅ | admin + `combined_notional_exceeded` |
+| 7.7 | ETH / XAU 标题与正文区分 | ✅ | `resolve_exchange_theme(symbol)` · tag `#币安25x·XAU` |
 
 配置：`platform_runtime.json` dingtalk.* > `.env DINGTALK_*`  
-过滤：`trading_alerts.should_push_trading_dingtalk()`
+过滤：`trading_alerts.should_push_trading_dingtalk()`  
+主题：每条 alert 的 `detail.symbol` / `canonical_symbol` 必须注入（supervisor `_alert`），禁止默认写成 ETH。
 
 ---
 

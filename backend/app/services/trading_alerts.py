@@ -374,6 +374,7 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
 
     lines = [
         _line("交易所", theme["label"]),
+        _line("合约", f"{theme.get('symbol_label') or theme['symbol']} `{theme['symbol']}`"),
         _line("类型", {"OPEN": "首次开仓", "PYRAMID": "加仓", "PROFIT_ADD": "浮盈加仓"}.get(entry_type, entry_type)),
         _line("方向", side_txt),
         _line("档位", regime_txt),
@@ -653,7 +654,8 @@ def format_trading_alert_body(
     body = (
         f"{theme['header']}\n"
         f"{sev} **{theme['tag']} [{type_label}]** "
-        f"{theme['accent']} {theme['label']} {theme['symbol']} · **{theme['leverage']}×**\n\n"
+        f"{theme['accent']} {theme['label']} · **{theme.get('symbol_label') or theme['symbol']}** · **{theme['leverage']}×**\n\n"
+        f"**合约**：`{theme['symbol']}`（{theme.get('canonical_symbol') or ''}）\n"
         f"**用户**：{display}（UID {uid} / 内部ID {user_id}）\n\n"
         f"**{title}**\n\n"
         f"{message}\n"

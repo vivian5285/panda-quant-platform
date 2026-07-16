@@ -267,3 +267,18 @@ def test_helpers_price_and_book():
     assert not price_reached_tp(1800.0, 1810.27, "LONG")
     assert tp_limit_still_on_book(1810.27, [1810.28, 1829.0])
     assert not tp_limit_still_on_book(1810.27, [1829.0, 1847.0])
+    # XAU short TP (price down) — relative slack, not ETH-sized absolute
+    assert price_reached_tp(4004.0, 4004.75, "SHORT")
+    assert not price_reached_tp(4020.0, 4004.75, "SHORT")
+
+
+def test_keep_three_tps_when_qty_covers_min():
+    rs = build_regime_settings()
+    slices = compute_tp_slices(
+        0.03, 2, [100.0, 101.0, 102.0], rs,
+        round_qty_fn=lambda x: round(x, 3),
+        min_qty=0.01,
+    )
+    assert len(slices) == 3
+    assert all(q >= 0.01 - 1e-9 for _, q, _ in slices)
+    assert abs(sum(q for _, q, _ in slices) - 0.03) < 1e-9

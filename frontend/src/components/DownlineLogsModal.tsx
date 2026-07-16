@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { X } from 'lucide-react'
 import GlassCard from './GlassCard'
 import TradeLogDetailPanel from './TradeLogDetailPanel'
@@ -6,6 +6,7 @@ import TabBar from './TabBar'
 import { referralApi } from '../api'
 import { useI18n, localeDate } from '../i18n'
 import { qtyUnitForSymbol, shortSymbol } from '../utils/symbolDisplay'
+import SymbolPnlStrip from './SymbolPnlStrip'
 
 type Props = {
   userId: number | null
@@ -45,6 +46,25 @@ export default function DownlineLogsModal({ userId, displayName, onClose }: Prop
       })
       .finally(() => setLoading(false))
   }, [userId])
+
+  const symbolPnlRows = useMemo(() => {
+    const map: Record<string, { pnl: number; trades: number; wins: number }> = {}
+    for (const tr of trades) {
+      if (tr.realized_pnl == null) continue
+      const s = shortSymbol(tr.symbol)
+      if (!map[s]) map[s] = { pnl: 0, trades: 0, wins: 0 }
+      const p = Number(tr.realized_pnl || 0)
+      map[s].pnl += p
+      map[s].trades += 1
+      if (p > 0) map[s].wins += 1
+    }
+    return Object.entries(map).map(([symbol, v]) => ({
+      symbol,
+      pnl: v.pnl,
+      trades: v.trades,
+      win_rate: v.trades ? Math.round((v.wins / v.trades) * 1000) / 10 : 0,
+    }))
+  }, [trades])
 
   if (!userId) return null
 
@@ -165,6 +185,16 @@ export default function DownlineLogsModal({ userId, displayName, onClose }: Prop
                   onChange={k => setTab(k as TabKey)}
                 />
               </div>
+
+              {symbolPnlRows.length > 0 && (
+                <GlassCard className="p-3 section-mb-sm">
+                  <SymbolPnlStrip
+                    title={t('analytics.pnlBySymbol')}
+                    hint={t('dashboard.dualSymbolHint')}
+                    rows={symbolPnlRows}
+                  />
+                </GlassCard>
+              )}
 
               {tab === 'logs' && (
                 <div className="log-list-stack downline-logs-list">

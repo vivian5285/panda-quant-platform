@@ -204,7 +204,17 @@ class PositionSupervisor(
         self.on_log(self.user_id, event_type, message, detail, self.current_trade_id)
 
     def _alert(self, severity: str, alert_type: str, title: str, message: str, detail: dict | None = None):
-        self.on_alert(self.user_id, severity, alert_type, title, message, detail)
+        payload = dict(detail or {})
+        can = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
+        if can:
+            payload.setdefault("canonical_symbol", can)
+            payload.setdefault("symbol", can)
+        if getattr(self, "qty_unit", None):
+            payload.setdefault("qty_unit", self.qty_unit)
+        ex = getattr(self, "exchange_id", None) or getattr(self, "exchange", None)
+        if ex:
+            payload.setdefault("exchange", ex)
+        self.on_alert(self.user_id, severity, alert_type, title, message, payload)
 
     def _save_state(self):
         try:
@@ -997,12 +1007,19 @@ class PositionSupervisor(
             enrich_note = getattr(self, "_last_enrich_note", "") or ""
             if enrich_note:
                 enrich_suffix = f" | {enrich_note}"
-            open_title = f"{theme['accent']} GEMINI开仓 · {theme['label']} 档位{self.regime}"
-            self._log("OPEN", f"🔶 战神出击：{action} {real_qty} {unit} @ {entry_price} | 滑点 {slip:+.2f}{verify_note}{enrich_suffix}", detail)
+            open_title = (
+                f"{theme['accent']} GEMINI开仓 · {theme.get('symbol_label') or self.canonical_symbol} "
+                f"· {theme['label']} 档位{self.regime}"
+            )
+            self._log(
+                "OPEN",
+                f"🔶 战神出击：{self.canonical_symbol} {action} {real_qty} {unit} @ {entry_price} | 滑点 {slip:+.2f}{verify_note}{enrich_suffix}",
+                detail,
+            )
             self._alert(
                 "info", "OPEN",
                 open_title,
-                f"{action} {real_qty} {unit} @ {entry_price} | 滑点 {slip:+.2f} | "
+                f"{self.canonical_symbol} {action} {real_qty} {unit} @ {entry_price} | 滑点 {slip:+.2f} | "
                 f"TP {self.tv_tps} | ATR {self.current_atr} | {theme['leverage']}×{verify_note}{enrich_suffix}",
                 detail,
             )

@@ -27,8 +27,9 @@ def compute_tp_slices(
 ) -> list[tuple[int, float, float]]:
     """Regime-ratio slices for live qty; skip consumed levels and re-normalize.
 
-    ``min_qty``: exchange lot-size floor. Undersized non-final slices are folded
-    into the next tier so small XAU positions still get placeable TP orders.
+    ``min_qty``: exchange lot-size floor.
+    - If qty ≥ N × min_qty: keep all N tiers (floor each, distribute remainder by ratio).
+    - Else: fold undersized early tiers into later ones so at least one placeable TP remains.
     """
     exclude_levels = exclude_levels or set()
     ratios = regime_settings[regime]["ratios"]
@@ -44,18 +45,47 @@ def compute_tp_slices(
 
     floor = max(float(min_qty or 0), 0.0)
     total_ratio = sum(r for _, r, _ in active)
+    n = len(active)
+    qty = float(qty)
+
+    # Prefer full TP123 when position is large enough for every tier ≥ min_qty
+    if floor > 0 and qty + 1e-12 >= n * floor and total_ratio > 0:
+        remainder = max(qty - n * floor, 0.0)
+        slices: list[tuple[int, float, float]] = []
+        allocated = 0.0
+        for idx, (level, ratio, price) in enumerate(active):
+            if idx == n - 1:
+                part = round_qty_fn(qty - allocated)
+            else:
+                part = round_qty_fn(floor + remainder * (ratio / total_ratio))
+                if part + 1e-12 < floor:
+                    part = round_qty_fn(floor)
+                allocated += part
+            if part > 0:
+                slices.append((level, part, price))
+        # Fix float drift: last slice eats remainder
+        if slices:
+            used = sum(q for _, q, _ in slices[:-1])
+            last_lvl, _, last_px = slices[-1]
+            last_q = round_qty_fn(qty - used)
+            if last_q > 0:
+                slices[-1] = (last_lvl, last_q, last_px)
+            else:
+                slices.pop()
+        return slices
+
+    # Small position: ratio-split then fold under-min into next tier
     raw: list[tuple[int, float, float]] = []
     allocated = 0.0
     for idx, (level, ratio, price) in enumerate(active):
-        if idx == len(active) - 1:
+        if idx == n - 1:
             part_qty = round_qty_fn(qty - allocated)
         else:
             part_qty = round_qty_fn(qty * (ratio / total_ratio))
             allocated += part_qty
         raw.append((level, part_qty, price))
 
-    # Fold slices below min_qty into the next remaining tier (keep final remnant)
-    slices: list[tuple[int, float, float]] = []
+    slices = []
     carry = 0.0
     for idx, (level, part_qty, price) in enumerate(raw):
         q = round_qty_fn(part_qty + carry)
@@ -66,14 +96,10 @@ def compute_tp_slices(
             continue
         if q > 0:
             slices.append((level, q, price))
-        elif carry > 0 and is_last:
-            # last chance: attach carry even if under floor (caller may skip)
-            pass
     if carry > 0 and slices:
         lvl, q, px = slices[-1]
         slices[-1] = (lvl, round_qty_fn(q + carry), px)
     elif carry > 0 and not slices and raw:
-        # Entire position too small to split — single TP at last active price
         level, _, price = raw[-1]
         q = round_qty_fn(qty)
         if q > 0:

@@ -244,7 +244,15 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         message: str,
         detail: dict | None = None,
     ):
-        self.on_alert(self.user_id, severity, alert_type, title, message, detail or {})
+        payload = dict(detail or {})
+        can = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
+        if can:
+            payload.setdefault("canonical_symbol", can)
+            payload.setdefault("symbol", can)
+        if getattr(self, "qty_unit", None):
+            payload.setdefault("qty_unit", self.qty_unit)
+        payload.setdefault("exchange", "deepcoin")
+        self.on_alert(self.user_id, severity, alert_type, title, message, payload)
 
     @staticmethod
     def _call_dingtalk(fn, **kwargs):

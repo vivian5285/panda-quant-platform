@@ -15,6 +15,8 @@ import { CHART } from '../theme/chartColors'
 import { buildCalendarHeatmap } from '../utils/heatmapCalendar'
 import SettlementGateBanner from '../components/SettlementGateBanner'
 import PendingPerfFeeCard from '../components/PendingPerfFeeCard'
+import SymbolPnlStrip from '../components/SymbolPnlStrip'
+import { qtyUnitForSymbol, shortSymbol } from '../utils/symbolDisplay'
 
 function fmt(n: number) {
   const prefix = n >= 0 ? '+$' : '-$'
@@ -198,6 +200,20 @@ export default function Dashboard() {
         </GlassCard>
       )}
 
+      {!loading && (analytics?.pnl_by_symbol?.length > 0) && (
+        <GlassCard className="p-4 section-mb-md" delay={0.14}>
+          <SymbolPnlStrip
+            title={t('analytics.pnlBySymbol')}
+            hint={
+              analytics.since_activation && analytics.window_start
+                ? t('analytics.sinceActivationHint', { date: analytics.window_start })
+                : t('dashboard.dualSymbolHint')
+            }
+            rows={analytics.pnl_by_symbol}
+          />
+        </GlassCard>
+      )}
+
       <div className="dash-main-grid">
         <GlassCard className="p-6" delay={0.22}>
           <h3 className="card-heading">{t('dashboard.equityCurve')}</h3>
@@ -236,27 +252,46 @@ export default function Dashboard() {
         )}
       </GlassCard>
 
-      {data?.open_position?.has_position && (
+      {(data?.open_position?.all_positions?.length
+        ? data.open_position.all_positions
+        : data?.open_position?.has_position
+          ? [data.open_position]
+          : []
+      ).length > 0 && (
         <GlassCard className="p-6 section-mb-lg" delay={0.28}>
           <h3 className="card-heading">{t('dashboard.currentPosition')}</h3>
-          <div className="stat-grid stat-grid-flush">
-            <div className="stat-tile">
-              <p className="text-muted text-xs">{t('dashboard.direction')}</p>
-              <p className={data.open_position.side === 'LONG' ? 'text-green stat-value-xl' : 'text-red stat-value-xl'}>{data.open_position.side}</p>
-            </div>
-            <div className="stat-tile">
-              <p className="text-muted text-xs">{t('dashboard.qty')}</p>
-              <p className="stat-value-xl">{data.open_position.qty} {t('admin.ethUnit')}</p>
-            </div>
-            <div className="stat-tile">
-              <p className="text-muted text-xs">{t('dashboard.entry')}</p>
-              <p className="stat-value-xl">${data.open_position.entry_price?.toFixed(2)}</p>
-            </div>
-            <div className="stat-tile">
-              <p className="text-muted text-xs">{t('dashboard.floatingPnl')}</p>
-              <p className={`stat-value-xl ${data.open_position.unrealized_pnl >= 0 ? 'text-green' : 'text-red'}`}>{fmt(data.open_position.unrealized_pnl)}</p>
-            </div>
-          </div>
+          {(data.open_position.all_positions?.length
+            ? data.open_position.all_positions
+            : [data.open_position]
+          ).map((pos: any, idx: number) => {
+            const sym = shortSymbol(pos.symbol || data.open_position.symbol)
+            return (
+              <div key={`${sym}-${idx}`} className="stat-grid stat-grid-flush section-mb-sm">
+                <div className="stat-tile">
+                  <p className="text-muted text-xs">{t('trades.symbol')}</p>
+                  <p className="stat-value-xl"><span className="badge badge-gray">{sym}</span></p>
+                </div>
+                <div className="stat-tile">
+                  <p className="text-muted text-xs">{t('dashboard.direction')}</p>
+                  <p className={pos.side === 'LONG' ? 'text-green stat-value-xl' : 'text-red stat-value-xl'}>{pos.side}</p>
+                </div>
+                <div className="stat-tile">
+                  <p className="text-muted text-xs">{t('dashboard.qty')}</p>
+                  <p className="stat-value-xl">{pos.qty ?? pos.size} {qtyUnitForSymbol(sym)}</p>
+                </div>
+                <div className="stat-tile">
+                  <p className="text-muted text-xs">{t('dashboard.entry')}</p>
+                  <p className="stat-value-xl">${Number(pos.entry_price || 0).toFixed(2)}</p>
+                </div>
+                <div className="stat-tile">
+                  <p className="text-muted text-xs">{t('dashboard.floatingPnl')}</p>
+                  <p className={`stat-value-xl ${(pos.unrealized_pnl || 0) >= 0 ? 'text-green' : 'text-red'}`}>
+                    {fmt(pos.unrealized_pnl || 0)}
+                  </p>
+                </div>
+              </div>
+            )
+          })}
         </GlassCard>
       )}
 
