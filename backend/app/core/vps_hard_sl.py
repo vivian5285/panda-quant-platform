@@ -7,12 +7,13 @@ from typing import Any
 from app.core.regime_utils import clamp_regime
 from app.core.symbol_precision import round_price
 
-# Hard stop distance = entry × regime_pct (breathing room scales with price)
+# Hard stop distance = entry × regime_pct (ETH/XAU 共用；高价品种自动更宽绝对距离)
+# Spec: R1 2.78% / R2 3.89% / R3 5.56% / R4 8.33%
 REGIME_HARD_SL_PCT: dict[int, float] = {
-    1: 0.028,  # 2.8%
-    2: 0.039,  # 3.9%
-    3: 0.056,  # 5.6%
-    4: 0.083,  # 8.3%
+    1: 0.0278,
+    2: 0.0389,
+    3: 0.0556,
+    4: 0.0833,
 }
 
 # Stop-Limit: limit worse than trigger by this fraction of trigger (0.1%~0.2%)

@@ -26,19 +26,15 @@ LEGACY_BINANCE_FILL = "BINANCE_FILL"
 FILL_EVENTS = (EXCHANGE_FILL_EVENT, LEGACY_BINANCE_FILL)
 
 
-def trading_symbol_for_exchange(exchange: str | None) -> str:
-    ex = (exchange or "binance").lower()
-    if ex == "okx":
-        return settings.OKX_SYMBOL
-    if ex == "gate":
-        return settings.GATE_SYMBOL
-    if ex == "deepcoin":
-        return settings.DEEPCOIN_SYMBOL
-    return settings.SYMBOL
+def trading_symbol_for_exchange(exchange: str | None, canonical: str | None = None) -> str:
+    from app.core.symbol_registry import exchange_native_symbol, normalize_canonical_symbol, DEFAULT_CANONICAL
+
+    can = normalize_canonical_symbol(canonical) or DEFAULT_CANONICAL
+    return exchange_native_symbol(exchange, can)
 
 
-def resolve_trading_client(user: User):
-    supervisor = supervisor_pool.get(user.id)
+def resolve_trading_client(user: User, canonical: str | None = None):
+    supervisor = supervisor_pool.get(user.id, canonical)
     if supervisor and getattr(supervisor, "client", None):
         return supervisor.client
     if not (user.api_key_enc and user.api_secret_enc and user.api_status == ApiStatus.ACTIVE.value):
@@ -51,6 +47,7 @@ def resolve_trading_client(user: User):
         decrypt_text(user.api_key_enc),
         decrypt_text(user.api_secret_enc),
         passphrase,
+        canonical_symbol=canonical,
     )
 
 
@@ -165,75 +162,96 @@ def normalize_fill_row(exchange: str, raw: dict) -> dict | None:
     return None
 
 
-def fetch_live_eth_fills(client: Any, exchange: str, start_time_ms: int | None = None) -> list[dict]:
-    """Pull native history and normalize to common fill rows (ETH contract only)."""
+def fetch_live_eth_fills(client: Any, exchange: str, start_time_ms: int | None = None, canonical: str | None = None) -> list[dict]:
+    """Pull native history and normalize to common fill rows (ETH/XAU perps)."""
+    from app.core.symbol_registry import enabled_trading_symbols
+
     ex = (exchange or getattr(client, "exchange_id", "binance") or "binance").lower()
-    symbol = trading_symbol_for_exchange(ex)
+    symbols = [canonical] if canonical else enabled_trading_symbols()
     out: list[dict] = []
 
-    try:
-        if ex == "binance":
-            raw = client.get_account_trades(symbol=symbol, start_time_ms=start_time_ms, limit=1000) or []
-            for r in raw:
-                n = normalize_fill_row("binance", r)
-                if n:
-                    out.append(n)
-            return out
-
-        if ex == "okx":
-            raw = client.get_account_trades(symbol=symbol, start_time_ms=start_time_ms, limit=100) or []
-            for r in raw:
-                n = normalize_fill_row("okx", r)
-                if n:
-                    out.append(n)
-            return out
-
-        if ex == "gate":
-            # Prefer position close history (has pnl).
-            if hasattr(client, "get_position_close_history"):
-                raw = client.get_position_close_history(symbol=symbol, start_time_ms=start_time_ms) or []
+    for can in symbols:
+        symbol = trading_symbol_for_exchange(ex, can)
+        try:
+            if ex == "binance":
+                raw = client.get_account_trades(symbol=symbol, start_time_ms=start_time_ms, limit=1000) or []
                 for r in raw:
-                    r = dict(r)
-                    r["raw_kind"] = "position_close"
-                    n = normalize_fill_row("gate", r)
+                    n = normalize_fill_row("binance", r)
                     if n:
+                        n["canonical_symbol"] = can
                         out.append(n)
-            if not out and hasattr(client, "get_futures_cashflows"):
-                cash = client.get_futures_cashflows(start_time_ms=start_time_ms) or []
-                for r in cash:
-                    if str(r.get("kind") or "") == "realized_pnl" or str(r.get("income_type") or "").lower() == "pnl":
-                        # already normalized-ish from cashflow helper
-                        out.append({
-                            "fill_id": str(r.get("tran_id") or f"cf-{r.get('time_ms')}-{r.get('amount')}"),
-                            "exchange": "gate",
-                            "symbol": r.get("symbol") or symbol,
-                            "side": "",
-                            "qty": 0.0,
-                            "price": 0.0,
-                            "realized_pnl": _safe_float(r.get("amount")),
-                            "commission": 0.0,
-                            "time_ms": int(r.get("time_ms") or 0),
-                            "order_id": "",
-                            "raw_kind": "cashflow_pnl",
-                        })
-            return out
+                continue
 
-        if ex == "deepcoin":
-            if hasattr(client, "get_orders_history_pnl"):
-                raw = client.get_orders_history_pnl(symbol=symbol, start_time_ms=start_time_ms) or []
+            if ex == "okx":
+                # Client may be bound to one trading_symbol — temporarily use requested
+                prev = getattr(client, "trading_symbol", None)
+                try:
+                    client.trading_symbol = symbol
+                    raw = client.get_account_trades(symbol=symbol, start_time_ms=start_time_ms, limit=100) or []
+                finally:
+                    if prev is not None:
+                        client.trading_symbol = prev
                 for r in raw:
-                    n = normalize_fill_row("deepcoin", r)
+                    n = normalize_fill_row("okx", r)
                     if n:
+                        n["canonical_symbol"] = can
                         out.append(n)
-            elif hasattr(client, "get_account_trades"):
-                raw = client.get_account_trades(symbol=symbol, start_time_ms=start_time_ms) or []
-                for r in raw:
-                    n = normalize_fill_row("deepcoin", r)
-                    if n:
-                        out.append(n)
-            return out
-    except Exception as exc:
-        logger.warning("[FillSync] live fetch failed exchange=%s: %s", ex, exc)
+                continue
+
+            if ex == "gate":
+                if hasattr(client, "get_position_close_history"):
+                    raw = client.get_position_close_history(symbol=symbol, start_time_ms=start_time_ms) or []
+                    for r in raw:
+                        r = dict(r)
+                        r["raw_kind"] = "position_close"
+                        n = normalize_fill_row("gate", r)
+                        if n:
+                            n["canonical_symbol"] = can
+                            out.append(n)
+                if not any(f.get("canonical_symbol") == can for f in out) and hasattr(client, "get_futures_cashflows"):
+                    cash = client.get_futures_cashflows(start_time_ms=start_time_ms) or []
+                    for r in cash:
+                        if str(r.get("kind") or "") == "realized_pnl" or str(r.get("income_type") or "").lower() == "pnl":
+                            out.append({
+                                "fill_id": str(r.get("tran_id") or f"cf-{r.get('time_ms')}-{r.get('amount')}"),
+                                "exchange": "gate",
+                                "symbol": r.get("symbol") or symbol,
+                                "canonical_symbol": can,
+                                "side": "",
+                                "qty": 0.0,
+                                "price": 0.0,
+                                "realized_pnl": _safe_float(r.get("amount")),
+                                "commission": 0.0,
+                                "time_ms": int(r.get("time_ms") or 0),
+                                "order_id": "",
+                                "raw_kind": "cashflow_pnl",
+                            })
+                continue
+
+            if ex == "deepcoin":
+                prev = getattr(client, "trading_symbol", None)
+                try:
+                    client.trading_symbol = symbol
+                    if hasattr(client, "get_orders_history_pnl"):
+                        raw = client.get_orders_history_pnl(symbol=symbol, start_time_ms=start_time_ms) or []
+                        for r in raw:
+                            n = normalize_fill_row("deepcoin", r)
+                            if n:
+                                n["canonical_symbol"] = can
+                                out.append(n)
+                    elif hasattr(client, "get_account_trades"):
+                        raw = client.get_account_trades(symbol=symbol, start_time_ms=start_time_ms) or []
+                        for r in raw:
+                            n = normalize_fill_row("deepcoin", r)
+                            if n:
+                                n["canonical_symbol"] = can
+                                out.append(n)
+                finally:
+                    if prev is not None:
+                        client.trading_symbol = prev
+                continue
+        except Exception as exc:
+            logger.warning("[FillSync] live fetch failed exchange=%s symbol=%s: %s", ex, can, exc)
     return out
 
 

@@ -1487,7 +1487,7 @@ export default {
   },
   positions: {
     title: "Positions",
-    subtitle: "Live aggregated position · ETHUSDT perpetual",
+    subtitle: "Live aggregated positions · ETHUSDT / XAUUSDT perpetual",
     current: "Current Position",
     flat: "No open position",
     entry: "Entry",

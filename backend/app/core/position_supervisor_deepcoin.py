@@ -111,12 +111,22 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         user_id: int,
         client: DeepcoinClient,
         initial_principal: float = 0.0,
+        canonical_symbol: str | None = None,
         on_log: Optional[Callable] = None,
         on_trade_open: Optional[Callable] = None,
         on_trade_close: Optional[Callable] = None,
         on_trade_update_targets: Optional[Callable] = None,
         on_alert: Optional[Callable] = None,
     ):
+        from app.core.symbol_registry import (
+            DEFAULT_CANONICAL,
+            exchange_native_symbol,
+            label_for_symbol,
+            normalize_canonical_symbol,
+            qty_unit_for_symbol,
+            supervisor_state_key,
+        )
+
         self.user_id = user_id
         self.client = client
         self.initial_principal = float(initial_principal or 0)
@@ -129,7 +139,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.current_trade_id: int | None = None
         self.exchange_id = "deepcoin"
 
-        self.symbol = settings.DEEPCOIN_SYMBOL
+        self.canonical_symbol = (
+            normalize_canonical_symbol(canonical_symbol)
+            or getattr(client, "canonical_symbol", None)
+            or DEFAULT_CANONICAL
+        )
+        self.symbol = getattr(client, "trading_symbol", None) or exchange_native_symbol(
+            "deepcoin", self.canonical_symbol
+        )
+        self.qty_unit = qty_unit_for_symbol(self.canonical_symbol, "deepcoin")
+        self.symbol_label = label_for_symbol(self.canonical_symbol)
         self.monitoring = False
         self._lock = threading.Lock()
 
@@ -160,14 +179,32 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self._signal_worker_started = False
         self._init_adverse_radar_fields()
 
-        base_dir = os.path.join("data", "supervisor", f"deepcoin_{user_id}")
+        state_key = supervisor_state_key("deepcoin", user_id, self.canonical_symbol)
+        base_dir = os.path.join("data", "supervisor", state_key)
         os.makedirs(base_dir, exist_ok=True)
         self.state_file = os.path.join(base_dir, "state.json")
         self.tv_journal = os.path.join(base_dir, "tv_journal.jsonl")
         self.open_journal = os.path.join(base_dir, "open_journal.jsonl")
+        # Migrate legacy deepcoin_{user_id}/ for ETH
+        legacy_dir = os.path.join("data", "supervisor", f"deepcoin_{user_id}")
+        if (
+            self.canonical_symbol == DEFAULT_CANONICAL
+            and not os.path.exists(self.state_file)
+            and os.path.isdir(legacy_dir)
+        ):
+            for name in ("state.json", "tv_journal.jsonl", "open_journal.jsonl"):
+                src = os.path.join(legacy_dir, name)
+                dst = os.path.join(base_dir, name)
+                if os.path.isfile(src) and not os.path.exists(dst):
+                    try:
+                        import shutil
+                        shutil.copy2(src, dst)
+                    except Exception:
+                        pass
 
         logger.info(
-            f"🧠 深币 Supervisor user={user_id} [{DEEPCOIN_SUPERVISOR_VERSION}/{CLIENT_VERSION}] 已加载"
+            f"🧠 深币 Supervisor user={user_id} {self.canonical_symbol} "
+            f"[{DEEPCOIN_SUPERVISOR_VERSION}/{CLIENT_VERSION}] 已加载"
         )
         self._start_signal_worker()
         self._start_idle_flat_patrol()
@@ -2056,12 +2093,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return int(self.leverage)
 
     def _resolve_entry_qty(self, curr_px: float) -> tuple[int, dict]:
+        from app.core.tv_entry_sizing import ENTRY_TYPES_ADD
+
         equity = read_contract_equity(self.client)
         leverage = self._resolve_entry_leverage()
         tv_fields = getattr(self, "_tv_entry_fields", None) or {}
         entry_type = getattr(self, "_entry_type", "OPEN")
         regime = int(tv_fields.get("regime") or self.regime)
-        return resolve_vps_entry_qty_deepcoin(
+        qty, meta = resolve_vps_entry_qty_deepcoin(
             live_balance=equity,
             initial_principal=self.initial_principal,
             entry_type=entry_type,
@@ -2073,7 +2112,25 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             face_value=self.face_value,
             tv_qty_ratio=tv_fields.get("qty_ratio"),
             qty_ratio_source=str(tv_fields.get("qty_ratio_source") or "tv_qty_ratio"),
+            symbol=self.canonical_symbol,
         )
+        if entry_type not in ENTRY_TYPES_ADD and qty > 0:
+            from app.core.combined_notional import check_combined_notional_cap
+
+            notional = float(meta.get("notional_usd") or meta.get("position_value") or 0)
+            if notional <= 0 and curr_px and self.face_value:
+                # Deepcoin contracts: approximate notional = qty × face × price
+                notional = float(qty) * float(self.face_value) * float(curr_px)
+            ok, cap_meta = check_combined_notional_cap(
+                user_id=self.user_id,
+                canonical=self.canonical_symbol,
+                equity=equity if equity > 0 else self.initial_principal,
+                new_notional=notional,
+            )
+            meta.update(cap_meta)
+            if not ok:
+                return 0, meta
+        return qty, meta
 
     def _max_add_times(self) -> int:
         tv_fields = getattr(self, "_tv_entry_fields", None) or {}
@@ -2419,6 +2476,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self.current_trade_id = self.on_trade_open(
                 self.user_id, action, real_qty, entry_price or float(pos.get("entry_price", 0) or 0),
                 self.regime, self.tv_tps,
+                symbol=self.canonical_symbol,
             )
             self.trade_opened_at = time.time()
             self._protect_and_monitor(real_qty, entry_price or pos['entry_price'])

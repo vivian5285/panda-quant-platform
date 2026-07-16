@@ -185,39 +185,50 @@ export default function AdminUsersTab() {
           active={userDetailTab}
           onChange={k => setUserDetailTab(k as typeof userDetailTab)}
         />
-        {userDetailTab === 'overview' && userDetail.dashboard?.open_position?.has_position && (
-          <GlassCard className="p-4 section-mt-md">
-            <p className="text-md-strong mb-sm">{t('dashboard.currentPosition')}</p>
-            <div className="stat-grid stat-grid-flush">
-              <div className="stat-tile">
-                <p className="text-muted text-xs">{t('dashboard.direction')}</p>
-                <p className="text-md-strong">{userDetail.dashboard.open_position.side}</p>
-              </div>
-              <div className="stat-tile">
-                <p className="text-muted text-xs">{t('dashboard.qty')}</p>
-                <p className="text-md-strong">{userDetail.dashboard.open_position.qty} {t('admin.ethUnit')}</p>
-              </div>
-              <div className="stat-tile">
-                <p className="text-muted text-xs">{t('dashboard.entry')}</p>
-                <p className="text-md-strong">${userDetail.dashboard.open_position.entry_price?.toFixed(2)}</p>
-              </div>
-              <div className="stat-tile">
-                <p className="text-muted text-xs">{t('dashboard.floatingPnl')}</p>
-                <p className={(userDetail.dashboard.open_position.unrealized_pnl || 0) >= 0 ? 'text-green text-md-strong' : 'text-red text-md-strong'}>
-                  ${userDetail.dashboard.open_position.unrealized_pnl?.toFixed(2)}
-                </p>
-              </div>
-            </div>
-          </GlassCard>
-        )}
+        {userDetailTab === 'overview' && (() => {
+          const op = userDetail.dashboard?.open_position
+          const list = op?.all_positions?.length ? op.all_positions : (op?.has_position ? [op] : [])
+          if (!list.length) return null
+          return (
+            <GlassCard className="p-4 section-mt-md">
+              <p className="text-md-strong mb-sm">{t('dashboard.currentPosition')}</p>
+              {list.map((pos: any, idx: number) => (
+                <div key={`${pos.symbol || 'p'}-${idx}`} className="stat-grid stat-grid-flush section-mb-sm">
+                  <div className="stat-tile">
+                    <p className="text-muted text-xs">{t('common.symbol')}</p>
+                    <p className="text-md-strong">{pos.symbol || 'ETHUSDT'}</p>
+                  </div>
+                  <div className="stat-tile">
+                    <p className="text-muted text-xs">{t('dashboard.direction')}</p>
+                    <p className="text-md-strong">{pos.side}</p>
+                  </div>
+                  <div className="stat-tile">
+                    <p className="text-muted text-xs">{t('dashboard.qty')}</p>
+                    <p className="text-md-strong">{pos.qty}</p>
+                  </div>
+                  <div className="stat-tile">
+                    <p className="text-muted text-xs">{t('dashboard.entry')}</p>
+                    <p className="text-md-strong">${pos.entry_price?.toFixed?.(2) ?? pos.entry_price}</p>
+                  </div>
+                  <div className="stat-tile">
+                    <p className="text-muted text-xs">{t('dashboard.floatingPnl')}</p>
+                    <p className={(pos.unrealized_pnl || 0) >= 0 ? 'text-green text-md-strong' : 'text-red text-md-strong'}>
+                      ${Number(pos.unrealized_pnl || 0).toFixed(2)}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </GlassCard>
+          )
+        })()}
         {userDetailTab === 'trades' && (
           <GlassCard className="p-0 table-wrap section-mt-md">
             <table className="data-table">
-              <thead><tr><th>{t('admin.cols.id')}</th><th>{t('trades.side')}</th><th>{t('trades.qty')}</th><th>{t('trades.entry')}</th><th>{t('trades.pnl')}</th><th>{t('common.status')}</th></tr></thead>
+              <thead><tr><th>{t('admin.cols.id')}</th><th>{t('trades.symbol')}</th><th>{t('trades.side')}</th><th>{t('trades.qty')}</th><th>{t('trades.entry')}</th><th>{t('trades.pnl')}</th><th>{t('common.status')}</th></tr></thead>
               <tbody>
                 {userTrades.map((tr: any) => (
                   <tr key={tr.id}>
-                    <td>{tr.id}</td><td>{tr.side}</td><td>{tr.quantity}</td><td>{tr.entry_price}</td>
+                    <td>{tr.id}</td><td>{tr.symbol || 'ETHUSDT'}</td><td>{tr.side}</td><td>{tr.quantity}</td><td>{tr.entry_price}</td>
                     <td className={tr.realized_pnl >= 0 ? 'text-green' : ''}>{tr.realized_pnl?.toFixed(2)}</td><td>{tr.status}</td>
                   </tr>
                 ))}

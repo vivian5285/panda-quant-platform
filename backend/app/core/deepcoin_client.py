@@ -30,13 +30,22 @@ SYMBOL_TICK_FALLBACK = {
 
 
 class DeepcoinClient:
-    def __init__(self, api_key: str, api_secret: str, passphrase: str = "", user_id: int = 0):
+    def __init__(
+        self,
+        api_key: str,
+        api_secret: str,
+        passphrase: str = "",
+        user_id: int = 0,
+        trading_symbol: str | None = None,
+    ):
         self.api_key = api_key or ""
         self.secret_key = api_secret or ""
         self.passphrase = passphrase or ""
         self.user_id = user_id
-        self.trading_symbol = settings.DEEPCOIN_SYMBOL
+        self.trading_symbol = trading_symbol or settings.DEEPCOIN_SYMBOL
         self.trading_leverage = settings.DEEPCOIN_LEVERAGE
+        self.canonical_symbol = None
+        self.exchange_id = "deepcoin"
         self.base_url = "https://api.deepcoin.com"
         self._price_cache = {}
         self._price_cache_ts = {}

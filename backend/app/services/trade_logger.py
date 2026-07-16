@@ -44,12 +44,24 @@ class TradeLogger:
             logger.error(f"Log event failed user={user_id}: {e}")
             self.db.rollback()
 
-    def on_trade_open(self, user_id: int, side: str, qty: float, entry_price: float, regime: int, tv_tps: list) -> int:
+    def on_trade_open(
+        self,
+        user_id: int,
+        side: str,
+        qty: float,
+        entry_price: float,
+        regime: int,
+        tv_tps: list,
+        symbol: str | None = None,
+        **_kwargs,
+    ) -> int:
         """Create Trade row only; event detail is logged by PositionSupervisor._log(OPEN)."""
+        from app.core.symbol_registry import normalize_canonical_symbol, DEFAULT_CANONICAL
+
         try:
             trade = Trade(
                 user_id=user_id,
-                symbol=settings.SYMBOL,
+                symbol=normalize_canonical_symbol(symbol) or DEFAULT_CANONICAL,
                 side=side,
                 action=side,
                 quantity=qty,

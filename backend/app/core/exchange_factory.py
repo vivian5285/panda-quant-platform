@@ -1,4 +1,4 @@
-"""Exchange client + supervisor factory (multi-exchange)."""
+"""Exchange client + supervisor factory (multi-exchange, dual-symbol)."""
 from __future__ import annotations
 
 import logging
@@ -11,6 +11,11 @@ from app.core.gate_client import GateClient
 from app.core.okx_client import OkxClient
 from app.core.position_supervisor import PositionSupervisor
 from app.core.position_supervisor_deepcoin import DeepcoinPositionSupervisor
+from app.core.symbol_registry import (
+    DEFAULT_CANONICAL,
+    exchange_native_symbol,
+    normalize_canonical_symbol,
+)
 from app.models import ExchangeType, User
 
 logger = logging.getLogger(__name__)
@@ -71,25 +76,29 @@ def create_exchange_client(
     api_key: str,
     api_secret: str,
     passphrase: str = "",
+    *,
+    canonical_symbol: str | None = None,
 ) -> BinanceClient | DeepcoinClient | OkxClient | GateClient:
     from app.services.platform_public_settings import is_exchange_enabled
 
     ex = user_exchange(user)
     if not is_exchange_enabled(ex):
         raise ExchangeNotEnabledError(ex)
+    can = normalize_canonical_symbol(canonical_symbol) or DEFAULT_CANONICAL
+    native = exchange_native_symbol(ex, can)
     if ex == ExchangeType.DEEPCOIN.value:
-        client = DeepcoinClient(api_key, api_secret, passphrase, user.id)
+        client = DeepcoinClient(api_key, api_secret, passphrase, user.id, trading_symbol=native)
     elif ex == ExchangeType.OKX.value:
-        client = OkxClient(api_key, api_secret, passphrase, user.id)
+        client = OkxClient(api_key, api_secret, passphrase, user.id, trading_symbol=native)
     elif ex == ExchangeType.GATE.value:
-        client = GateClient(api_key, api_secret, user.id)
+        client = GateClient(api_key, api_secret, user.id, trading_symbol=native)
     else:
-        client = BinanceClient(api_key, api_secret, user.id)
+        client = BinanceClient(api_key, api_secret, user.id, trading_symbol=native)
+    client.canonical_symbol = can
     lev = exchange_leverage(ex)
-    sym = getattr(client, "trading_symbol", settings.SYMBOL)
     logger.info(
-        "[User %s] exchange client ready: %s %s @ %sx",
-        user.id, ex, sym, lev,
+        "[User %s] exchange client ready: %s %s (%s) @ %sx",
+        user.id, ex, native, can, lev,
     )
     return client
 
@@ -98,18 +107,25 @@ def create_supervisor(
     user: User,
     client: BinanceClient | DeepcoinClient | OkxClient | GateClient,
     *,
+    canonical_symbol: str | None = None,
     on_log: Optional[Callable] = None,
     on_trade_open: Optional[Callable] = None,
     on_trade_close: Optional[Callable] = None,
     on_trade_update_targets: Optional[Callable] = None,
     on_alert: Optional[Callable] = None,
 ) -> SupervisorType:
+    can = (
+        normalize_canonical_symbol(canonical_symbol)
+        or getattr(client, "canonical_symbol", None)
+        or DEFAULT_CANONICAL
+    )
     ex = user_exchange(user)
     if ex == ExchangeType.DEEPCOIN.value:
         return DeepcoinPositionSupervisor(
             user_id=user.id,
             client=client,  # type: ignore[arg-type]
             initial_principal=float(user.initial_principal or 0),
+            canonical_symbol=can,
             on_log=on_log,
             on_trade_open=on_trade_open,
             on_trade_close=on_trade_close,
@@ -120,6 +136,7 @@ def create_supervisor(
         user_id=user.id,
         client=client,  # type: ignore[arg-type]
         initial_principal=float(user.initial_principal or 0),
+        canonical_symbol=can,
         on_log=on_log,
         on_trade_open=on_trade_open,
         on_trade_close=on_trade_close,

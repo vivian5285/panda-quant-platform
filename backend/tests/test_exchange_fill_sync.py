@@ -9,7 +9,9 @@ from app.services.exchange_fill_sync import (
 
 def test_symbols_per_exchange():
     assert trading_symbol_for_exchange("binance") == "ETHUSDT"
+    assert trading_symbol_for_exchange("binance", "XAUUSDT") == "XAUUSDT"
     assert "ETH" in trading_symbol_for_exchange("okx")
+    assert "XAU" in trading_symbol_for_exchange("okx", "XAUUSDT")
     assert "ETH" in trading_symbol_for_exchange("gate")
     assert "ETH" in trading_symbol_for_exchange("deepcoin")
 

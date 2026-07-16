@@ -28,28 +28,44 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
     SYMBOL: str = "ETHUSDT"
+    # Dual-symbol: comma-separated canonical IDs (ETHUSDT,XAUUSDT)
+    TRADING_SYMBOLS: str = "ETHUSDT,XAUUSDT"
+    XAU_SYMBOL: str = "XAUUSDT"
     LEVERAGE: int = 25
     DEEPCOIN_SYMBOL: str = "ETH-USDT-SWAP"
+    DEEPCOIN_XAU_SYMBOL: str = "XAU-USDT-SWAP"
     DEEPCOIN_LEVERAGE: int = 25
     OKX_SYMBOL: str = "ETH-USDT-SWAP"
+    OKX_XAU_SYMBOL: str = "XAU-USDT-SWAP"
     OKX_LEVERAGE: int = 25
     OKX_CONTRACT_VALUE: float = 0.1
     OKX_LOT_SIZE: float = 0.01
     GATE_SYMBOL: str = "ETH_USDT"
+    GATE_XAU_SYMBOL: str = "XAU_USDT"
     GATE_LEVERAGE: int = 25
-    # OPEN 保证金预算系数（与交易所杠杆解耦：保证金≈本金×风险%×本系数，头寸=保证金×LEVERAGE）
+    # Legacy OPEN path (kept for tests); dual-symbol OPEN uses REGIME_MARGIN_* below
     SIZING_MARGIN_LEVERAGE: int = 5
     GATE_QUANTO_MULTIPLIER: float = 0.01
 
     # Same-direction TV entry: skip re-open when |TV价−持仓价|/现价 below this % (regime unchanged)
     SAME_DIR_IGNORE_PRICE_DIFF_PCT: float = 0.20
 
-    # VPS 自主开仓风险（与 TV risk_pct 脱钩）
+    # Dual-symbol OPEN: margin = TOTAL_EQUITY × regime_margin% ; notional = margin × LEVERAGE
+    # Spec: R1 5% / R2 10% / R3 15% / R4 18% of equity
+    REGIME_MARGIN_1: float = 0.05
+    REGIME_MARGIN_2: float = 0.10
+    REGIME_MARGIN_3: float = 0.15
+    REGIME_MARGIN_4: float = 0.18
+    # Combined ETH+XAU notional hard cap vs equity (spec: ≤ 9×)
+    MAX_COMBINED_NOTIONAL_MULT: float = 9.0
+
+    # VPS 自主开仓风险（legacy / fallback — dual OPEN prefers REGIME_MARGIN_*）
     VPS_RISK_PCT: float = 3.0
     GLOBAL_SCALE: float = 1.0
     MAX_RISK_PCT: float = 4.0
     MIN_VPS_RISK_PCT: float = 0.5
     MIN_ORDER_QTY_ETH: float = 0.001
+    MIN_ORDER_QTY_XAU: float = 0.01
     MAX_POSITION_QTY: float = 9999.0
     REGIME_SCALE_1: float = 0.55
     REGIME_SCALE_2: float = 0.75

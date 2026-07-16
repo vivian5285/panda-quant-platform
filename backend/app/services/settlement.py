@@ -38,11 +38,16 @@ def user_has_open_position(db: Session, user_id: int) -> bool:
     if open_trade:
         return True
 
-    supervisor = supervisor_pool.get(user_id)
-    if supervisor:
-        status = supervisor.position_manager.get_position_status()
-        if status.get("has_position"):
-            return True
+    for supervisor in supervisor_pool.get_all_for_user(user_id):
+        try:
+            if hasattr(supervisor, "position_manager"):
+                status = supervisor.position_manager.get_position_status()
+                if status.get("has_position"):
+                    return True
+            elif float(getattr(supervisor, "watched_qty", 0) or 0) > 0:
+                return True
+        except Exception:
+            continue
     return False
 
 

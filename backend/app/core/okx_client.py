@@ -28,13 +28,21 @@ BASE_URL = "https://www.okx.com"
 class OkxClient:
     exchange_id = "okx"
 
-    def __init__(self, api_key: str, api_secret: str, passphrase: str = "", user_id: int = 0):
+    def __init__(
+        self,
+        api_key: str,
+        api_secret: str,
+        passphrase: str = "",
+        user_id: int = 0,
+        trading_symbol: str | None = None,
+    ):
         self.api_key = api_key or ""
         self.api_secret = api_secret or ""
         self.passphrase = passphrase or ""
         self.user_id = user_id
-        self.trading_symbol = settings.OKX_SYMBOL
+        self.trading_symbol = trading_symbol or settings.OKX_SYMBOL
         self.trading_leverage = settings.OKX_LEVERAGE
+        self.canonical_symbol = None
         self._ct_val = float(settings.OKX_CONTRACT_VALUE)
         self._lot_sz = float(settings.OKX_LOT_SIZE)
         self._one_way_checked = False

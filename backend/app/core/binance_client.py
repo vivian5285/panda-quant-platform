@@ -31,12 +31,19 @@ def _error_indicates_sub_account_only(err: str) -> bool:
 class BinanceClient:
     exchange_id = "binance"
 
-    def __init__(self, api_key: str, api_secret: str, user_id: int):
+    def __init__(
+        self,
+        api_key: str,
+        api_secret: str,
+        user_id: int,
+        trading_symbol: str | None = None,
+    ):
         self.user_id = user_id
         self.api_key = api_key
         self.api_secret = api_secret
-        self.trading_symbol = settings.SYMBOL
+        self.trading_symbol = trading_symbol or settings.SYMBOL
         self.trading_leverage = settings.LEVERAGE
+        self.canonical_symbol = trading_symbol or settings.SYMBOL
         self.client = Client(api_key, api_secret)
         self._one_way_checked = False
         self._price_cache: dict[str, float] = {}

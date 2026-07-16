@@ -199,18 +199,20 @@ def get_open_trade_log_detail(db: Session, user_id: int, trade_id: int | None = 
     }
 
 
-def get_open_trade_context(db: Session, user_id: int) -> dict | None:
-    trade = (
-        db.query(Trade)
-        .filter(Trade.user_id == user_id, Trade.status == "open")
-        .order_by(Trade.created_at.desc())
-        .first()
-    )
+def get_open_trade_context(db: Session, user_id: int, symbol: str | None = None) -> dict | None:
+    from app.core.symbol_registry import normalize_canonical_symbol
+
+    q = db.query(Trade).filter(Trade.user_id == user_id, Trade.status == "open")
+    can = normalize_canonical_symbol(symbol, default=None) if symbol else None
+    if can:
+        q = q.filter(Trade.symbol == can)
+    trade = q.order_by(Trade.created_at.desc()).first()
     if not trade:
         return None
     return {
         "id": trade.id,
         "side": trade.side,
+        "symbol": trade.symbol,
         "regime": trade.regime,
         "quantity": float(trade.quantity or 0),
         "entry_price": float(trade.entry_price or 0),
@@ -219,9 +221,9 @@ def get_open_trade_context(db: Session, user_id: int) -> dict | None:
     }
 
 
-def build_radar_recovery_context(db: Session, user_id: int) -> dict:
+def build_radar_recovery_context(db: Session, user_id: int, symbol: str | None = None) -> dict:
     """Merge DB open trade, OPEN log, and per-user latest TV for VPS takeover audit."""
-    trade = get_open_trade_context(db, user_id)
+    trade = get_open_trade_context(db, user_id, symbol=symbol)
     trade_id = trade["id"] if trade else None
     open_log = get_open_trade_log_detail(db, user_id, trade_id)
     latest_tv = get_latest_tv_signal_for_user(db, user_id)
@@ -255,4 +257,5 @@ def build_radar_recovery_context(db: Session, user_id: int) -> dict:
         "latest_entry_tv": latest_entry_tv,
         "tv_signal_scope": tv_scope,
         "checks": checks,
+        "symbol": symbol,
     }

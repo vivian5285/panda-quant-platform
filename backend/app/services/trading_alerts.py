@@ -173,7 +173,15 @@ DINGTALK_VERBOSE_EXCLUDED = frozenset({
 })
 
 
-def resolve_exchange_theme(exchange: str | None = None) -> dict:
+def resolve_exchange_theme(exchange: str | None = None, symbol: str | None = None) -> dict:
+    from app.core.symbol_registry import (
+        exchange_native_symbol,
+        label_for_symbol,
+        normalize_canonical_symbol,
+        qty_unit_for_symbol,
+        DEFAULT_CANONICAL,
+    )
+
     key = (exchange or "binance").strip().lower()
     if key == "gateio":
         key = "gate"
@@ -181,19 +189,31 @@ def resolve_exchange_theme(exchange: str | None = None) -> dict:
     lev = exchange_leverage(key)
     prefix = _EXCHANGE_TAG_PREFIX.get(key, "币安")
     base["leverage"] = lev
-    base["tag"] = f"#{prefix}{lev}x" if prefix != "OKX" else f"#OKX{lev}x"
+    can = normalize_canonical_symbol(symbol) or DEFAULT_CANONICAL
+    base["canonical_symbol"] = can
+    base["symbol"] = exchange_native_symbol(key, can)
+    base["qty_unit"] = qty_unit_for_symbol(can, key)
+    base["symbol_label"] = label_for_symbol(can)
+    tag_sym = "ETH" if can.startswith("ETH") else ("XAU" if "XAU" in can else can[:3])
+    if prefix == "OKX":
+        base["tag"] = f"#OKX{lev}x·{tag_sym}"
+    else:
+        base["tag"] = f"#{prefix}{lev}x·{tag_sym}"
     return base
 
 
-def qty_unit_for_exchange(exchange: str | None) -> str:
-    return resolve_exchange_theme(exchange).get("qty_unit", "ETH")
+def qty_unit_for_exchange(exchange: str | None = None, symbol: str | None = None) -> str:
+    return resolve_exchange_theme(exchange, symbol).get("qty_unit", "ETH")
 
 
 def format_signal_received_message(payload: dict | None) -> str:
+    from app.core.symbol_registry import extract_payload_symbol
+
     data = dict(payload or {})
     action = str(data.get("action") or "").upper()
     entry_type = str(data.get("entry_type") or "").upper()
-    parts = [f"action={action}"]
+    symbol = extract_payload_symbol(data)
+    parts = [f"symbol={symbol}", f"action={action}"]
     if entry_type:
         parts.append(f"entry_type={entry_type}")
     if data.get("side"):
@@ -647,7 +667,8 @@ def push_trading_alert(
     exchange: str | None = None,
 ) -> None:
     ex = exchange or (detail or {}).get("exchange") or (detail or {}).get("exchange_id")
-    theme = resolve_exchange_theme(ex)
+    sym = (detail or {}).get("symbol") or (detail or {}).get("canonical_symbol")
+    theme = resolve_exchange_theme(ex, sym)
     body = format_trading_alert_body(
         theme=theme,
         severity=severity,

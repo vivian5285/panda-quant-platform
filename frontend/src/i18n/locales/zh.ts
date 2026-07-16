@@ -1487,7 +1487,7 @@ export default {
   },
   positions: {
     title: "持仓",
-    subtitle: "实时聚合持仓 · ETHUSDT 永续",
+    subtitle: "实时聚合持仓 · ETHUSDT / XAUUSDT 永续",
     current: "当前持仓",
     flat: "当前无持仓（空仓）",
     entry: "开仓价",

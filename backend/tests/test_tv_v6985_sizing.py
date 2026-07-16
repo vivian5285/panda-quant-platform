@@ -9,6 +9,7 @@ from app.core.tv_entry_sizing import (
     max_add_times_for_regime,
     parse_tv_entry_fields,
     regime_add_qty_ratio,
+    regime_margin_coeff,
     regime_scale,
     resolve_vps_entry_qty_eth,
 )
@@ -35,13 +36,20 @@ def test_regime_max_add_times_match_pine():
     assert max_add_times_for_regime(4) == 3
 
 
+def test_regime_margin_coeff_dual_symbol_spec():
+    assert regime_margin_coeff(1) == pytest.approx(0.05)
+    assert regime_margin_coeff(2) == pytest.approx(0.10)
+    assert regime_margin_coeff(3) == pytest.approx(0.15)
+    assert regime_margin_coeff(4) == pytest.approx(0.18)
+
+
 @pytest.mark.parametrize(
     "regime,price,expected_qty",
     [
-        (1, 2000.0, 0.619),
-        (2, 2000.0, 0.844),
-        (3, 2000.0, 1.069),
-        (4, 2000.0, 1.496),
+        (1, 2000.0, 0.625),   # 1000×5%×25 / 2000
+        (2, 2000.0, 1.25),    # 1000×10%×25 / 2000
+        (3, 2000.0, 1.875),   # 1000×15%×25 / 2000
+        (4, 2000.0, 2.25),    # 1000×18%×25 / 2000
     ],
 )
 def test_vps_open_table_1000u(regime, price, expected_qty):
@@ -51,11 +59,11 @@ def test_vps_open_table_1000u(regime, price, expected_qty):
         price=price,
         tv_sl=1950.0,
         regime=regime,
-        leverage=15,
+        leverage=25,
         round_fn=lambda x: round(x, 3),
     )
     assert qty == pytest.approx(expected_qty, rel=0.02)
-    assert meta["sizing_mode"] == "vps_open"
+    assert meta["sizing_mode"] == "vps_open_margin_coeff"
     assert meta["position_value"] > 0
 
 
@@ -135,7 +143,7 @@ def test_parse_tv_entry_fields_add_falls_back_to_regime_ratio():
     assert fields["qty_ratio_source"] == "regime_default"
 
 
-def test_resolve_open_never_uses_regime_margin():
+def test_resolve_open_uses_margin_coeff():
     qty, meta = resolve_vps_entry_qty_eth(
         live_balance=1000.0,
         initial_principal=1000.0,
@@ -144,12 +152,12 @@ def test_resolve_open_never_uses_regime_margin():
         price=2000.0,
         tv_sl=1955.0,
         regime=1,
-        exchange_leverage=15,
+        exchange_leverage=25,
         round_fn=lambda x: round(x, 3),
     )
     assert qty > 0
-    assert meta.get("sizing_mode") == "vps_open"
-    assert "margin_pct" not in meta
+    assert meta.get("sizing_mode") == "vps_open_margin_coeff"
+    assert meta.get("margin_coeff") == pytest.approx(0.05)
 
 
 def test_resolve_add_requires_base_qty():

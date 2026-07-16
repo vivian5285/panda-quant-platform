@@ -419,13 +419,22 @@ def unbind_api(
 
 @router.get("/positions")
 def positions(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.core.symbol_registry import enabled_trading_symbols
     from app.services.user_account import build_dashboard_stats
+
     dash = build_dashboard_stats(db, user)
+    pos = dash.open_position or {}
+    all_positions = pos.get("all_positions") if isinstance(pos, dict) else None
+    if not all_positions and pos.get("has_position"):
+        all_positions = [pos]
+    symbols = enabled_trading_symbols()
     return {
-        "open_position": dash.open_position,
+        "open_position": pos if pos.get("has_position") else None,
+        "open_positions": all_positions or [],
+        "trading_symbols": symbols,
         "balance": dash.balance,
         "unrealized_pnl": dash.unrealized_pnl,
-        "symbol": dash.symbol if hasattr(dash, "symbol") else "ETHUSDT",
+        "symbol": (pos.get("symbol") if isinstance(pos, dict) else None) or symbols[0],
         "updated_at": datetime.utcnow().isoformat() + "Z",
     }
 

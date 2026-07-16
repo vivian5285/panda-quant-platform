@@ -108,12 +108,22 @@ class PositionSupervisor(
         user_id: int,
         client: BinanceClient,
         initial_principal: float = 0.0,
+        canonical_symbol: str | None = None,
         on_log: Optional[Callable] = None,
         on_trade_open: Optional[Callable] = None,
         on_trade_close: Optional[Callable] = None,
         on_trade_update_targets: Optional[Callable] = None,
         on_alert: Optional[Callable] = None,
     ):
+        from app.core.symbol_registry import (
+            DEFAULT_CANONICAL,
+            label_for_symbol,
+            normalize_canonical_symbol,
+            qty_unit_for_symbol,
+            supervisor_state_key,
+        )
+        from app.core.symbol_precision import min_qty_for
+
         self.user_id = user_id
         self.client = client
         self.initial_principal = float(initial_principal or 0)
@@ -125,9 +135,17 @@ class PositionSupervisor(
         self.on_alert = on_alert or (lambda *a, **k: None)
         self._sentinel_error_notified = False
 
-        self.symbol = getattr(client, "trading_symbol", settings.SYMBOL)
+        self.canonical_symbol = (
+            normalize_canonical_symbol(canonical_symbol)
+            or getattr(client, "canonical_symbol", None)
+            or DEFAULT_CANONICAL
+        )
+        self.symbol = getattr(client, "trading_symbol", None) or settings.SYMBOL
         self.exchange_id = getattr(client, "exchange_id", "binance")
         self.leverage = int(getattr(client, "trading_leverage", settings.LEVERAGE))
+        self.qty_unit = qty_unit_for_symbol(self.canonical_symbol, self.exchange_id)
+        self.symbol_label = label_for_symbol(self.canonical_symbol)
+        self.min_order_qty = min_qty_for(self.canonical_symbol)
         self.monitoring = False
         self._lock = threading.Lock()
         self._signal_queue: queue.Queue[_QueuedSignal] = queue.Queue()
@@ -158,11 +176,30 @@ class PositionSupervisor(
         self._scan_ticks = 0
         self._init_adverse_radar_fields()
 
-        os.makedirs("state", exist_ok=True)
-        self.state_file = f"state/user_{user_id}.json"
+        state_key = supervisor_state_key(self.exchange_id, user_id, self.canonical_symbol)
+        base_dir = os.path.join("data", "supervisor", state_key)
+        os.makedirs(base_dir, exist_ok=True)
+        self.state_file = os.path.join(base_dir, "state.json")
+        # Migrate legacy single-file state for ETH only
+        legacy = f"state/user_{user_id}.json"
+        if (
+            self.canonical_symbol == DEFAULT_CANONICAL
+            and not os.path.exists(self.state_file)
+            and os.path.exists(legacy)
+        ):
+            try:
+                import shutil
+                shutil.copy2(legacy, self.state_file)
+            except Exception:
+                pass
         self._load_state()
         self._start_idle_flat_patrol()
 
+    def _round_qty(self, value) -> float:
+        return round_quantity(value, self.canonical_symbol)
+
+    def _round_px(self, value) -> float:
+        return round_price(value, self.canonical_symbol)
     def _log(self, event_type: str, message: str, detail: dict | None = None):
         self.on_log(self.user_id, event_type, message, detail, self.current_trade_id)
 
@@ -470,7 +507,7 @@ class PositionSupervisor(
         tv_fields = getattr(self, "_tv_entry_fields", None) or {}
         entry_type = getattr(self, "_entry_type", "OPEN")
         regime = int(tv_fields.get("regime") or self.regime)
-        return resolve_vps_entry_qty_eth(
+        qty, meta = resolve_vps_entry_qty_eth(
             live_balance=equity,
             initial_principal=self.initial_principal,
             entry_type=entry_type,
@@ -479,10 +516,28 @@ class PositionSupervisor(
             tv_sl=float(getattr(self, "tv_sl", 0) or 0),
             regime=regime,
             exchange_leverage=leverage,
-            round_fn=round_quantity,
+            round_fn=self._round_qty,
             tv_qty_ratio=tv_fields.get("qty_ratio"),
             qty_ratio_source=str(tv_fields.get("qty_ratio_source") or "tv_qty_ratio"),
+            symbol=self.canonical_symbol,
+            min_qty=float(getattr(self, "min_order_qty", 0) or 0) or None,
         )
+        if entry_type not in ENTRY_TYPES_ADD and qty > 0:
+            from app.core.combined_notional import check_combined_notional_cap
+
+            notional = float(meta.get("notional_usd") or meta.get("position_value") or 0)
+            if notional <= 0 and curr_px:
+                notional = qty * float(curr_px)
+            ok, cap_meta = check_combined_notional_cap(
+                user_id=self.user_id,
+                canonical=self.canonical_symbol,
+                equity=equity if equity > 0 else self.initial_principal,
+                new_notional=notional,
+            )
+            meta.update(cap_meta)
+            if not ok:
+                return 0.0, meta
+        return qty, meta
 
     def _max_add_times(self) -> int:
         tv_fields = getattr(self, "_tv_entry_fields", None) or {}
@@ -857,13 +912,17 @@ class PositionSupervisor(
             self.add_count = 0
             self.consumed_tp_levels = []
             self.current_trade_id = self.on_trade_open(
-                self.user_id, action, real_qty, entry_price, self.regime, self.tv_tps
+                self.user_id, action, real_qty, entry_price, self.regime, self.tv_tps,
+                symbol=self.canonical_symbol,
             )
             self.trade_opened_at = time.time()
             slip = (entry_price - self.tv_price) if action == "LONG" else (self.tv_price - entry_price)
-            theme = resolve_exchange_theme(self.exchange_id)
+            theme = resolve_exchange_theme(self.exchange_id, self.canonical_symbol)
             detail = {
                 "exchange": self.exchange_id,
+                "symbol": self.canonical_symbol,
+                "native_symbol": self.symbol,
+                "qty_unit": self.qty_unit,
                 "entry_type": entry_type,
                 "regime": self.regime,
                 "side": action,

@@ -426,14 +426,20 @@ def get_supervisor_account_summary(
 def reconcile_exchange_flat(db: Session, user_id: int, supervisor=None) -> dict[str, Any]:
     """
     Exchange reports flat but ledger still shows open — close stale trades and reset supervisor state.
+    Scoped to supervisor.canonical_symbol when dual-symbol is active.
     """
+    from app.core.symbol_registry import normalize_canonical_symbol, DEFAULT_CANONICAL
+
     result: dict[str, Any] = {"reconciled": False, "closed_trade_ids": [], "supervisor_reset": False}
-    open_trades = (
-        db.query(Trade)
-        .filter(Trade.user_id == user_id, Trade.status == "open")
-        .order_by(Trade.created_at.desc())
-        .all()
-    )
+    can = None
+    if supervisor is not None:
+        can = getattr(supervisor, "canonical_symbol", None) or normalize_canonical_symbol(
+            getattr(supervisor, "symbol", None)
+        )
+    q = db.query(Trade).filter(Trade.user_id == user_id, Trade.status == "open")
+    if can:
+        q = q.filter(Trade.symbol == can)
+    open_trades = q.order_by(Trade.created_at.desc()).all()
     exit_price = 0.0
     if supervisor is not None and hasattr(supervisor, "client"):
         try:
@@ -460,6 +466,7 @@ def reconcile_exchange_flat(db: Session, user_id: int, supervisor=None) -> dict[
                 "账本对账：交易所无仓，收口未平交易记录",
                 {
                     "trade_id": trade.id,
+                    "symbol": getattr(trade, "symbol", can),
                     "reconcile": True,
                     "exit_price": exit_price,
                     "snapshot_source": "exchange_api",
@@ -469,9 +476,10 @@ def reconcile_exchange_flat(db: Session, user_id: int, supervisor=None) -> dict[
             result["closed_trade_ids"].append(trade.id)
         result["reconciled"] = True
         logger.warning(
-            "flat reconcile closed %s open trade(s) for user=%s",
+            "flat reconcile closed %s open trade(s) for user=%s symbol=%s",
             len(open_trades),
             user_id,
+            can or DEFAULT_CANONICAL,
         )
 
     if supervisor is not None:
@@ -494,17 +502,38 @@ def reconcile_exchange_flat(db: Session, user_id: int, supervisor=None) -> dict[
 
 
 def get_user_live_snapshot(db: Session, user) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Single entry: live position + account summary for admin/user/referral views."""
+    """Live positions (multi-symbol) + account summary for admin/user/referral views."""
     from app.services.dispatcher import supervisor_pool
 
-    supervisor = supervisor_pool.get(user.id)
-    position = get_supervisor_position_status(supervisor, db=db, user_id=user.id)
-    summary = get_supervisor_account_summary(supervisor, user=user, position=position, db=db)
-    if position.get("has_position"):
-        try:
-            ensure_open_trade_from_snapshot(db, user.id, supervisor, position)
-        except Exception:
-            logger.exception("ensure_open_trade_from_snapshot failed user=%s", user.id)
+    supervisors = supervisor_pool.get_all_for_user(user.id)
+    if not supervisors:
+        legacy = supervisor_pool.get(user.id)
+        supervisors = [legacy] if legacy else []
+
+    positions: list[dict[str, Any]] = []
+    for supervisor in supervisors:
+        pos = get_supervisor_position_status(supervisor, db=db, user_id=user.id)
+        can = getattr(supervisor, "canonical_symbol", None) if supervisor else None
+        if pos.get("has_position"):
+            pos = dict(pos)
+            pos["symbol"] = can or pos.get("symbol") or settings.SYMBOL
+            positions.append(pos)
+            try:
+                ensure_open_trade_from_snapshot(db, user.id, supervisor, pos)
+            except Exception:
+                logger.exception("ensure_open_trade_from_snapshot failed user=%s", user.id)
+
+    position = positions[0] if positions else {"has_position": False}
+    if positions:
+        position = dict(position)
+        position["has_position"] = True
+        position["all_positions"] = positions
+        position["unrealized_pnl"] = round(
+            sum(float(p.get("unrealized_pnl", 0) or 0) for p in positions), 4
+        )
+
+    primary = supervisors[0] if supervisors else None
+    summary = get_supervisor_account_summary(primary, user=user, position=position, db=db)
     return position, summary
 
 
@@ -515,11 +544,19 @@ def ensure_open_trade_from_snapshot(
     position: dict[str, Any],
 ) -> int | None:
     """Create missing open Trade row so settlement/history align with live position."""
+    from app.core.symbol_registry import normalize_canonical_symbol, DEFAULT_CANONICAL
+
     if not position.get("has_position"):
         return None
+    can = (
+        position.get("symbol")
+        or getattr(supervisor, "canonical_symbol", None)
+        or DEFAULT_CANONICAL
+    )
+    can = normalize_canonical_symbol(can) or DEFAULT_CANONICAL
     existing = (
         db.query(Trade)
-        .filter(Trade.user_id == user_id, Trade.status == "open")
+        .filter(Trade.user_id == user_id, Trade.status == "open", Trade.symbol == can)
         .order_by(Trade.created_at.desc())
         .first()
     )
@@ -537,6 +574,7 @@ def ensure_open_trade_from_snapshot(
         float(position["entry_price"]),
         regime,
         tv_tps,
+        symbol=can,
     )
     if trade_id and supervisor is not None:
         supervisor.current_trade_id = trade_id

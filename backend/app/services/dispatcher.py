@@ -5,6 +5,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy.orm import Session
 from app.models import User, ApiStatus
 from app.core.exchange_factory import create_exchange_client, create_supervisor, user_has_api_credentials, user_exchange
+from app.core.symbol_registry import (
+    DEFAULT_CANONICAL,
+    enabled_trading_symbols,
+    extract_payload_symbol,
+    normalize_canonical_symbol,
+)
 from app.services.platform_public_settings import is_exchange_enabled
 from app.services.trade_logger import TradeLogger
 from app.services.radar_context import build_radar_recovery_context
@@ -14,6 +20,10 @@ from app.utils.crypto import decrypt_text
 from app.database import SessionLocal
 
 logger = logging.getLogger(__name__)
+
+
+def _pool_key(user_id: int, canonical: str) -> tuple[int, str]:
+    return (int(user_id), normalize_canonical_symbol(canonical) or DEFAULT_CANONICAL)
 
 
 def _user_event_handler(db: Session):
@@ -26,10 +36,10 @@ def _user_event_handler(db: Session):
 
 
 class UserSupervisorPool:
-    """Manages per-user PositionSupervisor instances."""
+    """Manages per-(user, symbol) PositionSupervisor instances."""
 
     def __init__(self):
-        self._supervisors: dict[int, PositionSupervisor] = {}
+        self._supervisors: dict[tuple[int, str], object] = {}
         self._lock = threading.Lock()
         self.last_startup_audits: list[dict] = []
         self.last_startup_failures: list[dict] = []
@@ -91,8 +101,13 @@ class UserSupervisorPool:
             api_key = decrypt_text(user.api_key_enc)
             api_secret = decrypt_text(user.api_secret_enc)
             passphrase = decrypt_text(user.passphrase_enc) if user.passphrase_enc else ""
-            client = create_exchange_client(user, api_key, api_secret, passphrase)
-            if not client.test_connection():
+
+            # Probe credentials once on primary symbol
+            probe = create_exchange_client(
+                user, api_key, api_secret, passphrase,
+                canonical_symbol=DEFAULT_CANONICAL,
+            )
+            if not probe.test_connection():
                 logger.warning("User %s API connection failed", user.id)
                 TradeLogger(db).log_event(
                     user.id, "ERROR", "API 连接失败，无法加载 Supervisor", {"uid": user.uid},
@@ -107,25 +122,43 @@ class UserSupervisorPool:
 
             trade_logger = TradeLogger(db)
             user_events = _user_event_handler(db)
-            supervisor = create_supervisor(
-                user,
-                client,
-                on_log=trade_logger.log_event,
-                on_trade_open=trade_logger.on_trade_open,
-                on_trade_close=trade_logger.on_trade_close,
-                on_trade_update_targets=trade_logger.on_trade_update_targets,
-                on_alert=user_events,
-            )
-            recovery = build_radar_recovery_context(db, user.id)
-            trade = recovery.get("trade") or {}
-            open_trade_id = trade.get("id")
-            audit = supervisor.recover_on_startup(
-                open_trade_id=open_trade_id,
-                recovery_context=recovery,
-            )
-            audit["uid"] = user.uid
-            audit["exchange"] = user_exchange(user)
-            log_takeover_audit(user, audit)
+            symbols = enabled_trading_symbols()
+            audits: list[dict] = []
+            primary_audit: dict | None = None
+
+            for can in symbols:
+                client = create_exchange_client(
+                    user, api_key, api_secret, passphrase,
+                    canonical_symbol=can,
+                )
+                supervisor = create_supervisor(
+                    user,
+                    client,
+                    canonical_symbol=can,
+                    on_log=trade_logger.log_event,
+                    on_trade_open=trade_logger.on_trade_open,
+                    on_trade_close=trade_logger.on_trade_close,
+                    on_trade_update_targets=trade_logger.on_trade_update_targets,
+                    on_alert=user_events,
+                )
+                recovery = build_radar_recovery_context(db, user.id, symbol=can)
+                trade = recovery.get("trade") or {}
+                open_trade_id = trade.get("id")
+                audit = supervisor.recover_on_startup(
+                    open_trade_id=open_trade_id,
+                    recovery_context=recovery,
+                )
+                audit["uid"] = user.uid
+                audit["exchange"] = user_exchange(user)
+                audit["symbol"] = can
+                log_takeover_audit(user, audit)
+                audits.append(audit)
+                if can == DEFAULT_CANONICAL or primary_audit is None:
+                    primary_audit = audit
+
+                with self._lock:
+                    self._supervisors[_pool_key(user.id, can)] = supervisor
+                logger.info("Supervisor added for user %s symbol %s", user.id, can)
 
             try:
                 from app.services.profit_audit import run_startup_dual_audit
@@ -133,10 +166,12 @@ class UserSupervisorPool:
             except Exception as audit_err:
                 logger.warning("Dual profit audit failed user=%s: %s", user.id, audit_err)
 
-            with self._lock:
-                self._supervisors[user.id] = supervisor
-            logger.info("Supervisor added for user %s", user.id)
-            return audit
+            # Aggregate for startup summary: any symbol with position
+            merged = dict(primary_audit or audits[0] if audits else {})
+            merged["has_position"] = any(a.get("has_position") for a in audits)
+            merged["symbols"] = [a.get("symbol") for a in audits]
+            merged["per_symbol"] = audits
+            return merged
         except Exception as e:
             from app.core.exchange_factory import ExchangeNotEnabledError
             if isinstance(e, ExchangeNotEnabledError):
@@ -163,8 +198,9 @@ class UserSupervisorPool:
 
     def remove_user(self, user_id: int):
         with self._lock:
-            sup = self._supervisors.pop(user_id, None)
-        if sup:
+            keys = [k for k in self._supervisors if k[0] == user_id]
+            removed = [self._supervisors.pop(k) for k in keys]
+        for sup in removed:
             sup.monitoring = False
 
     def shutdown_all(self, wait_seconds: float = 3.0) -> None:
@@ -184,16 +220,34 @@ class UserSupervisorPool:
         with self._lock:
             return list(self._supervisors.values())
 
-    def get(self, user_id: int):
+    def get_all_for_user(self, user_id: int) -> list:
         with self._lock:
-            return self._supervisors.get(user_id)
+            return [s for (uid, _), s in self._supervisors.items() if uid == user_id]
+
+    def get(self, user_id: int, symbol: str | None = None):
+        """
+        Legacy: get(user_id) → primary ETH supervisor (or first available).
+        Dual: get(user_id, symbol) → exact match.
+        """
+        can = normalize_canonical_symbol(symbol) if symbol else None
+        with self._lock:
+            if can:
+                return self._supervisors.get(_pool_key(user_id, can))
+            # Prefer ETH, else any
+            eth = self._supervisors.get(_pool_key(user_id, DEFAULT_CANONICAL))
+            if eth is not None:
+                return eth
+            for (uid, _), s in self._supervisors.items():
+                if uid == user_id:
+                    return s
+            return None
 
 
 supervisor_pool = UserSupervisorPool()
 
 
 class SignalDispatcher:
-    """Broadcast TV signals to all active user supervisors."""
+    """Route TV signals to matching (user, symbol) supervisors."""
 
     def __init__(self, pool: UserSupervisorPool, max_workers: int = 20):
         self.pool = pool
@@ -205,6 +259,8 @@ class SignalDispatcher:
 
         action = str(payload.get("action", "")).upper().strip()
         is_close = is_close_signal(action)
+        signal_symbol = extract_payload_symbol(payload)
+        routed_payload = {**payload, "symbol": signal_symbol}
 
         if is_globally_paused() and not is_close:
             logger.warning("Signal rejected: platform globally paused")
@@ -212,20 +268,24 @@ class SignalDispatcher:
                 "warning", "GLOBAL_PAUSE",
                 "全局交易已暂停",
                 f"收到 {payload.get('action', '?')} 信号但未执行（平台暂停）",
-                {"payload_action": payload.get("action")},
+                {"payload_action": payload.get("action"), "symbol": signal_symbol},
             )
-            return {"dispatched": 0, "results": [], "reason": "global_pause"}
+            return {"dispatched": 0, "results": [], "reason": "global_pause", "symbol": signal_symbol}
 
-        supervisors = self.pool.get_all()
+        # Only supervisors for this symbol
+        supervisors = [
+            s for s in self.pool.get_all()
+            if (getattr(s, "canonical_symbol", None) or DEFAULT_CANONICAL) == signal_symbol
+        ]
         if not supervisors:
-            logger.warning("No active supervisors to dispatch")
+            logger.warning("No active supervisors for symbol %s", signal_symbol)
             notify_system(
                 "warning", "DISPATCH_EMPTY",
                 "信号广播无接收者",
-                f"收到 {payload.get('action', '?')} 信号，但无活跃 Supervisor",
-                {"payload_action": payload.get("action")},
+                f"收到 {payload.get('action', '?')} · {signal_symbol}，但无活跃 Supervisor",
+                {"payload_action": payload.get("action"), "symbol": signal_symbol},
             )
-            return {"dispatched": 0, "results": []}
+            return {"dispatched": 0, "results": [], "symbol": signal_symbol}
 
         db = SessionLocal()
         try:
@@ -236,6 +296,7 @@ class SignalDispatcher:
                 if not user or not user.is_active:
                     results.append({
                         "user_id": s.user_id,
+                        "symbol": signal_symbol,
                         "status": "risk_blocked",
                         "reason": "user_inactive",
                     })
@@ -243,6 +304,7 @@ class SignalDispatcher:
                 if user.api_status != ApiStatus.ACTIVE.value:
                     results.append({
                         "user_id": s.user_id,
+                        "symbol": signal_symbol,
                         "status": "risk_blocked",
                         "reason": "api_inactive",
                     })
@@ -250,6 +312,7 @@ class SignalDispatcher:
                 if not is_exchange_enabled(user_exchange(user)):
                     results.append({
                         "user_id": s.user_id,
+                        "symbol": signal_symbol,
                         "status": "risk_blocked",
                         "reason": "exchange_not_open",
                     })
@@ -263,6 +326,7 @@ class SignalDispatcher:
                         reason = credit_reason or "settlement_blocked"
                     results.append({
                         "user_id": s.user_id,
+                        "symbol": signal_symbol,
                         "status": "risk_blocked",
                         "reason": reason,
                     })
@@ -272,17 +336,23 @@ class SignalDispatcher:
             db.close()
 
         if not eligible:
-            logger.warning("No eligible supervisors (all paused, settlement-gated, or inactive)")
-            return {"dispatched": 0, "results": results, "reason": "all_users_paused"}
+            logger.warning("No eligible supervisors for %s", signal_symbol)
+            return {
+                "dispatched": 0,
+                "results": results,
+                "reason": "all_users_paused",
+                "symbol": signal_symbol,
+            }
 
         from app.services.trading_alerts import format_signal_received_message
         notify_system(
             "info",
             "SIGNAL_RECV",
             "TV 信号接收",
-            format_signal_received_message(payload),
+            format_signal_received_message(routed_payload),
             {
                 "action": action,
+                "symbol": signal_symbol,
                 "eligible_users": len(eligible),
                 "entry_type": payload.get("entry_type"),
                 "price": payload.get("price"),
@@ -294,24 +364,24 @@ class SignalDispatcher:
         errors = []
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {
-                executor.submit(self._execute_for_user, s, payload): s.user_id
+                executor.submit(self._execute_for_user, s, routed_payload): (s.user_id, signal_symbol)
                 for s in eligible
             }
             for future in as_completed(futures):
-                uid = futures[future]
+                uid, sym = futures[future]
                 try:
                     outcome = future.result()
-                    results.append({"user_id": uid, **outcome})
+                    results.append({"user_id": uid, "symbol": sym, **outcome})
                     if outcome.get("status") == "error":
-                        errors.append({"user_id": uid, "message": outcome.get("message", "")})
+                        errors.append({"user_id": uid, "symbol": sym, "message": outcome.get("message", "")})
                 except Exception as e:
-                    logger.error(f"Dispatch failed user={uid}: {e}")
-                    errors.append({"user_id": uid, "message": str(e)})
+                    logger.error(f"Dispatch failed user={uid} symbol={sym}: {e}")
+                    errors.append({"user_id": uid, "symbol": sym, "message": str(e)})
                     err_db = SessionLocal()
                     try:
                         TradeLogger(err_db).log_event(
                             uid, "ERROR", f"信号执行失败: {e}",
-                            {"action": payload.get("action")},
+                            {"action": payload.get("action"), "symbol": sym},
                         )
                     finally:
                         err_db.close()
@@ -319,20 +389,20 @@ class SignalDispatcher:
                         uid, "critical", "DISPATCH_ERROR",
                         "信号执行失败",
                         str(e),
-                        {"action": payload.get("action")},
+                        {"action": payload.get("action"), "symbol": sym},
                     )
-                    results.append({"user_id": uid, "status": "error", "message": str(e)})
+                    results.append({"user_id": uid, "symbol": sym, "status": "error", "message": str(e)})
 
         ok_count = sum(1 for r in results if r.get("status") == "ok")
-        logger.info(f"Signal dispatched: ok={ok_count} total={len(results)}")
+        logger.info(f"Signal dispatched {signal_symbol}: ok={ok_count} total={len(results)}")
         if errors:
             notify_system(
                 "warning", "DISPATCH_PARTIAL_FAIL",
                 "信号广播部分失败",
-                f"{len(errors)}/{len(results)} 用户执行失败",
-                {"action": payload.get("action"), "errors": errors},
+                f"{len(errors)}/{len(results)} 用户执行失败 · {signal_symbol}",
+                {"action": payload.get("action"), "symbol": signal_symbol, "errors": errors},
             )
-        return {"dispatched": ok_count, "results": results}
+        return {"dispatched": ok_count, "results": results, "symbol": signal_symbol}
 
     def _execute_for_user(self, supervisor, payload: dict) -> dict:
         from app.services.platform_runtime import get_global_risk_multiplier
