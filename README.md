@@ -57,14 +57,14 @@ rules:
   - 永远一手、单向持仓 One-Way；工厂 OPEN 同向已有仓 → 先平后开（人工接管同向仓除外）
   - 反方向 TV 信号：一律先平后开（cancel all → 市价全平 → 再开仓）
   - PYRAMID / PROFIT_ADD：同向追加，数量 = base_qty × TV qty_ratio；**加仓后核武重挂 TP123（新价格×新总头寸）+ TV SL + 雷达**
-  - 开仓后挂限价止盈 TP1/2/3（reduceOnly）+ **VPS 自主硬止损**（开仓价×档位%，TV tv_sl 仅参考）+ **6 阶段雷达移动保本（TP1 三重验证后启动）**
+  - 开仓后挂限价止盈 TP1/2/3（reduceOnly）+ **VPS 自主硬止损**（开仓价×档位%，TV tv_sl 仅参考）+ **6 阶段雷达移动保本（价格达 TP1 路径比例后启动）**
   - **硬止损**：`距离 = 开仓价 × 档位%`（R1~R4：2.78/3.89/5.56/8.33%；ETH/XAU 同比例）；**Stop-Limit** 缓冲；**忽略 TV UPDATE_SL**
   - 禁止与 TV 反向持仓：哨兵 / 重启 / 空闲巡检 → FORCE_ALIGN 全平
-  - 人工/外部同向仓：manual adopt 后保留仓位，TV CLOSE 不强制全平，补挂 TP123 + **VPS 硬止损**（雷达 TP1 确认后按 6 阶段激活）
+  - 人工/外部同向仓：manual adopt 后保留仓位，TV CLOSE 不强制全平，补挂 TP123 + **VPS 硬止损**（雷达按档位路径比例激活）
   - **人工/外部全平**：哨兵/空闲巡检检测到实盘归零 → **立即撤销 TP123 + STOP**（不等待平仓确认），防止孤儿止盈反向开仓
   - **雷达越过 TP1/TP2**：雷达止损有效上移后，若 SL ≥ TP1（多）或 SL ≤ TP1（空），主动撤销过时 TP1/TP2 限价单（`TP_ORPHAN_PURGE`）
   - **加仓合并**：PYRAMID/PROFIT_ADD → 加权均价重置雷达、硬止损取更宽（多取低/空取高）、TV 新 TP123 替换旧限价
-  - **三层止损**：TV `CLOSE_STOPLOSS` = 第一指令立即全平；VPS 宽硬止损 = 限价保险；6 阶段雷达 = 动态锁利（TP1 三重验证后）
+  - **三层止损**：TV `CLOSE_STOPLOSS` = 第一指令立即全平；VPS 宽硬止损 = 限价保险；6 阶段雷达 = 动态锁利（路径比例启动）
   - 未结清绩效账单 / 用户暂停 / 全局暂停 → 跳过建仓；平仓类信号在暂停时仍放行
 
 # 策略对接（Pine v6.9.45 双系统）
@@ -521,11 +521,12 @@ qty             = notional_usd / price   （DeepCoin 换算为合约张）
 
 ```
 ① VPS 硬止损          开仓价×档位% 四档呼吸空间，Stop-Limit（ETH/XAU 同比例；忽略 TV tv_sl）
-② 雷达保本 (radar)    TP1 三重验证后激活，6 阶段 ATR 追踪（Stage 0~5）
+② 雷达保本 (radar)    价格达 TP1 路径比例后激活（R1/R2 70% · R3 75% · R4 80%），6 阶段 ATR 追踪
 ③ TP123               regime 比例 reduceOnly 限价
 ```
 
-- **TP1 三重验证**（`tp_slice_guard.confirm_tp_tier_fill`）：价格达到 + TP 限价消失 + 数量减仓匹配；防止 R4 小切片误判
+- **路径启动**：`progress = |mark−entry|/|TP1−entry|` ≥ 档位激活比例即 Stage 1 保本（不再等 qty+book 三重验证）
+- **TP2/TP3 锁利**：过 TP1 后 Stage 2~5 收紧；qty/book 仍用于切片记账
 - **合并止损（Binance/OKX/Gate）：** LONG `max(vps_sl, radar)` / SHORT `min(...)`，Stop-Limit 优先
 - **DeepCoin 双轨：** TV SL 与雷达条件单并行
 - **STOP 安全钳制：** `clamp_stop_market_safe()` 防止 SL 高于 mark 瞬间全平
@@ -540,10 +541,10 @@ qty             = notional_usd / price   （DeepCoin 换算为合约张）
 
 | Regime | 保证金 cap% | TP 分批 (%) | 雷达激活路径 | Trail ATR× |
 |--------|-------------|-------------|--------------|------------|
-| 1 | 15% | **25/35/40** | 85% | 0.75 |
-| 2 | 25% | 20/35/45 | 88% | 1.00 |
-| 3 | 35% | 18/32/50 | 90% | 1.35 |
-| 4 | 50% | 5/20/75 | 95% | 1.80 |
+| 1 | 15% | **25/35/40** | **70%** | 0.75 |
+| 2 | 25% | 20/35/45 | **70%** | 1.00 |
+| 3 | 35% | 18/32/50 | **75%** | 1.35 |
+| 4 | 50% | 5/20/75 | **80%** | 1.80 |
 
 钉钉开仓/加仓/重启明细会显示 `止盈比例 TP1/2/3 = xx/xx/xx%`。
 
@@ -1183,7 +1184,7 @@ Cursor 开发与 VPS 上线前，按 **[`docs/VPS_LIVE_CHECKLIST.md`](docs/VPS_L
 | Webhook + ETH/XAU 路由 | 🔴 P0 | `symbol` 必填，绝不串单 |
 | OPEN sizing + 13× 名义 cap | 🔴 P0 | 总本金 × 档位% × 25× |
 | VPS 硬止损 | 🔴 P0 | 忽略 TV `tv_sl` |
-| TP1 三重验证 + 雷达 | 🟡 P1 | 价格主判 + 订单辅判 + 仓位参考 |
+| 路径启动 + 雷达 | 🟡 P1 | 价格达 TP1 路径比例 |
 | 钉钉 | 🟢 P2 | 开/平/雷达/风控拦截 |
 
 自动化验收（`backend/`）：
@@ -1214,7 +1215,7 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 - [x] **25× 杠杆**全所统一；保证金预算与交易所杠杆解耦
 - [x] **ETH + XAU 双品种**：独立 supervisor + 13× 名义 cap + 品种路由
 - [x] **VPS 硬止损**：开仓价×档位%（ETH/XAU 同比例；非 TV 紧止损）
-- [x] **TP1 三重验证 + 6 阶段雷达**（TP1 成交后启动）
+- [x] **路径比例雷达 + 6 阶段锁利**（R1/R2 70% · R3 75% · R4 80%）
 - [x] manual adopt：TV CLOSE 不误平同向人工仓；空闲巡检 10s
 - [x] TV v6.9.45 字段解析 + 网关极速 200
 - [x] 管理后台 Webhook/RPC/钉钉 可视化配置

@@ -2289,8 +2289,12 @@ class PositionSupervisor(
         stage = detect_radar_stage(
             float(self.watched_entry or 0), curr_px, self.current_side, tp1, tp2, tp3,
             peak_px=float(self.best_price or 0) or None,
-            tp1_filled=tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None))
-            or bool(getattr(self, "radar_latched", False)),
+            tp1_filled=self._radar_activation_reached(curr_px)
+            if curr_px > 0
+            else (
+                tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None))
+                or bool(getattr(self, "radar_latched", False))
+            ),
         )
         vps_meta = getattr(self, "_vps_hard_sl_meta", None) or {}
         detail = {
@@ -2298,6 +2302,10 @@ class PositionSupervisor(
             "new_sl": new_sl,
             "best_price": self.best_price,
             "radar_progress": round(progress, 4),
+            "radar_activation": float(
+                (self.regime_settings.get(self.regime) or {}).get("activation")
+                or 0.70
+            ),
             "radar_stage": stage,
             "consumed_tp_levels": list(getattr(self, "consumed_tp_levels", []) or []),
             "vps_hard_sl": float(getattr(self, "tv_sl", 0) or 0),
@@ -2328,6 +2336,7 @@ class PositionSupervisor(
         tp1 = float(tps[0] or 0) if tps else 0.0
         tp2 = float(tps[1] or 0) if len(tps) > 1 else 0.0
         tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
+        path_armed = True  # gate already passed
         radar = compute_vps_radar_sl(
             entry=float(self.watched_entry or 0),
             curr_px=curr_px,
@@ -2339,7 +2348,7 @@ class PositionSupervisor(
             hard_sl=float(getattr(self, "tv_sl", 0) or 0),
             clamp_fn=self._clamp_radar_sl_to_tv_floor,
             radar_latched=bool(getattr(self, "radar_latched", False)),
-            tp1_filled=tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
+            tp1_filled=path_armed or tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
         )
         new_sl = float(radar.get("radar_sl") or 0)
         if new_sl <= 0:

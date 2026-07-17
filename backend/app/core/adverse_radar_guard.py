@@ -952,32 +952,43 @@ class AdverseRadarMixin:
             self.adverse_consumed_tiers.append(t)
         self.adverse_sl_armed = True
 
+    def _regime_radar_activation(self) -> float:
+        from app.core.radar_trail import REGIME_RADAR
+
+        regime = int(getattr(self, "regime", 3) or 3)
+        settings = getattr(self, "regime_settings", None) or {}
+        row = settings.get(regime) or settings.get(str(regime)) or {}
+        if isinstance(row, dict) and row.get("activation") is not None:
+            try:
+                return float(row["activation"])
+            except (TypeError, ValueError):
+                pass
+        return float(REGIME_RADAR.get(regime, REGIME_RADAR[3])["activation"])
+
     def _radar_activation_reached(self, curr_px: float) -> bool:
         """
-        True only after confirmed TP1 fill (or radar already latched/trailing).
+        True when path-to-TP1 ≥ regime activation (primary), or TP filled / already trailing.
 
-        Re-checks live book: if TP1 limit is still hanging, refuse to arm radar even
-        when consumed_tp_levels is stale/wrong.
+        No longer requires qty+book+price triple confirmation — price progress is enough.
         """
         if self._is_radar_engaged():
-            # Still block if TP1 limit is clearly still on book (false latch cleanup)
-            if self._tp1_limit_still_live_on_book():
-                self.radar_latched = False
-                if 1 in (getattr(self, "consumed_tp_levels", []) or []):
-                    self.consumed_tp_levels = [
-                        x for x in self.consumed_tp_levels if int(x) != 1
-                    ]
-                return False
             return True
+        from app.core.radar_trail import radar_may_arm
         from app.core.vps_radar_stages import tp1_filled_from_consumed
-        if not tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)):
-            return False
-        if self._tp1_limit_still_live_on_book():
-            return False
-        return True
+
+        progress = 0.0
+        if hasattr(self, "_radar_activation_progress"):
+            progress = float(self._radar_activation_progress(curr_px) or 0.0)
+        act = self._regime_radar_activation()
+        return radar_may_arm(
+            consumed_tp_levels=getattr(self, "consumed_tp_levels", None),
+            progress=progress,
+            activation_ratio=act,
+            radar_active=bool(getattr(self, "radar_latched", False)),
+        )
 
     def _tp1_limit_still_live_on_book(self) -> bool:
-        """Exchange-first: open TP1 limit still present → TP1 not filled."""
+        """Exchange-first: open TP1 limit still present (slice accounting only; not an arm gate)."""
         tps = list(getattr(self, "tv_tps", []) or [])
         if not tps:
             return False
@@ -1013,20 +1024,17 @@ class AdverseRadarMixin:
         self,
         curr_px: float,
         *,
-        reason: str = "radar_tp1_activation",
+        reason: str = "radar_path_activation",
         notify: bool = False,
     ) -> dict[str, Any]:
         """Route A: 不撤 TV 硬止损；Binance 由合并单槽表达双层语义。"""
         return {"cancelled": 0, "skipped": "route_a_coexist", "reason": reason}
 
     def _handoff_shield_to_radar(self, live_qty: float, curr_px: float) -> bool:
-        """Activate radar breakeven trail only after TP1 fill (or already trailing)."""
+        """Activate radar when path-to-TP1 activation reached (or already trailing)."""
         if curr_px <= 0:
             return False
-        from app.core.vps_radar_stages import tp1_filled_from_consumed
-        consumed = list(getattr(self, "consumed_tp_levels", []) or [])
-        radar_mem = bool(hasattr(self, "_is_radar_active") and self._is_radar_active())
-        if not radar_mem and not tp1_filled_from_consumed(consumed) and not self._is_radar_engaged():
+        if not self._radar_activation_reached(curr_px):
             return False
         live_qty = self._resolve_adverse_live_qty(live_qty)
         if hasattr(self, "_refresh_radar_state_on_recover"):

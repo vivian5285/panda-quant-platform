@@ -1509,7 +1509,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         curr_px = self._current_tp_price() if hasattr(self, "_current_tp_price") else 0.0
         if hasattr(self, "_radar_activation_reached") and not self._radar_activation_reached(curr_px):
             logger.info(
-                "⏸️ 雷达未达激活条件（待 TP1 成交），跳过保本 STOP @ %.2f",
+                "⏸️ 雷达未达激活条件（待价格达 TP1 路径比例），跳过保本 STOP @ %.2f",
                 float(sl_price),
             )
             return False
@@ -2591,6 +2591,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         tp1 = float(tps[0] or 0) if tps else 0.0
         tp2 = float(tps[1] or 0) if len(tps) > 1 else 0.0
         tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
+        path_armed = True
         radar = compute_vps_radar_sl(
             entry=float(self.watched_entry or 0), curr_px=curr_px,
             best_price=float(self.best_price or self.watched_entry or 0),
@@ -2600,7 +2601,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             hard_sl=float(getattr(self, "tv_sl", 0) or 0),
             clamp_fn=self._clamp_radar_sl_to_tv_floor,
             radar_latched=bool(getattr(self, "radar_latched", False)),
-            tp1_filled=tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
+            tp1_filled=path_armed or tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
         )
         new_sl = float(radar.get("radar_sl") or 0)
         if new_sl <= 0:

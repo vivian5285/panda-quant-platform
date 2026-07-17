@@ -12,7 +12,7 @@
 |---|------|----------|
 | P0 | TV 只发信号，不执行实盘决策 | `webhook_server.py` → `dispatcher.py` → `position_supervisor*.py` |
 | P0 | `tv_sl` **仅供日志参考**，绝不作为实盘硬止损挂单依据 | `vps_hard_sl.py` · `adverse_radar_guard.py`（`UPDATE_SL` 忽略） |
-| P1 | 雷达移动保本 **必须在 TP1 三重验证确认后** 才启动 | `tp_slice_guard.confirm_tp_tier_fill()` · `vps_radar_stages.tp1_filled_from_consumed()` |
+| P1 | 雷达移动保本 **价格达档位 TP1 路径比例后** 启动（R1/R2 70%、R3 75%、R4 80%） | `radar_may_arm()` · `_radar_activation_reached()` |
 | P0 | ETH / XAU **独立** supervisor 状态，互不串单 | `symbol_registry.py` · `dispatcher.UserSupervisorPool` |
 | P0 | 所有 OPEN sizing 基于 **账户总本金（Total Equity）**，非可用余额 | `position_sizing.resolve_principal_sizing_base()` · `tv_entry_sizing.py` |
 
@@ -127,30 +127,31 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 
 ---
 
-## 模块四：雷达移动保本（三重对账 · TP1 后启动）🟡 P1
+## 模块四：雷达移动保本（路径比例启动 · TP2/TP3 锁利）🟡 P1
 
 | # | 检查项 | 状态 | 源码 |
 |---|--------|------|------|
-| 4.1 | 雷达 **仅 TP1 确认后** 启动 | ✅ | `tp1_filled_from_consumed()` |
-| 4.2 | 验证一（主）：WebSocket/REST 价格达到 TP1 | ✅ | `price_reached_tp()` · `get_current_price(prefer_ws=True)` |
-| 4.3 | 验证二（辅）：TP1 限价单从订单簿消失 | ✅ | `tp_limit_still_on_book()` 取反 |
-| 4.4 | 验证三（参）：仓位数量明显减少 | ✅ | `confirm_tp_tier_fill()` qty 门 |
-| 4.5 | 头寸微小变化 **不** 单独触发雷达 | ✅ | `TP_FILL_SLICE_FRAC=0.35` · 半片 TP1 门槛 |
-| 4.6 | 启动后止损上移至成本 + 微利 | ✅ | Stage 1 · `BREAKEVEN_BUFFER_PCT=0.1%` |
-| 4.7 | TP2/TP3 逐步收紧，保留呼吸空间 | ✅ | Stage 2~5 ATR 追踪 |
+| 4.1 | 雷达按 **TP1 路径进度 ≥ 档位激活比例** 启动 | ✅ | `radar_may_arm()` · `_radar_activation_reached()` |
+| 4.2 | R1/R2 弱势 70%；R3 75%；R4 80% | ✅ | `REGIME_RADAR` |
+| 4.3 | **不再**要求 qty+book+price 三重验证才启动 | ✅ | 三重门仅用于 TP 切片记账 |
+| 4.4 | 启动后止损上移至成本 + 微利 | ✅ | Stage 1 · `BREAKEVEN_BUFFER_PCT=0.1%` |
+| 4.5 | 价格到 TP1 前保持 Stage 1；之后 TP2/TP3 逐步锁利 | ✅ | Stage 2~5 ATR 追踪 |
 
-### 三重验证逻辑（代码实现）
+### 激活逻辑
 
 ```
-confirm_tp_tier_fill 要求同时满足：
-  ① qty_ok   — 减仓量匹配 TP 切片（紧容差，非全仓 8% 漂移带）
-  ② book_cleared — 该 TP 限价不在 open orders
-  ③ price_ok — mark 价已触及 TP（新推断 tier 时 require_price=True）
+progress = |mark − entry| / |TP1 − entry|
+if progress ≥ REGIME_RADAR[regime].activation  →  arm Stage 1（保本）
+# 不再等待：qty 减仓匹配 / TP1 限价撤单 / 三重同时满足
 
-任一缺失 → 不标记 TP1 成交 → 雷达 Stage 0（仅硬止损）
+到达 TP1 后：Stage 2~5 随 TP2/TP3 路径继续锁利（与 webhook 雷达保本配合）
 ```
 
-> **注意**：R4 的 TP1 仅占 5%，仓位变化极微。浮盈/浮亏导致保证金变化 **≠** 数量变化，不可单凭头寸价值变化启动雷达。
+| 档位 | 激活路径（占 entry→TP1） |
+|------|--------------------------|
+| R1 / R2 | **70%** |
+| R3 | **75%** |
+| R4 | **80%** |
 
 ### TP 切片（min_qty · 尽量保留 TP123）
 
@@ -237,19 +238,17 @@ confirm_tp_tier_fill 要求同时满足：
 2. VPS：margin 200U，名义 5000U，qty ≈ 2.78 ETH
 3. 硬止损：1800 × (1 − 5.56%) ≈ 1700
 4. 挂 TP1/2/3 限价（R3 比例 18/32/50%）
-5. 价格到 TP1，三重验证通过
-6. 雷达 Stage 1：止损 → 1800 + 0.1%
-7. 价格到 TP2/TP3，Stage 3~5 逐步锁利
+5. 价格达 TP1 路径 70%~80%（按档位）→ 雷达 Stage 1 保本
+6. 价格到 TP2/TP3，Stage 3~5 逐步锁利
 ```
 
-### 场景 2：插针未成交 → 雷达不启动
+### 场景 2：插针未达激活比例 → 雷达不启动
 
 ```
-1. ETH 1800，TP1 = 1980
-2. 价格瞬间 1985 后回落 1900
-3. price_ok 可能 true，但 book_cleared=false 且 qty 未减
-4. 三重验证失败 → 雷达不启动
-5. 若最终触及硬止损 1700 → 正常风控离场
+1. ETH 1800，TP1 = 1980，R3 激活 75%
+2. 价格瞬间 1900（约 55% 路径）后回落
+3. progress < 0.75 → 雷达不启动，仅硬止损防守
+4. 若最终触及硬止损 1700 → 正常风控离场
 ```
 
 ### 场景 3：双品种 R4 踩线
@@ -275,7 +274,7 @@ confirm_tp_tier_fill 要求同时满足：
 |------|---------|-----|------|----------|
 | OPEN sizing | ✅ | ✅ | ✅ | ✅（张） |
 | VPS 硬止损 | ✅ | ✅ | ✅ | ✅ 双轨 |
-| 三重 TP1 验证 | ✅ | ✅ | ✅ | ✅ |
+| 路径雷达激活 | ✅ | ✅ | ✅ | ✅ |
 | 6 阶段雷达 | ✅ | ✅ | ✅ | ✅ |
 | ETH + XAU | ✅ | ✅ | ✅ | ✅ |
 | 13× 名义 cap | ✅ | ✅ | ✅ | ✅ |
@@ -293,7 +292,7 @@ DeepCoin 差异：合约张、`face_value=0.1`、双轨 STOP（TV SL + 雷达条
 | Webhook + 品种路由 | 🔴 P0 | `test_dual_symbol` · `test_webhook_payload` |
 | OPEN sizing + 13× cap | 🔴 P0 | `test_dual_symbol` · `test_tv_v6985_sizing` |
 | VPS 硬止损 | 🔴 P0 | `test_vps_hard_sl` |
-| 三重 TP1 + 雷达 | 🟡 P1 | `test_tp_slice_guard` · `test_radar_trail` |
+| 路径雷达 + Stage 锁利 | 🟡 P1 | `test_radar_trail` · `test_vps_radar_stages` |
 | 钉钉 | 🟢 P2 | `test_vps_dev_checklist` |
 
 **禁止事项**：

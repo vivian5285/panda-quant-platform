@@ -1,4 +1,4 @@
-"""Radar breakeven trailing — regime slack so normal pullbacks do not stop out early."""
+"""Radar breakeven trailing — path-to-TP1 activation by regime, then ATR stages."""
 
 from __future__ import annotations
 
@@ -10,27 +10,39 @@ FEE_BUFFER_PCT = 0.0015
 # Breakeven floor slack (ATR) — wider before TP1, tighter after TP1 lock-in
 RADAR_BREAKEVEN_ATR_BEFORE_TP1 = 0.55
 RADAR_BREAKEVEN_ATR_AFTER_TP1 = 0.25
-# Legacy constants kept for import compat — radar arms only on TP1 fill (no path pre-arm)
-RADAR_PRE_TP1_ARM_PROGRESS = 1.01  # unreachable — disables path-based pre-TP1 arming
-RADAR_STARTUP_PROFIT_PROGRESS = 1.01  # unreachable — startup profit-radar only after TP1 fill
 
-# Looser activation path + wider ATR trail vs legacy tight defaults
+# Compat aliases (path arming uses REGIME_RADAR activation; these are unused gates)
+RADAR_PRE_TP1_ARM_PROGRESS = 0.70  # legacy name — now equals R1/R2 activation
+RADAR_STARTUP_PROFIT_PROGRESS = 0.70
+
+# Path-to-TP1 arming (primary gate — no qty/book triple check):
+# R1/R2 弱势 70% 早锁；R3/R4 强势 75%/80% 给趋势空间
 REGIME_RADAR: dict[int, dict[str, float]] = {
-    1: {"activation": 0.85, "trail_offset": 0.75},
-    2: {"activation": 0.88, "trail_offset": 1.00},
-    3: {"activation": 0.90, "trail_offset": 1.35},
-    4: {"activation": 0.95, "trail_offset": 1.80},
+    1: {"activation": 0.70, "trail_offset": 0.75},
+    2: {"activation": 0.70, "trail_offset": 1.00},
+    3: {"activation": 0.75, "trail_offset": 1.35},
+    4: {"activation": 0.80, "trail_offset": 1.80},
 }
 
 
 def merge_regime_radar(base: dict[int, dict]) -> dict[int, dict]:
-    """Overlay looser radar params onto margin/ratios regime_settings."""
+    """Overlay radar params onto margin/ratios regime_settings."""
     merged: dict[int, dict] = {}
     for r, cfg in base.items():
         row = dict(cfg)
         row.update(REGIME_RADAR.get(int(r), {}))
         merged[int(r)] = row
     return merged
+
+
+def regime_radar_activation(regime: int) -> float:
+    """TP1 path fraction required to arm radar for this regime."""
+    r = int(regime or 3)
+    if r < 1:
+        r = 1
+    if r > 4:
+        r = 4
+    return float(REGIME_RADAR[r]["activation"])
 
 
 def tp1_distance(entry: float, tv_tps: list, atr: float) -> float:
@@ -83,15 +95,18 @@ def radar_may_arm(
 ) -> bool:
     """
     When to place/move breakeven radar STOP:
-    - TP1+ filled (only — breathing room before TP1)
     - already armed and trailing
-    Path progress alone never arms (activation_ratio / progress ignored).
+    - path to TP1 ≥ regime activation (primary — 70%/70%/75%/80%)
+    - TP1+ filled (qty/book still used for slice accounting, not required to arm)
     """
     if radar_active:
         return True
     if tp1_consumed(consumed_tp_levels):
         return True
     if any(int(x) in (2, 3) for x in (consumed_tp_levels or [])):
+        return True
+    act = max(float(activation_ratio or 0), 0.0)
+    if act > 0 and float(progress or 0) >= act - 1e-9:
         return True
     return False
 

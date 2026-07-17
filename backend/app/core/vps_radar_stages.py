@@ -1,4 +1,4 @@
-"""VPS radar trailing stop — TP1-fill activation, 5-stage trail (all regimes unified)."""
+"""VPS radar trailing stop — path-to-TP1 arming + 5-stage trail (all regimes)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from app.core.symbol_precision import round_price
 # Stage 0 = VPS hard SL only (before TP1 fill — breathing room)
 RADAR_STAGE_LABELS: dict[int, str] = {
     0: "硬止损防守",
-    1: "TP1成交·保本激活",
+    1: "路径达激活·保本",
     2: "TP1→TP2 50%·追踪",
     3: "到达TP2·锁利",
     4: "TP2→TP3 50%·加深",
@@ -79,12 +79,15 @@ def _detect_radar_stage_at_px(
     tp2: float,
     tp3: float,
     *,
-    tp1_filled: bool,
+    armed: bool,
 ) -> int:
-    """Stage from price only after TP1 has filled (otherwise always 0)."""
-    if not tp1_filled or entry <= 0:
+    """Stage once armed (path activation or TP fill). Before TP1 mark → stage 1 only."""
+    if not armed or entry <= 0:
         return 0
     if px <= 0:
+        return 1
+
+    if tp1 > 0 and not _reached_level(px, tp1, side):
         return 1
 
     stage = 1
@@ -116,17 +119,16 @@ def detect_radar_stage(
     peak_px: float | None = None,
     tp1_filled: bool = False,
 ) -> int:
-    """Highest stage (0–5). Requires TP1 fill; peak_px preserves stage after pullbacks."""
+    """Highest stage (0–5). tp1_filled means armed (path or fill); peak preserves stage."""
+    armed = bool(tp1_filled)
     stage = _detect_radar_stage_at_px(
-        entry, curr_px, side, tp1, tp2, tp3, tp1_filled=tp1_filled,
+        entry, curr_px, side, tp1, tp2, tp3, armed=armed,
     )
-    if peak_px is not None and float(peak_px or 0) > 0 and tp1_filled:
-        stage = max(
-            stage,
-            _detect_radar_stage_at_px(
-                entry, peak_px, side, tp1, tp2, tp3, tp1_filled=True,
-            ),
+    if peak_px is not None and float(peak_px or 0) > 0 and armed:
+        peak_stage = _detect_radar_stage_at_px(
+            entry, float(peak_px), side, tp1, tp2, tp3, armed=True,
         )
+        stage = max(stage, peak_stage)
     return stage
 
 
@@ -208,8 +210,8 @@ def compute_vps_radar_sl(
 ) -> dict[str, Any]:
     """
     Full radar evaluation.
-    Arms only after TP1 fill (or already latched). Stage never retreats on pullback.
-    Radar SL replaces hard SL as the effective stop once armed (hard_sl is floor only).
+    Arms when path-to-TP1 activation is reached (or TP filled / latched).
+    Stage never retreats on pullback. Hard SL is floor only.
     """
     armed_gate = bool(tp1_filled or radar_latched)
     if radar_latched and is_favorable_radar_sl(old_sl, entry, side):

@@ -366,7 +366,9 @@ def test_adverse_tier_prices_single_10pct():
 
 
 def test_binance_supervisor_has_orchestration():
-    sup = PositionSupervisor(user_id=1, client=MagicMock())
+    client = MagicMock()
+    client.exchange_id = "binance"
+    sup = PositionSupervisor(user_id=1, client=client)
     assert hasattr(sup, "_arm_adverse_shield_at_open")
     assert hasattr(sup, "_orchestrate_qty_change")
     assert ADVERSE_HARD_STOP_PCT == 0.10

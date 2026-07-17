@@ -435,7 +435,7 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             lines.append(_line("TV 止损参考", f"{float(detail['tv_sl_reference']):.2f}"))
         elif detail.get("tv_sl_ref"):
             lines.append(_line("TV 止损参考", f"{float(detail['tv_sl_ref']):.2f}"))
-        # Explicit: radar does not trail until TP1 fill (all exchanges)
+        # Explicit: radar arms on path-to-TP1 ratio (R1/R2 70%, R3 75%, R4 80%)
         if detail.get("radar_armed") or detail.get("radar_active"):
             radar_sl = detail.get("radar_sl") or detail.get("current_sl")
             if radar_sl:
@@ -443,7 +443,17 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             else:
                 lines.append(_line("雷达状态", "已激活"))
         else:
-            lines.append(_line("雷达状态", "待命 · 待 TP1 限价成交后启动（数量对账+盘口撤单+价格到达）"))
+            act = detail.get("radar_activation")
+            if act is None:
+                from app.core.radar_trail import REGIME_RADAR
+                regime = int(detail.get("regime") or 3)
+                act = REGIME_RADAR.get(regime, REGIME_RADAR[3])["activation"]
+            lines.append(
+                _line(
+                    "雷达状态",
+                    f"待命 · 价格达 TP1 路径 {float(act) * 100:.0f}% 后启动移动保本（随后 TP2/TP3 锁利）",
+                )
+            )
         slices = detail.get("tp_slices") or []
         if slices:
             parts = []
@@ -550,7 +560,7 @@ def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
     if detail.get("adopted_manual"):
         lines.append(_line("接管类型", "人工/外部持仓 · 按最新 TV 补挂"))
         if detail.get("radar_permitted") is False and not detail.get("breakeven_active"):
-            lines.append(_line("雷达状态", "待 TP1 成交后启动移动保本"))
+            lines.append(_line("雷达状态", "待价格达档位 TP1 路径比例后启动移动保本"))
     if detail.get("shield_stop_price") or detail.get("tv_sl"):
         stop_px = detail.get("shield_stop_price") or detail.get("tv_sl")
         if detail.get("breakeven_active"):
