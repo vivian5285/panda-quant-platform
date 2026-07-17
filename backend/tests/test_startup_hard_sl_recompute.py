@@ -23,14 +23,14 @@ def test_recompute_overwrites_tight_tv_sl():
         current_side = "LONG"
         regime = 2
         current_atr = 16.65
-        tv_sl = 1805.0  # old tight TV stop (must be replaced)
+        tv_sl = 1787.0  # old tight value from state/DB
 
     host = Host()
     host._init_adverse_radar_fields()
-    meta = recompute_vps_hard_sl_on_recovery(host, entry_px=1819.0, side="LONG", tv_sl_reference=1805.0)
+    meta = recompute_vps_hard_sl_on_recovery(host, entry_px=1819.0, side="LONG", tv_sl_reference=1787.0)
     assert meta.get("sl_changed") is True
-    assert host.tv_sl == pytest.approx(1819.0 - 16.65 * 1.89, rel=0.01)
-    assert meta["prev_sl"] == pytest.approx(1805.0)
+    assert host.tv_sl == pytest.approx(1819.0 * (1 - 0.0389), rel=0.01)
+    assert meta["prev_sl"] == pytest.approx(1787.0)
 
 
 def test_finalize_recovery_recomputes_not_tv_sl():
@@ -41,7 +41,7 @@ def test_finalize_recovery_recomputes_not_tv_sl():
         last_tv_side = "LONG"
         regime = 2
         current_atr = 16.65
-        tv_sl = 1805.0
+        tv_sl = 1787.0
 
         def _recompute_vps_hard_sl(self, entry_px=None, *, payload=None, side=None):
             from app.core.vps_hard_sl import compute_vps_hard_sl
@@ -56,12 +56,12 @@ def test_finalize_recovery_recomputes_not_tv_sl():
     sup = Sup()
     report = {"open_log_entry": 1819.0, "open_log_side": "LONG"}
     recovery = {
-        "latest_tv": {"tv_sl": 1805.0, "regime": 2, "atr": 16.65},
+        "latest_tv": {"tv_sl": 1787.0, "regime": 2, "atr": 16.65},
         "open_log": {"entry": 1819.0, "side": "LONG"},
     }
     finalize_recovery_tv_params(sup, report, recovery)
-    assert sup.tv_sl == pytest.approx(1819.0 - 16.65 * 1.89, rel=0.01)
-    assert report.get("tv_sl_reference") == pytest.approx(1805.0)
+    assert sup.tv_sl == pytest.approx(1819.0 * (1 - 0.0389), rel=0.01)
+    assert report.get("tv_sl_reference") == pytest.approx(1787.0)
     assert report["vps_hard_sl_meta"]["sl_changed"] is True
 
 
@@ -113,9 +113,7 @@ class _StartupProbe(AdverseRadarMixin):
 def test_startup_reconcile_upgrades_stale_stop_on_book():
     probe = _StartupProbe()
     probe._init_adverse_radar_fields()
-    # Old wrong entry-% stop (~1748); ATR×1.89 target ≈1787.53
-    stale_px = 1748.06
-    expected_px = 1819.0 - 16.65 * 1.89
+    stale_px = 1787.0
     stop_order = {
         "type": "STOP",
         "orderId": 1,
@@ -127,8 +125,8 @@ def test_startup_reconcile_upgrades_stale_stop_on_book():
     new_stop = {
         "type": "STOP",
         "orderId": 2,
-        "stopPrice": f"{expected_px:.2f}",
-        "price": f"{expected_px * (1 - 0.0015):.2f}",
+        "stopPrice": "1748.06",
+        "price": "1745.44",
         "origQty": "0.6",
         "side": "SELL",
     }

@@ -94,22 +94,22 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 
 | # | 检查项 | 状态 | 源码 |
 |---|--------|------|------|
-| 3.1 | 硬止损 = ATR × sl_m × 档位倍数 | ✅ | `vps_hard_sl.REGIME_HARD_SL` |
-| 3.2 | ETH / XAU **同一 ATR 倍数**（不按开仓价%） | ✅ | 高价 XAU 不再被 5.56% 拉飞 |
-| 3.3 | 多：止损 = entry − distance | ✅ | `compute_vps_hard_sl()` |
-| 3.4 | 空：止损 = entry + distance | ✅ | 同上 |
+| 3.1 | 硬止损 = 开仓价 × 档位百分比 | ✅ | `vps_hard_sl.REGIME_HARD_SL_PCT` |
+| 3.2 | ETH / XAU **同一开仓价比例** | ✅ | R1~R4：2.78/3.89/5.56/8.33% |
+| 3.3 | 多：止损 = entry × (1 − pct) | ✅ | `compute_vps_hard_sl()` |
+| 3.4 | 空：止损 = entry × (1 + pct) | ✅ | 同上 |
 | 3.5 | 开仓成交后立即挂 Stop-Limit | ✅ | `adverse_radar_guard.py` |
 | 3.6 | 止损只收紧不放松 | ✅ | `max(vps_sl, radar)` 合并逻辑 |
 | 3.7 | `tv_sl` 仅日志，不用于挂单 | ✅ | `tv_sl_ignored` 元数据 |
 
-### 硬止损 ATR 倍数（ETH / XAU 共用）
+### 硬止损比例（占开仓价 % · ETH/XAU 共用）
 
-| 档位 | sl_m | 倍数 | 最终 | ATR=16.65 呼吸 | ATR=15.16（本单 XAU） |
-|------|------|------|------|----------------|----------------------|
-| R1 | 0.90 | 1.0 | 0.90× | ≈15U | ≈13.6 |
-| R2 | 1.05 | 1.8 | 1.89× | ≈31.5U | ≈28.7 |
-| R3 | 1.10 | 3.0 | 3.30× | ≈55U | ≈50.0 |
-| R4 | 1.25 | 4.8 | 6.00× | ≈100U | ≈91.0 |
+| 档位 | 比例 | ETH@1800 示例 |
+|------|------|---------------|
+| R1 | 2.78% | ≈50u / 止损≈1750 |
+| R2 | 3.89% | ≈70u |
+| R3 | 5.56% | ≈100u |
+| R4 | 8.33% | ≈150u |
 
 执行：**Stop-Limit**，限价缓冲 0.15%（`HARD_SL_LIMIT_PCT`）。
 
@@ -117,9 +117,9 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 
 | 场景 | VPS 预期 |
 |------|----------|
-| XAU R3 SHORT @4004.27 ATR≈15.16 | 止损 ≈ **4054.3**（+ATR×3.3），**不是** 4226.91（错误的 entry×5.56%） |
-| ETH R4 LONG @1800 ATR=16.65 | 止损 ≈ 1700.1（−ATR×6） |
-| TV 发来紧 `tv_sl` | 日志参考，挂单用 VPS ATR 公式 |
+| XAU R3 SHORT @4004.27 | 止损 ≈ **4226.91**（4004.27 × 5.56%） |
+| ETH R4 LONG @1800 | 止损 ≈ 1650.06（1800 × 8.33%） |
+| TV 发来紧 `tv_sl` | 日志参考，挂单用 VPS 开仓价% |
 | `UPDATE_SL` | 记录并跳过（`vps_self_managed`） |
 | `CLOSE_STOPLOSS` | **第一优先级**立即市价全平 |
 
@@ -235,7 +235,7 @@ confirm_tp_tier_fill 要求同时满足：
 ```
 1. ETH 1800，R3（18% 保证金，1000U 本金）
 2. VPS：margin 180U，名义 4500U，qty = 2.5 ETH
-3. 硬止损：ATR×3.30 → 1800 − 16.65×3.30 ≈ 1745（需带 ATR；无 ATR 才回退参考%）
+3. 硬止损：1800 × (1 − 5.56%) ≈ 1700
 4. 挂 TP1/2/3 限价（R3 比例 18/32/50%）
 5. 价格到 TP1，三重验证通过
 6. 雷达 Stage 1：止损 → 1800 + 0.1%

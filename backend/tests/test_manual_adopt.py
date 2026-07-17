@@ -88,7 +88,7 @@ def test_finalize_recovery_derives_missing_tp3():
     }
     finalize_recovery_tv_params(sup, report, recovery)
     assert sup.tv_tps[2] > 0
-    assert sup.tv_sl == pytest.approx(2000.0 - 30.0 * 3.30, rel=0.01)
+    assert sup.tv_sl == pytest.approx(2000.0 * (1 - 0.0556), rel=0.01)
     assert report.get("tv_sl_reference") == pytest.approx(1900.0)
     assert "tv_tps_derived_from_regime" in report.get("warnings", [])
 
