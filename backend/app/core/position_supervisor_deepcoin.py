@@ -2455,8 +2455,26 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         qty, sizing_meta = self._resolve_entry_qty(curr_px)
         if qty <= 0:
             err = sizing_meta.get("error", "insufficient_balance")
+            alert_type = (
+                "NOTIONAL_CAP"
+                if err in ("combined_notional_exceeded", "total_nominal_exceeded")
+                else "INSUFFICIENT_BALANCE"
+            )
+            title = "总名义敞口超限" if alert_type == "NOTIONAL_CAP" else "开仓失败"
             logger.error(f"开仓失败: {err} | {sizing_meta}")
-            self._alert("warning", "INSUFFICIENT_BALANCE", "开仓失败", f"用户 {self.user_id}: {err}", sizing_meta)
+            self._alert(
+                "warning",
+                alert_type,
+                title,
+                f"用户 {self.user_id} {getattr(self, 'canonical_symbol', '')}: {err} | "
+                f"名义={sizing_meta.get('proposed_notional') or sizing_meta.get('order_amount')} "
+                f"上限={sizing_meta.get('notional_cap')} ({sizing_meta.get('max_mult')}×本金)",
+                {
+                    **sizing_meta,
+                    "symbol": getattr(self, "canonical_symbol", None),
+                    "max_combined_mult": sizing_meta.get("max_mult"),
+                },
+            )
             return
         open_side = "buy" if action == "LONG" else "sell"
         pos_side = "long" if action == "LONG" else "short"

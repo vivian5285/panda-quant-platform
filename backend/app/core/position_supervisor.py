@@ -907,12 +907,13 @@ class PositionSupervisor(
                 "warning", alert_type, title,
                 f"用户 {self.user_id} {getattr(self, 'canonical_symbol', '')} 无法开仓: {err} | "
                 f"名义={sizing_meta.get('proposed_notional') or sizing_meta.get('order_amount')} "
-                f"上限={sizing_meta.get('notional_cap')} "
+                f"上限={sizing_meta.get('notional_cap')} ({sizing_meta.get('max_mult')}×本金) "
                 f"unit={unit}",
                 {
                     **sizing_meta,
                     "symbol": getattr(self, "canonical_symbol", None),
                     "qty_unit": unit,
+                    "max_combined_mult": sizing_meta.get("max_mult"),
                 },
             )
             return {

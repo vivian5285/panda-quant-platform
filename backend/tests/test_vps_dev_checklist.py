@@ -26,10 +26,10 @@ from unittest.mock import MagicMock, patch
 
 
 CHECKLIST_OPEN_TABLE = [
-    (1, 0.75, 0.0),      # 6%×25 / 2000
-    (2, 1.5, 0.45),      # 12% → add 0.3×
-    (3, 2.25, 1.125),    # 18% → add 0.5×
-    (4, 2.75, 1.925),    # 22% → add 0.7×
+    (1, 1.0, 0.0),       # 8%×25 / 2000
+    (2, 1.75, 0.525),    # 14% → add 0.3×
+    (3, 2.5, 1.25),      # 20% → add 0.5×
+    (4, 3.25, 2.275),    # 26% → add 0.7×
 ]
 
 
@@ -153,15 +153,15 @@ def test_config_matches_checklist_defaults():
     assert s.DEEPCOIN_LEVERAGE == 25
     assert s.OKX_LEVERAGE == 25
     assert s.GATE_LEVERAGE == 25
-    assert s.REGIME_MARGIN_1 == pytest.approx(0.06)
-    assert s.REGIME_MARGIN_2 == pytest.approx(0.12)
-    assert s.REGIME_MARGIN_3 == pytest.approx(0.18)
-    assert s.REGIME_MARGIN_4 == pytest.approx(0.22)
-    assert s.MAX_COMBINED_NOTIONAL_MULT == pytest.approx(11.0)
+    assert s.REGIME_MARGIN_1 == pytest.approx(0.08)
+    assert s.REGIME_MARGIN_2 == pytest.approx(0.14)
+    assert s.REGIME_MARGIN_3 == pytest.approx(0.20)
+    assert s.REGIME_MARGIN_4 == pytest.approx(0.26)
+    assert s.MAX_COMBINED_NOTIONAL_MULT == pytest.approx(13.0)
 
 
-def test_r4_strongest_open_220u_margin_5500u_position_at_25x():
-    """R4 最强趋势：1000U 本金 22% 保证金 ×25 杠杆 = 5500U 名义."""
+def test_r4_strongest_open_260u_margin_6500u_position_at_25x():
+    """R4 最强趋势：1000U 本金 26% 保证金 ×25 杠杆 = 6500U 名义."""
     qty, meta = compute_vps_open_qty(
         live_balance=1000.0,
         initial_principal=1000.0,
@@ -171,9 +171,9 @@ def test_r4_strongest_open_220u_margin_5500u_position_at_25x():
         leverage=25,
         round_fn=lambda x: round(x, 3),
     )
-    assert meta["margin_usd"] == pytest.approx(220.0, rel=0.02)
-    assert meta["position_value"] == pytest.approx(5500.0, rel=0.02)
-    assert qty == pytest.approx(2.75, rel=0.02)
+    assert meta["margin_usd"] == pytest.approx(260.0, rel=0.02)
+    assert meta["position_value"] == pytest.approx(6500.0, rel=0.02)
+    assert qty == pytest.approx(3.25, rel=0.02)
 
 
 def test_resolve_entry_qty_eth_open_uses_price_not_sl_distance():
@@ -188,7 +188,7 @@ def test_resolve_entry_qty_eth_open_uses_price_not_sl_distance():
         exchange_leverage=25,
         round_fn=lambda x: round(x, 3),
     )
-    assert qty == pytest.approx(2.75, rel=0.02)
+    assert qty == pytest.approx(3.25, rel=0.02)
     assert meta.get("error") is None
     assert "margin_usd" in meta
 

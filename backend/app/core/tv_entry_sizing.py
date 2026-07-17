@@ -35,14 +35,14 @@ def regime_scale(regime: int) -> float:
 
 
 def regime_margin_coeff(regime: int) -> float:
-    """Dual-symbol OPEN: margin = equity × this coeff (R1 6% / R2 12% / R3 18% / R4 22%)."""
+    """Dual-symbol OPEN: margin = equity × this coeff (R1 8% / R2 14% / R3 20% / R4 26%)."""
     r = clamp_regime(int(regime or 3))
     return {
-        1: float(getattr(settings, "REGIME_MARGIN_1", 0.06) or 0.06),
-        2: float(getattr(settings, "REGIME_MARGIN_2", 0.12) or 0.12),
-        3: float(getattr(settings, "REGIME_MARGIN_3", 0.18) or 0.18),
-        4: float(getattr(settings, "REGIME_MARGIN_4", 0.22) or 0.22),
-    }.get(r, float(getattr(settings, "REGIME_MARGIN_3", 0.18) or 0.18))
+        1: float(getattr(settings, "REGIME_MARGIN_1", 0.08) or 0.08),
+        2: float(getattr(settings, "REGIME_MARGIN_2", 0.14) or 0.14),
+        3: float(getattr(settings, "REGIME_MARGIN_3", 0.20) or 0.20),
+        4: float(getattr(settings, "REGIME_MARGIN_4", 0.26) or 0.26),
+    }.get(r, float(getattr(settings, "REGIME_MARGIN_3", 0.20) or 0.20))
 
 
 def regime_add_qty_ratio(regime: int) -> float:

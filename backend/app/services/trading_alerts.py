@@ -91,6 +91,7 @@ ALERT_TYPE_TAGS = {
     "SL_RETRY_FAIL": "止损失败",
     "SENTINEL_ERROR": "哨兵异常",
     "INSUFFICIENT_BALANCE": "余额不足",
+    "NOTIONAL_CAP": "名义敞口超限",
     "LOCK_TIMEOUT": "锁超时",
     "CLOSE_PROTECT_EMPTY": "空仓保护复位",
     "SAME_DIR_TP_REFRESH": "同向智能持仓",
@@ -134,6 +135,7 @@ ADMIN_DINGTALK_KEY_TYPES = frozenset({
     "ADJUST",
     "MANUAL_ADJUST",
     "INSUFFICIENT_BALANCE",
+    "NOTIONAL_CAP",
     "LOCK_TIMEOUT",
     "CLOSE_PROTECT_EMPTY",
     "SAME_DIR_TP_REFRESH",
@@ -401,17 +403,28 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             lines.append(_line("头寸价值", f"{float(detail['order_amount']):.2f} USDT（{lev}×）"))
         if detail.get("margin_usd") is not None:
             lines.append(_line("保证金", f"{float(detail['margin_usd']):.2f} USDT"))
+        if detail.get("margin_coeff") is not None and detail.get("vps_risk_pct") is None:
+            lines.append(_line("档位权重", f"{float(detail['margin_coeff']) * 100:.0f}% 总本金"))
         notional = detail.get("notional_usd") or detail.get("order_amount") or detail.get("position_value")
         if notional is not None and detail.get("order_amount") is None:
             lev = detail.get("leverage") or theme["leverage"]
             lines.append(_line("名义头寸", f"{float(notional):.2f} USDT（{lev}×）"))
         if detail.get("combined_notional") is not None or detail.get("proposed_notional") is not None:
             total_n = detail.get("proposed_notional") or detail.get("combined_notional")
-            mult = detail.get("max_combined_mult") or detail.get("cap_mult")
-            if mult:
-                lines.append(_line("当前总敞口", f"{float(total_n):.2f} USDT（{float(mult):.0f}倍本金上限内）"))
+            mult = detail.get("max_combined_mult") or detail.get("cap_mult") or detail.get("max_mult")
+            if mult is None:
+                from app.config import get_settings
+                mult = float(getattr(get_settings(), "MAX_COMBINED_NOTIONAL_MULT", 13.0) or 13.0)
+            cap = detail.get("notional_cap")
+            if cap is not None:
+                lines.append(
+                    _line(
+                        "当前总敞口",
+                        f"{float(total_n):.2f} / 上限 {float(cap):.2f} USDT（{float(mult):.0f}×本金）",
+                    )
+                )
             else:
-                lines.append(_line("当前总敞口", f"{float(total_n):.2f} USDT"))
+                lines.append(_line("当前总敞口", f"{float(total_n):.2f} USDT（{float(mult):.0f}倍本金上限）"))
         if detail.get("tv_sl"):
             pct = detail.get("hard_sl_pct_display") or detail.get("vps_hard_sl_pct")
             if pct:
@@ -595,7 +608,7 @@ def format_admin_detail_lines(
         return format_force_align_detail_cn(detail, ex)
     if alert_type == "IDLE_WATCH":
         return format_force_align_detail_cn(detail, ex) if detail.get("live_side") else format_startup_detail_cn(detail, ex)
-    if alert_type in ("OPEN", "PYRAMID", "PROFIT_ADD") or detail.get("sizing_mode") in ("vps_open", "vps_add"):
+    if alert_type in ("OPEN", "PYRAMID", "PROFIT_ADD", "NOTIONAL_CAP") or detail.get("sizing_mode") in ("vps_open", "vps_add", "vps_open_margin_coeff"):
         return format_vps_entry_detail_cn(detail, ex)
     if alert_type == "UPDATE_TP":
         theme = resolve_exchange_theme(ex, detail.get("symbol") or detail.get("canonical_symbol"))

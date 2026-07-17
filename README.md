@@ -498,7 +498,7 @@ TV `tv_sl`（ATR 紧止损）**仅记录日志**，实盘挂单用上表。
 实现：`tv_entry_sizing.py` · 品种精度：`symbol_registry.py`
 
 ```
-margin_usd      = total_equity × REGIME_MARGIN_{1~4}   # R1 6% / R2 12% / R3 18% / R4 22%
+margin_usd      = total_equity × REGIME_MARGIN_{1~4}   # R1 8% / R2 14% / R3 20% / R4 26%
 notional_usd    = margin_usd × exchange_leverage（25×）
 qty             = notional_usd / price   （DeepCoin 换算为合约张）
 双品种硬顶       = (ETH名义 + XAU名义) ≤ total_equity × 11
@@ -507,8 +507,8 @@ qty             = notional_usd / price   （DeepCoin 换算为合约张）
 | 参数 | 默认 | 说明 |
 |------|------|------|
 | `LEVERAGE` / `OKX_*` / `GATE_*` / `DEEPCOIN_*` | **25** | 实盘杠杆 + 钉钉 `#币安25x` |
-| `REGIME_MARGIN_1~4` | 6/12/18/22% | OPEN 保证金占 **总本金** 比例（短周期权重） |
-| `MAX_COMBINED_NOTIONAL_MULT` | **11.0** | ETH+XAU 合计名义上限 |
+| `REGIME_MARGIN_1~4` | 8/14/20/26% | OPEN 保证金占 **总本金** 比例（短周期权重） |
+| `MAX_COMBINED_NOTIONAL_MULT` | **13.0** | ETH+XAU 合计名义上限 |
 | `TRADING_SYMBOLS` | ETHUSDT,XAUUSDT | 启用品种 |
 | `ADD_RATIO_REG1~4` | 0 / 0.3 / 0.5 / 0.7 | TV 未传 qty_ratio 时的档位默认 |
 | `MAX_ADD_TIMES_REG1~4` | 1 / 2 / 2 / 3 | 各档位最大加仓次数 |
@@ -1181,7 +1181,7 @@ Cursor 开发与 VPS 上线前，按 **[`docs/VPS_LIVE_CHECKLIST.md`](docs/VPS_L
 | 模块 | 优先级 | 要点 |
 |------|--------|------|
 | Webhook + ETH/XAU 路由 | 🔴 P0 | `symbol` 必填，绝不串单 |
-| OPEN sizing + 11× 名义 cap | 🔴 P0 | 总本金 × 档位% × 25× |
+| OPEN sizing + 13× 名义 cap | 🔴 P0 | 总本金 × 档位% × 25× |
 | VPS 硬止损 | 🔴 P0 | 忽略 TV `tv_sl` |
 | TP1 三重验证 + 雷达 | 🟡 P1 | 价格主判 + 订单辅判 + 仓位参考 |
 | 钉钉 | 🟢 P2 | 开/平/雷达/风控拦截 |
@@ -1212,7 +1212,7 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 - [x] **统一交易工厂**：四所共享 Mixin 栈 + Route A 防线 + VPS sizing + manual adopt
 - [x] 多交易所多用户执行（Binance/OKX/Gate/DeepCoin）
 - [x] **25× 杠杆**全所统一；保证金预算与交易所杠杆解耦
-- [x] **ETH + XAU 双品种**：独立 supervisor + 11× 名义 cap + 品种路由
+- [x] **ETH + XAU 双品种**：独立 supervisor + 13× 名义 cap + 品种路由
 - [x] **VPS 硬止损**：开仓价×档位%（ETH/XAU 同比例；非 TV 紧止损）
 - [x] **TP1 三重验证 + 6 阶段雷达**（TP1 成交后启动）
 - [x] manual adopt：TV CLOSE 不误平同向人工仓；空闲巡检 10s

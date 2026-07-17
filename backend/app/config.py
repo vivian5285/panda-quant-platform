@@ -55,13 +55,13 @@ class Settings(BaseSettings):
     SAME_DIR_IGNORE_PRICE_DIFF_PCT: float = 0.20
 
     # Dual-symbol OPEN: margin = TOTAL_EQUITY × regime_margin% ; notional = margin × LEVERAGE
-    # Spec (45m ETH / 50m XAU): R1 6% / R2 12% / R3 18% / R4 22% of equity
-    REGIME_MARGIN_1: float = 0.06
-    REGIME_MARGIN_2: float = 0.12
-    REGIME_MARGIN_3: float = 0.18
-    REGIME_MARGIN_4: float = 0.22
-    # Combined ETH+XAU notional hard cap vs equity (spec: ≤ 11×)
-    MAX_COMBINED_NOTIONAL_MULT: float = 11.0
+    # Spec (45m ETH / 50m XAU): R1 8% / R2 14% / R3 20% / R4 26% of equity
+    REGIME_MARGIN_1: float = 0.08
+    REGIME_MARGIN_2: float = 0.14
+    REGIME_MARGIN_3: float = 0.20
+    REGIME_MARGIN_4: float = 0.26
+    # Combined ETH+XAU notional hard cap vs equity (spec: ≤ 13×)
+    MAX_COMBINED_NOTIONAL_MULT: float = 13.0
 
     # VPS 自主开仓风险（legacy / fallback — dual OPEN prefers REGIME_MARGIN_*）
     VPS_RISK_PCT: float = 3.0
