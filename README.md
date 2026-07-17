@@ -57,8 +57,8 @@ rules:
   - 永远一手、单向持仓 One-Way；工厂 OPEN 同向已有仓 → 先平后开（人工接管同向仓除外）
   - 反方向 TV 信号：一律先平后开（cancel all → 市价全平 → 再开仓）
   - PYRAMID / PROFIT_ADD：同向追加，数量 = base_qty × TV qty_ratio；**加仓后核武重挂 TP123（新价格×新总头寸）+ TV SL + 雷达**
-  - 开仓后挂限价止盈 TP1/2/3（reduceOnly）+ **VPS 自主硬止损**（开仓价×档位%，TV tv_sl 仅参考）+ **6 阶段雷达移动保本（TP1 三重验证后启动）**
-  - **硬止损**：`距离 = 开仓价 × 档位%`（R1~R4：2.78/3.89/5.56/8.33%）；**Stop-Limit** 缓冲执行；**忽略 TV UPDATE_SL**
+  - 开仓后挂限价止盈 TP1/2/3（reduceOnly）+ **VPS 自主硬止损**（ATR×档位倍数，TV tv_sl 仅参考）+ **6 阶段雷达移动保本（TP1 三重验证后启动）**
+  - **硬止损**：`距离 = ATR × sl_m × 档位倍数`（R1~R4：0.90/1.89/3.30/6.00×）；ETH/XAU 同公式；**Stop-Limit** 缓冲；**忽略 TV UPDATE_SL**
   - 禁止与 TV 反向持仓：哨兵 / 重启 / 空闲巡检 → FORCE_ALIGN 全平
   - 人工/外部同向仓：manual adopt 后保留仓位，TV CLOSE 不强制全平，补挂 TP123 + **VPS 硬止损**（雷达 TP1 确认后按 6 阶段激活）
   - **人工/外部全平**：哨兵/空闲巡检检测到实盘归零 → **立即撤销 TP123 + STOP**（不等待平仓确认），防止孤儿止盈反向开仓
@@ -71,7 +71,7 @@ rules:
 tv_actions: [LONG, SHORT, CLOSE, CLOSE_PROTECT, CLOSE_TP3]
 entry_fields: [action, secret, price, regime, atr, tv_tp1, tv_tp2, tv_tp3, tv_sl?, entry_type?]
 close_fields: [action, secret, regime, price, atr, side, reason, pnl_pct?]
-extra_actions: [UPDATE_SL]   # VPS 忽略，仅记录日志；硬止损由 开仓价×档位% 自主计算
+extra_actions: [UPDATE_SL]   # VPS 忽略，仅记录日志；硬止损由 ATR×档位倍数 自主计算
 note: TP1/TP2 策略内部记账不发 TV 警报；仅 TP3 与保护性全平各发一条
 dual_symbol: ETHUSDT + XAUUSDT 独立 supervisor；symbol 字段必填（.P 后缀支持）
 vps_checklist: docs/VPS_LIVE_CHECKLIST.md   # Cursor 实盘自查清单
@@ -471,19 +471,20 @@ TradingView POST /gemini/webhook
 
 #### UPDATE_SL
 
-**VPS 忽略** — 硬止损由 **开仓价 × 档位%** 自主计算；雷达本地管理。仅写 `UPDATE_SL` 日志。
+**VPS 忽略** — 硬止损由 **ATR × 档位倍数** 自主计算；雷达本地管理。仅写 `UPDATE_SL` 日志。
 
-#### VPS 硬止损（四档 · 占开仓价百分比）
+#### VPS 硬止损（四档 · ATR × 档位倍数 · ETH/XAU 相同）
 
 ```
-硬止损距离 = 开仓价 × regime_pct
-Regime  pct      示例（ETH@1800 多）
-  1     2.78%    ≈ 1700
-  2     3.89%    ≈ 1730
-  3     5.56%    ≈ 1700
-  4     8.33%    ≈ 1650
+硬止损距离 = ATR × sl_m × regime_multiplier
+Regime  最终倍数   示例（ATR=16.65）
+  1     0.90×      ≈15U
+  2     1.89×      ≈31.5U
+  3     3.30×      ≈55U
+  4     6.00×      ≈100U
 ```
 
+XAU 与 ETH 共用倍数：同 ATR 同呼吸空间（禁止再用开仓价%——黄金高价会把止损拉飞）。  
 TV `tv_sl`（ATR 紧止损）**仅记录日志**，实盘挂单用上表。  
 执行：**Stop-Limit** 缓冲单（触发价=止损价；限价=触发价 ±0.15%）。  
 优先级：`CLOSE_STOPLOSS` 立即市价全平 > VPS 缓冲止损触发 > 忽略 `UPDATE_SL`。
@@ -517,7 +518,7 @@ qty             = notional_usd / price   （DeepCoin 换算为合约张）
 ### 五、统一防线 · Route A
 
 ```
-① VPS 硬止损          开仓价×档位% 四档呼吸空间，Stop-Limit 缓冲执行（忽略 TV tv_sl）
+① VPS 硬止损          ATR×档位倍数 呼吸空间，Stop-Limit（忽略 TV tv_sl；ETH/XAU 同公式）
 ② 雷达保本 (radar)    TP1 三重验证后激活，6 阶段 ATR 追踪（Stage 0~5）
 ③ TP123               regime 比例 reduceOnly 限价
 ```
@@ -1175,7 +1176,7 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 - [x] 多交易所多用户执行（Binance/OKX/Gate/DeepCoin）
 - [x] **25× 杠杆**全所统一；保证金预算与交易所杠杆解耦
 - [x] **ETH + XAU 双品种**：独立 supervisor + 11× 名义 cap + 品种路由
-- [x] **VPS 硬止损**：开仓价×档位%（非 TV ATR 紧止损）
+- [x] **VPS 硬止损**：ATR×档位倍数（非 TV 紧止损；非错误的开仓价%）
 - [x] **TP1 三重验证 + 6 阶段雷达**（TP1 成交后启动）
 - [x] manual adopt：TV CLOSE 不误平同向人工仓；空闲巡检 10s
 - [x] TV v6.9.45 字段解析 + 网关极速 200

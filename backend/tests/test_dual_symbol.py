@@ -9,7 +9,7 @@ from app.core.symbol_registry import (
     normalize_canonical_symbol,
 )
 from app.core.tv_entry_sizing import compute_vps_open_qty, regime_margin_coeff
-from app.core.vps_hard_sl import REGIME_HARD_SL_PCT
+from app.core.vps_hard_sl import hard_sl_final_multiplier
 
 
 def test_normalize_xau_aliases():
@@ -99,14 +99,18 @@ def test_margin_coeff_and_open_qty_matches_spec():
 
 
 def test_hard_sl_pct_table():
-    from app.core.vps_hard_sl import compute_vps_hard_sl
+    from app.core.vps_hard_sl import compute_vps_hard_sl, hard_sl_final_multiplier
 
-    assert abs(REGIME_HARD_SL_PCT[1] - 0.0278) < 1e-6
-    assert abs(REGIME_HARD_SL_PCT[4] - 0.0833) < 1e-6
-    # ETH long R4 @ 1800 → ~1650.06
-    meta = compute_vps_hard_sl(entry=1800, side="LONG", regime=4)
+    assert abs(hard_sl_final_multiplier(1) - 0.90) < 1e-6
+    assert abs(hard_sl_final_multiplier(4) - 6.0) < 1e-6
+    # ETH long R4 @ 1800 ATR 16.65 → ~1700
+    meta = compute_vps_hard_sl(entry=1800, side="LONG", atr=16.65, regime=4)
     sl = float(meta.get("stop_price") or 0)
-    assert abs(sl - (1800 - 1800 * 0.0833)) < 0.02
+    assert abs(sl - (1800 - 16.65 * 6.0)) < 0.05
+    # XAU short R3 must use ATR×3.3, not entry×5.56%
+    xau = compute_vps_hard_sl(entry=4004.27, side="SHORT", atr=15.16, regime=3)
+    assert abs(float(xau["stop_price"]) - (4004.27 + 15.16 * 3.30)) < 0.05
+    assert float(xau["stop_price"]) < 4100
 
 
 def test_xau_qty_precision():
