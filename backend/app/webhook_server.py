@@ -4,7 +4,6 @@ import time
 
 from flask import Flask, request, jsonify
 
-from app.config import get_settings
 from app.services.webhook_secrets import get_webhook_secret
 from app.services.webhook_guard import check_webhook_access, validate_signal_payload, _client_ip
 from app.services.webhook_payload import parse_webhook_payload
@@ -98,6 +97,21 @@ def _run_dispatch_async(data: dict, fingerprint: str, webhook_log_id: int | None
         db.close()
 
 
+def _spawn_dispatch(data: dict, fingerprint: str) -> None:
+    """Start background dispatch (called after seq gate releases)."""
+    action = str(data.get("action", "UNKNOWN")).upper()
+    from app.services.webhook_guard import is_close_signal
+
+    is_close = is_close_signal(action)
+    thread_name = f"webhook-close-{action}" if is_close else f"webhook-dispatch-{action}"
+    threading.Thread(
+        target=_run_dispatch_async,
+        args=(data, fingerprint, None),
+        daemon=True,
+        name=thread_name,
+    ).start()
+
+
 @webhook_app.route("/webhook", methods=["POST"])
 def webhook():
     t0 = time.perf_counter()
@@ -175,6 +189,7 @@ def webhook():
 
     from app.database import SessionLocal
     from app.services.webhook_idempotency import compute_fingerprint, try_acquire
+    from app.services.webhook_seq_gate import get_seq_gate
 
     fingerprint = compute_fingerprint(data)
     db = SessionLocal()
@@ -183,8 +198,24 @@ def webhook():
     finally:
         db.close()
 
+    bar_index = data.get("bar_index")
+    seq = data.get("seq")
+    logger.info(
+        "[Webhook] recv action=%s symbol=%s bar_index=%s seq=%s regime=%s atr=%s fp=%s",
+        action,
+        data.get("symbol") or data.get("ticker"),
+        bar_index,
+        seq,
+        data.get("regime"),
+        data.get("atr"),
+        fingerprint[:48],
+    )
+
     if not acquired:
-        logger.info("[Webhook] Duplicate fingerprint=%s dispatch_id=%s", fingerprint[:16], existing_dispatch_id)
+        logger.info(
+            "[Webhook] Duplicate fingerprint=%s bar_index=%s seq=%s dispatch_id=%s",
+            fingerprint[:48], bar_index, seq, existing_dispatch_id,
+        )
         _log_reject_async(
             payload=data,
             fingerprint=fingerprint,
@@ -199,28 +230,35 @@ def webhook():
             "message": "Signal already processed (idempotent)",
             "dispatch_id": existing_dispatch_id,
             "action": action,
+            "bar_index": bar_index,
+            "seq": seq,
         })
         resp.headers["X-Webhook-Latency-Ms"] = str(max(1, int((time.perf_counter() - t0) * 1000)))
         return resp, 200
 
     reason = data.get("reason", "")
     if "CLOSE_PROTECT" in action:
-        logger.info("[Webhook] CLOSE_PROTECT | reason=%s regime=%s side=%s", reason, data.get("regime"), data.get("side"))
-    else:
-        logger.info("[Webhook] action=%s regime=%s atr=%s", action, data.get("regime"), data.get("atr"))
+        logger.info(
+            "[Webhook] CLOSE_PROTECT | reason=%s regime=%s side=%s bar_index=%s seq=%s",
+            reason, data.get("regime"), data.get("side"), bar_index, seq,
+        )
 
-    thread_name = f"webhook-close-{action}" if is_close else f"webhook-dispatch-{action}"
-    threading.Thread(
-        target=_run_dispatch_async,
-        args=(data, fingerprint, None),
-        daemon=True,
-        name=thread_name,
-    ).start()
+    gate = get_seq_gate()
+    gate.set_dispatch(_spawn_dispatch)
+    disposition = gate.submit(data, fingerprint, dispatch=_spawn_dispatch)
+    depth = gate.pending_depth()
+    logger.info(
+        "[Webhook] seq_gate disposition=%s depth=%s action=%s bar_index=%s seq=%s",
+        disposition, depth, action, bar_index, seq,
+    )
 
     resp = jsonify({
         "status": "success",
         "message": "Signal received, dispatching to all users",
         "action": action,
+        "bar_index": bar_index,
+        "seq": seq,
+        "seq_gate": disposition,
     })
     resp.headers["X-Webhook-Latency-Ms"] = str(max(1, int((time.perf_counter() - t0) * 1000)))
     return resp, 200
@@ -228,4 +266,9 @@ def webhook():
 
 @webhook_app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok"}), 200
+    from app.services.webhook_seq_gate import get_seq_gate
+
+    return jsonify({
+        "status": "ok",
+        "seq_pending": get_seq_gate().pending_depth(),
+    }), 200

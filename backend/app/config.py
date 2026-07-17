@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     WEBHOOK_ALLOWED_IPS: str = ""
     WEBHOOK_RATE_LIMIT_PER_MIN: int = 120
     WEBHOOK_IDEMPOTENCY_TTL_SEC: int = 120
+    # bar_index+seq 幂等键 TTL（防 TV 重发）；默认 24h
+    WEBHOOK_SEQ_IDEMPOTENCY_TTL_SEC: int = 86400
+    # 同 bar 缺前置 seq 时暂存等待秒数，超时报警后按已有顺序释放
+    WEBHOOK_SEQ_WAIT_SEC: float = 3.0
     PRODUCTION_STRICT: bool = False
     PLATFORM_DOMAIN: str = "twinstar.pro"
     ADMIN_EMAIL: str = "admin@twinstar.pro"
@@ -135,6 +139,12 @@ class Settings(BaseSettings):
 
     DINGTALK_WEBHOOK: str = ""
     DINGTALK_SECRET: str = ""
+    # 钉钉攒批：条数或等待秒数触发合并发送（规避 20条/分钟限流）
+    DINGTALK_BATCH_MAX: int = 8
+    DINGTALK_BATCH_FLUSH_SEC: float = 6.0
+    DINGTALK_RETRY_MAX: int = 3
+    # 钉钉重试耗尽后的备用渠道（企业微信群机器人 webhook，可选）
+    WECOM_WEBHOOK: str = ""
 
     EMAIL_DEV_MODE: bool = True
     SMTP_HOST: str = ""

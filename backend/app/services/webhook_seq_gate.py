@@ -1,0 +1,275 @@
+"""TradingView bar_index + seq reorder gate.
+
+Sort key: (bar_index ASC, seq ASC) — never wall-clock arrival time.
+If a higher seq arrives before a missing lower seq, hold for WEBHOOK_SEQ_WAIT_SEC,
+then alert and release buffered messages in order (skip holes).
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+from app.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+DispatchFn = Callable[[dict, str], None]
+
+
+@dataclass
+class _Pending:
+    payload: dict
+    fingerprint: str
+    symbol: str
+    bar_index: int
+    seq: int
+    enqueued_at: float = field(default_factory=time.time)
+
+
+class WebhookSeqGate:
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._pending: list[_Pending] = []
+        self._timer: threading.Timer | None = None
+        self._dispatch: DispatchFn | None = None
+        # last released seq per (symbol, bar_index); cleared when bar advances
+        self._released: dict[tuple[str, int], set[int]] = {}
+
+    def set_dispatch(self, fn: DispatchFn) -> None:
+        self._dispatch = fn
+
+    def pending_depth(self) -> int:
+        with self._lock:
+            return len(self._pending)
+
+    def submit(self, payload: dict, fingerprint: str, *, dispatch: DispatchFn | None = None) -> str:
+        """
+        Enqueue or pass-through. Returns disposition: immediate | buffered | flushed.
+        """
+        fn = dispatch or self._dispatch
+        if dispatch is not None:
+            self._dispatch = dispatch
+        if fn is None:
+            raise RuntimeError("WebhookSeqGate dispatch callback not set")
+
+        bi = payload.get("bar_index")
+        seq = payload.get("seq")
+        if bi is None or seq is None:
+            fn(payload, fingerprint)
+            return "immediate"
+
+        try:
+            bi_i = int(bi)
+            seq_i = int(seq)
+        except (TypeError, ValueError):
+            fn(payload, fingerprint)
+            return "immediate"
+
+        if seq_i < 1:
+            fn(payload, fingerprint)
+            return "immediate"
+
+        from app.core.symbol_registry import extract_payload_symbol
+
+        symbol = extract_payload_symbol(payload, require=False) or "UNKNOWN"
+        item = _Pending(
+            payload=payload,
+            fingerprint=fingerprint,
+            symbol=symbol,
+            bar_index=bi_i,
+            seq=seq_i,
+        )
+        with self._lock:
+            self._pending.append(item)
+            logger.info(
+                "[WebhookSeq] buffered symbol=%s bar_index=%s seq=%s action=%s depth=%s",
+                symbol,
+                bi_i,
+                seq_i,
+                str(payload.get("action", "")).upper(),
+                len(self._pending),
+            )
+            released = self._flush_locked(fn, force=False)
+            self._arm_timer_locked()
+        return "flushed" if released else "buffered"
+
+    def flush_now(self) -> int:
+        """Force flush all pending (tests / shutdown)."""
+        fn = self._dispatch
+        if fn is None:
+            return 0
+        with self._lock:
+            return self._flush_locked(fn, force=True)
+
+    def _wait_sec(self) -> float:
+        return max(0.5, float(getattr(get_settings(), "WEBHOOK_SEQ_WAIT_SEC", 3.0) or 3.0))
+
+    def _arm_timer_locked(self) -> None:
+        if not self._pending:
+            if self._timer:
+                self._timer.cancel()
+                self._timer = None
+            return
+        if self._timer:
+            self._timer.cancel()
+        wait = self._wait_sec()
+        oldest = min(p.enqueued_at for p in self._pending)
+        delay = max(0.05, wait - (time.time() - oldest))
+        t = threading.Timer(delay, self._on_timer)
+        t.daemon = True
+        self._timer = t
+        t.start()
+
+    def _on_timer(self) -> None:
+        fn = self._dispatch
+        if fn is None:
+            return
+        with self._lock:
+            self._timer = None
+            self._flush_locked(fn, force=False)
+            if self._pending:
+                # force release timed-out groups
+                self._flush_locked(fn, force=True)
+            self._arm_timer_locked()
+
+    def _next_expected_seq(self, symbol: str, bar_index: int) -> int:
+        done = self._released.get((symbol, bar_index)) or set()
+        n = 1
+        while n in done:
+            n += 1
+        return n
+
+    def _mark_released(self, symbol: str, bar_index: int, seq: int) -> None:
+        key = (symbol, bar_index)
+        self._released.setdefault(key, set()).add(seq)
+        # prune old bars for this symbol (keep last few)
+        bars = sorted(b for (s, b) in self._released if s == symbol)
+        for old in bars[:-8]:
+            self._released.pop((symbol, old), None)
+
+    def _flush_locked(self, fn: DispatchFn, *, force: bool) -> int:
+        if not self._pending:
+            return 0
+        wait = self._wait_sec()
+        now = time.time()
+        released_n = 0
+
+        # Process symbol by symbol; within symbol: lowest bar_index first
+        symbols = sorted({p.symbol for p in self._pending})
+        for symbol in symbols:
+            while True:
+                group_bars = sorted({p.bar_index for p in self._pending if p.symbol == symbol})
+                if not group_bars:
+                    break
+                bar = group_bars[0]
+                bucket = [p for p in self._pending if p.symbol == symbol and p.bar_index == bar]
+                bucket.sort(key=lambda p: p.seq)
+                next_seq = self._next_expected_seq(symbol, bar)
+                age = now - min(p.enqueued_at for p in bucket)
+                timed_out = force or age >= wait
+
+                # Contiguous ready from next_seq
+                ready: list[_Pending] = []
+                for p in bucket:
+                    if p.seq == next_seq + len(ready):
+                        ready.append(p)
+                    elif p.seq < next_seq:
+                        # already released / duplicate seq — drop silently
+                        self._pending.remove(p)
+                        logger.info(
+                            "[WebhookSeq] drop already-released symbol=%s bar=%s seq=%s",
+                            symbol, bar, p.seq,
+                        )
+                    else:
+                        break
+
+                if ready:
+                    for p in ready:
+                        self._pending.remove(p)
+                        self._mark_released(symbol, bar, p.seq)
+                        logger.info(
+                            "[WebhookSeq] release symbol=%s bar_index=%s seq=%s action=%s",
+                            symbol, bar, p.seq, str(p.payload.get("action", "")).upper(),
+                        )
+                        try:
+                            fn(p.payload, p.fingerprint)
+                        except Exception:
+                            logger.exception("[WebhookSeq] dispatch failed seq=%s", p.seq)
+                        released_n += 1
+                    continue  # more on same bar?
+
+                if not timed_out:
+                    break  # wait for missing lower seq on this bar
+
+                # Timeout with gap: alert and release remaining in seq order
+                missing = next_seq
+                have = sorted(p.seq for p in bucket)
+                logger.warning(
+                    "[WebhookSeq] gap timeout symbol=%s bar_index=%s missing_seq=%s have=%s age=%.2fs",
+                    symbol, bar, missing, have, age,
+                )
+                self._alert_seq_gap(symbol, bar, missing, have, age)
+                for p in sorted(bucket, key=lambda x: x.seq):
+                    if p not in self._pending:
+                        continue
+                    self._pending.remove(p)
+                    self._mark_released(symbol, bar, p.seq)
+                    logger.info(
+                        "[WebhookSeq] force-release symbol=%s bar_index=%s seq=%s action=%s",
+                        symbol, bar, p.seq, str(p.payload.get("action", "")).upper(),
+                    )
+                    try:
+                        fn(p.payload, p.fingerprint)
+                    except Exception:
+                        logger.exception("[WebhookSeq] force dispatch failed seq=%s", p.seq)
+                    released_n += 1
+                # proceed to next bar for this symbol
+            # end while symbol
+        return released_n
+
+    def _alert_seq_gap(
+        self,
+        symbol: str,
+        bar_index: int,
+        missing_seq: int,
+        have: list[int],
+        age: float,
+    ) -> None:
+        try:
+            from app.services.dingtalk_notify import push_dingtalk
+
+            push_dingtalk(
+                "Webhook 时序缺口",
+                (
+                    f"**symbol**: `{symbol}`\n\n"
+                    f"**bar_index**: `{bar_index}`\n\n"
+                    f"**缺失 seq**: `{missing_seq}`\n\n"
+                    f"**已缓冲**: `{have}`\n\n"
+                    f"**等待**: `{age:.1f}s` → 超时后按已有顺序强制释放"
+                ),
+            )
+        except Exception as e:
+            logger.warning("[WebhookSeq] gap alert failed: %s", e)
+
+
+_gate: WebhookSeqGate | None = None
+_gate_lock = threading.Lock()
+
+
+def get_seq_gate() -> WebhookSeqGate:
+    global _gate
+    with _gate_lock:
+        if _gate is None:
+            _gate = WebhookSeqGate()
+        return _gate
+
+
+def reset_seq_gate_for_tests() -> WebhookSeqGate:
+    """Replace singleton (unit tests)."""
+    global _gate
+    with _gate_lock:
+        _gate = WebhookSeqGate()
+        return _gate

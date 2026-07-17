@@ -1,4 +1,8 @@
-"""Webhook signal deduplication (TV retries / duplicate alerts)."""
+"""Webhook signal deduplication (TV retries / duplicate alerts).
+
+Prefer TradingView bar_index+seq keys (24h TTL) when present; otherwise
+content hash with short TTL.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -9,12 +13,13 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.core.symbol_precision import normalize_entry_payload, round_price
+from app.core.symbol_precision import round_price
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 IDEMPOTENCY_TTL_SEC = 120
+SEQ_IDEMPOTENCY_TTL_SEC = 86400
 
 
 def compute_fingerprint(payload: dict) -> str:
@@ -23,6 +28,21 @@ def compute_fingerprint(payload: dict) -> str:
     )
     if explicit:
         return f"id:{explicit}"
+
+    bi = payload.get("bar_index")
+    seq = payload.get("seq")
+    if bi is not None and seq is not None:
+        try:
+            bi_i = int(bi)
+            seq_i = int(seq)
+        except (TypeError, ValueError):
+            bi_i = seq_i = None
+        if bi_i is not None and seq_i is not None and seq_i >= 1:
+            from app.core.symbol_registry import extract_payload_symbol
+
+            symbol = extract_payload_symbol(payload, require=False) or "UNKNOWN"
+            # Redis unique key shape: {symbol}_{bar_index}_{seq}
+            return f"seq:{symbol}_{bi_i}_{seq_i}"
 
     action = str(payload.get("action", "")).upper()
     from app.core.symbol_registry import extract_payload_symbol
@@ -44,7 +64,12 @@ def compute_fingerprint(payload: dict) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _ttl_seconds() -> int:
+def _ttl_seconds(fingerprint: str | None = None) -> int:
+    if fingerprint and str(fingerprint).startswith("seq:"):
+        return max(
+            3600,
+            int(getattr(settings, "WEBHOOK_SEQ_IDEMPOTENCY_TTL_SEC", SEQ_IDEMPOTENCY_TTL_SEC)),
+        )
     return max(30, int(getattr(settings, "WEBHOOK_IDEMPOTENCY_TTL_SEC", IDEMPOTENCY_TTL_SEC)))
 
 
@@ -53,7 +78,7 @@ def try_acquire(db: Session, fingerprint: str) -> tuple[bool, int | None]:
     Attempt to claim fingerprint for processing.
     Returns (acquired, existing_dispatch_log_id).
     """
-    ttl = _ttl_seconds()
+    ttl = _ttl_seconds(fingerprint)
     from app.services.redis_client import get_redis
 
     redis = get_redis()
@@ -104,7 +129,7 @@ def finalize(db: Session, fingerprint: str, dispatch_log_id: int) -> None:
     from app.services.redis_client import get_redis
     from app.models.platform import WebhookIdempotencyKey
 
-    ttl = _ttl_seconds()
+    ttl = _ttl_seconds(fingerprint)
     redis = get_redis()
     if redis:
         try:

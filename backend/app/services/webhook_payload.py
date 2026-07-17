@@ -61,6 +61,12 @@ def normalize_tv_payload(data: dict) -> dict:
         out["reason"] = str(out["reason"])[:500]
     if out.get("entry_type") is not None:
         out["entry_type"] = str(out["entry_type"]).upper().strip()
+    for key in ("bar_index", "seq"):
+        if key in out and out[key] is not None and out[key] != "":
+            try:
+                out[key] = int(float(str(out[key]).strip()))
+            except (TypeError, ValueError):
+                pass
     return out
 
 

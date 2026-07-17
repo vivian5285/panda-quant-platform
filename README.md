@@ -335,8 +335,10 @@ panda-quant-platform/
 │   │       ├── webhook_payload.py        # TV JSON 解析/修复（含 Pine 缺引号）
 │   │       ├── webhook_guard.py          # secret/IP/频率/action 白名单
 │   │       ├── webhook_secrets.py        # 管理后台 Webhook Secret
-│   │       ├── webhook_idempotency.py    # 指纹去重 TTL
+│   │       ├── webhook_idempotency.py    # 指纹去重；bar_index+seq → 24h Redis 键
+│   │       ├── webhook_seq_gate.py       # bar_index/seq 有序缓冲与缺口等待
 │   │       ├── chain_rpc_config.py       # 管理后台 RPC
+│   │       ├── dingtalk_notify.py          # 钉钉攒批 + 重试 + 企业微信兜底
 │   │       ├── dingtalk_secrets.py       # 管理后台钉钉
 │   │       ├── trading_alerts.py           # 按交易所主题推送
 │   │       ├── alert_service.py          # notify_admin / notify_system
@@ -634,6 +636,34 @@ https://twinstar.pro/gemini/webhook
 
 > `tv_sl` 为 TV 硬止损价，VPS 挂 STOP 使用，**不参与 OPEN sizing**。`entry_type` 可选 `OPEN` / `PYRAMID` / `PROFIT_ADD`。
 
+### 时序字段（bar_index + seq）
+
+策略 Webhook 应带上：
+
+| 字段 | 含义 |
+|------|------|
+| `bar_index` | 当前 K 线索引 |
+| `seq` | 同一 `bar_index` 内从 1 递增的事件序号 |
+
+```json
+{
+  "action": "CLOSE_PROTECT",
+  "secret": "你的密码",
+  "symbol": "ETHUSDT.P",
+  "bar_index": 200,
+  "seq": 1
+}
+```
+
+**VPS 规则（全所共用）：**
+
+1. **排序**：主键 `bar_index` 升序，次键 `seq` 升序（**禁止**按到达时间处理）
+2. **幂等**：Redis 键 `seq:{symbol}_{bar_index}_{seq}`，TTL 24h（`WEBHOOK_SEQ_IDEMPOTENCY_TTL_SEC`）
+3. **乱序**：缺前置 `seq` 时暂存 `WEBHOOK_SEQ_WAIT_SEC`（默认 3s），超时钉钉告警后按已有顺序强制释放
+4. **无时序字段**：回退旧内容指纹（短 TTL）并立即派发
+
+实现：`webhook_seq_gate.py` · `webhook_idempotency.py`
+
 ### 保护性全平 JSON
 
 ```json
@@ -713,6 +743,13 @@ https://twinstar.pro/gemini/webhook
 ## 钉钉通知策略
 
 配置：管理后台 **平台与钱包 → 钉钉告警**（或 `.env` `DINGTALK_*`）。
+
+### 发送节流与重试
+
+- **攒批**：默认最多 `DINGTALK_BATCH_MAX=8` 条或 `DINGTALK_BATCH_FLUSH_SEC=6` 秒合并为一条 Markdown 摘要（规避 20 条/分钟限流）
+- **重试**：失败后指数退避 1s / 2s / 4s（`DINGTALK_RETRY_MAX`）
+- **兜底**：重试耗尽后若配置了 `WECOM_WEBHOOK`，改推企业微信群机器人
+- `critical` 系统告警 / 归集失败可走 `immediate` 立即发送
 
 ### 用户实盘钉钉（`trading_alerts.py`）
 
