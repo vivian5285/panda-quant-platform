@@ -17,6 +17,36 @@ def client():
         yield bc
 
 
+def test_place_stop_limit_uses_algo_stop(client):
+    """Hard SL must use algo STOP (限价条件单), not classic book / STOP_MARKET close-all."""
+    client.client._request_futures_api.return_value = {
+        "algoId": 9010,
+        "orderType": "STOP",
+        "triggerPrice": "1891.82",
+        "price": "1894.66",
+        "quantity": "0.076",
+        "side": "BUY",
+        "reduceOnly": True,
+    }
+
+    res = client.place_stop_limit_order(
+        "BUY", 1891.82, 1894.66, "ETHUSDT", quantity=0.076, reduce_only=True,
+    )
+
+    assert res is not None
+    assert res.get("algoId") == 9010
+    args, kwargs = client.client._request_futures_api.call_args
+    assert args[0] == "post" and args[1] == "algoOrder"
+    data = kwargs.get("data") or {}
+    assert data["algoType"] == "CONDITIONAL"
+    assert data["type"] == "STOP"
+    assert "closePosition" not in data
+    assert float(data["quantity"]) == pytest.approx(0.076)
+    assert float(data["triggerPrice"]) == pytest.approx(1891.82)
+    assert float(data["price"]) == pytest.approx(1894.66)
+    client.client.futures_create_order.assert_not_called()
+
+
 def test_place_stop_market_uses_algo_close_position(client):
     client.client._request_futures_api.return_value = {
         "algoId": 9001,

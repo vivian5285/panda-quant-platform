@@ -1003,6 +1003,10 @@ class PositionSupervisor(
                 detail["tv_sl_reference"] = vps_meta["tv_sl_reference"]
             if shield:
                 detail["shield"] = shield
+                if shield.get("order_style"):
+                    detail["hard_sl_order_style"] = shield["order_style"]
+                if shield.get("limit_price"):
+                    detail["hard_sl_limit_price"] = shield["limit_price"]
             slices = (
                 self._expected_tp_levels(real_qty, entry_price)
                 if hasattr(self, "_expected_tp_levels")

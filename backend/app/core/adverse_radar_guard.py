@@ -99,12 +99,13 @@ def _order_is_close_position(o: dict) -> bool:
 
 
 def _is_stop_market_like(o: dict) -> bool:
-    """Recognize STOP on regular book and Binance algo conditional book."""
+    """Recognize STOP / STOP_MARKET on regular book and Binance algo conditional book."""
     otype = str(o.get("type") or o.get("orderType") or "").upper()
-    if otype in ("STOP_MARKET", "STOP"):
+    if otype in ("STOP_MARKET", "STOP", "TAKE_PROFIT", "TAKE_PROFIT_MARKET"):
         return True
     if o.get("isAlgoOrder") and _order_stop_price(o) > 0:
-        if otype in ("", "CONDITIONAL") or otype.endswith("_MARKET"):
+        # Algo CONDITIONAL with trigger — covers STOP and STOP_MARKET
+        if otype in ("", "CONDITIONAL") or "STOP" in otype or otype.endswith("_MARKET"):
             return True
     return False
 
@@ -650,6 +651,8 @@ class AdverseRadarMixin:
             "placed": placed,
             "cancelled": cancelled,
             "label": self._hard_stop_label(),
+            "order_style": getattr(self, "_last_hard_sl_order_style", None),
+            "limit_price": self._hard_sl_limit_price(effective) if effective > 0 else 0.0,
             **audit,
         }
 
@@ -1249,10 +1252,16 @@ class AdverseRadarMixin:
         )
 
     def _place_adverse_stop_slice(self, stop_price: float, qty: float) -> bool:
-        """Place buffer hard stop — prefer Stop-Limit (trigger + limit offset)."""
+        """
+        Place VPS hard stop — prefer Stop-Limit (限价条件单), never silent market-all.
+
+        Live book target (all exchanges): TP123 reduce-only limits + 1 hard Stop-Limit.
+        STOP_MARKET closePosition is last-resort only (and logged).
+        """
         close_side = self._adverse_close_side()
         symbol = getattr(self, "symbol", None)
         client = self.client
+        self._last_hard_sl_order_style = None
 
         if getattr(self, "exchange_id", "") == "deepcoin":
             pos_side = "long" if self.current_side == "LONG" else "short"
@@ -1260,33 +1269,85 @@ class AdverseRadarMixin:
             if sz <= 0:
                 return False
             trigger_px = round_price(stop_price)
-            order = client.place_trigger_order(
-                symbol, close_side, pos_side, sz, trigger_px,
-                order_type="market", td_mode="cross", mrg_position="merge",
-            )
-            return order is not None
+            # Prefer limit trigger when exchange supports it
+            order = None
+            if hasattr(client, "place_trigger_order"):
+                try:
+                    order = client.place_trigger_order(
+                        symbol, close_side, pos_side, sz, trigger_px,
+                        order_type="limit",
+                        price=self._hard_sl_limit_price(stop_price),
+                        td_mode="cross", mrg_position="merge",
+                    )
+                except TypeError:
+                    order = None
+                if not order:
+                    order = client.place_trigger_order(
+                        symbol, close_side, pos_side, sz, trigger_px,
+                        order_type="market", td_mode="cross", mrg_position="merge",
+                    )
+                    if order:
+                        self._last_hard_sl_order_style = "deepcoin_trigger_market"
+            if order:
+                if not self._last_hard_sl_order_style:
+                    self._last_hard_sl_order_style = "deepcoin_trigger_limit"
+                return True
+            return False
 
         limit_px = self._hard_sl_limit_price(stop_price)
-        if hasattr(client, "place_stop_limit_order"):
+        qty_f = float(qty or 0)
+
+        def _track_algo(order: dict | None) -> None:
+            if not order:
+                return
+            aid = order.get("algoId") or order.get("orderId")
+            if not aid:
+                return
+            pending = list(getattr(self, "_pending_adverse_algo_ids", None) or [])
+            aid_int = int(aid)
+            if aid_int not in pending:
+                pending.append(aid_int)
+            self._pending_adverse_algo_ids = pending[-8:]
+
+        if hasattr(client, "place_stop_limit_order") and qty_f > 0:
             order = client.place_stop_limit_order(
                 close_side, stop_price, limit_px, symbol,
-                quantity=qty, reduce_only=True,
+                quantity=qty_f, reduce_only=True,
             )
             if order:
+                self._last_hard_sl_order_style = "stop_limit"
+                _track_algo(order)
                 return True
 
+        # Fallback: qty-backed STOP_MARKET (reduceOnly) — still one slot, not close-all
+        if hasattr(client, "place_stop_market_order") and qty_f > 0:
+            order = client.place_stop_market_order(
+                close_side, stop_price, symbol, quantity=qty_f, reduce_only=True,
+            )
+            if order:
+                self._last_hard_sl_order_style = "stop_market_qty"
+                _track_algo(order)
+                logger.warning(
+                    "[User %s] 硬止损 Stop-Limit 失败，降级为 STOP_MARKET qty=%.4f @%.2f",
+                    getattr(self, "user_id", "?"),
+                    qty_f,
+                    float(stop_price or 0),
+                )
+                return True
+
+        # Last resort: closePosition market (Binance UI shows 市价止盈止损·全部平仓)
         if hasattr(client, "place_stop_market_order"):
             order = client.place_stop_market_order(
                 close_side, stop_price, symbol, quantity=None,
             )
             if order:
-                aid = order.get("algoId") or order.get("orderId")
-                if aid:
-                    pending = list(getattr(self, "_pending_adverse_algo_ids", None) or [])
-                    aid_int = int(aid)
-                    if aid_int not in pending:
-                        pending.append(aid_int)
-                    self._pending_adverse_algo_ids = pending[-8:]
+                self._last_hard_sl_order_style = "stop_market_close_all"
+                _track_algo(order)
+                logger.error(
+                    "[User %s] 硬止损降级为 closePosition STOP_MARKET @%.2f — 盘口会多出条件市价单",
+                    getattr(self, "user_id", "?"),
+                    float(stop_price or 0),
+                )
                 return True
         return False
 

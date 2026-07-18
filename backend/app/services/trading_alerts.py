@@ -445,14 +445,42 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
                 lines.append(_line("当前总敞口", f"{float(total_n):.2f} USDT（{float(mult):.0f}倍本金上限）"))
         if detail.get("tv_sl"):
             pct = detail.get("hard_sl_pct_display") or detail.get("vps_hard_sl_pct")
+            style = detail.get("hard_sl_order_style") or (detail.get("shield") or {}).get("order_style")
+            style_cn = {
+                "stop_limit": "Stop-Limit 限价条件单",
+                "stop_market_qty": "STOP_MARKET 数量单（已降级）",
+                "stop_market_close_all": "市价全部平仓（异常降级）",
+                "deepcoin_trigger_limit": "条件限价",
+                "deepcoin_trigger_market": "条件市价",
+            }.get(str(style or ""), "")
             if pct:
-                lines.append(_line("VPS 硬止损", f"@{float(detail['tv_sl']):.2f}（开仓价×{pct}）"))
+                line = f"@{float(detail['tv_sl']):.2f}（开仓价×{pct}"
+                if (detail.get("shield") or {}).get("limit_price"):
+                    line += f" · 限价@{float(detail['shield']['limit_price']):.2f}"
+                line += "）"
+                if style_cn:
+                    line += f" · {style_cn}"
+                lines.append(_line("VPS 硬止损", line))
             else:
                 lines.append(_line("VPS 硬止损", f"@{float(detail['tv_sl']):.2f}"))
+            # Explicit book layout — TP×3 + hard SL×1 (TV ref is NOT an order)
+            lines.append(
+                _line(
+                    "盘口结构",
+                    "限价止盈 TP1/2/3 ×3 + VPS 硬止损 Stop-Limit ×1（共 4 单；TV 止损价仅参考不挂单）",
+                )
+            )
         if detail.get("tv_sl_reference"):
-            lines.append(_line("TV 止损参考", f"{float(detail['tv_sl_reference']):.2f}"))
+            ref = float(detail["tv_sl_reference"])
+            vps = float(detail.get("tv_sl") or 0)
+            note = "（仅参考·不挂单）"
+            if vps > 0 and abs(ref - vps) < 0.02:
+                note = "（与 VPS 同价·仍只挂 1 张硬止损）"
+            lines.append(_line("TV 止损参考", f"{ref:.2f}{note}"))
         elif detail.get("tv_sl_ref"):
-            lines.append(_line("TV 止损参考", f"{float(detail['tv_sl_ref']):.2f}"))
+            lines.append(
+                _line("TV 止损参考", f"{float(detail['tv_sl_ref']):.2f}（仅参考·不挂单）")
+            )
         # Explicit: radar arms on path-to-TP1 ratio (R1/R2 70%, R3 75%, R4 80%)
         if detail.get("radar_armed") or detail.get("radar_active"):
             radar_sl = detail.get("radar_sl") or detail.get("current_sl")
@@ -485,12 +513,36 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             if abs(float(act) - float(base)) > 0.01:
                 arm_txt = (
                     f"待命 · 档位 TP1 路径 {float(base) * 100:.0f}% "
-                    f"（本笔有效 {float(act) * 100:.0f}%：TP1 间距收紧）后启动"
+                    f"（本笔有效 {float(act) * 100:.0f}%：TP1 间距收紧）后启动 Stop-Limit 保本"
                 )
             else:
                 arm_txt = (
                     f"待命 · 价格达 TP1 路径 {float(act) * 100:.0f}% 后启动移动保本"
-                    f"（随后 TP2/TP3 锁利）"
+                    f"（Stop-Limit；随后 TP2/TP3 锁利）"
+                )
+            # Show absolute trigger price for short/long when entry+tp1 known
+            entry_r = float(detail.get("entry") or detail.get("entry_price") or 0)
+            tp1_r = 0.0
+            tps_r = detail.get("tv_tps") or []
+            if tps_r:
+                try:
+                    tp1_r = float(tps_r[0] or 0)
+                except (TypeError, ValueError, IndexError):
+                    tp1_r = 0.0
+            side_r = str(detail.get("side") or "").upper()
+            if entry_r > 0 and tp1_r > 0 and side_r in ("LONG", "SHORT"):
+                span = abs(tp1_r - entry_r)
+                need = span * float(act)
+                if side_r == "LONG":
+                    trig = entry_r + need
+                else:
+                    trig = entry_r - need
+                lines.append(
+                    _line(
+                        "雷达触发价",
+                        f"现价需达 ≈{trig:.2f}（有效路径 {float(act)*100:.0f}% · "
+                        f"TP1间距 {span:.2f}）",
+                    )
                 )
             lines.append(_line("雷达状态", arm_txt))
         slices = detail.get("tp_slices") or []

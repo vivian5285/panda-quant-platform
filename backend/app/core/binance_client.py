@@ -516,21 +516,48 @@ class BinanceClient:
         quantity=None,
         reduce_only=True,
     ):
-        """STOP limit — trigger at stop_price, execute as limit at limit_price."""
+        """
+        STOP limit — trigger at stop_price, execute as limit at limit_price.
+
+        Prefer algo CONDITIONAL STOP (post-2025-12 migration); classic book is fallback.
+        Hard SL must be Stop-Limit (限价止盈止损), not STOP_MARKET 全部平仓.
+        """
         symbol = self._sym(symbol)
         can = self._can_sym()
+        binance_side = "BUY" if side.upper() in ["BUY", "LONG"] else "SELL"
+        stop_str = format_price(stop_price, can)
+        limit_str = format_price(limit_price, can)
+        if float(stop_str) <= 0 or float(limit_str) <= 0:
+            logger.error(
+                f"[User {self.user_id}] stop-limit invalid stop={stop_price} limit={limit_price}"
+            )
+            return None
+        qty_str = format_quantity(quantity, can) if quantity is not None else "0"
+        if float(qty_str) <= 0:
+            logger.error(f"[User {self.user_id}] stop-limit requires quantity")
+            return None
+
+        algo_params: dict = {
+            "algoType": "CONDITIONAL",
+            "symbol": symbol,
+            "side": binance_side,
+            "type": "STOP",
+            "triggerPrice": stop_str,
+            "price": limit_str,
+            "quantity": qty_str,
+            "workingType": "CONTRACT_PRICE",
+        }
+        if reduce_only:
+            algo_params["reduceOnly"] = "true"
+        res = self._place_algo_stop_market(algo_params)
+        if res:
+            logger.info(
+                f"[User {self.user_id}] algo stop-limit {side} qty={qty_str} {symbol} "
+                f"trigger={stop_str} limit={limit_str}"
+            )
+            return res
+
         try:
-            binance_side = "BUY" if side.upper() in ["BUY", "LONG"] else "SELL"
-            stop_str = format_price(stop_price, can)
-            limit_str = format_price(limit_price, can)
-            if float(stop_str) <= 0 or float(limit_str) <= 0:
-                logger.error(
-                    f"[User {self.user_id}] stop-limit invalid stop={stop_price} limit={limit_price}"
-                )
-                return None
-            if quantity is None or float(format_quantity(quantity, can)) <= 0:
-                logger.error(f"[User {self.user_id}] stop-limit requires quantity")
-                return None
             params: dict = {
                 "symbol": symbol,
                 "side": binance_side,
@@ -538,14 +565,14 @@ class BinanceClient:
                 "stopPrice": stop_str,
                 "price": limit_str,
                 "timeInForce": "GTC",
-                "quantity": format_quantity(quantity, can),
+                "quantity": qty_str,
                 "workingType": "CONTRACT_PRICE",
             }
             if reduce_only:
                 params["reduceOnly"] = "true"
             order = self.client.futures_create_order(**params)
             logger.info(
-                f"[User {self.user_id}] stop-limit {side} qty={params['quantity']} {symbol} "
+                f"[User {self.user_id}] stop-limit {side} qty={qty_str} {symbol} "
                 f"trigger={stop_str} limit={limit_str}"
             )
             return order

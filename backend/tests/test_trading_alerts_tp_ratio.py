@@ -34,3 +34,32 @@ def test_open_detail_radar_standby_until_tp1():
     assert "雷达状态" in body
     assert "TP1 路径" in body
     assert "80%" in body
+
+
+def test_open_detail_book_structure_and_tv_sl_reference_only():
+    body = format_vps_entry_detail_cn(
+        {
+            "entry_type": "OPEN",
+            "side": "SHORT",
+            "regime": 1,
+            "qty": 0.076,
+            "entry": 1840.65,
+            "tv_sl": 1891.82,
+            "hard_sl_pct_display": "2.8%",
+            "hard_sl_order_style": "stop_limit",
+            "tv_sl_reference": 1844.34,
+            "tv_tps": [1837.01, 1834.12, 1831.46],
+            "atr": 4.44,
+            "radar_armed": False,
+            "radar_activation": 0.70,
+            "radar_activation_effective": 0.95,
+            "shield": {"order_style": "stop_limit", "limit_price": 1894.66},
+        },
+        "binance",
+    )
+    assert "盘口结构" in body
+    assert "共 4 单" in body
+    assert "仅参考" in body
+    assert "1844.34" in body
+    assert "雷达触发价" in body
+    assert "Stop-Limit" in body or "限价条件单" in body
