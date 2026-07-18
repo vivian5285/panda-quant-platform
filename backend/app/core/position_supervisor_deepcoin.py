@@ -931,7 +931,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         )
 
     def _sync_consumed_tp_levels(self, live_qty, curr_px):
-        from app.core.tp_slice_guard import compute_tp_slices, tp_fill_qty_tolerance
+        from app.core.tp_slice_guard import compute_tp_slices
 
         anchor = float(self._safe_qty(self.initial_qty or live_qty))
         live = float(self._safe_qty(live_qty))
@@ -939,25 +939,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         slices = compute_tp_slices(
             anchor, self.regime, self.tv_tps, self.regime_settings, exclude_levels=set(),
         )
-        reduced = abs(anchor - live)
         tp1_slice = float(slices[0][1]) if slices else 0.0
-        min_reduce = 0.0
         if tp1_slice > 0:
-            min_reduce = max(
-                tp1_slice * 0.5,
-                tp_fill_qty_tolerance(tp1_slice, is_contracts=True) * 0.5,
-            )
-        if tp1_slice <= 0 or reduced < min_reduce:
-            if self.consumed_tp_levels:
-                logger.warning(
-                    "清除虚报 TP 成交 %s（减仓 %.4f < TP1门槛 %.4f）— 保留雷达锁",
-                    self.consumed_tp_levels, reduced, min_reduce,
-                )
-            if abs(live - anchor) <= max(tol, 1e-9):
+            if abs(live - anchor) <= max(tol, 1e-9) and self.consumed_tp_levels:
+                logger.warning("仓位回到开仓锚，清除 TP 成交记账 %s", self.consumed_tp_levels)
                 self.consumed_tp_levels = []
-            if hasattr(self, "_save_state"):
-                self._save_state()
-            return list(self.consumed_tp_levels or [])
+                if hasattr(self, "_save_state"):
+                    self._save_state()
+                return []
         open_prices = [float(o.get("price", 0)) for o in self._collect_tp_limit_orders()]
         inferred = infer_filled_tp_levels(
             live,
@@ -971,6 +960,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             open_tp_prices=open_prices,
             qty_tol=tol,
             is_contracts=True,
+            peak_px=float(getattr(self, "best_price", 0) or 0),
         )
         prev = {int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3)}
         merged = sorted(prev | {int(x) for x in inferred if int(x) in (1, 2, 3)})
@@ -1186,6 +1176,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 regime_settings=self.regime_settings,
                 open_tp_prices=open_prices,
                 is_contracts=True,
+                peak_px=float(getattr(self, "best_price", 0) or 0),
             )
             if skip:
                 exclude.add(level)
@@ -1392,6 +1383,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 regime_settings=self.regime_settings,
                 open_tp_prices=open_prices,
                 is_contracts=True,
+                peak_px=float(getattr(self, "best_price", 0) or 0),
             )
             if skip:
                 logger.warning(
@@ -3073,18 +3065,6 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                             logger.warning("人工异动钉钉跳过：实盘核查未通过")
 
                     self._scan_ticks += 1
-                    if not qty_changed and self._scan_ticks % 10 == 0:
-                        audit = self._audit_tp_levels(real_amt)
-                        if audit["issues"]:
-                            logger.info(
-                                f"🔍 定期扫描发现异常: {audit['issues']}，触发智能补挂"
-                            )
-                            sl_to_pass = self._radar_sl_to_pass()
-                            self._smart_realign_defenses(
-                                real_amt, self.watched_entry, dynamic_sl=sl_to_pass,
-                                reason="定期防线扫描",
-                            )
-
                     curr_px = self.client.get_current_price(self.symbol)
                     if curr_px <= 0:
                         curr_px = last_px
@@ -3092,11 +3072,34 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         last_px = curr_px
                     if curr_px <= 0:
                         continue
-                    self._sync_consumed_tp_levels(real_amt, curr_px)
                     if self.current_side == "LONG":
                         self.best_price = max(self.best_price, curr_px)
                     else:
                         self.best_price = min(self.best_price, curr_px)
+                    before_c = set(int(x) for x in (self.consumed_tp_levels or []))
+                    self._sync_consumed_tp_levels(real_amt, curr_px)
+                    after_c = set(int(x) for x in (self.consumed_tp_levels or []))
+                    gained_c = sorted(after_c - before_c)
+                    if gained_c:
+                        from app.core.position_supervisor import PositionSupervisor
+                        PositionSupervisor._notify_tp_fill_detected(
+                            self, gained_c[0], self.watched_qty, real_amt, curr_px,
+                        )
+
+                    if not qty_changed and self._scan_ticks % 10 == 0:
+                        audit = self._audit_tp_levels(real_amt, curr_px=curr_px)
+                        if audit["issues"]:
+                            logger.info(
+                                f"🔍 定期扫描发现异常: {audit['issues']}，触发智能补挂"
+                            )
+                            sl_to_pass = self._radar_sl_to_pass()
+                            # TP 补挂不带雷达 SL，避免与条件止损抢份额
+                            self._smart_realign_defenses(
+                                real_amt, self.watched_entry, dynamic_sl=None,
+                                reason="定期防线扫描·仅TP限价·不碰雷达硬止损",
+                            )
+                            if sl_to_pass and hasattr(self, "_ensure_radar_sl"):
+                                self._ensure_radar_sl(real_amt, sl_to_pass)
 
                     progress = self._radar_activation_progress(curr_px)
                     self._orchestrate_defense_monitoring(real_amt, curr_px)

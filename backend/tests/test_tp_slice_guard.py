@@ -87,7 +87,7 @@ def test_tp1_still_on_book_blocks_fill_even_with_qty_and_price():
 
 
 def test_price_pullback_after_tp1_still_infers_fill():
-    """Death-spiral fix: after TP1 fill mark often dips below TP1 — still consume."""
+    """After TP1 fill mark may dip; peak or qty+book still consume."""
     from app.core.tp_slice_guard import should_skip_rehang_tp_level
 
     slices = compute_tp_slices(INITIAL, 3, TV_TPS, REGIME_SETTINGS)
@@ -103,6 +103,7 @@ def test_price_pullback_after_tp1_still_infers_fill():
         tv_tps=TV_TPS,
         regime_settings=REGIME_SETTINGS,
         open_tp_prices=[1829.88, 1847.32],  # TP1 gone
+        peak_px=1812.0,  # had touched TP1
     )
     assert filled == {1}
     skip, reason = should_skip_rehang_tp_level(
@@ -117,9 +118,26 @@ def test_price_pullback_after_tp1_still_infers_fill():
         tv_tps=TV_TPS,
         regime_settings=REGIME_SETTINGS,
         open_tp_prices=[1829.88, 1847.32],
+        peak_px=1812.0,
     )
     assert skip is True
-    assert reason in ("consumed", "qty_book_implies_filled", "price_past_tp")
+    assert reason in ("consumed", "qty_book_implies_filled", "price_past_tp", "price_book_filled")
+
+
+def test_price_reached_and_tp1_gone_even_if_qty_barely_moved():
+    """User rule: TP1 price reached + limit gone → filled (ignore ETH mark qty noise)."""
+    filled = infer_filled_tp_levels(
+        INITIAL - 0.01,  # tiny qty noise, not a full TP1 slice
+        1811.0,  # at/past TP1
+        "LONG",
+        initial_qty=INITIAL,
+        consumed_tp_levels=[],
+        regime=3,
+        tv_tps=TV_TPS,
+        regime_settings=REGIME_SETTINGS,
+        open_tp_prices=[1829.88, 1847.32],  # TP1 gone
+    )
+    assert 1 in filled
 
 
 def test_prefix_tp1_tp2_multi_fill():

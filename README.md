@@ -591,10 +591,13 @@ qty             = notional_usd / price   （DeepCoin 换算为合约张）
 
 | 事件 | 系统行为 | 钉钉 |
 |------|----------|------|
-| 仓位减少 + TP 限价消失 | 记入 `consumed_tp_levels`，只补挂**未成交**更高档 | `TP_FILLED` |
-| 现价在 TP1 附近但 TP1 已成交 | 跳过补挂 TP1，剩余仓位只挂 TP2/TP3 | `TP_SKIP_REHANG` |
-| 路径≥85% 或 TP 吃单 | 雷达启动并随 TP2/TP3 阶段锁利 | `RADAR_ARM` / `TRAIL` |
-| 仓位异动无法归为 TP | 对账后增量对齐（禁核武全量重挂 TP123） | `POSITION_QTY_CHANGE` |
+| **TP 价已达 + 该档限价消失** | 认定成交，记入 `consumed`，**绝不重挂**该档，耐心等更高档 | `TP_FILLED` |
+| ETH/XAU 市价引起的细微 qty 漂移 | 忽略（漂移阈值 8%）；不以噪声当漏挂 | — |
+| 现价在 TP1 附近但 TP1 已成交 | 跳过补挂 TP1，剩余只挂 TP2/TP3 | `TP_SKIP_REHANG` |
+| 路径≥85% 或 TP 吃单 | 雷达启动并随 TP2/TP3 锁利（条件槽，不与 TP 抢份额） | `RADAR_ARM` / `TRAIL` |
+| VPS 宽硬止损 | `closePosition` 合并槽，与 TP123 限价互不抢 reduceOnly | 开仓钉钉 |
+
+**三层分工（互不抢份额）：** `TP123 限价` ‖ `VPS 硬止损/雷达条件槽` ‖ 各自推进，定期补挂只动 TP 限价。
 
 **锁利阶段（启动后）：**
 

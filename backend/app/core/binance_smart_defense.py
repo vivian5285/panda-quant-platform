@@ -91,6 +91,7 @@ class BinanceSmartDefenseMixin:
                 regime_settings=getattr(self, "regime_settings", {}) or {},
                 open_tp_prices=open_prices,
                 is_contracts=str(getattr(self, "exchange_id", "")).lower() == "deepcoin",
+                peak_px=float(getattr(self, "best_price", 0) or 0),
             )
             if skip:
                 exclude.add(level)
@@ -651,6 +652,7 @@ class BinanceSmartDefenseMixin:
                 regime_settings=getattr(self, "regime_settings", {}) or {},
                 open_tp_prices=open_prices,
                 is_contracts=str(getattr(self, "exchange_id", "")).lower() == "deepcoin",
+                peak_px=float(getattr(self, "best_price", 0) or 0),
             )
             if skip:
                 skipped += 1
@@ -983,6 +985,7 @@ class BinanceSmartDefenseMixin:
                 regime_settings=getattr(self, "regime_settings", {}) or {},
                 open_tp_prices=open_prices,
                 is_contracts=str(getattr(self, "exchange_id", "")).lower() == "deepcoin",
+                peak_px=float(getattr(self, "best_price", 0) or 0),
             )
             if skip:
                 self._def_log(

@@ -9,8 +9,10 @@ from app.core.position_qty_tolerance import (
 )
 from app.core.tp_defense_reconcile import tp_price_matches
 
-# Mark-price proximity for "price reached TP" (tight — not a substitute for fill)
+# Mark-price proximity for "price reached TP"
 TP_REACH_PRICE_TOL_PCT = 0.0008
+# Slightly looser for "ever touched" via peak/best (pullback after fill)
+TP_TOUCH_PEAK_TOL_PCT = 0.0015
 # Fill qty match: must track the slice itself, never the whole-position drift band
 TP_FILL_SLICE_FRAC = 0.35
 
@@ -276,6 +278,21 @@ def tp_limit_still_on_book(
     return False
 
 
+def _price_or_peak_reached_tp(
+    curr_px: float,
+    tp_price: float,
+    side: str | None,
+    peak_px: float = 0.0,
+) -> bool:
+    """Mark now at TP, or peak/best already touched TP (fill then pullback)."""
+    if price_reached_tp(curr_px, tp_price, side):
+        return True
+    peak = float(peak_px or 0)
+    if peak > 0 and side in ("LONG", "SHORT"):
+        return price_reached_tp(peak, tp_price, side, tol_pct=TP_TOUCH_PEAK_TOL_PCT)
+    return False
+
+
 def confirm_tp_tier_fill(
     *,
     level: int,
@@ -289,17 +306,16 @@ def confirm_tp_tier_fill(
     is_contracts: bool = False,
     price_tol: float = 0.02,
     require_price: bool = True,
+    peak_px: float = 0.0,
 ) -> dict:
     """
-    Evidence that a TP tier truly filled:
+    Evidence that a TP tier truly filled.
 
-    1. Qty — realized reduction matches the expected prefix / slice
-    2. Book — that TP limit is gone from the exchange open orders
-    3. Price — mark reached TP (soft when book+qty already strong)
+    Primary (user rule): TP limit gone from book + price reached/touched
+    → filled. ETH/XAU mark noise may leave qty nearly unchanged briefly;
+    do not require perfect slice qty for this path.
 
-    Death-spiral fix: when book cleared AND qty matches, do NOT require mark to
-    still sit at TP (price often pulls back a tick after fill). Soft price is
-    only a bonus confirmation, not a hard gate in that case.
+    Secondary: qty reduction match + book cleared (price may pull back).
     """
     detail = {
         "level": int(level),
@@ -312,11 +328,9 @@ def confirm_tp_tier_fill(
         "confirmed": False,
     }
     fill_tol = tp_fill_qty_tolerance(slice_qty, is_contracts=is_contracts)
-    # Prefix match (TP1+TP2 filled together) OR single-slice match
     qty_ok = abs(float(reduced) - float(prefix_consumed_qty)) <= fill_tol
     if not qty_ok:
         qty_ok = abs(float(reduced) - float(slice_qty)) <= fill_tol and float(reduced) > fill_tol
-    # Relaxed: reduced covers ≥55% of this tier's prefix (multi-fill / rounding)
     if not qty_ok and float(prefix_consumed_qty) > 0:
         qty_ok = float(reduced) + 1e-12 >= float(prefix_consumed_qty) * 0.55
     noise = qty_drift_tolerance(float(prefix_consumed_qty) or float(slice_qty), 0.0)
@@ -328,14 +342,21 @@ def confirm_tp_tier_fill(
     book_cleared = not tp_limit_still_on_book(tp_price, open_tp_prices, price_tol=price_tol)
     detail["book_cleared"] = book_cleared
 
-    if float(curr_px or 0) > 0:
-        price_ok = price_reached_tp(curr_px, tp_price, side)
-        detail["price_ok"] = price_ok
-    else:
-        detail["price_ok"] = True
-        price_ok = True
+    has_mark = float(curr_px or 0) > 0 or float(peak_px or 0) > 0
+    price_ok = (
+        _price_or_peak_reached_tp(curr_px, tp_price, side, peak_px=peak_px)
+        if has_mark
+        else False
+    )
+    detail["price_ok"] = bool(price_ok)
 
-    # Strong path: qty + book cleared → filled even if mark pulled back
+    # Primary: 价到 + 限价消失 → 认定成交（需有市价/峰值，避免空仓价误伤全档）
+    if book_cleared and price_ok and has_mark:
+        detail["confirmed"] = True
+        detail["confirm_mode"] = "price_book"
+        return detail
+
+    # Secondary: qty + book（重启无市价、或回撤后仍可靠）
     if qty_ok and book_cleared:
         detail["confirmed"] = True
         detail["confirm_mode"] = "qty_book"
@@ -396,12 +417,13 @@ def should_skip_rehang_tp_level(
     regime_settings: dict,
     open_tp_prices: list[float] | None = None,
     is_contracts: bool = False,
+    peak_px: float = 0.0,
 ) -> tuple[bool, str]:
     """
     Hard gate before placing ANY TP limit.
 
-    Never re-hang a tier that is already consumed, whose mark is at/past the
-    TV price (instant fill death spiral), or whose qty+book evidence says filled.
+    User rule: TP limit gone + price reached/touched → never rehang; wait for
+    higher tiers. Also skip consumed / mark past / qty+book evidence.
     """
     lvl = int(level)
     consumed_set = {int(x) for x in (consumed or []) if int(x) in (1, 2, 3)}
@@ -411,7 +433,14 @@ def should_skip_rehang_tp_level(
     if tp <= 0:
         return True, "invalid_price"
 
-    # Mark at/past TP → rehang would fill immediately near TP1
+    book_gone = not tp_limit_still_on_book(tp, open_tp_prices)
+    touched = _price_or_peak_reached_tp(curr_px, tp, side, peak_px=peak_px)
+
+    # Primary: 价到 + 该档限价没了 → 已成交，禁止补挂
+    if book_gone and touched:
+        return True, "price_book_filled"
+
+    # Mark still at/past TP → rehang would instant-fill
     if float(curr_px or 0) > 0 and side in ("LONG", "SHORT"):
         if price_reached_tp(curr_px, tp, side, tol_pct=0.0015):
             return True, "price_past_tp"
@@ -427,7 +456,6 @@ def should_skip_rehang_tp_level(
             slice_qty, _ = by_level[lvl]
             prefix = sum(by_level[l][0] for l in by_level if l <= lvl)
             reduced = round_quantity(anchor - live)
-            book_gone = not tp_limit_still_on_book(tp, open_tp_prices)
             min_drop = max(float(slice_qty) * 0.5, float(prefix) * 0.4)
             if book_gone and reduced + 1e-12 >= min_drop:
                 return True, "qty_book_implies_filled"
@@ -449,13 +477,14 @@ def infer_filled_tp_levels(
     qty_tol: float | None = None,
     price_tol: float = 0.02,
     is_contracts: bool = False,
+    peak_px: float = 0.0,
 ) -> set[int]:
     """
-    Infer consumed TP tiers with exchange-grade evidence.
+    Infer consumed TP tiers.
 
-    Persisted levels kept when book/qty still sane.
-    New levels: qty+book (price soft) OR prefix multi-fill.
-    Never mark fills on a still-full open.
+    Prefer price_reached/touched + book cleared (ignore tiny ETH/XAU qty noise).
+    Also: qty+book, prefix multi-fill. Never invent fills on a still-full open
+    without book/price evidence.
     """
     persisted = set(int(x) for x in (consumed_tp_levels or []) if int(x) in (1, 2, 3))
     anchor = float(initial_qty or live_qty)
@@ -470,21 +499,14 @@ def infer_filled_tp_levels(
     if not all_slices:
         return set()
 
-    tp1_slice = float(all_slices[0][1])
-    # Full / sub-TP1 noise: require at least half a TP1 slice reduced
-    if reduced < max(tp1_slice * 0.5, tp_fill_qty_tolerance(tp1_slice, is_contracts=is_contracts) * 0.5):
-        return set()
-
     by_level = {lvl: (q, px) for lvl, q, px in all_slices}
     filled: set[int] = set()
+    peak = float(peak_px or 0)
 
-    # Sanitize persisted: drop levels whose limit is still hanging or qty denies
-    for level in sorted(persisted):
-        if level not in by_level:
-            continue
-        slice_qty, tp_price = by_level[level]
+    # Price+book path works even when qty barely moved (API lag / mark noise)
+    def _confirm(level: int, slice_qty: float, tp_price: float, *, require_price: bool) -> dict:
         prefix_qty = sum(by_level[l][0] for l in by_level if l <= level)
-        ev = confirm_tp_tier_fill(
+        return confirm_tp_tier_fill(
             level=level,
             slice_qty=slice_qty,
             tp_price=tp_price,
@@ -495,45 +517,49 @@ def infer_filled_tp_levels(
             open_tp_prices=open_tp_prices,
             is_contracts=is_contracts,
             price_tol=price_tol,
-            require_price=False,
+            require_price=require_price,
+            peak_px=peak,
         )
-        if ev["qty_ok"] and ev["book_cleared"]:
+
+    # Sanitize persisted
+    for level in sorted(persisted):
+        if level not in by_level:
+            continue
+        slice_qty, tp_price = by_level[level]
+        ev = _confirm(level, slice_qty, tp_price, require_price=False)
+        if ev["confirmed"] or (ev["book_cleared"] and (ev["qty_ok"] or ev["price_ok"])):
             filled.add(level)
 
-    # Prefix multi-fill (TP1+TP2 in one poll)
-    filled |= infer_prefix_filled_levels(
-        reduced=reduced,
-        all_slices=all_slices,
-        open_tp_prices=open_tp_prices,
-        is_contracts=is_contracts,
-        price_tol=price_tol,
-    )
-
-    # Discover next unfilled tier — qty+book is enough (price soft after pullback)
+    # Discover contiguous tiers: price+book first (no min qty gate)
     next_level = (max(filled) + 1) if filled else 1
     for level, slice_qty, tp_price in all_slices:
         if level < next_level:
             continue
         if level > next_level:
             break
-        prefix_qty = sum(q for lvl, q, _ in all_slices if lvl <= level)
-        ev = confirm_tp_tier_fill(
-            level=level,
-            slice_qty=slice_qty,
-            tp_price=tp_price,
+        ev = _confirm(level, slice_qty, tp_price, require_price=False)
+        if ev.get("confirm_mode") == "price_book" or (
+            ev["confirmed"] and ev.get("confirm_mode") in ("price_book", "qty_book", "triple")
+        ):
+            filled.add(level)
+            next_level = level + 1
+            continue
+        break
+
+    # Prefix multi-fill when qty drop is material
+    tp1_slice = float(all_slices[0][1])
+    min_reduce = max(
+        tp1_slice * 0.5,
+        tp_fill_qty_tolerance(tp1_slice, is_contracts=is_contracts) * 0.5,
+    )
+    if reduced >= min_reduce:
+        filled |= infer_prefix_filled_levels(
             reduced=reduced,
-            prefix_consumed_qty=prefix_qty,
-            curr_px=curr_px,
-            side=side,
+            all_slices=all_slices,
             open_tp_prices=open_tp_prices,
             is_contracts=is_contracts,
             price_tol=price_tol,
-            require_price=False,  # qty+book strong path; avoid TP1 rehang death spiral
         )
-        if not ev["confirmed"]:
-            break
-        filled.add(level)
-        next_level = level + 1
 
     return filled
 

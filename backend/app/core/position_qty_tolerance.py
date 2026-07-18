@@ -3,8 +3,9 @@ from __future__ import annotations
 
 # 叠仓纠偏：仅当实盘超出档位上限超过此比例才强制减仓（默认 10%）
 CAP_EXCESS_RATIO = 0.10
-# 哨兵异动 / TP 匹配：仓位数量变化超过此比例才重挂止盈（默认 5%）
-QTY_DRIFT_RATIO = 0.05
+# 哨兵异动：忽略 ETH/XAU 市价波动引起的细微数量噪声（默认 8%）
+# TP 是否成交以「价到 + 该档限价消失」为主，不以微小 qty 漂移为准
+QTY_DRIFT_RATIO = 0.08
 # 向后兼容别名
 CAP_DRIFT_RATIO = QTY_DRIFT_RATIO
 

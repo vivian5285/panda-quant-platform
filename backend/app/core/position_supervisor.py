@@ -1217,7 +1217,7 @@ class PositionSupervisor(
 
     def _sync_consumed_tp_levels(self, live_qty: float, curr_px: float) -> list[int]:
         """Exchange-first: qty+book+price evidence merge (never mark TP1 on full open)."""
-        from app.core.tp_slice_guard import compute_tp_slices, tp_fill_qty_tolerance
+        from app.core.tp_slice_guard import compute_tp_slices
 
         anchor = float(self.initial_qty or live_qty)
         live = float(live_qty or 0)
@@ -1228,26 +1228,16 @@ class PositionSupervisor(
         )
         reduced = abs(anchor - live)
         tp1_slice = float(slices[0][1]) if slices else 0.0
-        # Sub-TP1 noise / still-full → clear false consume (do NOT use whole-pos 8% band)
-        min_reduce = 0.0
-        if tp1_slice > 0:
-            min_reduce = max(
-                tp1_slice * 0.5,
-                tp_fill_qty_tolerance(tp1_slice, is_contracts=is_dc) * 0.5,
+        if tp1_slice > 0 and abs(live - anchor) <= max(tol, 1e-9) and self.consumed_tp_levels:
+            # 仓位回到开仓量 → 清空虚报（真·全仓恢复）
+            logger.warning(
+                "[User %s] 仓位回到开仓锚，清除 TP 成交记账 %s",
+                self.user_id, self.consumed_tp_levels,
             )
-        if tp1_slice <= 0 or reduced < min_reduce:
-            if self.consumed_tp_levels:
-                logger.warning(
-                    "[User %s] 清除虚报 TP 档位 %s（减仓 %.4f < TP1门槛 %.4f | 实盘 %s 锚 %s）"
-                    " — 保留雷达锁（路径保本不依赖 TP 记账）",
-                    self.user_id, self.consumed_tp_levels, reduced, min_reduce, live, anchor,
-                )
-            # 仅当仓位几乎回到开仓量时才清空；否则保留已确认成交档位
-            if abs(live - anchor) <= max(tol, 1e-9):
-                self.consumed_tp_levels = []
+            self.consumed_tp_levels = []
             if hasattr(self, "_save_state"):
                 self._save_state()
-            return list(self.consumed_tp_levels or [])
+            return []
         inferred = infer_filled_tp_levels(
             live,
             curr_px,
@@ -1260,6 +1250,7 @@ class PositionSupervisor(
             open_tp_prices=self._open_tp_prices_on_book(),
             qty_tol=tol,
             is_contracts=is_dc,
+            peak_px=float(getattr(self, "best_price", 0) or 0),
         )
         # 只增不减：哨兵已确认的档位不被盘口延迟/短暂回挂抹掉
         prev = {int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3)}
@@ -1290,6 +1281,7 @@ class PositionSupervisor(
             open_tp_prices=self._open_tp_prices_on_book(),
             qty_tol=tol,
             is_contracts=self.exchange_id == "deepcoin",
+            peak_px=float(getattr(self, "best_price", 0) or 0),
         )
 
     def _active_tp_exclude_levels(self, qty: float, curr_px: float) -> set[int]:
@@ -1395,9 +1387,10 @@ class PositionSupervisor(
         self._alert(
             "info",
             "TP_FILLED",
-            f"止盈TP{level}成交·头寸已减{note}",
+            f"止盈TP{level}成交·不再补挂{note}",
             f"{self.current_side} {old_qty}→{new_qty} @ {curr_px or '—'} | "
-            f"已成交档 {detail['consumed_tp_levels']} | 禁止再补挂该档",
+            f"已成交档 {detail['consumed_tp_levels']} | 耐心等更高档TP | "
+            f"雷达/硬止损另槽不抢份额",
             detail,
         )
 
@@ -2872,19 +2865,35 @@ class PositionSupervisor(
                         self._save_state()
 
                     self._scan_ticks += 1
+                    if curr_px > 0:
+                        self.best_price = (
+                            max(self.best_price, curr_px)
+                            if self.current_side == "LONG"
+                            else min(self.best_price, curr_px)
+                        )
+                        # 先按「价到+限价消失」记账，再决定是否补挂（避免误补 TP1）
+                        before_c = set(int(x) for x in (self.consumed_tp_levels or []))
+                        self._sync_consumed_tp_levels(actual_qty, curr_px)
+                        after_c = set(int(x) for x in (self.consumed_tp_levels or []))
+                        gained_c = sorted(after_c - before_c)
+                        if gained_c:
+                            self._notify_tp_fill_detected(
+                                gained_c[0], self.watched_qty, actual_qty, curr_px,
+                            )
+
                     if not qty_changed and self._scan_ticks % 10 == 0:
-                        audit = self._audit_tp_levels(actual_qty)
+                        # 仅补挂未成交更高档；雷达/硬止损另槽，不带 dynamic_sl 抢份额
+                        audit = self._audit_tp_levels(actual_qty, curr_px=curr_px or None)
                         if audit["issues"]:
                             logger.info(
                                 f"[User {self.user_id}] 🔍 定期扫描发现异常: {audit['issues']}，触发智能补挂"
                             )
                             sl_to_pass = self._radar_sl_to_pass()
-                            # TP 对账不带 dynamic_sl，避免与雷达/硬止损抢 reduceOnly 份额
                             self._smart_realign_defenses(
                                 actual_qty,
                                 self.watched_entry,
                                 dynamic_sl=None,
-                                reason="定期防线扫描",
+                                reason="定期防线扫描·仅TP限价·不碰雷达硬止损",
                             )
                             if sl_to_pass and hasattr(self, "_ensure_radar_sl"):
                                 self._ensure_radar_sl(sl_to_pass, actual_qty)
@@ -2894,12 +2903,6 @@ class PositionSupervisor(
                                 )
 
                     if curr_px > 0:
-                        self._sync_consumed_tp_levels(actual_qty, curr_px)
-                        self.best_price = (
-                            max(self.best_price, curr_px)
-                            if self.current_side == "LONG"
-                            else min(self.best_price, curr_px)
-                        )
                         progress = self._radar_activation_progress(curr_px)
                         self._orchestrate_defense_monitoring(actual_qty, curr_px)
                         if (
