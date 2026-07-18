@@ -96,7 +96,7 @@ def test_seq_gate_orders_same_bar_close_then_open():
     def dispatch(payload, fingerprint):
         released.append((int(payload["seq"]), str(payload["action"])))
 
-    # Out-of-order arrival: OPEN seq=2 first
+    # Out-of-order arrival: OPEN seq=2 first (TV refresh: close seq < open seq)
     gate.submit(
         {"action": "LONG", "symbol": "ETHUSDT", "bar_index": 200, "seq": 2, "price": 1},
         "seq:ETHUSDT_200_2",
@@ -112,6 +112,50 @@ def test_seq_gate_orders_same_bar_close_then_open():
     )
     assert released == [(1, "CLOSE_PROTECT"), (2, "LONG")]
     assert gate.pending_depth() == 0
+
+
+def test_seq_gate_close_then_open_natural_order():
+    """Canonical TV refresh: CLOSE seq=1 then OPEN seq=2 (open may arrive first)."""
+    gate = reset_seq_gate_for_tests()
+    released: list[str] = []
+
+    def dispatch(payload, fingerprint):
+        released.append(str(payload["action"]))
+
+    gate.submit(
+        {"action": "LONG", "symbol": "ETHUSDT", "bar_index": 91, "seq": 2, "price": 1},
+        "fp-open2",
+        dispatch=dispatch,
+    )
+    assert released == []
+    gate.submit(
+        {"action": "CLOSE_STOPLOSS", "symbol": "ETHUSDT", "bar_index": 91, "seq": 1},
+        "fp-close1",
+        dispatch=dispatch,
+    )
+    assert released == ["CLOSE_STOPLOSS", "LONG"]
+
+
+def test_seq_gate_same_seq_close_then_open_companion():
+    """Safety: equal seq still CLOSE→OPEN (OPEN after CLOSE with same seq)."""
+    gate = reset_seq_gate_for_tests()
+    released: list[str] = []
+
+    def dispatch(payload, fingerprint):
+        released.append(str(payload["action"]))
+
+    gate.submit(
+        {"action": "CLOSE_PROTECT", "symbol": "ETHUSDT", "bar_index": 92, "seq": 1},
+        "fp-c",
+        dispatch=dispatch,
+    )
+    assert released == ["CLOSE_PROTECT"]
+    gate.submit(
+        {"action": "LONG", "symbol": "ETHUSDT", "bar_index": 92, "seq": 1, "price": 2},
+        "fp-o",
+        dispatch=dispatch,
+    )
+    assert released == ["CLOSE_PROTECT", "LONG"]
 
 
 def test_seq_gate_cross_bar_order():

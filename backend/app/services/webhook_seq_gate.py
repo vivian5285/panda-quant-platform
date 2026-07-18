@@ -1,12 +1,15 @@
 """TradingView bar_index + seq reorder gate.
 
-Sort key: (bar_index ASC, seq ASC, enqueued_at ASC) — never wall-clock alone.
-If a higher seq arrives before a missing lower seq, hold for WEBHOOK_SEQ_WAIT_SEC,
-then alert and release buffered messages in order (skip holes).
+Sort key: (bar_index ASC, seq ASC, close-before-open, enqueued_at ASC).
 
-V1.6.10 cycle (open→close→open = seq 1-2-1):
-  Same bar may reuse seq after a higher seq was released. Dedupe is by fingerprint
-  (includes action); released tracking allows a new cycle when seq restarts ≤ last.
+TV same-bar reality (VPS 必读):
+  - Only CLOSE_*  → flatten
+  - CLOSE_* then OPEN (refresh): close seq < open seq → sort naturally close→open
+  - Never simultaneous "open then close" as two live alerts (open is overwritten)
+  - Safety: equal seq still prefers CLOSE before OPEN; rare seq recycle still handled
+
+If a higher seq arrives before a missing lower seq, hold WEBHOOK_SEQ_WAIT_SEC,
+then alert and force-release in order.
 """
 from __future__ import annotations
 
@@ -37,6 +40,7 @@ class _Pending:
 @dataclass
 class _BarState:
     last_seq: int = 0
+    last_action: str = ""
     released_fps: set[str] = field(default_factory=set)
     cycle: int = 0
 
@@ -168,27 +172,48 @@ class WebhookSeqGate:
 
     def _mark_released(self, symbol: str, bar_index: int, item: _Pending) -> None:
         state = self._bar_state(symbol, bar_index)
-        # Cycle restart: seq reused after a higher seq was already released (1-2-1)
-        if state.last_seq > 0 and item.seq <= state.last_seq and item.seq == 1:
+        # Cycle restart: OPEN seq:1 after a higher seq (1-2-1). Not same-seq CLOSE→OPEN.
+        if state.last_seq >= 2 and item.seq == 1 and item.seq < state.last_seq:
             state.cycle += 1
             logger.info(
                 "[WebhookSeq] cycle-restart symbol=%s bar=%s seq=%s action=%s cycle=%s",
                 symbol, bar_index, item.seq, item.action, state.cycle,
             )
         state.last_seq = item.seq
+        state.last_action = item.action
         state.released_fps.add(item.fingerprint)
         # prune old bars for this symbol (keep last few)
         bars = sorted(b for (s, b) in self._bars if s == symbol)
         for old in bars[:-8]:
             self._bars.pop((symbol, old), None)
 
-    def _is_ready(self, item: _Pending, last_seq: int) -> bool:
-        """Contiguous next seq, or 1-2-1 cycle restart after higher seq."""
+    @staticmethod
+    def _action_rank(action: str) -> int:
+        """CLOSE before OPEN when seq ties (TV refresh never opens before close)."""
+        a = str(action or "").upper()
+        if a.startswith("CLOSE"):
+            return 0
+        if a in ("LONG", "SHORT", "BUY", "SELL") or a.startswith("OPEN"):
+            return 1
+        return 2
+
+    def _sort_key(self, p: _Pending) -> tuple:
+        return (p.seq, self._action_rank(p.action), p.enqueued_at)
+
+    def _is_ready(self, item: _Pending, last_seq: int, *, last_action: str = "") -> bool:
+        """Contiguous next seq; CLOSE→OPEN same seq; rare seq recycle."""
         if last_seq <= 0:
             return item.seq == 1
         if item.seq == last_seq + 1:
             return True
-        # Same-bar recycle: OPEN seq:1 after CLOSE seq:2 (TV overwrite pattern)
+        # Same seq: after CLOSE, allow OPEN (tie-break companion)
+        if (
+            item.seq == last_seq
+            and str(last_action).upper().startswith("CLOSE")
+            and self._action_rank(item.action) == 1
+        ):
+            return True
+        # Legacy recycle safety (OPEN seq:1 after CLOSE seq:2)
         if item.seq == 1 and last_seq >= 2:
             return True
         return False
@@ -208,27 +233,31 @@ class WebhookSeqGate:
                     break
                 bar = group_bars[0]
                 bucket = [p for p in self._pending if p.symbol == symbol and p.bar_index == bar]
-                # Stable: seq ASC, then arrival (same seq different actions in cycle)
-                bucket.sort(key=lambda p: (p.seq, p.enqueued_at))
+                # seq ASC, CLOSE before OPEN, then arrival
+                bucket.sort(key=self._sort_key)
                 state = self._bar_state(symbol, bar)
                 age = now - min(p.enqueued_at for p in bucket)
                 timed_out = force or age >= wait
 
                 ready: list[_Pending] = []
                 last = state.last_seq
+                last_action = state.last_action
                 for p in bucket:
                     if p.fingerprint in state.released_fps:
                         self._pending.remove(p)
                         continue
-                    if self._is_ready(p, last):
+                    if self._is_ready(p, last, last_action=last_action):
                         ready.append(p)
-                        # Simulate progression for multi-ready in one flush pass
-                        if last > 0 and p.seq == 1 and last >= 2:
+                        if last > 0 and p.seq == 1 and last >= 2 and self._action_rank(p.action) == 1:
                             last = 1
                         else:
                             last = p.seq
-                    elif p.seq <= last and p.seq != 1:
-                        # Stale lower seq that is not a cycle restart — drop
+                        last_action = p.action
+                    elif p.seq < last or (
+                        p.seq == last
+                        and self._action_rank(p.action) == 0
+                        and str(last_action).upper().startswith("CLOSE")
+                    ):
                         self._pending.remove(p)
                         logger.info(
                             "[WebhookSeq] drop stale symbol=%s bar=%s seq=%s action=%s last=%s",
@@ -266,7 +295,7 @@ class WebhookSeqGate:
                 self._alert_seq_gap(symbol, bar, missing, have, age)
                 for p in sorted(
                     [x for x in bucket if x in self._pending],
-                    key=lambda x: (x.seq, x.enqueued_at),
+                    key=self._sort_key,
                 ):
                     self._pending.remove(p)
                     self._mark_released(symbol, bar, p)

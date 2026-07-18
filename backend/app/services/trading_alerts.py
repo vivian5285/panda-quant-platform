@@ -117,6 +117,7 @@ ALERT_TYPE_TAGS = {
     "TP_FILLED": "止盈成交",
     "TP_SKIP_REHANG": "拒绝补挂已成交止盈",
     "POSITION_QTY_CHANGE": "仓位异动",
+    "FLIP_CLEAN": "先平后开清场",
     "API_OFFLINE": "API离线",
 }
 
@@ -168,6 +169,7 @@ ADMIN_DINGTALK_KEY_TYPES = frozenset({
     "TP_FILL",
     "TP_SKIP_REHANG",
     "POSITION_QTY_CHANGE",
+    "FLIP_CLEAN",
     "TRAIL",
     "RADAR_ARM",
     "RADAR_REVOKE",

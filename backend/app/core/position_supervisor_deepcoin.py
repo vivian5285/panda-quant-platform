@@ -2350,22 +2350,27 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             return False, "缺少首仓基准数量 base_qty"
         return True, ""
 
+    def _count_open_book_orders(self) -> int:
+        from app.core.position_supervisor import PositionSupervisor
+
+        return PositionSupervisor._count_open_book_orders(self)
+
+    def _ensure_book_clean_before_open(self, reason: str = "pre_open") -> dict:
+        from app.core.position_supervisor import PositionSupervisor
+
+        return PositionSupervisor._ensure_book_clean_before_open(self, reason)
+
     def _force_flat_before_open(self, reason: str) -> bool:
-        self.client.cancel_all_open_orders(self.symbol)
-        time.sleep(0.5)
-        self._close_all(reason)
-        if not self._wait_until_flat():
-            logger.error("先平后开：平仓后仍未归零，暂缓新开仓")
-            return False
-        self.client.cancel_all_open_orders(self.symbol)
-        time.sleep(0.4)
-        return True
+        from app.core.position_supervisor import PositionSupervisor
+
+        return PositionSupervisor._force_flat_before_open(self, reason)
 
     def _handle_tv_entry(self, action, curr_px, *, has_pos, current_side):
         entry_type = getattr(self, "_entry_type", "OPEN")
         if entry_type in ENTRY_TYPES_ADD:
             if not has_pos:
                 logger.info(f"⚠️ {entry_type} 无持仓，降级为 OPEN")
+                self._ensure_book_clean_before_open(f"{entry_type}降级OPEN前清场")
                 self._open_position(action, curr_px)
                 return
             if current_side != action:
@@ -2403,9 +2408,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             if is_manual_same_direction_position(self, action):
                 self._preserve_manual_on_tv_open_reopen(action, curr_px)
                 return
-            logger.info(f"⚡ TV OPEN [{action}] 先平后开")
+            logger.info(f"⚡ TV OPEN [{action}] 先平后开（清场后再挂新 TP123/硬止损）")
             if not self._force_flat_before_open("TV OPEN 先平后开"):
                 return
+        else:
+            self._ensure_book_clean_before_open("TV OPEN 空仓清场（配套先平后开）")
         self._open_position(action, curr_px)
 
     def _add_to_position(self, action, curr_px, entry_type):

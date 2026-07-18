@@ -748,17 +748,26 @@ https://twinstar.pro/gemini/webhook
 }
 ```
 
-**VPS 规则（全所共用 · V1.6.10）：**
+**TV 同 K 线只可能两种组合（VPS 必读）：**
 
-1. **排序**：主键 `bar_index` 升序，次键 `seq` 升序，同 seq 按入队时间（**禁止**仅按到达时间处理）
-2. **幂等**：`seq:{symbol}_{bar}_{seq}_{action}_{price}_{tps}`，TTL 24h — **必须含 action+价格/TP**，否则同 K 线 `开→平→再开`（seq `1-2-1`）第二次开仓会被误判重复而丢弃
-3. **循环时序**：同 K 线 `seq:1 → seq:2 → seq:1` 为正常（第二次开仓覆盖）；门控按序释放，**不得**因 seq 已释放而丢掉第二次 `seq:1`
-4. **串行派发**：时序门释放后按 **symbol 串行**执行（先平后开），避免异步线程把 OPEN 插到 CLOSE 前导致「只平不开」
-5. **乱序**：缺前置 `seq` 时暂存 `WEBHOOK_SEQ_WAIT_SEC`（默认 3s），超时钉钉告警后按已有顺序强制释放
-6. **无时序字段**：回退旧内容指纹（短 TTL）并立即派发
-7. **最终状态**：每次开/平后查询交易所持仓对账（`POSITION_RECONCILE` 钉钉）
+| TV 发出 | 含义 | VPS |
+|---------|------|-----|
+| 仅 `CLOSE_*` | 先开后平被拦截，只发平仓 | 执行平仓，仓位归零，撤尽挂单 |
+| `CLOSE_*` + `OPEN`（平 seq 小、开 seq 大） | 刷新仓位 | **先平后开**：干净归零+撤单 → 再挂新 TP123/硬止损/雷达待命 |
+| 仅 `OPEN` | 空仓开仓 | 先清残留挂单，再开仓 |
 
-实现：`webhook_seq_gate.py` · `webhook_idempotency.py` · `webhook_server.py` 串行队列
+> 永远不会出现「开仓+平仓同时作为两条有效警报且开在平前」。同 seq 时门控仍 **CLOSE 优先于 OPEN**。
+
+**VPS 规则（全所共用）：**
+
+1. **排序**：`bar_index` ↑ → `seq` ↑ → **CLOSE 优先于 OPEN** → 入队时间
+2. **幂等**：`seq:{symbol}_{bar}_{seq}_{action}_{price}_{tps}`，TTL 24h
+3. **串行派发**：同 symbol 串行，保证 CLOSE 整段完成后再 OPEN
+4. **干净翻仓**：平仓必须仓位归零 + 撤尽 TP/雷达/硬止损；OPEN 前再扫一遍挂单（钉钉 `FLIP_CLEAN`）
+5. **乱序**：缺前置 `seq` 暂存 `WEBHOOK_SEQ_WAIT_SEC`（默认 3s），超时钉钉后强制释放
+6. **最终状态**：开/平后交易所对账（`POSITION_RECONCILE`）
+
+实现：`webhook_seq_gate.py` · `webhook_idempotency.py` · `webhook_server.py` · `_force_flat_before_open`
 
 ### 保护性全平 JSON
 

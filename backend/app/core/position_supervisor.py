@@ -690,17 +690,144 @@ class PositionSupervisor(
             )
         return detail
 
+    def _count_open_book_orders(self) -> int:
+        """TP limits + conditional stops still on the exchange book."""
+        n = 0
+        try:
+            if hasattr(self, "_collect_tp_limit_orders"):
+                n += len(self._collect_tp_limit_orders() or [])
+            elif hasattr(self.client, "get_open_orders"):
+                n += len(self.client.get_open_orders(self.symbol) or [])
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_collect_adverse_stop_orders"):
+                n += len(self._collect_adverse_stop_orders() or [])
+            elif hasattr(self, "_collect_stop_orders"):
+                n += len(self._collect_stop_orders() or [])
+        except Exception:
+            pass
+        return int(n)
+
+    def _ensure_book_clean_before_open(self, reason: str = "pre_open") -> dict:
+        """
+        After flat (or before OPEN): wipe residual TP/stop so a fast CLOSE→OPEN
+        cannot leave reverse/oversize fills from stale reduce-only orders.
+        """
+        detail: dict = {
+            "reason": reason,
+            "exchange": getattr(self, "exchange_id", None),
+            "rounds": 0,
+            "orders_before": 0,
+            "orders_after": 0,
+            "ok": False,
+        }
+        detail["orders_before"] = self._count_open_book_orders()
+        for round_i in range(3):
+            detail["rounds"] = round_i + 1
+            if hasattr(self, "_purge_defense_orders_on_flat"):
+                self._purge_defense_orders_on_flat(f"pre_open_{reason}", notify=False)
+            if hasattr(self, "_cancel_all_verified"):
+                self._cancel_all_verified()
+            elif hasattr(self.client, "cancel_all_open_orders"):
+                self.client.cancel_all_open_orders(self.symbol)
+            if hasattr(self, "_disarm_adverse_staged_stops"):
+                self._disarm_adverse_staged_stops(reason="pre_open_clean", notify=False)
+            if hasattr(self, "_reset_adverse_radar"):
+                self._reset_adverse_radar(keep_tv_sl=False)
+            self.consumed_tp_levels = []
+            if hasattr(self, "radar_latched"):
+                self.radar_latched = False
+            time.sleep(0.35 + round_i * 0.15)
+            left = self._count_open_book_orders()
+            detail["orders_after"] = left
+            if left <= 0:
+                detail["ok"] = True
+                break
+        if not detail["ok"]:
+            self._log(
+                "FLIP_CLEAN",
+                f"开仓前挂单未清零 remaining={detail['orders_after']} | {reason}",
+                detail,
+            )
+            self._alert(
+                "warning",
+                "FLIP_CLEAN",
+                "开仓前挂单残留·已尽力撤单",
+                f"仍有 {detail['orders_after']} 笔挂单 | {reason} — 继续开仓前请留意",
+                detail,
+            )
+        else:
+            if detail["orders_before"] > 0:
+                self._log("FLIP_CLEAN", f"开仓前清场完成 撤尽 {detail['orders_before']} 笔 | {reason}", detail)
+        if hasattr(self, "_save_state"):
+            self._save_state()
+        return detail
+
     def _force_flat_before_open(self, reason: str) -> bool:
-        self.client.cancel_all_open_orders(self.symbol)
-        time.sleep(0.5)
+        """
+        TV 刷新/反向：先干净平仓（仓位归零 + 撤尽 TP/雷达/硬止损），再允许开仓。
+        防止 CLOSE→OPEN 过快时历史挂单成交造成反手或超档位敞口。
+        """
+        self._alert(
+            "info",
+            "FLIP_CLEAN",
+            "先平后开·开始清场",
+            f"{reason} | 将市价归零并撤尽全部挂单后再开新仓",
+            {"reason": reason, "exchange": self.exchange_id, "side": self.current_side},
+        )
+        # 先撤单再平仓，减少平仓瞬间旧 TP 误成
+        if hasattr(self, "_purge_defense_orders_on_flat"):
+            self._purge_defense_orders_on_flat("force_flat_pre", notify=False)
+        if hasattr(self, "_cancel_all_verified"):
+            self._cancel_all_verified()
+        else:
+            self.client.cancel_all_open_orders(self.symbol)
+        time.sleep(0.45)
+
         self._close_all(reason)
         if not self._wait_until_flat():
-            self._log("ERROR", "先平后开：平仓后仍未归零，暂缓新开仓")
+            for _ in range(2):
+                if hasattr(self, "_purge_defense_orders_on_flat"):
+                    self._purge_defense_orders_on_flat("force_flat_retry", notify=False)
+                try:
+                    self._close_all(f"{reason}·残仓扫尾")
+                except Exception as e:
+                    logger.warning("[User %s] force_flat retry close: %s", self.user_id, e)
+                if self._wait_until_flat(timeout=5.0):
+                    break
+        if not self._wait_until_flat(timeout=3.0):
+            self._log("ERROR", "先平后开：平仓后仍未归零，暂缓新开仓", {"reason": reason})
+            self._alert(
+                "critical",
+                "FLIP_CLEAN",
+                "先平后开失败·仓位未归零",
+                f"{reason} — 已中止开仓，请人工核查",
+                {"reason": reason},
+            )
             self._reconcile_live_vs_book(expect_flat=True, context="force_flat", notify_ok=False)
             return False
-        self.client.cancel_all_open_orders(self.symbol)
-        time.sleep(0.4)
-        self._reconcile_live_vs_book(expect_flat=True, context="force_flat", notify_ok=False)
+
+        clean = self._ensure_book_clean_before_open(reason)
+        self.watched_qty = 0.0
+        self.initial_qty = 0.0
+        self.base_qty = 0.0
+        self.add_count = 0
+        self.consumed_tp_levels = []
+        self.current_side = None
+        recon = self._reconcile_live_vs_book(expect_flat=True, context="force_flat", notify_ok=False)
+        book_ok = bool(clean.get("ok"))
+        recon_ok = bool(recon.get("ok", True))
+        ok = book_ok and recon_ok
+        book_txt = "清零✓" if book_ok else f"残留{clean.get('orders_after')}"
+        recon_txt = "一致" if recon_ok else "异常"
+        self._alert(
+            "info" if ok else "warning",
+            "FLIP_CLEAN",
+            "先平后开·清场完成·准备开仓" if ok else "先平后开·清场有残留",
+            f"{reason} | 仓位归零✓ | 挂单{book_txt} | 对账{recon_txt}",
+            {"reason": reason, "clean": clean, "reconcile": recon, "exchange": self.exchange_id},
+        )
         return True
 
     def _handle_tv_entry(
@@ -715,6 +842,7 @@ class PositionSupervisor(
         if entry_type in ENTRY_TYPES_ADD:
             if not has_pos:
                 self._log("SIGNAL", f"⚠️ {entry_type} 无持仓，降级为 OPEN")
+                self._ensure_book_clean_before_open(f"{entry_type}降级OPEN前清场")
                 return self._open_position(action, curr_px)
             if current_side != action:
                 self._log("SIGNAL", f"⚠️ {entry_type} 方向不一致，先平后开")
@@ -748,9 +876,12 @@ class PositionSupervisor(
         if has_pos:
             if is_manual_same_direction_position(self, action):
                 return self._preserve_manual_on_tv_open_reopen(action, curr_px)
-            self._log("SIGNAL", f"⚡ TV OPEN [{action}] 先平后开")
+            self._log("SIGNAL", f"⚡ TV OPEN [{action}] 先平后开（清场后再挂新 TP123/硬止损）")
             if not self._force_flat_before_open("TV OPEN 先平后开"):
                 return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
+        else:
+            # CLOSE 已先执行时：仓位可能已空，仍必须撤尽历史挂单再开
+            self._ensure_book_clean_before_open("TV OPEN 空仓清场（配套先平后开）")
         return self._open_position(action, curr_px)
 
     def _add_to_position(self, action: str, curr_px: float, entry_type: str) -> dict:
