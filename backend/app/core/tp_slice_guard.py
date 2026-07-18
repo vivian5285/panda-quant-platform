@@ -137,6 +137,96 @@ def match_qty_reduction_to_tp_level(
     return None
 
 
+def resolve_tp_step_fill_level(
+    *,
+    old_qty: float,
+    new_qty: float,
+    initial_qty: float,
+    regime: int,
+    tv_tps: list[float],
+    regime_settings: dict,
+    consumed_levels: list[int] | set[int] | None = None,
+    curr_px: float = 0.0,
+    side: str | None = None,
+    open_tp_prices: list[float] | None = None,
+    is_contracts: bool = False,
+) -> int | None:
+    """
+    Classify one position reduction as TP1/2/3 fill (exchange-grade).
+
+    Tries in order:
+    1. Step qty vs next slice of *current* remaining plan (post-heal TP23 sizes)
+    2. Step qty vs next slice of *original* open plan
+    3. Book cleared + price reached for next TP (qty already dropped)
+    """
+    old_q = float(old_qty or 0)
+    new_q = float(new_qty or 0)
+    reduced = old_q - new_q
+    if reduced <= 0 or new_q < 0:
+        return None
+    consumed = {int(x) for x in (consumed_levels or []) if int(x) in (1, 2, 3)}
+    anchor = float(initial_qty or old_q or 0)
+
+    # 1) Current remaining book plan (after TP1 heal, TP2/TP3 are re-sliced on old_qty)
+    live_slices = compute_tp_slices(
+        old_q, regime, tv_tps, regime_settings, exclude_levels=consumed,
+    )
+    if live_slices:
+        level, slice_qty, tp_px = live_slices[0]
+        tol = tp_fill_qty_tolerance(slice_qty, is_contracts=is_contracts)
+        if abs(reduced - float(slice_qty)) <= tol:
+            return level
+
+    # 2) Original open plan next unconsumed tier
+    if anchor > 0:
+        level = match_qty_reduction_to_tp_level(
+            reduced,
+            anchor,
+            regime,
+            tv_tps,
+            regime_settings,
+            consumed_levels=consumed,
+            qty_tol=tp_fill_qty_tolerance(
+                max(reduced, 1e-9), is_contracts=is_contracts,
+            ),
+        )
+        if level is not None:
+            return level
+
+    # 3) Exchange book evidence: next TP limit gone + price touched
+    all_slices = compute_tp_slices(
+        anchor if anchor > 0 else old_q,
+        regime,
+        tv_tps,
+        regime_settings,
+        exclude_levels=set(),
+    )
+    next_level = (max(consumed) + 1) if consumed else 1
+    for level, slice_qty, tp_px in all_slices:
+        if level < next_level:
+            continue
+        if level > next_level:
+            break
+        if float(slice_qty) <= 0 or float(tp_px) <= 0:
+            break
+        # Need a meaningful drop (at least ~40% of expected slice or live next slice)
+        min_drop = float(slice_qty) * 0.4
+        if live_slices:
+            min_drop = min(min_drop, float(live_slices[0][1]) * 0.4)
+        if reduced + 1e-12 < max(min_drop, 1e-9):
+            break
+        book_gone = not tp_limit_still_on_book(tp_px, open_tp_prices)
+        px_ok = (
+            price_reached_tp(curr_px, tp_px, side)
+            if float(curr_px or 0) > 0 and side in ("LONG", "SHORT")
+            else True
+        )
+        if book_gone and px_ok:
+            return level
+        break
+    return None
+
+
 def tp_fill_qty_tolerance(slice_qty: float, *, is_contracts: bool = False) -> float:
     """
     Tight tolerance for claiming a fill equals a TP slice.

@@ -44,7 +44,12 @@ from app.core.tp_defense_reconcile import (
     tp_qty_matches,
     tp_qty_tolerance,
 )
-from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, match_qty_reduction_to_tp_level
+from app.core.tp_slice_guard import (
+    compute_tp_slices,
+    infer_filled_tp_levels,
+    match_qty_reduction_to_tp_level,
+    resolve_tp_step_fill_level,
+)
 from app.core.position_qty_tolerance import tp_slice_qty_tolerance
 from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.adverse_radar_guard import AdverseRadarMixin, ADVERSE_STOP_TOLERANCE
@@ -879,11 +884,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "清除虚报 TP 成交 %s（减仓 %.4f < TP1门槛 %.4f）— 保留雷达锁",
                     self.consumed_tp_levels, reduced, min_reduce,
                 )
-            self.consumed_tp_levels = []
-            # 路径保本与 TP 记账解耦：不清 radar_latched
+            if abs(live - anchor) <= max(tol, 1e-9):
+                self.consumed_tp_levels = []
             if hasattr(self, "_save_state"):
                 self._save_state()
-            return []
+            return list(self.consumed_tp_levels or [])
         open_prices = [float(o.get("price", 0)) for o in self._collect_tp_limit_orders()]
         inferred = infer_filled_tp_levels(
             live,
@@ -898,7 +903,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             qty_tol=tol,
             is_contracts=True,
         )
-        merged = sorted({int(x) for x in (self.consumed_tp_levels or [])} | inferred)
+        prev = {int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3)}
+        merged = sorted(prev | {int(x) for x in inferred if int(x) in (1, 2, 3)})
         self.consumed_tp_levels = merged
         if hasattr(self, "_save_state"):
             self._save_state()
@@ -936,7 +942,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return cancelled
 
     def _classify_qty_change(self, old_qty, new_qty, curr_px=None):
-        """与币安 PositionSupervisor 一致：按 initial_qty 识别 TP 吃单 vs 手动减仓。"""
+        """与币安一致：当前盘口切片 + 开仓锚 + 盘口证据识别 TP 吃单。"""
         old_qty = float(self._safe_qty(old_qty))
         new_qty = float(self._safe_qty(new_qty))
         tol = self._qty_match_tol(old_qty, new_qty)
@@ -949,26 +955,34 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             return "unchanged"
 
         anchor = float(self._safe_qty(self.initial_qty or old_qty))
-        if anchor > 0:
-            slice_tol = tp_slice_qty_tolerance(anchor, is_contracts=True)
-            level = match_qty_reduction_to_tp_level(
-                reduced,
-                anchor,
-                self.regime,
-                self.tv_tps,
-                self.regime_settings,
-                consumed_levels=set(self.consumed_tp_levels),
-                qty_tol=slice_tol,
-            )
-            if level is not None:
-                if level not in self.consumed_tp_levels:
-                    self.consumed_tp_levels.append(level)
-                if curr_px is not None and float(curr_px) > 0:
-                    self._sync_consumed_tp_levels(new_qty, float(curr_px))
-                return f"tp{level}_filled"
+        open_prices = [float(o.get("price", 0)) for o in self._collect_tp_limit_orders()]
+        level = resolve_tp_step_fill_level(
+            old_qty=old_qty,
+            new_qty=new_qty,
+            initial_qty=anchor,
+            regime=self.regime,
+            tv_tps=list(self.tv_tps or []),
+            regime_settings=self.regime_settings,
+            consumed_levels=self.consumed_tp_levels,
+            curr_px=float(curr_px or 0),
+            side=self.current_side,
+            open_tp_prices=open_prices,
+            is_contracts=True,
+        )
+        if level is not None:
+            if level not in self.consumed_tp_levels:
+                self.consumed_tp_levels.append(level)
+            if hasattr(self, "_save_state"):
+                self._save_state()
+            return f"tp{level}_filled"
 
         if curr_px is not None and float(curr_px) > 0:
+            before = set(int(x) for x in (self.consumed_tp_levels or []))
             self._sync_consumed_tp_levels(new_qty, float(curr_px))
+            after = set(int(x) for x in (self.consumed_tp_levels or []))
+            gained = sorted(after - before)
+            if gained:
+                return f"tp{gained[0]}_filled"
         return "manual_reduce"
 
     def _reconcile_radar_context(self, recovery: dict | None) -> dict:

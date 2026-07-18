@@ -11,7 +11,15 @@ from app.core.position_supervisor import PositionSupervisor
 def supervisor(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     client = MagicMock()
-    sup = PositionSupervisor(user_id=1, client=client)
+    type(client).exchange_id = "binance"
+    type(client).trading_symbol = "ETHUSDT"
+    type(client).canonical_symbol = "ETHUSDT"
+    client.get_open_orders.return_value = []
+    with patch.object(PositionSupervisor, "_load_state", lambda self: None), patch.object(
+        PositionSupervisor, "_save_state", lambda self: None,
+    ):
+        sup = PositionSupervisor(user_id=1, client=client)
+    sup.exchange_id = "binance"
     sup.current_side = "LONG"
     sup.regime = 3
     sup.tv_tps = [3600.0, 3700.0, 3800.0]
@@ -61,6 +69,24 @@ def test_after_tp1_only_tp23_slices(supervisor):
     assert len(slices) == 2
     assert all(level in (2, 3) for level, _, _ in slices)
     assert abs(sum(q for _, q, _ in slices) - 0.987) < 0.002
+
+
+def test_classify_tp2_after_heal_not_manual(supervisor):
+    """0.031→0.009 with TP1 already consumed must be tp2_filled, not 人工减仓."""
+    supervisor.consumed_tp_levels = [1]
+    supervisor.regime = 1
+    supervisor.tv_tps = [1848.0, 1851.49, 1854.18]
+    supervisor.initial_qty = 0.076
+    supervisor.current_side = "LONG"
+    remaining = supervisor._compute_tp_slices(0.031, exclude_levels={1})
+    tp2_qty = remaining[0][1]
+    new_qty = round(0.031 - tp2_qty, 3)
+    supervisor.client.get_open_orders.return_value = [
+        {"type": "LIMIT", "price": "1854.18", "origQty": "0.01", "reduceOnly": True, "side": "SELL"},
+    ]
+    change = supervisor._classify_qty_change(0.031, new_qty, curr_px=1851.50)
+    assert change == "tp2_filled"
+    assert 2 in supervisor.consumed_tp_levels
 
 
 def test_reconcile_radar_context_merges_tv_and_open_log(supervisor):

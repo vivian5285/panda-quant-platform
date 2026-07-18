@@ -153,20 +153,19 @@ def test_disarm_when_live_stop_even_if_flag_false():
     assert probe._should_disarm_adverse_for_recovery(2045.0) is False
 
 
-def test_arm_at_open_places_stop_limit():
-    """Hard SL → Stop-Limit 条件单（禁止普通限价，否则低于市价会立刻成交秒平）。"""
+def test_arm_at_open_places_close_position_stop():
+    """Hard SL → closePosition 条件单（不与 TP123 reduceOnly 抢份额）。"""
     probe = _AdverseProbe()
     with patch("app.core.adverse_radar_guard.time.sleep", lambda *_: None):
         result = probe._arm_adverse_shield_at_open(0.6)
     assert result["armed"] is True
     assert result["placed"] == 1
-    probe.client.place_stop_limit_order.assert_called_once()
-    probe.client.place_limit_order.assert_not_called()
-    args, kwargs = probe.client.place_stop_limit_order.call_args
+    probe.client.place_stop_market_order.assert_called()
+    args, kwargs = probe.client.place_stop_market_order.call_args
     assert args[0] == "SELL"
     assert float(args[1]) == pytest.approx(1900.0, rel=0.001)
-    assert kwargs.get("reduce_only") is True
-    assert kwargs.get("quantity") == pytest.approx(0.6, rel=0.01)
+    assert kwargs.get("quantity") is None
+    probe.client.place_limit_order.assert_not_called()
 
 
 def test_arm_aligned_with_close_position_stop():
@@ -294,10 +293,10 @@ def test_sync_merged_stop_clamps_hot_radar_stop():
     ):
         result = probe._sync_binance_merged_stop(0.6, radar_sl=1791.0)
     assert result.get("stop_price", 0) < 1785.0
-    # Clamped stop must be conditional Stop-Limit (plain LIMIT would fill immediately)
-    probe.client.place_stop_limit_order.assert_called_once()
-    placed_stop = float(probe.client.place_stop_limit_order.call_args[0][1])
-    assert placed_stop < 1785.0
+    # Clamped stop uses closePosition (no reduceOnly qty fight with TP123)
+    probe.client.place_stop_market_order.assert_called()
+    kwargs = probe.client.place_stop_market_order.call_args.kwargs
+    assert kwargs.get("quantity") is None
     probe.client.place_limit_order.assert_not_called()
 
 

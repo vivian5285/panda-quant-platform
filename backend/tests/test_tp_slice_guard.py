@@ -6,6 +6,7 @@ from app.core.tp_slice_guard import (
     infer_filled_tp_levels,
     match_qty_reduction_to_tp_level,
     price_reached_tp,
+    resolve_tp_step_fill_level,
     tp_limit_still_on_book,
 )
 from app.core.position_qty_tolerance import tp_slice_qty_tolerance
@@ -282,3 +283,49 @@ def test_keep_three_tps_when_qty_covers_min():
     assert len(slices) == 3
     assert all(q >= 0.01 - 1e-9 for _, q, _ in slices)
     assert abs(sum(q for _, q, _ in slices) - 0.03) < 1e-9
+
+
+def test_resolve_tp2_fill_after_heal_uses_remaining_plan():
+    """Live bug: after TP1, heal re-slices TP23 on remaining qty — step fill must match that."""
+    rs = build_regime_settings()
+    tps = [1848.0, 1851.49, 1854.18]
+    initial = 0.076
+    # After TP1 + earlier reduces, remaining 0.031 with TP1 consumed
+    old_qty = 0.031
+    remaining = compute_tp_slices(
+        old_qty, 1, tps, rs, exclude_levels={1}, round_qty_fn=lambda x: round(x, 3),
+    )
+    assert len(remaining) == 2
+    tp2_qty = remaining[0][1]
+    new_qty = round(old_qty - tp2_qty, 3)
+    level = resolve_tp_step_fill_level(
+        old_qty=old_qty,
+        new_qty=new_qty,
+        initial_qty=initial,
+        regime=1,
+        tv_tps=tps,
+        regime_settings=rs,
+        consumed_levels=[1],
+        curr_px=1851.50,
+        side="LONG",
+        open_tp_prices=[1854.18],  # TP2 gone, TP3 still up
+    )
+    assert level == 2
+
+
+def test_resolve_tp_fill_by_book_when_qty_slightly_off():
+    rs = build_regime_settings()
+    tps = [1848.0, 1851.49, 1854.18]
+    level = resolve_tp_step_fill_level(
+        old_qty=0.031,
+        new_qty=0.009,
+        initial_qty=0.076,
+        regime=1,
+        tv_tps=tps,
+        regime_settings=rs,
+        consumed_levels=[1],
+        curr_px=1851.50,
+        side="LONG",
+        open_tp_prices=[1854.18],
+    )
+    assert level == 2

@@ -52,7 +52,12 @@ from app.core.tv_entry_sizing import (
 from app.core.position_qty_tolerance import qty_change_significant, qty_drift_tolerance, tp_slice_qty_tolerance
 from app.core.position_exposure_guard import resolve_booked_side
 from app.core.tp_defense_reconcile import tp_price_matches
-from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, match_qty_reduction_to_tp_level
+from app.core.tp_slice_guard import (
+    compute_tp_slices,
+    infer_filled_tp_levels,
+    match_qty_reduction_to_tp_level,
+    resolve_tp_step_fill_level,
+)
 from app.services.tv_signal_enrich import format_enrich_note, merge_supervisor_fallbacks
 from app.services.close_alert_utils import (
     build_close_detail,
@@ -1117,11 +1122,12 @@ class PositionSupervisor(
                     " — 保留雷达锁（路径保本不依赖 TP 记账）",
                     self.user_id, self.consumed_tp_levels, reduced, min_reduce, live, anchor,
                 )
-            self.consumed_tp_levels = []
-            # 禁止在此清除 radar_latched：路径达 85% 保本与 TP1 记账解耦
+            # 仅当仓位几乎回到开仓量时才清空；否则保留已确认成交档位
+            if abs(live - anchor) <= max(tol, 1e-9):
+                self.consumed_tp_levels = []
             if hasattr(self, "_save_state"):
                 self._save_state()
-            return []
+            return list(self.consumed_tp_levels or [])
         inferred = infer_filled_tp_levels(
             live,
             curr_px,
@@ -1135,7 +1141,9 @@ class PositionSupervisor(
             qty_tol=tol,
             is_contracts=is_dc,
         )
-        merged = sorted({int(x) for x in (self.consumed_tp_levels or [])} | inferred)
+        # 只增不减：哨兵已确认的档位不被盘口延迟/短暂回挂抹掉
+        prev = {int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3)}
+        merged = sorted(prev | {int(x) for x in inferred if int(x) in (1, 2, 3)})
         if merged != sorted(self.consumed_tp_levels or []):
             logger.info(
                 "[User %s] TP 已成交档位更新: %s → %s | 实盘 %s | 开仓锚 %s | 减仓 %.4f",
@@ -1178,30 +1186,40 @@ class PositionSupervisor(
             return "unchanged"
 
         anchor = float(self.initial_qty or old_qty or 0)
-        if anchor > 0:
-            slice_tol = tp_slice_qty_tolerance(
-                anchor, is_contracts=self.exchange_id == "deepcoin",
-            )
-            level = match_qty_reduction_to_tp_level(
-                reduced,
-                anchor,
-                self.regime,
-                self.tv_tps,
-                self.regime_settings,
-                consumed_levels=set(self.consumed_tp_levels),
-                qty_tol=slice_tol,
-            )
-            if level is not None:
-                if level not in self.consumed_tp_levels:
-                    self.consumed_tp_levels.append(level)
-                if curr_px is not None and curr_px > 0:
-                    self._sync_consumed_tp_levels(new_qty, curr_px)
-                return f"tp{level}_filled"
+        open_prices = (
+            self._open_tp_prices_on_book()
+            if hasattr(self, "_open_tp_prices_on_book")
+            else []
+        )
+        level = resolve_tp_step_fill_level(
+            old_qty=old_qty,
+            new_qty=new_qty,
+            initial_qty=anchor,
+            regime=self.regime,
+            tv_tps=list(self.tv_tps or []),
+            regime_settings=self.regime_settings,
+            consumed_levels=self.consumed_tp_levels,
+            curr_px=float(curr_px or 0),
+            side=self.current_side,
+            open_tp_prices=open_prices,
+            is_contracts=self.exchange_id == "deepcoin",
+        )
+        if level is not None:
+            if level not in self.consumed_tp_levels:
+                self.consumed_tp_levels.append(level)
+            # 不在此处全量 sync 抹档：盘口撤单可能滞后于仓位变化
+            if hasattr(self, "_save_state"):
+                self._save_state()
+            return f"tp{level}_filled"
 
-        result = "manual_reduce"
         if curr_px is not None and curr_px > 0:
+            before = set(int(x) for x in (self.consumed_tp_levels or []))
             self._sync_consumed_tp_levels(new_qty, curr_px)
-        return result
+            after = set(int(x) for x in (self.consumed_tp_levels or []))
+            gained = sorted(after - before)
+            if gained:
+                return f"tp{gained[0]}_filled"
+        return "manual_reduce"
 
     def _reconcile_radar_context(self, recovery: dict | None) -> dict:
         """重启：开仓日志 + 最新 TV + DB 交易 三方核实雷达参数。"""
@@ -2657,12 +2675,19 @@ class PositionSupervisor(
                                 f"[User {self.user_id}] 🔍 定期扫描发现异常: {audit['issues']}，触发智能补挂"
                             )
                             sl_to_pass = self._radar_sl_to_pass()
+                            # TP 对账不带 dynamic_sl，避免与雷达/硬止损抢 reduceOnly 份额
                             self._smart_realign_defenses(
                                 actual_qty,
                                 self.watched_entry,
-                                dynamic_sl=sl_to_pass,
+                                dynamic_sl=None,
                                 reason="定期防线扫描",
                             )
+                            if sl_to_pass and hasattr(self, "_ensure_radar_sl"):
+                                self._ensure_radar_sl(sl_to_pass, actual_qty)
+                            elif sl_to_pass and hasattr(self, "_sync_binance_merged_stop"):
+                                self._sync_binance_merged_stop(
+                                    actual_qty, radar_sl=sl_to_pass, force_replace=True,
+                                )
 
                     if curr_px > 0:
                         self._sync_consumed_tp_levels(actual_qty, curr_px)

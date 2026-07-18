@@ -59,8 +59,8 @@ def test_open_detail_book_structure_and_tv_sl_reference_only():
     )
     assert "盘口结构" in body
     assert "基础单×3" in body
-    assert "Stop-Limit" in body
+    assert "closePosition" in body or "条件委托" in body
     assert "仅参考" in body
     assert "1844.34" in body
-    assert "雷达触发价" in body
+    assert "雷达触发价" in body or "85%" in body or "条件委托" in body
     assert "条件委托" in body

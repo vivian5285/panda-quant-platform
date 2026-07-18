@@ -1214,11 +1214,13 @@ class AdverseRadarMixin:
             self._latch_radar()
         return placed
 
-    def _classify_tp_reduction(self, old_qty: float, new_qty: float) -> str | None:
+    def _classify_tp_reduction(
+        self, old_qty: float, new_qty: float, curr_px: float | None = None,
+    ) -> str | None:
         if new_qty <= 0 or new_qty >= old_qty - self._qty_match_tol(old_qty, new_qty):
             return None
         if hasattr(self, "_classify_qty_change"):
-            cause = self._classify_qty_change(old_qty, new_qty)
+            cause = self._classify_qty_change(old_qty, new_qty, curr_px=curr_px)
             if cause.startswith("tp"):
                 return cause
             return None
@@ -1252,7 +1254,7 @@ class AdverseRadarMixin:
         if abs(new_qty - old_qty) <= self._qty_match_tol(old_qty, new_qty):
             return "unchanged"
 
-        tp_cause = self._classify_tp_reduction(old_qty, new_qty)
+        tp_cause = self._classify_tp_reduction(old_qty, new_qty, curr_px=curr_px)
         if tp_cause:
             return tp_cause
 
@@ -1301,11 +1303,12 @@ class AdverseRadarMixin:
 
     def _place_adverse_stop_slice(self, stop_price: float, qty: float) -> bool:
         """
-        Place VPS hard stop — must be conditional (Stop-Limit / STOP), never a plain LIMIT.
+        Place VPS hard stop — must be conditional; never a plain LIMIT.
 
-        A reduce-only LIMIT at the hard-SL price is marketable on all futures books:
-        LONG SELL below mark / SHORT BUY above mark fills immediately → 秒平 near entry.
-        Live book target: TP123 reduce-only limits (基础单×3) + 1 hard Stop-Limit (条件委托).
+        Share coexistence (all exchanges):
+        - TP123 = reduceOnly LIMIT（占用仓位减仓额度）
+        - Hard SL / Radar = 单条件槽 closePosition（不与 TP 抢 reduceOnly 份额）
+        Binance/OKX/Gate: Route A 合并槽；DeepCoin: 双轨条件单。
         """
         close_side = self._adverse_close_side()
         symbol = getattr(self, "symbol", None)
@@ -1357,7 +1360,17 @@ class AdverseRadarMixin:
                 pending.append(aid_int)
             self._pending_adverse_algo_ids = pending[-8:]
 
-        # Primary: Stop-Limit (条件委托) — never plain LIMIT at stop_px
+        # 份额共存：条件单 closePosition / 全仓关闭，不与 TP123 reduceOnly 限价抢仓位额度
+        if hasattr(client, "place_stop_market_order"):
+            order = client.place_stop_market_order(
+                close_side, stop_price, symbol, quantity=None,
+            )
+            if order:
+                self._last_hard_sl_order_style = "stop_market_close_all"
+                _track_algo(order)
+                return True
+
+        # Fallback: qty Stop-Limit（可能与 TP 抢 reduceOnly 份额，仅当 closePosition 不可用）
         if hasattr(client, "place_stop_limit_order") and qty_f > 0:
             order = client.place_stop_limit_order(
                 close_side, stop_price, limit_px, symbol,
@@ -1366,6 +1379,12 @@ class AdverseRadarMixin:
             if order:
                 self._last_hard_sl_order_style = "stop_limit"
                 _track_algo(order)
+                logger.warning(
+                    "[User %s] 硬止损 closePosition 不可用，降级 Stop-Limit qty=%.4f @%.2f（注意与TP份额）",
+                    getattr(self, "user_id", "?"),
+                    qty_f,
+                    float(stop_price or 0),
+                )
                 return True
 
         if hasattr(client, "place_stop_market_order") and qty_f > 0:
@@ -1376,23 +1395,9 @@ class AdverseRadarMixin:
                 self._last_hard_sl_order_style = "stop_market_qty"
                 _track_algo(order)
                 logger.warning(
-                    "[User %s] 硬止损 Stop-Limit 失败，降级 STOP_MARKET qty=%.4f @%.2f",
+                    "[User %s] 硬止损降级 STOP_MARKET qty=%.4f @%.2f",
                     getattr(self, "user_id", "?"),
                     qty_f,
-                    float(stop_price or 0),
-                )
-                return True
-
-        if hasattr(client, "place_stop_market_order"):
-            order = client.place_stop_market_order(
-                close_side, stop_price, symbol, quantity=None,
-            )
-            if order:
-                self._last_hard_sl_order_style = "stop_market_close_all"
-                _track_algo(order)
-                logger.error(
-                    "[User %s] 硬止损降级 closePosition STOP_MARKET @%.2f",
-                    getattr(self, "user_id", "?"),
                     float(stop_price or 0),
                 )
                 return True
