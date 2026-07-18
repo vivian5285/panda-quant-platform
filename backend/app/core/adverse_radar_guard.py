@@ -74,6 +74,33 @@ def _order_stop_price(o: dict) -> float:
     return 0.0
 
 
+def _order_limit_price(o: dict) -> float:
+    try:
+        px = float(o.get("price") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return round(px, 2) if px > 0 else 0.0
+
+
+def _adverse_defense_price(o: dict) -> float:
+    """Stop trigger, or resting reduce-only LIMIT price used as hard SL."""
+    px = _order_stop_price(o)
+    if px > 0:
+        return px
+    if str(o.get("type") or o.get("orderType") or "").upper() == "LIMIT":
+        return _order_limit_price(o)
+    return 0.0
+
+
+def _order_is_reduce_only(o: dict) -> bool:
+    val = o.get("reduceOnly")
+    if val is True:
+        return True
+    if isinstance(val, str) and val.strip().lower() in ("true", "1"):
+        return True
+    return False
+
+
 def _order_qty_value(o: dict) -> float:
     for key in ("origQty", "quantity", "sz", "size"):
         val = o.get(key)
@@ -499,7 +526,7 @@ class AdverseRadarMixin:
         return set()
 
     def _cancel_binance_all_close_stops(self) -> int:
-        """Cancel every STOP closePosition on book before replacing merged slot."""
+        """Cancel hard-SL slot: conditional STOP* and resting reduce-only LIMIT at VPS SL."""
         if self._uses_dual_stop_track():
             return 0
         symbol = getattr(self, "symbol", None)
@@ -508,17 +535,21 @@ class AdverseRadarMixin:
             return 0
         cancelled = 0
         seen: set[str | int] = set()
+        tier_prices = self._shield_tier_prices()
         for o in client.get_open_orders(symbol) or []:
-            if not _is_stop_market_like(o):
-                continue
             oid = o.get("algoId") or o.get("orderId")
             if oid is None or oid in seen:
+                continue
+            hit = _is_stop_market_like(o)
+            if not hit and tier_prices:
+                hit = self._is_adverse_stop_order(o, tier_prices)
+            if not hit:
                 continue
             seen.add(oid)
             client.cancel_order(symbol, int(oid))
             cancelled += 1
             time.sleep(0.2)
-        for o in self._collect_pending_adverse_algo_orders(set()):
+        for o in self._collect_pending_adverse_algo_orders(tier_prices or set()):
             oid = o.get("algoId") or o.get("orderId")
             if oid is None or oid in seen:
                 continue
@@ -554,7 +585,7 @@ class AdverseRadarMixin:
         side = getattr(self, "current_side", None)
         open_stops = self._collect_adverse_stop_orders()
         live_stop_px = (
-            _order_stop_price(open_stops[0]) if open_stops else 0.0
+            _adverse_defense_price(open_stops[0]) if open_stops else 0.0
         )
         if live_stop_px > 0 and effective > 0:
             if abs(effective - live_stop_px) > ADVERSE_STOP_TOLERANCE:
@@ -578,7 +609,7 @@ class AdverseRadarMixin:
                 if audit_early.get("aligned"):
                     open_stops = self._collect_adverse_stop_orders()
                     live_px = (
-                        _order_stop_price(open_stops[0])
+                        _adverse_defense_price(open_stops[0])
                         if open_stops
                         else float(getattr(self, "tv_sl", 0) or 0)
                     )
@@ -1251,12 +1282,30 @@ class AdverseRadarMixin:
             stop_price, getattr(self, "current_side", None),
         )
 
+    def _is_hard_sl_limit_order(self, o: dict) -> bool:
+        """True when open LIMIT is the VPS hard-SL resting reduce-only order."""
+        if str(o.get("type") or "").upper() != "LIMIT":
+            return False
+        if not _order_is_reduce_only(o):
+            return False
+        px = _order_limit_price(o)
+        if px <= 0:
+            return False
+        tiers = self._shield_tier_prices()
+        if not tiers:
+            hard = float(getattr(self, "tv_sl", 0) or 0)
+            if hard <= 0:
+                return False
+            tiers = {round(hard, 2)}
+        return any(abs(px - t) <= ADVERSE_STOP_TOLERANCE for t in tiers)
+
     def _place_adverse_stop_slice(self, stop_price: float, qty: float) -> bool:
         """
-        Place VPS hard stop — prefer Stop-Limit (限价条件单), never silent market-all.
+        Place VPS hard stop.
 
-        Live book target (all exchanges): TP123 reduce-only limits + 1 hard Stop-Limit.
-        STOP_MARKET closePosition is last-resort only (and logged).
+        Binance/OKX/Gate open book target: reduce-only LIMIT at hard SL price
+        (shows under 基础单 with TP123 → exactly 4 limit orders, no 条件委托).
+        Radar later may replace this slot with Stop-Limit / STOP_MARKET.
         """
         close_side = self._adverse_close_side()
         symbol = getattr(self, "symbol", None)
@@ -1269,7 +1318,6 @@ class AdverseRadarMixin:
             if sz <= 0:
                 return False
             trigger_px = round_price(stop_price)
-            # Prefer limit trigger when exchange supports it
             order = None
             if hasattr(client, "place_trigger_order"):
                 try:
@@ -1294,8 +1342,8 @@ class AdverseRadarMixin:
                 return True
             return False
 
-        limit_px = self._hard_sl_limit_price(stop_price)
         qty_f = float(qty or 0)
+        stop_px = round_price(stop_price)
 
         def _track_algo(order: dict | None) -> None:
             if not order:
@@ -1309,6 +1357,16 @@ class AdverseRadarMixin:
                 pending.append(aid_int)
             self._pending_adverse_algo_ids = pending[-8:]
 
+        # Primary: resting reduce-only LIMIT → Binance 基础单 (with TP123 = 4 limits)
+        if hasattr(client, "place_limit_order") and qty_f > 0 and stop_px > 0:
+            order = client.place_limit_order(
+                close_side, qty_f, stop_px, symbol=symbol, reduce_only=True,
+            )
+            if order:
+                self._last_hard_sl_order_style = "reduce_only_limit"
+                return True
+
+        limit_px = self._hard_sl_limit_price(stop_price)
         if hasattr(client, "place_stop_limit_order") and qty_f > 0:
             order = client.place_stop_limit_order(
                 close_side, stop_price, limit_px, symbol,
@@ -1317,9 +1375,13 @@ class AdverseRadarMixin:
             if order:
                 self._last_hard_sl_order_style = "stop_limit"
                 _track_algo(order)
+                logger.warning(
+                    "[User %s] 硬止损限价挂单失败，降级 Stop-Limit @%.2f",
+                    getattr(self, "user_id", "?"),
+                    float(stop_price or 0),
+                )
                 return True
 
-        # Fallback: qty-backed STOP_MARKET (reduceOnly) — still one slot, not close-all
         if hasattr(client, "place_stop_market_order") and qty_f > 0:
             order = client.place_stop_market_order(
                 close_side, stop_price, symbol, quantity=qty_f, reduce_only=True,
@@ -1328,14 +1390,13 @@ class AdverseRadarMixin:
                 self._last_hard_sl_order_style = "stop_market_qty"
                 _track_algo(order)
                 logger.warning(
-                    "[User %s] 硬止损 Stop-Limit 失败，降级为 STOP_MARKET qty=%.4f @%.2f",
+                    "[User %s] 硬止损降级 STOP_MARKET qty=%.4f @%.2f",
                     getattr(self, "user_id", "?"),
                     qty_f,
                     float(stop_price or 0),
                 )
                 return True
 
-        # Last resort: closePosition market (Binance UI shows 市价止盈止损·全部平仓)
         if hasattr(client, "place_stop_market_order"):
             order = client.place_stop_market_order(
                 close_side, stop_price, symbol, quantity=None,
@@ -1344,7 +1405,7 @@ class AdverseRadarMixin:
                 self._last_hard_sl_order_style = "stop_market_close_all"
                 _track_algo(order)
                 logger.error(
-                    "[User %s] 硬止损降级为 closePosition STOP_MARKET @%.2f — 盘口会多出条件市价单",
+                    "[User %s] 硬止损降级 closePosition STOP_MARKET @%.2f",
                     getattr(self, "user_id", "?"),
                     float(stop_price or 0),
                 )
@@ -1352,6 +1413,25 @@ class AdverseRadarMixin:
         return False
 
     def _is_adverse_stop_order(self, o: dict, tier_prices: set[float]) -> bool:
+        if not tier_prices:
+            return False
+        otype = str(o.get("type") or o.get("orderType") or "").upper()
+        close_side = str(self._adverse_close_side() or "").upper()
+        order_side = str(o.get("side", "")).upper()
+
+        # Resting reduce-only LIMIT at VPS hard SL (基础单硬止损)
+        if otype == "LIMIT":
+            px = _order_limit_price(o)
+            if px <= 0:
+                return False
+            if not any(abs(px - t) <= ADVERSE_STOP_TOLERANCE for t in tier_prices):
+                return False
+            if not _order_is_reduce_only(o):
+                return False
+            if close_side and order_side and order_side != close_side:
+                return False
+            return True
+
         stop_px = _order_stop_price(o)
         if stop_px <= 0:
             return False
@@ -1362,8 +1442,6 @@ class AdverseRadarMixin:
         if not _is_stop_market_like(o):
             return False
         if _order_is_close_position(o):
-            close_side = str(self._adverse_close_side() or "").upper()
-            order_side = str(o.get("side", "")).upper()
             if close_side and order_side and order_side != close_side:
                 return False
         return True
@@ -1460,7 +1538,7 @@ class AdverseRadarMixin:
         }
         by_price: dict[float, list[dict]] = {}
         for o in open_stops:
-            px = _order_stop_price(o)
+            px = _adverse_defense_price(o)
             if px <= 0:
                 continue
             bucket = next(
@@ -1505,7 +1583,7 @@ class AdverseRadarMixin:
         for tier in plan:
             target_px = round(float(tier["stop_price"]), 2)
             for o in open_stops:
-                if abs(_order_stop_price(o) - target_px) <= ADVERSE_STOP_TOLERANCE:
+                if abs(_adverse_defense_price(o) - target_px) <= ADVERSE_STOP_TOLERANCE:
                     matched += 1
                     break
         return matched
@@ -1515,7 +1593,7 @@ class AdverseRadarMixin:
         target_qty = float(tier["qty"])
         qty_tol = self._qty_match_tol(target_qty, target_qty)
         for o in open_stops:
-            if abs(_order_stop_price(o) - target_px) > ADVERSE_STOP_TOLERANCE:
+            if abs(_adverse_defense_price(o) - target_px) > ADVERSE_STOP_TOLERANCE:
                 continue
             if order_qty_covers_tier(o, target_qty, qty_tol):
                 return True
@@ -1647,7 +1725,7 @@ class AdverseRadarMixin:
 
         if open_stops:
             live_prices = sorted({
-                _order_stop_price(o) for o in open_stops if _order_stop_price(o) > 0
+                _adverse_defense_price(o) for o in open_stops if _adverse_defense_price(o) > 0
             })
             if live_prices:
                 self.adverse_sl_prices = live_prices
@@ -1686,9 +1764,9 @@ class AdverseRadarMixin:
             for o in self.client.get_open_orders(symbol) or []:
                 if str(o.get("side", "")).upper() != close_side:
                     continue
-                if _is_stop_market_like(o) or _order_stop_price(o) > 0:
+                if _is_stop_market_like(o) or _adverse_defense_price(o) > 0:
                     open_stops.append(o)
-        live_px = _order_stop_price(open_stops[0]) if open_stops else 0.0
+        live_px = _adverse_defense_price(open_stops[0]) if open_stops else 0.0
 
         if (
             expected_px > 0
@@ -1745,7 +1823,7 @@ class AdverseRadarMixin:
                 oid = o.get("orderId") or o.get("ordId")
                 if oid in used_ids:
                     continue
-                stop_px = _order_stop_price(o)
+                stop_px = _adverse_defense_price(o)
                 if abs(stop_px - target_px) > ADVERSE_STOP_TOLERANCE:
                     continue
                 if not order_qty_covers_tier(o, target_qty, qty_tol):

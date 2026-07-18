@@ -86,6 +86,7 @@ class _AdverseProbe(AdverseRadarMixin):
         self.client.get_open_orders.return_value = []
         self.client.place_stop_market_order.return_value = {"orderId": 1}
         self.client.place_stop_limit_order.return_value = {"orderId": 1}
+        self.client.place_limit_order.return_value = {"orderId": 2}
         self.on_log = MagicMock()
         self.on_alert = MagicMock()
 
@@ -152,16 +153,19 @@ def test_disarm_when_live_stop_even_if_flag_false():
     assert probe._should_disarm_adverse_for_recovery(2045.0) is False
 
 
-def test_arm_at_open_places_stop_limit():
+def test_arm_at_open_places_reduce_only_limit():
+    """Hard SL → 基础单 reduce-only LIMIT (with TP123 = 4 limits, no 条件委托)."""
     probe = _AdverseProbe()
     with patch("app.core.adverse_radar_guard.time.sleep", lambda *_: None):
         result = probe._arm_adverse_shield_at_open(0.6)
     assert result["armed"] is True
     assert result["placed"] == 1
-    probe.client.place_stop_limit_order.assert_called_once()
-    args = probe.client.place_stop_limit_order.call_args[0]
-    assert args[1] == pytest.approx(1900.0, rel=0.001)
-    assert args[2] < args[1]  # LONG limit below trigger
+    probe.client.place_limit_order.assert_called_once()
+    probe.client.place_stop_limit_order.assert_not_called()
+    args, kwargs = probe.client.place_limit_order.call_args
+    assert args[1] == pytest.approx(0.6, rel=0.01)
+    assert float(args[2]) == pytest.approx(1900.0, rel=0.001)
+    assert kwargs.get("reduce_only") is True
 
 
 def test_arm_aligned_with_close_position_stop():
@@ -289,9 +293,11 @@ def test_sync_merged_stop_clamps_hot_radar_stop():
     ):
         result = probe._sync_binance_merged_stop(0.6, radar_sl=1791.0)
     assert result.get("stop_price", 0) < 1785.0
-    probe.client.place_stop_limit_order.assert_called_once()
-    placed_px = probe.client.place_stop_limit_order.call_args[0][1]
+    # After clamp, resting reduce-only LIMIT preferred
+    probe.client.place_limit_order.assert_called_once()
+    placed_px = float(probe.client.place_limit_order.call_args[0][2])
     assert placed_px < 1785.0
+    probe.client.place_stop_limit_order.assert_not_called()
 
 
 def test_arm_skips_when_already_aligned():

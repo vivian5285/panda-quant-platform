@@ -447,6 +447,7 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             pct = detail.get("hard_sl_pct_display") or detail.get("vps_hard_sl_pct")
             style = detail.get("hard_sl_order_style") or (detail.get("shield") or {}).get("order_style")
             style_cn = {
+                "reduce_only_limit": "只减仓限价（基础单）",
                 "stop_limit": "Stop-Limit 限价条件单",
                 "stop_market_qty": "STOP_MARKET 数量单（已降级）",
                 "stop_market_close_all": "市价全部平仓（异常降级）",
@@ -454,20 +455,16 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
                 "deepcoin_trigger_market": "条件市价",
             }.get(str(style or ""), "")
             if pct:
-                line = f"@{float(detail['tv_sl']):.2f}（开仓价×{pct}"
-                if (detail.get("shield") or {}).get("limit_price"):
-                    line += f" · 限价@{float(detail['shield']['limit_price']):.2f}"
-                line += "）"
+                line = f"@{float(detail['tv_sl']):.2f}（开仓价×{pct}）"
                 if style_cn:
                     line += f" · {style_cn}"
                 lines.append(_line("VPS 硬止损", line))
             else:
                 lines.append(_line("VPS 硬止损", f"@{float(detail['tv_sl']):.2f}"))
-            # Explicit book layout — TP×3 + hard SL×1 (TV ref is NOT an order)
             lines.append(
                 _line(
                     "盘口结构",
-                    "限价止盈 TP1/2/3 ×3 + VPS 硬止损 Stop-Limit ×1（共 4 单；TV 止损价仅参考不挂单）",
+                    "限价×4：TP1/2/3 + VPS硬止损（均为基础单；TV 止损价仅参考不另挂；雷达启动后改追踪）",
                 )
             )
         if detail.get("tv_sl_reference"):

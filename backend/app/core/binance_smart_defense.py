@@ -217,6 +217,9 @@ class BinanceSmartDefenseMixin:
         return True
 
     def _is_tp_limit_order(self, o: dict) -> bool:
+        # VPS hard SL resting limit must not be counted as TP / orphan
+        if hasattr(self, "_is_hard_sl_limit_order") and self._is_hard_sl_limit_order(o):
+            return False
         if o.get("type") != "LIMIT":
             return False
         val = o.get("reduceOnly")
@@ -424,6 +427,19 @@ class BinanceSmartDefenseMixin:
             is_stop = otype in ("STOP_MARKET", "STOP") or (
                 o.get("isAlgoOrder") and self._order_stop_price(o) > 0
             )
+            # Resting hard-SL limit (基础单)
+            if (
+                not is_stop
+                and otype == "LIMIT"
+                and hasattr(self, "_is_hard_sl_limit_order")
+                and self._is_hard_sl_limit_order(o)
+            ):
+                try:
+                    if abs(round(float(o.get("price") or 0), 2) - target) <= tolerance:
+                        return True
+                except (TypeError, ValueError):
+                    pass
+                continue
             if not is_stop:
                 continue
             for key in ("stopPrice", "triggerPrice", "activatePrice"):
@@ -436,9 +452,9 @@ class BinanceSmartDefenseMixin:
                 except (TypeError, ValueError):
                     continue
         if hasattr(self, "_collect_adverse_stop_orders"):
-            from app.core.adverse_radar_guard import _order_stop_price
+            from app.core.adverse_radar_guard import _adverse_defense_price
             for o in self._collect_adverse_stop_orders() or []:
-                px = _order_stop_price(o)
+                px = _adverse_defense_price(o)
                 if px > 0 and abs(px - target) <= tolerance:
                     return True
         return False

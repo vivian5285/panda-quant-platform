@@ -527,8 +527,8 @@ qty             = notional_usd / price   （DeepCoin 换算为合约张）
 
 - **路径启动**：`progress = |mark−entry|/|TP1−entry|` ≥ 档位激活比例即 Stage 1 保本（R1/R2 70% · R3 75% · R4 80%）；TP1 间距 < 1×ATR 时抬高有效比例（常至 95%），开仓 25s 保护期 + 连续 2 轮哨兵确认，防刚开仓噪声误挂保本
 - **TP2/TP3 锁利**：过 TP1 后 Stage 2~5 收紧；qty/book 仍用于切片记账
-- **合并止损（Binance/OKX/Gate）：** LONG `max(vps_sl, radar)` / SHORT `min(...)`，**Stop-Limit 优先**（币安走 algo CONDITIONAL `STOP`，避免降级成市价全部平仓）
-- **盘口结构：** 限价 TP1/2/3 ×3 + VPS 硬止损 Stop-Limit ×1（共 4 单；TV `tv_sl` 仅钉钉参考，不另挂）
+- **合并止损（Binance/OKX/Gate）：** 开仓硬止损优先 **只减仓限价**（与 TP123 同属基础单，共 4 张）；雷达启动后改追踪条件单。LONG `max(vps_sl, radar)` / SHORT `min(...)`
+- **盘口结构：** 限价 TP1/2/3 ×3 + VPS 硬止损限价 ×1（TV `tv_sl` 仅钉钉参考，不另挂）
 - **DeepCoin 双轨：** TV SL 与雷达条件单并行
 - **STOP 安全钳制：** `clamp_stop_market_safe()` 防止 SL 高于 mark 瞬间全平
 
