@@ -1301,11 +1301,11 @@ class AdverseRadarMixin:
 
     def _place_adverse_stop_slice(self, stop_price: float, qty: float) -> bool:
         """
-        Place VPS hard stop.
+        Place VPS hard stop — must be conditional (Stop-Limit / STOP), never a plain LIMIT.
 
-        Binance/OKX/Gate open book target: reduce-only LIMIT at hard SL price
-        (shows under 基础单 with TP123 → exactly 4 limit orders, no 条件委托).
-        Radar later may replace this slot with Stop-Limit / STOP_MARKET.
+        A reduce-only LIMIT at the hard-SL price is marketable on all futures books:
+        LONG SELL below mark / SHORT BUY above mark fills immediately → 秒平 near entry.
+        Live book target: TP123 reduce-only limits (基础单×3) + 1 hard Stop-Limit (条件委托).
         """
         close_side = self._adverse_close_side()
         symbol = getattr(self, "symbol", None)
@@ -1342,8 +1342,8 @@ class AdverseRadarMixin:
                 return True
             return False
 
+        limit_px = self._hard_sl_limit_price(stop_price)
         qty_f = float(qty or 0)
-        stop_px = round_price(stop_price)
 
         def _track_algo(order: dict | None) -> None:
             if not order:
@@ -1357,16 +1357,7 @@ class AdverseRadarMixin:
                 pending.append(aid_int)
             self._pending_adverse_algo_ids = pending[-8:]
 
-        # Primary: resting reduce-only LIMIT → Binance 基础单 (with TP123 = 4 limits)
-        if hasattr(client, "place_limit_order") and qty_f > 0 and stop_px > 0:
-            order = client.place_limit_order(
-                close_side, qty_f, stop_px, symbol=symbol, reduce_only=True,
-            )
-            if order:
-                self._last_hard_sl_order_style = "reduce_only_limit"
-                return True
-
-        limit_px = self._hard_sl_limit_price(stop_price)
+        # Primary: Stop-Limit (条件委托) — never plain LIMIT at stop_px
         if hasattr(client, "place_stop_limit_order") and qty_f > 0:
             order = client.place_stop_limit_order(
                 close_side, stop_price, limit_px, symbol,
@@ -1375,11 +1366,6 @@ class AdverseRadarMixin:
             if order:
                 self._last_hard_sl_order_style = "stop_limit"
                 _track_algo(order)
-                logger.warning(
-                    "[User %s] 硬止损限价挂单失败，降级 Stop-Limit @%.2f",
-                    getattr(self, "user_id", "?"),
-                    float(stop_price or 0),
-                )
                 return True
 
         if hasattr(client, "place_stop_market_order") and qty_f > 0:
@@ -1390,7 +1376,7 @@ class AdverseRadarMixin:
                 self._last_hard_sl_order_style = "stop_market_qty"
                 _track_algo(order)
                 logger.warning(
-                    "[User %s] 硬止损降级 STOP_MARKET qty=%.4f @%.2f",
+                    "[User %s] 硬止损 Stop-Limit 失败，降级 STOP_MARKET qty=%.4f @%.2f",
                     getattr(self, "user_id", "?"),
                     qty_f,
                     float(stop_price or 0),

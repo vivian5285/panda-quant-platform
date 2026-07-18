@@ -1002,10 +1002,14 @@ class BinanceSmartDefenseMixin:
                     f"📐 加仓合并硬止损: {prev_sl:.2f} + {new_sl:.2f} → {self.tv_sl:.2f} ({side})",
                 )
 
-        # 重置雷达追踪器（新加权均价为基准）
+        # 重置雷达追踪器（新加权均价为基准）；未达 TP1 路径比例前 SL=0
         self.best_price = entry
         self.consumed_tp_levels = []
-        self.current_sl = entry
+        self.current_sl = 0.0
+        if hasattr(self, "radar_latched"):
+            self.radar_latched = False
+        if hasattr(self, "_radar_path_ok_streak"):
+            self._radar_path_ok_streak = 0
 
         self.watched_qty = live_qty
         self.watched_entry = entry

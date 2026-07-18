@@ -98,9 +98,10 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 | 3.2 | ETH / XAU **同一开仓价比例** | ✅ | R1~R4：2.78/3.89/5.56/8.33% |
 | 3.3 | 多：止损 = entry × (1 − pct) | ✅ | `compute_vps_hard_sl()` |
 | 3.4 | 空：止损 = entry × (1 + pct) | ✅ | 同上 |
-| 3.5 | 开仓成交后立即挂 Stop-Limit | ✅ | `adverse_radar_guard.py` |
+| 3.5 | 开仓成交后立即挂 **Stop-Limit 条件单**（禁止普通限价硬止损，否则会秒平；基础单仍为 TP123×3） | ✅ | `adverse_radar_guard._place_adverse_stop_slice` |
 | 3.6 | 止损只收紧不放松 | ✅ | `max(vps_sl, radar)` 合并逻辑 |
 | 3.7 | `tv_sl` 仅日志，不用于挂单 | ✅ | `tv_sl_ignored` 元数据 |
+| 3.8 | 雷达启动前币安条件委托 = 0 | ✅ | 限价失败才降级 Stop-Limit / STOP_MARKET |
 
 ### 硬止损比例（占开仓价 % · ETH/XAU 共用）
 
@@ -111,7 +112,8 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 | R3 | 5.56% | ≈100u |
 | R4 | 8.33% | ≈150u |
 
-执行：**Stop-Limit**，限价缓冲 0.15%（`HARD_SL_LIMIT_PCT`）。
+执行优先：**只减仓限价** `LIMIT reduceOnly`（基础单）。  
+降级：限价失败 → Stop-Limit（缓冲 `HARD_SL_LIMIT_PCT` 0.15%）→ STOP_MARKET（qty）→ closePosition。
 
 ### 实盘场景
 
@@ -119,6 +121,7 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 |------|----------|
 | XAU R3 SHORT @4004.27 | 止损 ≈ **4226.91**（4004.27 × 5.56%） |
 | ETH R4 LONG @1800 | 止损 ≈ 1650.06（1800 × 8.33%） |
+| 开仓后币安盘口 | 基础单 **3**（TP123）+ 条件委托 **1**（VPS 硬止损 Stop-Limit）；雷达前勿把硬止损挂成普通限价 |
 | TV 发来紧 `tv_sl` | 日志参考，挂单用 VPS 开仓价% |
 | `UPDATE_SL` | 记录并跳过（`vps_self_managed`） |
 | `CLOSE_STOPLOSS` | **第一优先级**立即市价全平 |

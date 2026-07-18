@@ -1840,6 +1840,14 @@ class PositionSupervisor(
                     f"🛡️ 开仓 {sl_label}实盘已存在 @{shield.get('stop_price', 0):.2f}",
                     shield,
                 )
+            elif float(getattr(self, "tv_sl", 0) or 0) > 0:
+                self._alert(
+                    "critical",
+                    "ADVERSE_SL",
+                    "开仓后硬止损未挂上",
+                    f"{self.current_side} {pos['size']} | {sl_label} @{getattr(self, 'tv_sl', 0):.2f} | {shield}",
+                    shield,
+                )
         self._save_state()
         threading.Thread(target=self._sentinel_loop, daemon=True).start()
 
@@ -2263,6 +2271,9 @@ class PositionSupervisor(
         tp1 = float(tps[0] or 0) if tps else 0.0
         tp2 = float(tps[1] or 0) if len(tps) > 1 else 0.0
         tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
+        path_ok = False
+        if hasattr(self, "_radar_activation_reached") and curr_px > 0:
+            path_ok = bool(self._radar_activation_reached(curr_px))
         radar = compute_vps_radar_sl(
             entry=entry,
             curr_px=curr_px,
@@ -2274,7 +2285,7 @@ class PositionSupervisor(
             hard_sl=float(getattr(self, "tv_sl", 0) or 0),
             clamp_fn=self._clamp_radar_sl_to_tv_floor,
             radar_latched=bool(getattr(self, "radar_latched", False)),
-            tp1_filled=tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
+            tp1_filled=path_ok or tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
         )
         if radar.get("armed") and radar.get("radar_sl", 0) > 0:
             self.current_sl = float(radar["radar_sl"])
@@ -2283,8 +2294,10 @@ class PositionSupervisor(
                 f"[User {self.user_id}] 📡 重启雷达恢复: {radar.get('stage_label')} | "
                 f"best={self.best_price:.2f} | SL={self.current_sl:.2f}"
             )
-        elif self.current_sl == 0.0 and not getattr(self, "adopted_manual", False):
-            self.current_sl = entry
+        else:
+            # 雷达未达 TP1 路径比例：保持 0，只用 VPS 宽硬止损（禁止写成入场价）
+            if float(self.current_sl or 0) == float(entry or 0):
+                self.current_sl = 0.0
 
     def _radar_activation_progress(self, curr_px: float) -> float:
         if curr_px <= 0 or not self.watched_entry:
@@ -2980,8 +2993,12 @@ class PositionSupervisor(
 
             if self.best_price <= 0:
                 self.best_price = self.watched_entry
-            if self.current_sl <= 0 and not getattr(self, "adopted_manual", False):
-                self.current_sl = self.watched_entry
+            # 未达雷达激活前 current_sl 必须为 0（与开仓路径一致），禁止写成入场价
+            if float(self.current_sl or 0) <= 0 or (
+                float(self.current_sl or 0) == float(self.watched_entry or 0)
+                and not getattr(self, "radar_latched", False)
+            ):
+                self.current_sl = 0.0
 
             curr_px = self.client.get_current_price(self.symbol)
             self._sync_consumed_tp_levels(self.watched_qty, curr_px or self.watched_entry)

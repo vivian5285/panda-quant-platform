@@ -17,13 +17,14 @@ def test_classify_loss_shield_when_underwater():
     assert classify_startup_pnl_track(2000.0, 1900.0, "LONG", radar_progress=0.2) == "loss_shield"
 
 
-def test_classify_loss_shield_even_when_path_full_before_tp1():
-    """TP1 path 100% without fill must stay on hard-SL track (breathing room)."""
-    assert classify_startup_pnl_track(2000.0, 2010.0, "LONG", radar_progress=1.0) == "loss_shield"
+def test_classify_profit_radar_when_path_reaches_activation():
+    """路径达档位激活比例 → 与实盘哨兵一致走雷达轨。"""
+    assert classify_startup_pnl_track(2000.0, 2010.0, "LONG", radar_progress=0.70) == "profit_radar"
+    assert classify_startup_pnl_track(2000.0, 2010.0, "LONG", radar_progress=1.0) == "profit_radar"
 
 
 def test_classify_loss_shield_when_profit_but_radar_not_active():
-    assert classify_startup_pnl_track(2000.0, 2010.0, "LONG", radar_progress=0.66) == "loss_shield"
+    assert classify_startup_pnl_track(2000.0, 2010.0, "LONG", radar_progress=0.50) == "loss_shield"
 
 
 def test_format_startup_summary():

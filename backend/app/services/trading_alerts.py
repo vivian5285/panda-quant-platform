@@ -447,7 +447,7 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             pct = detail.get("hard_sl_pct_display") or detail.get("vps_hard_sl_pct")
             style = detail.get("hard_sl_order_style") or (detail.get("shield") or {}).get("order_style")
             style_cn = {
-                "reduce_only_limit": "只减仓限价（基础单）",
+                "reduce_only_limit": "只减仓限价（已废弃·会秒平）",
                 "stop_limit": "Stop-Limit 限价条件单",
                 "stop_market_qty": "STOP_MARKET 数量单（已降级）",
                 "stop_market_close_all": "市价全部平仓（异常降级）",
@@ -464,7 +464,7 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             lines.append(
                 _line(
                     "盘口结构",
-                    "限价×4：TP1/2/3 + VPS硬止损（均为基础单；TV 止损价仅参考不另挂；雷达启动后改追踪）",
+                    "基础单×3：TP1/2/3 限价 + 条件委托×1：VPS硬止损 Stop-Limit（TV 止损价仅参考；雷达达TP1路径比例后改追踪）",
                 )
             )
         if detail.get("tv_sl_reference"):

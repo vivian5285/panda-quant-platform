@@ -227,7 +227,7 @@ def prepare_manual_adopt(supervisor) -> None:
     supervisor.adopted_manual = True
     if entry > 0:
         supervisor.best_price = entry
-    # 人工接管首挂仅 VPS 硬止损 + TP123；雷达待 TP1 成交后再激活
+    # 人工接管首挂仅 VPS 硬止损 + TP123；雷达待达 TP1 路径比例后再激活
     supervisor.current_sl = 0.0
 
 
@@ -464,18 +464,21 @@ def classify_startup_pnl_track(
     radar_progress: float = 0.0,
     radar_active: bool = False,
     consumed_tp_levels: list | None = None,
+    activation: float | None = None,
 ) -> str:
     """
-    loss_shield — TP1 未成交：保 TP123 + VPS 宽硬止损（给足呼吸空间）
-    profit_radar — TP1 已成交或雷达已锁：雷达保本接管
-    路径进度不再触发雷达轨（统一：仅 TP1 成交后激活）。
+    loss_shield — 未达雷达激活：保 TP123 + VPS 宽硬止损（给足呼吸空间）
+    profit_radar — TP1 已成交、雷达已锁、或路径进度 ≥ 档位激活比例（与实盘哨兵一致）
     """
     consumed = list(consumed_tp_levels or [])
     if tp1_consumed(consumed) or any(x in consumed for x in (2, 3)):
         return "profit_radar"
     if radar_active:
         return "profit_radar"
-    _ = (entry, curr_px, side, radar_progress, RADAR_STARTUP_PROFIT_PROGRESS)
+    act = float(activation if activation is not None else RADAR_STARTUP_PROFIT_PROGRESS)
+    if float(radar_progress or 0) + 1e-9 >= act:
+        return "profit_radar"
+    _ = (entry, curr_px, side)
     return "loss_shield"
 
 

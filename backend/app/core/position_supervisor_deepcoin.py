@@ -1547,6 +1547,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         tp1 = float(tps[0] or 0) if tps else 0.0
         tp2 = float(tps[1] or 0) if len(tps) > 1 else 0.0
         tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
+        path_ok = False
+        if hasattr(self, "_radar_activation_reached") and curr_px > 0:
+            path_ok = bool(self._radar_activation_reached(curr_px))
         radar = compute_vps_radar_sl(
             entry=entry, curr_px=curr_px, best_price=self.best_price,
             atr=self.current_atr, side=self.current_side,
@@ -1555,7 +1558,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             hard_sl=float(getattr(self, "tv_sl", 0) or 0),
             clamp_fn=self._clamp_radar_sl_to_tv_floor,
             radar_latched=bool(getattr(self, "radar_latched", False)),
-            tp1_filled=tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
+            tp1_filled=path_ok or tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
         )
         if radar.get("armed") and radar.get("radar_sl", 0) > 0:
             self.current_sl = float(radar["radar_sl"])
@@ -1564,8 +1567,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 f"📡 重启雷达恢复: {radar.get('stage_label')} | "
                 f"best={self.best_price:.2f} | SL={self.current_sl:.2f}"
             )
-        elif self.current_sl == 0.0 and not getattr(self, "adopted_manual", False):
-            self.current_sl = entry
+        else:
+            if float(self.current_sl or 0) == float(entry or 0):
+                self.current_sl = 0.0
 
     def _nuclear_realign_tp(self, live_qty, entry, dynamic_sl=None, rounds=3):
         sl_preserve = dynamic_sl is not None
@@ -1752,7 +1756,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         self.best_price = entry
         self.consumed_tp_levels = []
-        self.current_sl = entry
+        self.current_sl = 0.0
+        if hasattr(self, "radar_latched"):
+            self.radar_latched = False
+        if hasattr(self, "_radar_path_ok_streak"):
+            self._radar_path_ok_streak = 0
 
         self.watched_qty = live_qty
         self.watched_entry = entry
