@@ -2082,12 +2082,18 @@ class AdverseRadarMixin:
         return 0.0
 
     def _boost_radar_after_tp_fill(self, change_type: str, curr_px: float, live_qty: float) -> None:
-        """After TP1/TP2 eaten: lock breakeven with regime trail width toward TP3."""
+        """After TP1/TP2 eaten: lock breakeven immediately and trail toward TP3 (all exchanges)."""
         if change_type not in ("tp1_filled", "tp2_filled", "tp3_filled"):
             return
         entry = float(self.watched_entry or 0)
         if entry <= 0:
             return
+        # Force consume marker so path/qty gates cannot block post-fill arm
+        consumed = list(getattr(self, "consumed_tp_levels", None) or [])
+        level = {"tp1_filled": 1, "tp2_filled": 2, "tp3_filled": 3}.get(change_type)
+        if level and level not in consumed:
+            consumed.append(level)
+            self.consumed_tp_levels = consumed
         tps = list(getattr(self, "tv_tps", []) or [])
         tp1 = float(tps[0] or 0) if tps else 0.0
         tp2 = float(tps[1] or 0) if len(tps) > 1 else 0.0
@@ -2107,19 +2113,90 @@ class AdverseRadarMixin:
             old_sl=float(getattr(self, "current_sl", 0) or 0),
             hard_sl=float(getattr(self, "tv_sl", 0) or 0),
             clamp_fn=getattr(self, "_clamp_radar_sl_to_tv_floor", lambda x: x),
-            radar_latched=bool(getattr(self, "radar_latched", False)),
-            tp1_filled=tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
+            radar_latched=True,
+            tp1_filled=True,
         )
-        if radar.get("armed") and radar.get("radar_sl", 0) > 0:
-            self.current_sl = float(radar["radar_sl"])
-            self._latch_radar()
-
-        if hasattr(self, "_realign_radar_defenses"):
-            self._realign_radar_defenses(live_qty, entry, self.current_sl)
-        elif hasattr(self, "_smart_realign_defenses"):
-            self._smart_realign_defenses(
-                live_qty, entry, dynamic_sl=self.current_sl, reason=f"TP吃单后雷达朝TP3推进 · {change_type}",
+        sl_px = float(radar.get("radar_sl") or 0)
+        if sl_px <= 0:
+            logger.warning(
+                "[User %s] TP吃单后雷达 SL 计算失败 | %s | px=%.2f",
+                getattr(self, "user_id", "?"), change_type, float(curr_px or 0),
             )
+            return
+        self.current_sl = sl_px
+        self._latch_radar()
+
+        placed = False
+        on_book = False
+        # Route A: 合并单槽升级硬止损→雷达（不另挂第二份仓位份额）
+        if not self._uses_dual_stop_track() and hasattr(self, "_sync_binance_merged_stop"):
+            merged = self._sync_binance_merged_stop(
+                live_qty, radar_sl=sl_px, force_replace=True,
+            ) or {}
+            placed = bool(merged.get("placed") or merged.get("aligned") or merged.get("armed"))
+            on_book = bool(merged.get("aligned")) or (
+                hasattr(self, "_has_stop_sl_near") and self._has_stop_sl_near(sl_px)
+            )
+        elif hasattr(self, "_realign_radar_defenses"):
+            placed = bool(self._realign_radar_defenses(live_qty, entry, sl_px))
+            on_book = (
+                hasattr(self, "_has_stop_sl_near") and self._has_stop_sl_near(sl_px)
+            ) or (
+                hasattr(self, "_has_trigger_sl_near") and self._has_trigger_sl_near(sl_px)
+            )
+        elif hasattr(self, "_ensure_radar_sl"):
+            if getattr(self, "exchange_id", "") == "deepcoin":
+                placed = bool(self._ensure_radar_sl(live_qty, sl_px))
+                on_book = hasattr(self, "_has_trigger_sl_near") and self._has_trigger_sl_near(sl_px)
+            else:
+                placed = bool(self._ensure_radar_sl(sl_px, live_qty))
+                on_book = hasattr(self, "_has_stop_sl_near") and self._has_stop_sl_near(sl_px)
+
+        detail = {
+            "change_type": change_type,
+            "radar_sl": sl_px,
+            "stage": radar.get("stage"),
+            "stage_label": radar.get("stage_label"),
+            "placed": placed,
+            "verified_on_book": on_book,
+            "curr_px": float(curr_px or 0),
+            "entry": entry,
+            "tv_tps": list(tps),
+            "consumed_tp_levels": list(getattr(self, "consumed_tp_levels", []) or []),
+            "merged_slot": not self._uses_dual_stop_track(),
+            "exchange": getattr(self, "exchange_id", None),
+        }
+        label = radar.get("stage_label") or "雷达保本"
+        if on_book or placed:
+            self._latch_radar()
+            if hasattr(self, "_log"):
+                self._log(
+                    "RADAR_ARM",
+                    f"✅ {change_type} → {label} SL@{sl_px:.2f} | 盘口{'已核实' if on_book else '已提交'}",
+                    detail,
+                )
+            if hasattr(self, "_alert"):
+                self._alert(
+                    "info",
+                    "RADAR_ARM",
+                    f"雷达激活·{change_type}后防回吐",
+                    f"{label} SL@{sl_px:.2f} | 现价{float(curr_px or 0):.2f} | "
+                    f"盘口{'✓核实' if on_book else '提交中'} | 合并单槽不抢TP份额",
+                    detail,
+                )
+        else:
+            logger.warning(
+                "[User %s] TP吃单后雷达 STOP 未挂上 @%.2f | %s",
+                getattr(self, "user_id", "?"), sl_px, change_type,
+            )
+            if hasattr(self, "_alert"):
+                self._alert(
+                    "critical",
+                    "RADAR_ARM",
+                    "雷达激活失败·止盈后保本未挂上",
+                    f"{change_type} 期望 SL@{sl_px:.2f}，盘口无 STOP，请人工核查",
+                    detail,
+                )
         if hasattr(self, "_save_state"):
             self._save_state()
 
@@ -2162,7 +2239,7 @@ class AdverseRadarMixin:
 
         if progress >= 0.5 and getattr(self, "_scan_ticks", 0) % 5 == 0:
             logger.info(
-                "[User %s] 📡 TP1路径 %.0f%% | 现价 %.2f | 硬止损守护中（雷达待路径达档位比例）",
+                "[User %s] 📡 TP1路径 %.0f%% | 现价 %.2f | 硬止损守护中（雷达待路径≥85%%/TP成交）",
                 self.user_id, progress * 100, curr_px,
             )
 

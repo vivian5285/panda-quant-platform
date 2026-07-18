@@ -464,7 +464,7 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             lines.append(
                 _line(
                     "盘口结构",
-                    "基础单×3：TP1/2/3 限价 + 条件委托×1：VPS硬止损 Stop-Limit（TV 止损价仅参考；雷达达TP1路径比例后改追踪）",
+                    "基础单×3：TP1/2/3 限价 + 条件委托×1：VPS硬止损/雷达合并槽（TV 止损价仅参考；距TP1剩15%即启动保本追踪）",
                 )
             )
         if detail.get("tv_sl_reference"):
@@ -478,7 +478,7 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             lines.append(
                 _line("TV 止损参考", f"{float(detail['tv_sl_ref']):.2f}（仅参考·不挂单）")
             )
-        # Explicit: radar arms on path-to-TP1 ratio (R1/R2 70%, R3 75%, R4 80%)
+        # Explicit: radar arms at 85% path-to-TP1 (15% remaining)
         if detail.get("radar_armed") or detail.get("radar_active"):
             radar_sl = detail.get("radar_sl") or detail.get("current_sl")
             if radar_sl:
@@ -513,8 +513,10 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
                     f"（本笔有效 {float(act) * 100:.0f}%：TP1 间距收紧）后启动 Stop-Limit 保本"
                 )
             else:
+                remain = max(0.0, 1.0 - float(act)) * 100.0
                 arm_txt = (
-                    f"待命 · 价格达 TP1 路径 {float(act) * 100:.0f}% 后启动移动保本"
+                    f"待命 · 价格达 TP1 路径 {float(act) * 100:.0f}% "
+                    f"（距 TP1 剩 {remain:.0f}%）后启动移动保本"
                     f"（Stop-Limit；随后 TP2/TP3 锁利）"
                 )
             # Show absolute trigger price for short/long when entry+tp1 known
@@ -648,7 +650,7 @@ def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
     if detail.get("adopted_manual"):
         lines.append(_line("接管类型", "人工/外部持仓 · 按最新 TV 补挂"))
         if detail.get("radar_permitted") is False and not detail.get("breakeven_active"):
-            lines.append(_line("雷达状态", "待价格达档位 TP1 路径比例后启动移动保本"))
+            lines.append(_line("雷达状态", "待距TP1剩15%（路径≥85%）或TP成交后启动移动保本"))
     if detail.get("shield_stop_price") or detail.get("tv_sl"):
         stop_px = detail.get("shield_stop_price") or detail.get("tv_sl")
         if detail.get("breakeven_active"):

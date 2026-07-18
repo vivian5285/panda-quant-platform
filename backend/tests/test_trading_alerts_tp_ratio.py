@@ -32,8 +32,8 @@ def test_open_detail_radar_standby_until_tp1():
         "binance",
     )
     assert "雷达状态" in body
-    assert "TP1 路径" in body
-    assert "80%" in body
+    assert "TP1" in body
+    assert "85%" in body
 
 
 def test_open_detail_book_structure_and_tv_sl_reference_only():

@@ -770,9 +770,14 @@ class BinanceSmartDefenseMixin:
         if not dynamic_sl:
             return False
         curr_px = self._current_tp_price() if hasattr(self, "_current_tp_price") else 0.0
-        if hasattr(self, "_radar_activation_reached") and not self._radar_activation_reached(curr_px):
+        latched = bool(getattr(self, "radar_latched", False))
+        if (
+            not latched
+            and hasattr(self, "_radar_activation_reached")
+            and not self._radar_activation_reached(curr_px)
+        ):
             self._def_log(
-                f"⏸️ 雷达未达激活条件（待价格达 TP1 路径比例），"
+                f"⏸️ 雷达未达激活条件（待路径≥85%或TP成交），"
                 f"跳过保本 STOP @ {float(dynamic_sl):.2f}",
             )
             return False
@@ -793,7 +798,7 @@ class BinanceSmartDefenseMixin:
         qty = live_qty if live_qty is not None else getattr(self, "watched_qty", 0)
         if hasattr(self, "_uses_dual_stop_track") and not self._uses_dual_stop_track():
             if hasattr(self, "_sync_binance_merged_stop"):
-                result = self._sync_binance_merged_stop(qty, radar_sl=sl)
+                result = self._sync_binance_merged_stop(qty, radar_sl=sl, force_replace=True)
                 return bool(result.get("aligned") or result.get("armed"))
         if self._has_stop_sl_near(sl):
             return True

@@ -14,26 +14,26 @@ FEE_BUFFER_PCT = 0.0015
 RADAR_BREAKEVEN_ATR_BEFORE_TP1 = 0.55
 RADAR_BREAKEVEN_ATR_AFTER_TP1 = 0.25
 
-# Compat aliases (path arming uses REGIME_RADAR activation; these are unused gates)
-RADAR_PRE_TP1_ARM_PROGRESS = 0.70  # legacy name — now equals R1/R2 activation
-RADAR_STARTUP_PROFIT_PROGRESS = 0.70
+# Compat aliases — unified path arm at 85% (15% remaining to TP1)
+RADAR_PRE_TP1_ARM_PROGRESS = 0.85
+RADAR_STARTUP_PROFIT_PROGRESS = 0.85
 
-# Path-to-TP1 arming (primary gate — no qty/book triple check):
-# R1/R2 弱势 70% 早锁；R3/R4 强势 75%/80% 给趋势空间
+# Path-to-TP1 arming (primary gate — all regimes same):
+# 距 TP1 还剩 15%（进度 ≥ 85%）即启动保本，继续追踪锁住 TP2/TP3 利润
 REGIME_RADAR: dict[int, dict[str, float]] = {
-    1: {"activation": 0.70, "trail_offset": 0.75},
-    2: {"activation": 0.70, "trail_offset": 1.00},
-    3: {"activation": 0.75, "trail_offset": 1.35},
-    4: {"activation": 0.80, "trail_offset": 1.80},
+    1: {"activation": 0.85, "trail_offset": 0.75},
+    2: {"activation": 0.85, "trail_offset": 1.00},
+    3: {"activation": 0.85, "trail_offset": 1.35},
+    4: {"activation": 0.85, "trail_offset": 1.80},
 }
 
 # Global arm guards (all exchanges) — prevent noise on tight TV TP1 spans
 RADAR_OPEN_GRACE_SEC = 25.0
 RADAR_ARM_CONFIRM_POLLS = 2
-# When entry→TP1 span < 1.0×ATR, require nearly full path (noise territory)
+# When entry→TP1 span < 1.0×ATR, raise required progress (still ≤ 92%)
 RADAR_TIGHT_SPAN_ATR_MULT = 1.0
-RADAR_TIGHT_SPAN_MIN_PROGRESS = 0.95
-# Absolute favorable-move floor so 70% of a tiny span cannot arm on a tick
+RADAR_TIGHT_SPAN_MIN_PROGRESS = 0.92
+# Absolute favorable-move floor so 85% of a tiny span cannot arm on a tick
 RADAR_MIN_ABS_ATR_MULT = 0.55
 RADAR_MIN_ABS_ENTRY_PCT = 0.0015  # 0.15% of entry
 RADAR_EFFECTIVE_CAP = 0.98
@@ -128,7 +128,8 @@ def radar_effective_activation(
     """
     Regime path ratio raised when TV TP1 span is tight vs ATR / absolute floor.
 
-    Incident guard: entry→TP1 ≈ 0.75×ATR must not arm at 70% on a single tick.
+    Base = 85% (15% remaining to TP1). Tight spans raise toward ~92%, never block
+    a healthy absolute move once progress already meets the raised floor.
     """
     base = regime_radar_activation(regime)
     entry = float(entry or 0)
@@ -269,7 +270,7 @@ def radar_may_arm(
     """
     When to place/move breakeven radar STOP:
     - already armed and trailing
-    - path to TP1 ≥ regime activation (primary — 70%/70%/75%/80%)
+    - path to TP1 ≥ 85% (15% remaining — primary; tight-span may raise effective)
     - TP1+ filled (qty/book still used for slice accounting, not required to arm)
 
     When entry/tp1/atr provided, applies tight-span effective activation + open grace + confirm.

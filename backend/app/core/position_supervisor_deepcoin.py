@@ -876,12 +876,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if tp1_slice <= 0 or reduced < min_reduce:
             if self.consumed_tp_levels:
                 logger.warning(
-                    "清除虚报 TP 成交 %s（减仓 %.4f < TP1门槛 %.4f）",
+                    "清除虚报 TP 成交 %s（减仓 %.4f < TP1门槛 %.4f）— 保留雷达锁",
                     self.consumed_tp_levels, reduced, min_reduce,
                 )
             self.consumed_tp_levels = []
-            if hasattr(self, "radar_latched"):
-                self.radar_latched = False
+            # 路径保本与 TP 记账解耦：不清 radar_latched
             if hasattr(self, "_save_state"):
                 self._save_state()
             return []
@@ -1507,9 +1506,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if not sl_price:
             return False
         curr_px = self._current_tp_price() if hasattr(self, "_current_tp_price") else 0.0
-        if hasattr(self, "_radar_activation_reached") and not self._radar_activation_reached(curr_px):
+        latched = bool(getattr(self, "radar_latched", False))
+        if (
+            not latched
+            and hasattr(self, "_radar_activation_reached")
+            and not self._radar_activation_reached(curr_px)
+        ):
             logger.info(
-                "⏸️ 雷达未达激活条件（待价格达 TP1 路径比例），跳过保本 STOP @ %.2f",
+                "⏸️ 雷达未达激活条件（待路径≥85%%或TP成交），跳过保本 STOP @ %.2f",
                 float(sl_price),
             )
             return False

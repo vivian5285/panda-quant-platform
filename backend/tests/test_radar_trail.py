@@ -24,11 +24,11 @@ from app.core.radar_trail import (
 
 
 def test_regime_activation_table():
-    assert REGIME_RADAR[1]["activation"] == pytest.approx(0.70)
-    assert REGIME_RADAR[2]["activation"] == pytest.approx(0.70)
-    assert REGIME_RADAR[3]["activation"] == pytest.approx(0.75)
-    assert REGIME_RADAR[4]["activation"] == pytest.approx(0.80)
-    assert regime_radar_activation(3) == pytest.approx(0.75)
+    assert REGIME_RADAR[1]["activation"] == pytest.approx(0.85)
+    assert REGIME_RADAR[2]["activation"] == pytest.approx(0.85)
+    assert REGIME_RADAR[3]["activation"] == pytest.approx(0.85)
+    assert REGIME_RADAR[4]["activation"] == pytest.approx(0.85)
+    assert regime_radar_activation(3) == pytest.approx(0.85)
 
 
 def test_merge_regime_radar_overlays_looser_params():
@@ -48,23 +48,21 @@ def test_trail_distance_uses_tp1_floor_when_atr_tight():
 
 
 def test_radar_may_arm_on_path_ratio():
-    assert radar_may_arm(consumed_tp_levels=[1], progress=0.5, activation_ratio=0.70) is True
-    assert radar_may_arm(consumed_tp_levels=[], progress=0.69, activation_ratio=0.70) is False
-    assert radar_may_arm(consumed_tp_levels=[], progress=0.70, activation_ratio=0.70) is True
-    assert radar_may_arm(consumed_tp_levels=[], progress=0.75, activation_ratio=0.75) is True
-    assert radar_may_arm(consumed_tp_levels=[], progress=0.79, activation_ratio=0.80) is False
-    assert radar_may_arm(consumed_tp_levels=[], progress=0.80, activation_ratio=0.80) is True
+    assert radar_may_arm(consumed_tp_levels=[1], progress=0.5, activation_ratio=0.85) is True
+    assert radar_may_arm(consumed_tp_levels=[], progress=0.84, activation_ratio=0.85) is False
+    assert radar_may_arm(consumed_tp_levels=[], progress=0.85, activation_ratio=0.85) is True
+    assert radar_may_arm(consumed_tp_levels=[], progress=0.90, activation_ratio=0.85) is True
     assert radar_may_arm(
-        consumed_tp_levels=[], progress=0.0, activation_ratio=0.70, radar_active=True,
+        consumed_tp_levels=[], progress=0.0, activation_ratio=0.85, radar_active=True,
     ) is True
-    assert radar_may_arm(consumed_tp_levels=[2], progress=0.0, activation_ratio=0.70) is True
+    assert radar_may_arm(consumed_tp_levels=[2], progress=0.0, activation_ratio=0.85) is True
 
 
-def test_incident_tight_tp1_effective_activation_blocks_70pct():
-    """2026-07-18 ETH R1: span≈3.74 < ATR≈4.98 → effective ≥95%, 30% must not arm."""
+def test_incident_tight_tp1_effective_activation_blocks_early_path():
+    """Tight TP1 span → effective ≥92%; 30%/85% of tiny span must not arm without floor."""
     entry, tp1, atr = 1845.91, 1849.6471230213, 4.982830695
     eff = radar_effective_activation(1, entry, tp1, atr)
-    assert eff >= 0.95
+    assert eff >= 0.92
     d = evaluate_radar_arm_gate(
         consumed_tp_levels=[],
         progress=0.30,
@@ -78,21 +76,59 @@ def test_incident_tight_tp1_effective_activation_blocks_70pct():
         path_ok_streak=0,
     )
     assert d["arm"] is False
-    px_70 = entry + 0.70 * (tp1 - entry)
-    d70 = evaluate_radar_arm_gate(
+    px_85 = entry + 0.85 * (tp1 - entry)
+    d85 = evaluate_radar_arm_gate(
         consumed_tp_levels=[],
-        progress=0.70,
+        progress=0.85,
         regime=1,
         entry=entry,
         tp1=tp1,
         atr=atr,
-        curr_px=px_70,
+        curr_px=px_85,
         side="LONG",
         trade_opened_at=time.time() - 120,
         path_ok_streak=RADAR_ARM_CONFIRM_POLLS,
     )
-    assert d70["arm"] is False
-    assert d70["activation_effective"] >= 0.95
+    assert d85["arm"] is False
+    assert d85["activation_effective"] >= 0.92
+
+
+def test_path_85_arms_on_healthy_span():
+    """Healthy TP1 span: 85% path + confirms → arm (15% remaining to TP1)."""
+    entry, tp1, atr = 1800.0, 1900.0, 20.0
+    px = entry + 0.85 * (tp1 - entry)
+    d = evaluate_radar_arm_gate(
+        consumed_tp_levels=[],
+        progress=0.85,
+        regime=3,
+        entry=entry,
+        tp1=tp1,
+        atr=atr,
+        curr_px=px,
+        side="LONG",
+        trade_opened_at=time.time() - 120,
+        path_ok_streak=RADAR_ARM_CONFIRM_POLLS,
+    )
+    assert d["arm"] is True
+    assert d["arm_reason"] == "path_effective"
+    assert d["activation_base"] == pytest.approx(0.85)
+
+
+def test_tp1_fill_arms_immediately():
+    d = evaluate_radar_arm_gate(
+        consumed_tp_levels=[1],
+        progress=0.0,
+        regime=4,
+        entry=1800.0,
+        tp1=1900.0,
+        atr=20.0,
+        curr_px=1801.0,
+        side="LONG",
+        trade_opened_at=time.time(),
+        path_ok_streak=0,
+    )
+    assert d["arm"] is True
+    assert d["arm_reason"] == "tp1_filled"
 
 
 def test_open_grace_blocks_path_arm():

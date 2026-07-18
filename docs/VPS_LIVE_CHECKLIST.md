@@ -12,7 +12,7 @@
 |---|------|----------|
 | P0 | TV 只发信号，不执行实盘决策 | `webhook_server.py` → `dispatcher.py` → `position_supervisor*.py` |
 | P0 | `tv_sl` **仅供日志参考**，绝不作为实盘硬止损挂单依据 | `vps_hard_sl.py` · `adverse_radar_guard.py`（`UPDATE_SL` 忽略） |
-| P1 | 雷达移动保本 **价格达档位 TP1 路径比例后** 启动（R1/R2 70%、R3 75%、R4 80%；TP1 间距过窄时抬高有效比例 + 开仓保护期 + 双轮确认） | `evaluate_radar_arm_gate()` · `_radar_activation_reached()` |
+| P1 | 雷达移动保本 **距 TP1 剩 15%（路径≥85%）** 启动（四档统一；TP1 间距过窄时抬高有效比例 + 开仓保护期 + 双轮确认；TP 成交强制激活） | `evaluate_radar_arm_gate()` · `_radar_activation_reached()` |
 | P0 | ETH / XAU **独立** supervisor 状态，互不串单 | `symbol_registry.py` · `dispatcher.UserSupervisorPool` |
 | P0 | 所有 OPEN sizing 基于 **账户总本金（Total Equity）**，非可用余额 | `position_sizing.resolve_principal_sizing_base()` · `tv_entry_sizing.py` |
 
@@ -135,7 +135,7 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 | # | 检查项 | 状态 | 源码 |
 |---|--------|------|------|
 | 4.1 | 雷达按 **TP1 路径进度 ≥ 档位激活比例** 启动 | ✅ | `radar_may_arm()` · `_radar_activation_reached()` |
-| 4.2 | R1/R2 弱势 70%；R3 75%；R4 80% | ✅ | `REGIME_RADAR` |
+| 4.2 | 四档统一 **85%**（距 TP1 剩 15%） | ✅ | `REGIME_RADAR` |
 | 4.3 | **不再**要求 qty+book+price 三重验证才启动 | ✅ | 三重门仅用于 TP 切片记账 |
 | 4.4 | 启动后止损上移至成本 + 微利 | ✅ | Stage 1 · `BREAKEVEN_BUFFER_PCT=0.1%` |
 | 4.5 | 价格到 TP1 前保持 Stage 1；之后 TP2/TP3 逐步锁利 | ✅ | Stage 2~5 ATR 追踪 |
@@ -152,9 +152,7 @@ if progress ≥ REGIME_RADAR[regime].activation  →  arm Stage 1（保本）
 
 | 档位 | 激活路径（占 entry→TP1） |
 |------|--------------------------|
-| R1 / R2 | **70%** |
-| R3 | **75%** |
-| R4 | **80%** |
+| R1~R4 | **85%**（距 TP1 还剩 15%） |
 
 ### TP 切片（min_qty · 尽量保留 TP123）
 
@@ -241,17 +239,17 @@ if progress ≥ REGIME_RADAR[regime].activation  →  arm Stage 1（保本）
 2. VPS：margin 200U，名义 5000U，qty ≈ 2.78 ETH
 3. 硬止损：1800 × (1 − 5.56%) ≈ 1700
 4. 挂 TP1/2/3 限价（R3 比例 18/32/50%）
-5. 价格达 TP1 路径 70%~80%（按档位）→ 雷达 Stage 1 保本
+5. 价格达 TP1 路径 **85%**（距 TP1 剩 15%）→ 雷达 Stage 1 保本；继续追踪锁 TP2/TP3
 6. 价格到 TP2/TP3，Stage 3~5 逐步锁利
 ```
 
 ### 场景 2：插针未达激活比例 → 雷达不启动
 
 ```
-1. ETH 1800，TP1 = 1980，R3 激活 75%
+1. ETH 1800，TP1 = 1980，统一激活 85%
 2. 价格瞬间 1900（约 55% 路径）后回落
-3. progress < 0.75 → 雷达不启动，仅硬止损防守
-4. 若最终触及硬止损 1700 → 正常风控离场
+3. progress < 0.85 → 雷达不启动，仅硬止损防守
+4. 若最终触及硬止损 → 正常风控离场
 ```
 
 ### 场景 3：双品种 R4 踩线

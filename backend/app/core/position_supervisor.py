@@ -1111,14 +1111,14 @@ class PositionSupervisor(
                 tp_fill_qty_tolerance(tp1_slice, is_contracts=is_dc) * 0.5,
             )
         if tp1_slice <= 0 or reduced < min_reduce:
-            if self.consumed_tp_levels or getattr(self, "radar_latched", False):
+            if self.consumed_tp_levels:
                 logger.warning(
-                    "[User %s] 清除虚报 TP/雷达锁 %s（减仓 %.4f < TP1门槛 %.4f | 实盘 %s 锚 %s）",
+                    "[User %s] 清除虚报 TP 档位 %s（减仓 %.4f < TP1门槛 %.4f | 实盘 %s 锚 %s）"
+                    " — 保留雷达锁（路径保本不依赖 TP 记账）",
                     self.user_id, self.consumed_tp_levels, reduced, min_reduce, live, anchor,
                 )
             self.consumed_tp_levels = []
-            if hasattr(self, "radar_latched"):
-                self.radar_latched = False
+            # 禁止在此清除 radar_latched：路径达 85% 保本与 TP1 记账解耦
             if hasattr(self, "_save_state"):
                 self._save_state()
             return []
@@ -2328,7 +2328,7 @@ class PositionSupervisor(
         from app.core.radar_trail import radar_effective_activation
 
         base_act = float(
-            (self.regime_settings.get(self.regime) or {}).get("activation") or 0.70
+            (self.regime_settings.get(self.regime) or {}).get("activation") or 0.85
         )
         eff_act = float(
             arm_meta.get("activation_effective")
@@ -2438,13 +2438,13 @@ class PositionSupervisor(
                 self._log("TRAIL", f"{label} → SL {new_sl}", trail_detail)
                 if sl_placed or first_arm:
                     alert_type = "RADAR_ARM" if first_arm else "TRAIL"
-                    title = "雷达激活·路径达档位比例" if first_arm else f"雷达·{label}"
-                    eff = trail_detail.get("radar_activation_effective") or trail_detail.get("radar_activation") or 0.7
-                    base = trail_detail.get("radar_activation") or 0.7
+                    title = "雷达激活·距TP1剩15%防回吐" if first_arm else f"雷达·{label}"
+                    eff = trail_detail.get("radar_activation_effective") or trail_detail.get("radar_activation") or 0.85
+                    base = trail_detail.get("radar_activation") or 0.85
                     self._alert(
                         "info", alert_type, title,
                         f"路径启动 | 进度 {trail_detail.get('radar_progress', 0):.0%} "
-                        f"(档位{base:.0%}/有效{eff:.0%}) | 阶段{radar.get('stage')} SL {new_sl}",
+                        f"(档位{base:.0%}/有效{eff:.0%}) | 阶段{radar.get('stage')} SL {new_sl} | 盘口{'✓' if sl_placed else '?'}",
                         trail_detail,
                     )
                 if hasattr(self, "_cancel_obsolete_tp_after_radar_move"):
@@ -2488,13 +2488,13 @@ class PositionSupervisor(
                 self._log("TRAIL", f"{label} → SL {new_sl}", trail_detail)
                 if sl_placed or first_arm:
                     alert_type = "RADAR_ARM" if first_arm else "TRAIL"
-                    title = "雷达激活·路径达档位比例" if first_arm else f"雷达·{label}"
-                    eff = trail_detail.get("radar_activation_effective") or trail_detail.get("radar_activation") or 0.7
-                    base = trail_detail.get("radar_activation") or 0.7
+                    title = "雷达激活·距TP1剩15%防回吐" if first_arm else f"雷达·{label}"
+                    eff = trail_detail.get("radar_activation_effective") or trail_detail.get("radar_activation") or 0.85
+                    base = trail_detail.get("radar_activation") or 0.85
                     self._alert(
                         "info", alert_type, title,
                         f"路径启动 | 进度 {trail_detail.get('radar_progress', 0):.0%} "
-                        f"(档位{base:.0%}/有效{eff:.0%}) | 阶段{radar.get('stage')} SL {new_sl}",
+                        f"(档位{base:.0%}/有效{eff:.0%}) | 阶段{radar.get('stage')} SL {new_sl} | 盘口{'✓' if sl_placed else '?'}",
                         trail_detail,
                     )
                 if hasattr(self, "_cancel_obsolete_tp_after_radar_move"):
@@ -2682,7 +2682,7 @@ class PositionSupervisor(
                         ):
                             logger.info(
                                 f"[User {self.user_id}] 📡 TP1路径 {progress:.0%} | "
-                                f"现价 {curr_px:.2f} | 硬止损守护（雷达待TP1成交）"
+                                f"现价 {curr_px:.2f} | 硬止损守护（雷达待路径≥85%/TP成交）"
                             )
 
                     self._sentinel_error_notified = False
