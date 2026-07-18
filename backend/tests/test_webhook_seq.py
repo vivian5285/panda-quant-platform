@@ -39,7 +39,43 @@ def test_fingerprint_prefers_seq_key():
     })
     assert fp.startswith("seq:")
     assert "200_2" in fp
+    assert "OPEN_LONG" in fp
     assert _ttl_seconds(fp) >= 3600
+
+
+def test_fingerprint_1_2_1_second_open_not_duplicate():
+    """Same bar seq recycle: second LONG must not collide with first."""
+    first = compute_fingerprint({
+        "action": "LONG",
+        "symbol": "ETHUSDT",
+        "bar_index": 100,
+        "seq": 1,
+        "price": 3500,
+        "tv_tp1": 3510,
+        "tv_tp2": 3520,
+        "tv_tp3": 3530,
+    })
+    close_fp = compute_fingerprint({
+        "action": "CLOSE_STOPLOSS",
+        "symbol": "ETHUSDT",
+        "bar_index": 100,
+        "seq": 2,
+        "price": 3490,
+        "reason": "防回吐保本",
+    })
+    second = compute_fingerprint({
+        "action": "LONG",
+        "symbol": "ETHUSDT",
+        "bar_index": 100,
+        "seq": 1,
+        "price": 3488,
+        "tv_tp1": 3498,
+        "tv_tp2": 3508,
+        "tv_tp3": 3518,
+    })
+    assert first != close_fp
+    assert first != second
+    assert "CLOSE_STOPLOSS" in close_fp
 
 
 def test_fingerprint_legacy_without_seq():
@@ -135,6 +171,37 @@ def test_seq_gate_cross_bar_order():
         dispatch=dispatch3,
     )
     assert released == [(300, 1), (301, 1), (301, 2)]
+
+
+def test_seq_gate_cycle_1_2_1_releases_second_open():
+    """V1.6.10: open→close→open on same bar (seq 1-2-1) must all release."""
+    gate = reset_seq_gate_for_tests()
+    released: list[tuple[int, str]] = []
+
+    def dispatch(payload, fingerprint):
+        released.append((int(payload["seq"]), str(payload["action"])))
+
+    gate.submit(
+        {"action": "LONG", "symbol": "ETHUSDT", "bar_index": 200, "seq": 1, "price": 3500},
+        "fp-open-1",
+        dispatch=dispatch,
+    )
+    gate.submit(
+        {"action": "CLOSE_STOPLOSS", "symbol": "ETHUSDT", "bar_index": 200, "seq": 2},
+        "fp-close-2",
+        dispatch=dispatch,
+    )
+    gate.submit(
+        {"action": "LONG", "symbol": "ETHUSDT", "bar_index": 200, "seq": 1, "price": 3488},
+        "fp-open-1b",
+        dispatch=dispatch,
+    )
+    assert released == [
+        (1, "LONG"),
+        (2, "CLOSE_STOPLOSS"),
+        (1, "LONG"),
+    ]
+    assert gate.pending_depth() == 0
 
 
 def test_seq_gate_timeout_force_release(monkeypatch):

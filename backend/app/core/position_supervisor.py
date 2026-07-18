@@ -387,9 +387,15 @@ class PositionSupervisor(
             "entry_type": payload.get("entry_type"),
             "qty_ratio": payload.get("qty_ratio"),
             "reason": payload.get("reason"),
+            "bar_index": payload.get("bar_index"),
+            "seq": payload.get("seq"),
             "enrich_note": enrich_note,
         }
-        self._log("SIGNAL_RECV", f"TV → {payload.get('action')}", signal_detail)
+        self._log(
+            "SIGNAL_RECV",
+            f"TV → {payload.get('action')} bar={payload.get('bar_index')} seq={payload.get('seq')}",
+            signal_detail,
+        )
         raw_action = str(payload.get("action", "")).upper()
 
         # UPDATE_TP before mutating regime/atr/tv_sl — only replaces TP limits.
@@ -578,15 +584,123 @@ class PositionSupervisor(
             return False, "缺少首仓基准数量 base_qty"
         return True, ""
 
+    def _read_live_position_snapshot(self) -> tuple[str | None, float, float]:
+        """Return (side, qty, entry) from exchange — Binance-style or DeepCoin."""
+        if hasattr(self, "_get_active_position"):
+            pos = self._get_active_position()
+            if not pos:
+                return None, 0.0, 0.0
+            qty = float(self._safe_qty(pos.get("size"))) if hasattr(self, "_safe_qty") else float(pos.get("size") or 0)
+            if qty <= 0:
+                return None, 0.0, 0.0
+            side = str(pos.get("side") or "").upper()
+            if side not in ("LONG", "SHORT"):
+                ps = str(pos.get("posSide") or "").lower()
+                side = "LONG" if ps == "long" else ("SHORT" if ps == "short" else None)
+            entry = float(pos.get("entry_price") or pos.get("entryPrice") or 0)
+            return side, qty, entry
+        pos = self.position_manager.get_position(self.symbol)
+        live_amt = float(pos.get("positionAmt", 0) or 0) if pos else 0.0
+        live_side = "LONG" if live_amt > 0 else ("SHORT" if live_amt < 0 else None)
+        return live_side, abs(live_amt), float(pos.get("entryPrice", 0) or 0) if pos else 0.0
+
+    def _reconcile_live_vs_book(
+        self,
+        *,
+        expect_side: str | None = None,
+        expect_qty: float | None = None,
+        expect_flat: bool = False,
+        context: str = "",
+        notify_ok: bool = False,
+    ) -> dict:
+        """Query exchange position and compare to expected post-signal state."""
+        try:
+            live_side, live_qty, live_entry = self._read_live_position_snapshot()
+        except Exception as e:
+            detail = {
+                "context": context,
+                "error": str(e),
+                "exchange": getattr(self, "exchange_id", None),
+            }
+            self._log("POSITION_RECONCILE", f"对账失败·查仓异常 [{context}]", detail)
+            self._alert(
+                "warning",
+                "POSITION_RECONCILE",
+                "头寸对账失败·查仓异常",
+                f"{context}: {e}",
+                detail,
+            )
+            return detail
+
+        ok = True
+        mismatch = ""
+        if expect_flat:
+            if live_qty > 0:
+                ok = False
+                mismatch = f"期望空仓但盘口仍有 {live_side} {live_qty}"
+        elif expect_side:
+            if live_side != str(expect_side).upper() or live_qty <= 0:
+                ok = False
+                mismatch = (
+                    f"期望 {expect_side} 持仓，盘口为 "
+                    f"{live_side or '空仓'} {live_qty}"
+                )
+            elif expect_qty is not None and expect_qty > 0:
+                tol = max(expect_qty * 0.08, 0.001)
+                if abs(live_qty - float(expect_qty)) > tol:
+                    ok = False
+                    mismatch = f"数量偏差 账本{expect_qty} vs 盘口{live_qty}"
+
+        detail = {
+            "exchange": getattr(self, "exchange_id", None),
+            "context": context,
+            "ok": ok,
+            "expect_side": expect_side,
+            "expect_qty": expect_qty,
+            "expect_flat": expect_flat,
+            "live_side": live_side,
+            "live_qty": live_qty,
+            "live_entry": live_entry,
+            "book_side": getattr(self, "current_side", None),
+            "book_qty": float(getattr(self, "watched_qty", 0) or 0),
+            "mismatch": mismatch or None,
+        }
+        if ok:
+            self._log(
+                "POSITION_RECONCILE",
+                f"对账一致 [{context}] {live_side or 'FLAT'} {live_qty}",
+                detail,
+            )
+            if notify_ok:
+                self._alert(
+                    "info",
+                    "POSITION_RECONCILE",
+                    f"头寸对账一致·{context}",
+                    f"盘口 {live_side or '空仓'} {live_qty} @ {live_entry or '—'}",
+                    detail,
+                )
+        else:
+            self._log("POSITION_RECONCILE", f"对账不一致 [{context}] {mismatch}", detail)
+            self._alert(
+                "warning",
+                "POSITION_RECONCILE",
+                f"头寸对账不一致·{context}",
+                mismatch or "账本与交易所不符",
+                detail,
+            )
+        return detail
+
     def _force_flat_before_open(self, reason: str) -> bool:
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.5)
         self._close_all(reason)
         if not self._wait_until_flat():
             self._log("ERROR", "先平后开：平仓后仍未归零，暂缓新开仓")
+            self._reconcile_live_vs_book(expect_flat=True, context="force_flat", notify_ok=False)
             return False
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.4)
+        self._reconcile_live_vs_book(expect_flat=True, context="force_flat", notify_ok=False)
         return True
 
     def _handle_tv_entry(
@@ -1051,6 +1165,12 @@ class PositionSupervisor(
                 f"{self.canonical_symbol} {action} {real_qty} {unit} @ {entry_price} | 滑点 {slip:+.2f} | "
                 f"TP {self.tv_tps} | ATR {self.current_atr} | {theme['leverage']}×{verify_note}{enrich_suffix}",
                 detail,
+            )
+            self._reconcile_live_vs_book(
+                expect_side=action,
+                expect_qty=real_qty,
+                context="open",
+                notify_ok=True,
             )
             return {
                 "status": "ok",
@@ -2056,9 +2176,12 @@ class PositionSupervisor(
 
         self.on_trade_close(self.current_trade_id, exit_price, pnl, display_reason, funding_fee)
         self._log("CLOSE", display_reason, close_detail)
-        alert_type = resolve_close_alert_type(close_action, display_reason)
-        alert_title = resolve_close_alert_title(close_action, display_reason)
-        ding_msg = format_close_dingtalk_message(display_reason, verify_note)
+        alert_type = resolve_close_alert_type(close_action, display_reason, attribution)
+        alert_title = resolve_close_alert_title(close_action, display_reason, attribution)
+        ding_head = display_reason
+        if attribution and not close_action:
+            ding_head = attribution.get("human_reason") or display_reason
+        ding_msg = format_close_dingtalk_message(ding_head, verify_note)
         self._alert(alert_sev, alert_type, alert_title, ding_msg, close_detail)
         if attribution and attribution.get("anomaly"):
             self._alert(
@@ -2424,6 +2547,9 @@ class PositionSupervisor(
 
         moved = False
         min_move = RADAR_SL_MIN_MOVE
+        # first_arm = never latched yet (NOT "should_arm and not should_trail":
+        # when current_sl is 0/hard-SL, should_trail is usually True and RADAR_ARM never fired)
+        was_latched = bool(getattr(self, "radar_latched", False))
         if self.current_side == "LONG":
             on_book = self._has_stop_sl_near(new_sl)
             should_trail = new_sl > float(self.current_sl or 0) + min_move
@@ -2435,10 +2561,10 @@ class PositionSupervisor(
                 )
                 and new_sl > float(getattr(self, "tv_sl", 0) or 0)
             )
-            if on_book and not should_trail:
+            if on_book and not should_trail and was_latched:
                 return False
-            if should_trail or should_arm:
-                first_arm = should_arm and not should_trail
+            if should_trail or should_arm or (not was_latched and not on_book):
+                first_arm = not was_latched
                 self.current_sl = new_sl
                 self._latch_radar()
                 self._save_state()
@@ -2451,18 +2577,27 @@ class PositionSupervisor(
                     stage=radar.get("stage"),
                     stage_label=radar.get("stage_label"),
                     first_arm=first_arm,
+                    arm_source="path_tp1",
                 )
                 label = radar.get("stage_label") or "雷达锁润"
-                self._log("TRAIL", f"{label} → SL {new_sl}", trail_detail)
-                if sl_placed or first_arm:
+                self._log(
+                    "RADAR_ARM" if first_arm else "TRAIL",
+                    f"{'雷达启动' if first_arm else label} → SL {new_sl}",
+                    trail_detail,
+                )
+                if sl_placed or first_arm or on_book:
                     alert_type = "RADAR_ARM" if first_arm else "TRAIL"
-                    title = "雷达激活·距TP1剩15%防回吐" if first_arm else f"雷达·{label}"
+                    title = (
+                        "雷达启动·距TP1剩15%防回吐"
+                        if first_arm
+                        else f"雷达·{label}"
+                    )
                     eff = trail_detail.get("radar_activation_effective") or trail_detail.get("radar_activation") or 0.85
                     base = trail_detail.get("radar_activation") or 0.85
                     self._alert(
                         "info", alert_type, title,
-                        f"路径启动 | 进度 {trail_detail.get('radar_progress', 0):.0%} "
-                        f"(档位{base:.0%}/有效{eff:.0%}) | 阶段{radar.get('stage')} SL {new_sl} | 盘口{'✓' if sl_placed else '?'}",
+                        f"{'路径首次启动' if first_arm else '路径追踪'} | 进度 {trail_detail.get('radar_progress', 0):.0%} "
+                        f"(档位{base:.0%}/有效{eff:.0%}) | 阶段{radar.get('stage')} SL {new_sl} | 盘口{'✓' if (sl_placed or on_book) else '?'}",
                         trail_detail,
                     )
                 if hasattr(self, "_cancel_obsolete_tp_after_radar_move"):
@@ -2485,10 +2620,10 @@ class PositionSupervisor(
                     or abs(float(self.current_sl or 0) - new_sl) > min_move
                 )
             )
-            if on_book and not should_trail:
+            if on_book and not should_trail and was_latched:
                 return False
-            if should_trail or should_arm:
-                first_arm = should_arm and not should_trail
+            if should_trail or should_arm or (not was_latched and not on_book):
+                first_arm = not was_latched
                 self.current_sl = new_sl
                 self._latch_radar()
                 self._save_state()
@@ -2501,18 +2636,27 @@ class PositionSupervisor(
                     stage=radar.get("stage"),
                     stage_label=radar.get("stage_label"),
                     first_arm=first_arm,
+                    arm_source="path_tp1",
                 )
                 label = radar.get("stage_label") or "雷达锁润"
-                self._log("TRAIL", f"{label} → SL {new_sl}", trail_detail)
-                if sl_placed or first_arm:
+                self._log(
+                    "RADAR_ARM" if first_arm else "TRAIL",
+                    f"{'雷达启动' if first_arm else label} → SL {new_sl}",
+                    trail_detail,
+                )
+                if sl_placed or first_arm or on_book:
                     alert_type = "RADAR_ARM" if first_arm else "TRAIL"
-                    title = "雷达激活·距TP1剩15%防回吐" if first_arm else f"雷达·{label}"
+                    title = (
+                        "雷达启动·距TP1剩15%防回吐"
+                        if first_arm
+                        else f"雷达·{label}"
+                    )
                     eff = trail_detail.get("radar_activation_effective") or trail_detail.get("radar_activation") or 0.85
                     base = trail_detail.get("radar_activation") or 0.85
                     self._alert(
                         "info", alert_type, title,
-                        f"路径启动 | 进度 {trail_detail.get('radar_progress', 0):.0%} "
-                        f"(档位{base:.0%}/有效{eff:.0%}) | 阶段{radar.get('stage')} SL {new_sl} | 盘口{'✓' if sl_placed else '?'}",
+                        f"{'路径首次启动' if first_arm else '路径追踪'} | 进度 {trail_detail.get('radar_progress', 0):.0%} "
+                        f"(档位{base:.0%}/有效{eff:.0%}) | 阶段{radar.get('stage')} SL {new_sl} | 盘口{'✓' if (sl_placed or on_book) else '?'}",
                         trail_detail,
                     )
                 if hasattr(self, "_cancel_obsolete_tp_after_radar_move"):
@@ -2856,6 +3000,12 @@ class PositionSupervisor(
         self.trade_opened_at = None
         self._save_state()
         self._purge_defense_orders_on_flat("flat_reset", notify=True)
+        if closed_successfully:
+            self._reconcile_live_vs_book(
+                expect_flat=True,
+                context=str(close_action or close_trigger or "close"),
+                notify_ok=False,
+            )
 
     def _trigger_settlement_on_flat(self) -> None:
         """Profitable cycle awaiting flat: bill immediately after position closes."""

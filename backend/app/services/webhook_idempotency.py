@@ -22,6 +22,16 @@ IDEMPOTENCY_TTL_SEC = 120
 SEQ_IDEMPOTENCY_TTL_SEC = 86400
 
 
+def _seq_action_token(action: str) -> str:
+    """Normalize action for seq idempotency (OPEN/LONG/SHORT share open family)."""
+    a = str(action or "").upper().strip()
+    if a in ("LONG", "SHORT", "BUY", "SELL") or a.startswith("OPEN"):
+        return f"OPEN_{a}" if a in ("LONG", "SHORT", "BUY", "SELL") else a
+    if a.startswith("CLOSE"):
+        return a
+    return a or "UNKNOWN"
+
+
 def compute_fingerprint(payload: dict) -> str:
     explicit = (
         str(payload.get("idempotency_key") or payload.get("signal_id") or "").strip()
@@ -31,6 +41,7 @@ def compute_fingerprint(payload: dict) -> str:
 
     bi = payload.get("bar_index")
     seq = payload.get("seq")
+    action = str(payload.get("action", "")).upper()
     if bi is not None and seq is not None:
         try:
             bi_i = int(bi)
@@ -41,10 +52,19 @@ def compute_fingerprint(payload: dict) -> str:
             from app.core.symbol_registry import extract_payload_symbol
 
             symbol = extract_payload_symbol(payload, require=False) or "UNKNOWN"
-            # Redis unique key shape: {symbol}_{bar_index}_{seq}
-            return f"seq:{symbol}_{bi_i}_{seq_i}"
+            # V1.6.10: {symbol}_{bar}_{seq}_{action}_{price}_{tps}
+            # Same bar may recycle seq (open→close→open = 1-2-1). Action alone is not
+            # enough when both opens are LONG — include price/TP so the second open
+            # is not treated as a TV retry of the first.
+            act = _seq_action_token(action)
+            px = round_price(payload.get("price") or 0)
+            tps = (
+                f"{round_price(payload.get('tv_tp1') or 0)}_"
+                f"{round_price(payload.get('tv_tp2') or 0)}_"
+                f"{round_price(payload.get('tv_tp3') or 0)}"
+            )
+            return f"seq:{symbol}_{bi_i}_{seq_i}_{act}_{px}_{tps}"
 
-    action = str(payload.get("action", "")).upper()
     from app.core.symbol_registry import extract_payload_symbol
 
     core = {

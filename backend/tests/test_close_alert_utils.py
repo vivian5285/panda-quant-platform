@@ -47,6 +47,24 @@ def test_resolve_alert_type_and_title():
     assert resolve_close_alert_title("CLOSE_PROTECT", "风控拦截：xxx") == "风控拦截 · 保护全平"
 
 
+def test_resolve_title_from_exchange_attribution():
+    """Distinguish TP fill vs radar stop when no TV close_action."""
+    tp_attr = {
+        "close_origin": "exchange_limit_tp",
+        "matched_tps": [1, 2],
+        "human_reason": "盘口已平：限价止盈成交",
+    }
+    radar_attr = {
+        "close_origin": "exchange_stop",
+        "human_reason": "盘口已平：保本雷达/条件止损触发",
+    }
+    assert resolve_close_alert_type(None, None, tp_attr) == "CLOSE_ATTRIBUTION"
+    assert "限价止盈" in resolve_close_alert_title(None, None, tp_attr)
+    assert "TP1,2" in resolve_close_alert_title(None, None, tp_attr)
+    assert resolve_close_alert_type(None, None, radar_attr) == "CLOSE_STOPLOSS"
+    assert "保本雷达" in resolve_close_alert_title(None, None, radar_attr)
+
+
 def test_build_verify_note_with_delta():
     note = build_verify_note(
         exit_price=3500.0,

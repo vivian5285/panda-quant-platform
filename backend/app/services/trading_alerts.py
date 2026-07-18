@@ -113,6 +113,7 @@ ALERT_TYPE_TAGS = {
     "ADVERSE_SL_REPAIR": "逆势止损补挂",
     "FALSE_FLAT": "误报空仓",
     "CLOSE_ATTRIBUTION": "平仓归因",
+    "POSITION_RECONCILE": "头寸对账",
     "API_OFFLINE": "API离线",
 }
 
@@ -159,6 +160,7 @@ ADMIN_DINGTALK_KEY_TYPES = frozenset({
     "ADVERSE_SL_MISALIGN",
     "FALSE_FLAT",
     "CLOSE_ATTRIBUTION",
+    "POSITION_RECONCILE",
     "TRAIL",
     "RADAR_ARM",
     "RADAR_REVOKE",
@@ -342,6 +344,20 @@ def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
             "generic": "换防清场",
         }
         lines.append(_line("平仓类型", subtype_labels.get(detail["close_subtype"], detail["close_subtype"])))
+    origin = detail.get("close_origin")
+    if origin:
+        origin_labels = {
+            "exchange_limit_tp": "交易所限价止盈成交（非雷达）",
+            "exchange_stop": "保本雷达/条件止损触发（非TP限价）",
+            "manual_exchange": "交易所人工操作",
+            "platform_market": "平台市价全平",
+            "tv_forced": "TV强制平仓信号",
+            "exchange_already_flat": "盘口已平",
+            "unknown": "未能判定",
+        }
+        lines.append(_line("平仓来源", origin_labels.get(str(origin), str(origin))))
+    if detail.get("human_reason"):
+        lines.append(_line("归因说明", str(detail["human_reason"])))
     if detail.get("regime") is not None:
         lines.append(_line("档位", f"R{detail['regime']}"))
     if detail.get("atr") is not None:
@@ -725,6 +741,19 @@ def format_radar_arm_detail_cn(detail: dict, exchange: str | None = None) -> str
         )
     if detail.get("radar_arm_reason"):
         lines.append(_line("启动原因", str(detail["radar_arm_reason"])))
+    if detail.get("arm_source"):
+        src_labels = {
+            "path_tp1": "路径达TP1比例（非TP限价成交）",
+            "tp1_filled": "TP1限价成交后强制启动",
+            "tp2_filled": "TP2限价成交后强制启动",
+            "tp3_filled": "TP3限价成交后强制启动",
+            "tp_fill": "止盈成交后强制启动",
+        }
+        lines.append(
+            _line("启动来源", src_labels.get(str(detail["arm_source"]), str(detail["arm_source"])))
+        )
+    if detail.get("first_arm") is True:
+        lines.append(_line("首次启动", "是 · 路径保本雷达"))
     if detail.get("new_sl") or detail.get("radar_sl"):
         sl = detail.get("new_sl") or detail.get("radar_sl")
         lines.append(_line("雷达止损", f"@{float(sl):.2f}"))

@@ -2170,6 +2170,8 @@ class AdverseRadarMixin:
             "consumed_tp_levels": list(getattr(self, "consumed_tp_levels", []) or []),
             "merged_slot": not self._uses_dual_stop_track(),
             "exchange": getattr(self, "exchange_id", None),
+            "arm_source": "tp_fill",
+            "first_arm": not bool(getattr(self, "radar_latched", False)),
         }
         label = radar.get("stage_label") or "雷达保本"
         if on_book or placed:
@@ -2184,9 +2186,9 @@ class AdverseRadarMixin:
                 self._alert(
                     "info",
                     "RADAR_ARM",
-                    f"雷达激活·{change_type}后防回吐",
+                    f"雷达启动·{change_type}后防回吐（止盈成交）",
                     f"{label} SL@{sl_px:.2f} | 现价{float(curr_px or 0):.2f} | "
-                    f"盘口{'✓核实' if on_book else '提交中'} | 合并单槽不抢TP份额",
+                    f"盘口{'✓核实' if on_book else '提交中'} | 来源=TP成交非路径85%",
                     detail,
                 )
         else:

@@ -735,14 +735,17 @@ https://twinstar.pro/gemini/webhook
 }
 ```
 
-**VPS 规则（全所共用）：**
+**VPS 规则（全所共用 · V1.6.10）：**
 
-1. **排序**：主键 `bar_index` 升序，次键 `seq` 升序（**禁止**按到达时间处理）
-2. **幂等**：Redis 键 `seq:{symbol}_{bar_index}_{seq}`，TTL 24h（`WEBHOOK_SEQ_IDEMPOTENCY_TTL_SEC`）
-3. **乱序**：缺前置 `seq` 时暂存 `WEBHOOK_SEQ_WAIT_SEC`（默认 3s），超时钉钉告警后按已有顺序强制释放
-4. **无时序字段**：回退旧内容指纹（短 TTL）并立即派发
+1. **排序**：主键 `bar_index` 升序，次键 `seq` 升序，同 seq 按入队时间（**禁止**仅按到达时间处理）
+2. **幂等**：`seq:{symbol}_{bar}_{seq}_{action}_{price}_{tps}`，TTL 24h — **必须含 action+价格/TP**，否则同 K 线 `开→平→再开`（seq `1-2-1`）第二次开仓会被误判重复而丢弃
+3. **循环时序**：同 K 线 `seq:1 → seq:2 → seq:1` 为正常（第二次开仓覆盖）；门控按序释放，**不得**因 seq 已释放而丢掉第二次 `seq:1`
+4. **串行派发**：时序门释放后按 **symbol 串行**执行（先平后开），避免异步线程把 OPEN 插到 CLOSE 前导致「只平不开」
+5. **乱序**：缺前置 `seq` 时暂存 `WEBHOOK_SEQ_WAIT_SEC`（默认 3s），超时钉钉告警后按已有顺序强制释放
+6. **无时序字段**：回退旧内容指纹（短 TTL）并立即派发
+7. **最终状态**：每次开/平后查询交易所持仓对账（`POSITION_RECONCILE` 钉钉）
 
-实现：`webhook_seq_gate.py` · `webhook_idempotency.py`
+实现：`webhook_seq_gate.py` · `webhook_idempotency.py` · `webhook_server.py` 串行队列
 
 ### 保护性全平 JSON
 
@@ -799,8 +802,9 @@ https://twinstar.pro/gemini/webhook
 | 阶段 | 行为 |
 |------|------|
 | 同步 | 校验 → **立即 HTTP 200**（通常 <50ms） |
-| 异步 | `webhook-dispatch-*` 线程池广播（默认 20 并发） |
-| 幂等 | 相同指纹在 `WEBHOOK_IDEMPOTENCY_TTL_SEC`（默认 120s）内 → `{ "status": "duplicate" }` |
+| 时序门 | `bar_index+seq` 排序 / 缺口等待后按序释放 |
+| 异步 | **按 symbol 串行**派发（保证同品种 CLOSE→OPEN 不竞态），用户侧仍可并发 |
+| 幂等 | 时序指纹含 action+价格/TP（24h）；无时序字段用内容指纹（默认 120s）→ `{ "status": "duplicate" }` |
 
 响应头：`X-Webhook-Latency-Ms`
 
@@ -863,7 +867,16 @@ https://twinstar.pro/gemini/webhook
 
 前端 API 绑定页交易所卡片使用同色主题（`exchange-picker-{exchange}`），便于与原版系统视觉区分。
 
-**会推送：** `OPEN`、`PYRAMID`、`PROFIT_ADD`、`NOTIONAL_CAP`、`CLOSE`、`CLOSE_TP3`、`CLOSE_PROTECT`、`CLOSE_STOPLOSS`、`CLOSE_ATTRIBUTION`、`RADAR_ARM`、`RADAR_REVOKE`、`TRAIL`、`SAME_DIR_TP_REFRESH`、`SAME_DIR_REOPEN`、`STARTUP`、`STARTUP_FAIL`、`FORCE_ALIGN`、`POSITION_SIDE_FLIP`、`TP_OVER_COMMIT`、`ADJUST`、`MANUAL_ADJUST`、`DEFENSE_HEAL_FAIL`、`INSUFFICIENT_BALANCE`、`LOCK_TIMEOUT`、`TP_RETRY_FAIL`、`API_OFFLINE`、`SENTINEL_ERROR`、`severity=critical`
+**会推送：** `OPEN`、`PYRAMID`、`PROFIT_ADD`、`NOTIONAL_CAP`、`CLOSE`、`CLOSE_TP3`、`CLOSE_PROTECT`、`CLOSE_STOPLOSS`、`CLOSE_ATTRIBUTION`、`POSITION_RECONCILE`、`RADAR_ARM`、`RADAR_REVOKE`、`TRAIL`、`SAME_DIR_TP_REFRESH`、`SAME_DIR_REOPEN`、`STARTUP`、`STARTUP_FAIL`、`FORCE_ALIGN`、`POSITION_SIDE_FLIP`、`TP_OVER_COMMIT`、`ADJUST`、`MANUAL_ADJUST`、`DEFENSE_HEAL_FAIL`、`INSUFFICIENT_BALANCE`、`LOCK_TIMEOUT`、`TP_RETRY_FAIL`、`API_OFFLINE`、`SENTINEL_ERROR`、`severity=critical`
+
+**平仓来源区分（钉钉标题/核实明细）：**
+
+| 场景 | 钉钉识别 |
+|------|----------|
+| 路径达 TP1 85% 首次挂保本 | `RADAR_ARM`「雷达启动·距TP1剩15%防回吐」· 启动来源=路径 |
+| TP1/2/3 限价吃单后强制保本 | `RADAR_ARM`「雷达启动·…后防回吐（止盈成交）」· 启动来源=TP成交 |
+| 盘口归零·限价止盈 | `CLOSE_ATTRIBUTION`「限价止盈成交·TP…」 |
+| 盘口归零·雷达/条件止损 | `CLOSE_STOPLOSS`「保本雷达/条件止损触发」 |
 
 **开仓钉钉关键字段：**
 

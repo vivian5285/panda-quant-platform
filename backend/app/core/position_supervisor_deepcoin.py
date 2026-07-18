@@ -90,25 +90,80 @@ FLAT_WAIT_POLL = 0.6
 
 
 class _DingtalkBridge:
-    """Route legacy dingtalk report_* calls to Gemini on_alert."""
+    """Route legacy dingtalk report_* calls to Gemini on_alert.
+
+    Map known report_* names onto ADMIN_DINGTALK_KEY_TYPES so Open / radar /
+    close alerts actually push (bare REPORT_* names were silently dropped).
+    """
+
+    _TYPE_MAP = {
+        "report_supervisor_open": ("OPEN", "info", "GEMINI开仓"),
+        "report_intervention": ("TRAIL", "info", "雷达追踪"),
+        "report_system_alert": ("SENTINEL_ERROR", "warning", "系统告警"),
+        "report_force_align": ("FORCE_ALIGN", "critical", "方向背离"),
+        "report_close": ("CLOSE", "info", "全平完成"),
+    }
 
     def __init__(self, supervisor: "DeepcoinPositionSupervisor"):
         self._sup = supervisor
 
     def __getattr__(self, name: str):
         def _call(*args, **kwargs):
-            title = name.replace("report_", "").replace("_", " ").title()
+            mapped = self._TYPE_MAP.get(name)
+            if mapped:
+                alert_type, severity, title = mapped
+            else:
+                title = name.replace("report_", "").replace("_", " ").title()
+                alert_type = name.upper()
+                severity = (
+                    "critical" if "fail" in name or "force" in name
+                    else "warning" if "alert" in name or "intervention" in name
+                    else "info"
+                )
             msg_parts = [str(a) for a in args if a is not None]
             message = " | ".join(msg_parts)[:500] if msg_parts else title
-            severity = (
-                "critical" if "fail" in name or "force" in name
-                else "warning" if "alert" in name or "intervention" in name
-                else "info"
-            )
             detail = dict(kwargs) if kwargs else {}
-            self._sup._alert(severity, name.upper(), title, message, detail)
+            # Prefer explicit kwargs title/type when callers pass them
+            if kwargs.get("alert_type"):
+                alert_type = str(kwargs["alert_type"])
+            if kwargs.get("title"):
+                title = str(kwargs["title"])
+            self._sup._alert(severity, alert_type, title, message, detail)
 
         return _call
+
+    def report_supervisor_open(self, *args, **kwargs):
+        """OPEN with exchange theme title (pushes DingTalk)."""
+        from app.services.trading_alerts import resolve_exchange_theme
+
+        theme = resolve_exchange_theme("deepcoin", getattr(self._sup, "canonical_symbol", None))
+        side = args[0] if args else kwargs.get("side", "")
+        entry = args[1] if len(args) > 1 else kwargs.get("entry", 0)
+        qty = args[3] if len(args) > 3 else kwargs.get("qty", 0)
+        verify_note = kwargs.get("verify_note") or ""
+        detail = {k: v for k, v in kwargs.items() if k not in ("verify_note", "title", "alert_type")}
+        detail.setdefault("exchange", "deepcoin")
+        detail.setdefault("side", side)
+        detail.setdefault("entry", entry)
+        detail.setdefault("qty", qty)
+        detail.setdefault("radar_armed", False)
+        title = (
+            f"{theme['accent']} GEMINI开仓 · "
+            f"{theme.get('symbol_label') or getattr(self._sup, 'canonical_symbol', '')} "
+            f"· {theme['label']} 档位{getattr(self._sup, 'regime', '')}"
+        )
+        message = (
+            f"{getattr(self._sup, 'canonical_symbol', '')} {side} {qty} 张 @ {entry} | "
+            f"{verify_note}"
+        ).strip(" |")
+        self._sup._alert("info", "OPEN", title, message, detail)
+        if hasattr(self._sup, "_reconcile_live_vs_book"):
+            self._sup._reconcile_live_vs_book(
+                expect_side=str(side).upper() if side else None,
+                expect_qty=float(qty or 0) or None,
+                context="open",
+                notify_ok=True,
+            )
 
 class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, StartupReconcileMixin):
     def __init__(
@@ -213,6 +268,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         )
         self._start_signal_worker()
         self._start_idle_flat_patrol()
+
+    def _read_live_position_snapshot(self):
+        from app.core.position_supervisor import PositionSupervisor
+
+        return PositionSupervisor._read_live_position_snapshot(self)
+
+    def _reconcile_live_vs_book(self, **kwargs):
+        from app.core.position_supervisor import PositionSupervisor
+
+        return PositionSupervisor._reconcile_live_vs_book(self, **kwargs)
 
     def _start_idle_flat_patrol(self):
         """空仓待命时后台巡检：实盘对账 / 同向接管 / 残张扫尾"""
@@ -668,9 +733,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if tid and exit_price > 0:
             self.on_trade_close(tid, exit_price, pnl, display_reason, 0.0)
 
-        alert_type = resolve_close_alert_type(close_action, display_reason)
-        alert_title = resolve_close_alert_title(close_action, display_reason)
-        ding_msg = format_close_dingtalk_message(display_reason, verify_note)
+        attribution = close_detail.get("attribution") if isinstance(close_detail.get("attribution"), dict) else None
+        alert_type = resolve_close_alert_type(close_action, display_reason, attribution)
+        alert_title = resolve_close_alert_title(close_action, display_reason, attribution)
+        ding_head = display_reason
+        if attribution and not close_action:
+            ding_head = attribution.get("human_reason") or display_reason
+        ding_msg = format_close_dingtalk_message(ding_head, verify_note)
         self._log("CLOSE", display_reason, close_detail, trade_id=tid)
         self._alert("info", alert_type, alert_title, ding_msg, close_detail)
 
@@ -2640,6 +2709,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             new_sl = clamp_stop_market_safe(new_sl, curr_px, self.current_side)
         label = radar.get("stage_label") or "雷达锁润"
         min_move = 1.0
+        was_latched = bool(getattr(self, "radar_latched", False))
         if self.current_side == "LONG":
             on_book = self._has_trigger_sl_near(new_sl)
             should_trail = new_sl > float(self.current_sl or 0) + min_move
@@ -2647,24 +2717,59 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 float(self.current_sl or 0) <= 0
                 or abs(float(self.current_sl or 0) - new_sl) > min_move
             )
-            if on_book and not should_trail:
+            if on_book and not should_trail and was_latched:
                 return False
-            if should_trail or should_arm:
-                first_arm = should_arm and not should_trail
+            if should_trail or should_arm or (not was_latched and not on_book):
+                first_arm = not was_latched
                 self.current_sl = new_sl
                 self._latch_radar()
                 self._save_state()
                 placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
                 if not placed and not on_book:
                     placed = bool(self._ensure_radar_sl(real_amt, new_sl))
-                if placed or self._has_trigger_sl_near(new_sl) or first_arm:
-                    self._dt.report_intervention(
-                        real_amt, self.watched_entry, new_sl,
-                        f"🚀 {label} @ {new_sl:.2f} (阶段{radar.get('stage')})",
-                        verify_note=f"条件止损 @ {new_sl:.2f} | 持仓 {real_amt}张",
+                on_book_now = placed or self._has_trigger_sl_near(new_sl)
+                trail_detail = {
+                    "exchange": "deepcoin",
+                    "side": self.current_side,
+                    "entry": float(self.watched_entry or 0),
+                    "new_sl": new_sl,
+                    "curr_px": curr_px,
+                    "qty": real_amt,
+                    "stage": radar.get("stage"),
+                    "stage_label": label,
+                    "first_arm": first_arm,
+                    "arm_source": "path_tp1",
+                    "sl_placed": bool(on_book_now),
+                    "regime": self.regime,
+                }
+                if hasattr(self, "_radar_trail_detail"):
+                    trail_detail = self._radar_trail_detail(
+                        curr_px, new_sl,
+                        sl_placed=bool(on_book_now),
+                        stage=radar.get("stage"),
+                        stage_label=label,
+                        first_arm=first_arm,
+                        arm_source="path_tp1",
                     )
-                    self._cancel_obsolete_tp_after_radar_move(new_sl)
-                    return True
+                self._log(
+                    "RADAR_ARM" if first_arm else "TRAIL",
+                    f"{'雷达启动' if first_arm else label} → SL {new_sl}",
+                    trail_detail,
+                )
+                if on_book_now or first_arm:
+                    alert_type = "RADAR_ARM" if first_arm else "TRAIL"
+                    title = "雷达启动·距TP1剩15%防回吐" if first_arm else f"雷达·{label}"
+                    self._alert(
+                        "info",
+                        alert_type,
+                        title,
+                        f"{'路径首次启动' if first_arm else '路径追踪'} | "
+                        f"阶段{radar.get('stage')} SL {new_sl:.2f} | 持仓 {real_amt}张 | "
+                        f"盘口{'✓' if on_book_now else '?'}",
+                        trail_detail,
+                    )
+                self._cancel_obsolete_tp_after_radar_move(new_sl)
+                return True
         else:
             on_book = self._has_trigger_sl_near(new_sl)
             should_trail = (
@@ -2677,24 +2782,59 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 or float(self.current_sl or 0) >= float(self.watched_entry or 0)
                 or abs(float(self.current_sl or 0) - new_sl) > min_move
             )
-            if on_book and not should_trail:
+            if on_book and not should_trail and was_latched:
                 return False
-            if should_trail or should_arm:
-                first_arm = should_arm and not should_trail
+            if should_trail or should_arm or (not was_latched and not on_book):
+                first_arm = not was_latched
                 self.current_sl = new_sl
                 self._latch_radar()
                 self._save_state()
                 placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
                 if not placed and not on_book:
                     placed = bool(self._ensure_radar_sl(real_amt, new_sl))
-                if placed or self._has_trigger_sl_near(new_sl) or first_arm:
-                    self._dt.report_intervention(
-                        real_amt, self.watched_entry, new_sl,
-                        f"🚀 {label} @ {new_sl:.2f} (阶段{radar.get('stage')})",
-                        verify_note=f"条件止损 @ {new_sl:.2f} | 持仓 {real_amt}张",
+                on_book_now = placed or self._has_trigger_sl_near(new_sl)
+                trail_detail = {
+                    "exchange": "deepcoin",
+                    "side": self.current_side,
+                    "entry": float(self.watched_entry or 0),
+                    "new_sl": new_sl,
+                    "curr_px": curr_px,
+                    "qty": real_amt,
+                    "stage": radar.get("stage"),
+                    "stage_label": label,
+                    "first_arm": first_arm,
+                    "arm_source": "path_tp1",
+                    "sl_placed": bool(on_book_now),
+                    "regime": self.regime,
+                }
+                if hasattr(self, "_radar_trail_detail"):
+                    trail_detail = self._radar_trail_detail(
+                        curr_px, new_sl,
+                        sl_placed=bool(on_book_now),
+                        stage=radar.get("stage"),
+                        stage_label=label,
+                        first_arm=first_arm,
+                        arm_source="path_tp1",
                     )
-                    self._cancel_obsolete_tp_after_radar_move(new_sl)
-                    return True
+                self._log(
+                    "RADAR_ARM" if first_arm else "TRAIL",
+                    f"{'雷达启动' if first_arm else label} → SL {new_sl}",
+                    trail_detail,
+                )
+                if on_book_now or first_arm:
+                    alert_type = "RADAR_ARM" if first_arm else "TRAIL"
+                    title = "雷达启动·距TP1剩15%防回吐" if first_arm else f"雷达·{label}"
+                    self._alert(
+                        "info",
+                        alert_type,
+                        title,
+                        f"{'路径首次启动' if first_arm else '路径追踪'} | "
+                        f"阶段{radar.get('stage')} SL {new_sl:.2f} | 持仓 {real_amt}张 | "
+                        f"盘口{'✓' if on_book_now else '?'}",
+                        trail_detail,
+                    )
+                self._cancel_obsolete_tp_after_radar_move(new_sl)
+                return True
         return False
 
     def _sentinel_loop(self):

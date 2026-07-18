@@ -66,7 +66,11 @@ def classify_tv_close_subtype(close_action: str | None, tv_reason: str | None) -
     return "generic"
 
 
-def resolve_close_alert_type(close_action: str | None, tv_reason: str | None) -> str:
+def resolve_close_alert_type(
+    close_action: str | None,
+    tv_reason: str | None,
+    attribution: dict | None = None,
+) -> str:
     action = str(close_action or "").upper()
     subtype = classify_tv_close_subtype(action, tv_reason)
     if subtype == "tp3" or "CLOSE_TP3" in action:
@@ -75,10 +79,20 @@ def resolve_close_alert_type(close_action: str | None, tv_reason: str | None) ->
         return "CLOSE_STOPLOSS"
     if "CLOSE_PROTECT" in action or action.startswith("CLOSE_PROTECT"):
         return "CLOSE_PROTECT"
+    # Exchange-detected flat: keep CLOSE but DingTalk title distinguishes TP vs radar
+    origin = str((attribution or {}).get("close_origin") or "")
+    if origin == "exchange_limit_tp":
+        return "CLOSE_ATTRIBUTION"
+    if origin == "exchange_stop":
+        return "CLOSE_STOPLOSS"
     return "CLOSE"
 
 
-def resolve_close_alert_title(close_action: str | None, tv_reason: str | None) -> str:
+def resolve_close_alert_title(
+    close_action: str | None,
+    tv_reason: str | None,
+    attribution: dict | None = None,
+) -> str:
     subtype = classify_tv_close_subtype(close_action, tv_reason)
     titles = {
         "tp3": "TP3完美收网 · 全平完成",
@@ -89,7 +103,26 @@ def resolve_close_alert_title(close_action: str | None, tv_reason: str | None) -
         "protect": "保护性全平 · 完成",
         "generic": "全平完成",
     }
-    return titles.get(subtype, "全平完成")
+    if subtype != "generic" or close_action:
+        return titles.get(subtype, "全平完成")
+    # No TV close action — prefer exchange attribution (TP fill vs radar/stop)
+    origin = str((attribution or {}).get("close_origin") or "")
+    matched = (attribution or {}).get("matched_tps") or []
+    if origin == "exchange_limit_tp":
+        if matched:
+            levels = ",".join(str(x) for x in matched)
+            return f"限价止盈成交·TP{levels} · 全平"
+        return "限价止盈成交 · 全平"
+    if origin == "exchange_stop":
+        return "保本雷达/条件止损触发 · 全平"
+    if origin == "manual_exchange":
+        return "交易所人工平仓 · 全平"
+    if origin == "tv_forced":
+        return "TV强制平仓 · 全平"
+    human = str((attribution or {}).get("human_reason") or "").strip()
+    if human:
+        return f"{human[:40]} · 全平"
+    return "全平完成"
 
 
 def build_verify_note(

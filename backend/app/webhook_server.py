@@ -1,4 +1,5 @@
 import logging
+import queue
 import threading
 import time
 
@@ -11,6 +12,54 @@ from app.services.webhook_payload import parse_webhook_payload
 logger = logging.getLogger(__name__)
 
 webhook_app = Flask(__name__)
+
+# Per-symbol serial dispatch: seq gate releases CLOSE then OPEN in order, but
+# fire-and-forget threads can reorder queue.put() across users. One worker per
+# symbol runs _run_dispatch_async to completion before the next signal.
+_symbol_dispatch_queues: dict[str, queue.Queue] = {}
+_symbol_dispatch_lock = threading.Lock()
+
+
+def _symbol_dispatch_worker(symbol: str, q: "queue.Queue") -> None:
+    while True:
+        item = q.get()
+        try:
+            if item is None:
+                return
+            data, fingerprint = item
+            action = str(data.get("action", "?")).upper()
+            logger.info(
+                "[WebhookDispatch] serial start symbol=%s action=%s bar=%s seq=%s qsize=%s",
+                symbol, action, data.get("bar_index"), data.get("seq"), q.qsize(),
+            )
+            _run_dispatch_async(data, fingerprint, None)
+            logger.info(
+                "[WebhookDispatch] serial done symbol=%s action=%s bar=%s seq=%s",
+                symbol, action, data.get("bar_index"), data.get("seq"),
+            )
+        except Exception:
+            logger.exception("[WebhookDispatch] serial worker failed symbol=%s", symbol)
+        finally:
+            q.task_done()
+
+
+def _enqueue_symbol_dispatch(data: dict, fingerprint: str) -> None:
+    from app.core.symbol_registry import extract_payload_symbol
+
+    symbol = extract_payload_symbol(data, require=False) or "UNKNOWN"
+    with _symbol_dispatch_lock:
+        q = _symbol_dispatch_queues.get(symbol)
+        if q is None:
+            q = queue.Queue()
+            _symbol_dispatch_queues[symbol] = q
+            t = threading.Thread(
+                target=_symbol_dispatch_worker,
+                args=(symbol, q),
+                daemon=True,
+                name=f"webhook-serial-{symbol}",
+            )
+            t.start()
+        q.put((data, fingerprint))
 
 
 def _persist_webhook_log(**kwargs) -> int | None:
@@ -98,18 +147,8 @@ def _run_dispatch_async(data: dict, fingerprint: str, webhook_log_id: int | None
 
 
 def _spawn_dispatch(data: dict, fingerprint: str) -> None:
-    """Start background dispatch (called after seq gate releases)."""
-    action = str(data.get("action", "UNKNOWN")).upper()
-    from app.services.webhook_guard import is_close_signal
-
-    is_close = is_close_signal(action)
-    thread_name = f"webhook-close-{action}" if is_close else f"webhook-dispatch-{action}"
-    threading.Thread(
-        target=_run_dispatch_async,
-        args=(data, fingerprint, None),
-        daemon=True,
-        name=thread_name,
-    ).start()
+    """Enqueue ordered per-symbol dispatch (called after seq gate releases)."""
+    _enqueue_symbol_dispatch(data, fingerprint)
 
 
 @webhook_app.route("/webhook", methods=["POST"])
