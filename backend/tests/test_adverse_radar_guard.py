@@ -1,6 +1,7 @@
 """Adverse radar guard — 10% hard stop at open + radar handoff tests."""
 
 from unittest.mock import MagicMock, patch
+import time
 
 import pytest
 
@@ -338,6 +339,8 @@ def test_orchestrate_radar_coexist_route_a():
     probe = _AdverseProbe()
     probe.adverse_sl_armed = True
     probe.current_sl = 2003.0
+    probe.radar_latched = True
+    probe.trade_opened_at = time.time() - 300
     with patch.object(probe, "_process_adverse_radar_guard", return_value=True) as guard, patch.object(
         probe, "_process_radar_trailing", return_value=True,
     ) as trail, patch.object(

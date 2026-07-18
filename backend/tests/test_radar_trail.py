@@ -1,14 +1,20 @@
 """Radar breakeven trailing — path-to-TP1 arming by regime."""
 
+import time
+
 import pytest
 
 from app.core.radar_trail import (
+    RADAR_ARM_CONFIRM_POLLS,
     RADAR_MIN_TRAIL_TP1_FRAC,
+    RADAR_OPEN_GRACE_SEC,
     REGIME_RADAR,
     breakeven_floor,
     clamp_stop_market_safe,
     compute_radar_sl,
+    evaluate_radar_arm_gate,
     merge_regime_radar,
+    radar_effective_activation,
     radar_may_arm,
     regime_radar_activation,
     stop_would_trigger_immediately,
@@ -54,6 +60,84 @@ def test_radar_may_arm_on_path_ratio():
     assert radar_may_arm(consumed_tp_levels=[2], progress=0.0, activation_ratio=0.70) is True
 
 
+def test_incident_tight_tp1_effective_activation_blocks_70pct():
+    """2026-07-18 ETH R1: span≈3.74 < ATR≈4.98 → effective ≥95%, 30% must not arm."""
+    entry, tp1, atr = 1845.91, 1849.6471230213, 4.982830695
+    eff = radar_effective_activation(1, entry, tp1, atr)
+    assert eff >= 0.95
+    d = evaluate_radar_arm_gate(
+        consumed_tp_levels=[],
+        progress=0.30,
+        regime=1,
+        entry=entry,
+        tp1=tp1,
+        atr=atr,
+        curr_px=1847.05,
+        side="LONG",
+        trade_opened_at=time.time() - 120,
+        path_ok_streak=0,
+    )
+    assert d["arm"] is False
+    px_70 = entry + 0.70 * (tp1 - entry)
+    d70 = evaluate_radar_arm_gate(
+        consumed_tp_levels=[],
+        progress=0.70,
+        regime=1,
+        entry=entry,
+        tp1=tp1,
+        atr=atr,
+        curr_px=px_70,
+        side="LONG",
+        trade_opened_at=time.time() - 120,
+        path_ok_streak=RADAR_ARM_CONFIRM_POLLS,
+    )
+    assert d70["arm"] is False
+    assert d70["activation_effective"] >= 0.95
+
+
+def test_open_grace_blocks_path_arm():
+    entry, tp1, atr = 1800.0, 1900.0, 20.0
+    now = time.time()
+    d = evaluate_radar_arm_gate(
+        consumed_tp_levels=[],
+        progress=0.95,
+        regime=1,
+        entry=entry,
+        tp1=tp1,
+        atr=atr,
+        curr_px=entry + 0.95 * 100,
+        side="LONG",
+        trade_opened_at=now - 5,
+        path_ok_streak=5,
+        now_ts=now,
+    )
+    assert d["blocked_grace"] is True
+    assert d["arm"] is False
+    assert RADAR_OPEN_GRACE_SEC >= 20
+
+
+def test_confirm_polls_required_before_arm():
+    entry, tp1, atr = 1800.0, 1900.0, 20.0
+    now = time.time()
+    kwargs = dict(
+        consumed_tp_levels=[],
+        progress=0.95,
+        regime=1,
+        entry=entry,
+        tp1=tp1,
+        atr=atr,
+        curr_px=entry + 95.0,
+        side="LONG",
+        trade_opened_at=now - 120,
+        now_ts=now,
+    )
+    d1 = evaluate_radar_arm_gate(path_ok_streak=0, **kwargs)
+    assert d1["building_confirm"] is True
+    assert d1["arm"] is False
+    d2 = evaluate_radar_arm_gate(path_ok_streak=d1["path_ok_streak"], **kwargs)
+    assert d2["arm"] is True
+
+
 def test_tp_path_progress_reaches_one_at_tp1():
     from app.core.radar_trail import tp_path_progress
 
@@ -65,7 +149,6 @@ def test_path_arm_stage_stays_breakeven_before_tp1():
     from app.core.vps_radar_stages import detect_radar_stage, compute_vps_radar_sl
 
     entry, tp1, tp2, tp3 = 1800.0, 1900.0, 1950.0, 2000.0
-    # 70% of entry→TP1
     curr = entry + 0.70 * (tp1 - entry)
     assert detect_radar_stage(entry, curr, "LONG", tp1, tp2, tp3, tp1_filled=True) == 1
     radar = compute_vps_radar_sl(
@@ -147,7 +230,7 @@ def test_stop_market_safe_clamp_long_pullback():
     best = 1806.0
     curr = 1785.0
     tp1_dist = 37.62
-    trail = trail_distance(30.0, 1.35, tp1_dist)
+    trail = trail_distance(30.0, 0.9, tp1_dist)
     raw = max(best - trail, breakeven_floor(entry, "LONG", 30.0))
     assert raw > curr
     assert stop_would_trigger_immediately(raw, curr, "LONG") is True

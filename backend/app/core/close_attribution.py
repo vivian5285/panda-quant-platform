@@ -117,14 +117,23 @@ def _closing_leg_fills(fills: list[dict], target_qty: float, qty_tol: float | No
     return picked
 
 
-def _match_tp_prices(fills: list[dict], tv_tps: list) -> list[int]:
-    """Match fill prices to TP tiers — only levels whose price actually printed."""
+def _match_tp_prices(fills: list[dict], tv_tps: list, entry: float = 0.0) -> list[int]:
+    """Match fill prices to TP tiers — adaptive tol so near-entry fills ≠ TP1."""
     matched: list[int] = []
+    entry_f = float(entry or 0)
     for level, tp in enumerate(tv_tps[:3], start=1):
         if not tp or float(tp) <= 0:
             continue
+        tp_f = float(tp)
+        # Default 0.15%; when TP is close to entry, shrink to ≤25% of entry→TP span
+        tol_pct = 0.0015
+        if entry_f > 0:
+            span = abs(tp_f - entry_f)
+            if span > 0:
+                span_pct = span / entry_f
+                tol_pct = min(0.0015, max(0.0002, span_pct * 0.25))
         for f in fills:
-            if _near_price(f["price"], float(tp), pct=0.0015):
+            if _near_price(f["price"], tp_f, pct=tol_pct):
                 matched.append(level)
                 break
     return matched
@@ -195,7 +204,7 @@ def diagnose_flat_close(
         evidence["latest_tv_action"] = recent_tv_close.get("action")
         evidence["latest_tv_at"] = recent_tv_close.get("created_at")
 
-    tp_matched = _match_tp_prices(leg_fills, list(tv_tps or []))
+    tp_matched = _match_tp_prices(leg_fills, list(tv_tps or []), entry=float(entry or 0))
     evidence["tp_price_matches"] = tp_matched
 
     avg_px = evidence.get("closing_avg_price") or 0.0
@@ -223,6 +232,12 @@ def diagnose_flat_close(
             origin = "tv_forced"
             actor = "tv_signal"
             human_reason = "盘口已平：近期有 TV 平仓信号，疑为 TV 驱动或跟随成交"
+        # Prefer stop/radar when exit hugs entry+radar SL (avoid false TP1 from loose tol)
+        elif (radar_active or near_stop) and near_stop and (near_entry or loss_side):
+            origin = "exchange_stop"
+            actor = "exchange_order"
+            sl_note = f"@{current_sl:.2f}" if current_sl else ""
+            human_reason = f"盘口已平：保本雷达/条件止损触发{sl_note}（均价 {avg_px:.2f}）"
         elif tp_matched:
             origin = "exchange_limit_tp"
             actor = "exchange_order"

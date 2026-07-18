@@ -12,7 +12,7 @@
 |---|------|----------|
 | P0 | TV 只发信号，不执行实盘决策 | `webhook_server.py` → `dispatcher.py` → `position_supervisor*.py` |
 | P0 | `tv_sl` **仅供日志参考**，绝不作为实盘硬止损挂单依据 | `vps_hard_sl.py` · `adverse_radar_guard.py`（`UPDATE_SL` 忽略） |
-| P1 | 雷达移动保本 **价格达档位 TP1 路径比例后** 启动（R1/R2 70%、R3 75%、R4 80%） | `radar_may_arm()` · `_radar_activation_reached()` |
+| P1 | 雷达移动保本 **价格达档位 TP1 路径比例后** 启动（R1/R2 70%、R3 75%、R4 80%；TP1 间距过窄时抬高有效比例 + 开仓保护期 + 双轮确认） | `evaluate_radar_arm_gate()` · `_radar_activation_reached()` |
 | P0 | ETH / XAU **独立** supervisor 状态，互不串单 | `symbol_registry.py` · `dispatcher.UserSupervisorPool` |
 | P0 | 所有 OPEN sizing 基于 **账户总本金（Total Equity）**，非可用余额 | `position_sizing.resolve_principal_sizing_base()` · `tv_entry_sizing.py` |
 

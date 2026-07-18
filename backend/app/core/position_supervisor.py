@@ -1012,6 +1012,16 @@ class PositionSupervisor(
                 detail["tp_slices"] = slices
             detail["radar_armed"] = False
             detail["radar_active"] = False
+            from app.core.radar_trail import radar_effective_activation, regime_radar_activation
+            detail["radar_activation"] = regime_radar_activation(int(self.regime or 3))
+            tps = list(self.tv_tps or [])
+            tp1_o = float(tps[0] or 0) if tps else 0.0
+            detail["radar_activation_effective"] = radar_effective_activation(
+                int(self.regime or 3),
+                float(entry_price or 0),
+                tp1_o,
+                float(getattr(self, "current_atr", 0) or 0),
+            )
             detail = enrich_tp_alert_detail(detail, regime=self.regime)
             enrich_suffix = ""
             enrich_note = getattr(self, "_last_enrich_note", "") or ""
@@ -2297,15 +2307,32 @@ class PositionSupervisor(
             ),
         )
         vps_meta = getattr(self, "_vps_hard_sl_meta", None) or {}
+        arm_meta = getattr(self, "_last_radar_arm_meta", None) or {}
+        from app.core.radar_trail import radar_effective_activation
+
+        base_act = float(
+            (self.regime_settings.get(self.regime) or {}).get("activation") or 0.70
+        )
+        eff_act = float(
+            arm_meta.get("activation_effective")
+            or radar_effective_activation(
+                int(self.regime or 3),
+                float(self.watched_entry or 0),
+                tp1,
+                float(self.current_atr or 0),
+            )
+        )
         detail = {
             "regime": self.regime,
             "new_sl": new_sl,
             "best_price": self.best_price,
             "radar_progress": round(progress, 4),
-            "radar_activation": float(
-                (self.regime_settings.get(self.regime) or {}).get("activation")
-                or 0.70
-            ),
+            "radar_activation": base_act,
+            "radar_activation_effective": round(eff_act, 4),
+            "radar_arm_reason": arm_meta.get("arm_reason"),
+            "tp1_span": arm_meta.get("tp1_span"),
+            "favorable_move": arm_meta.get("favorable_move"),
+            "min_abs_move": arm_meta.get("min_abs_move"),
             "radar_stage": stage,
             "consumed_tp_levels": list(getattr(self, "consumed_tp_levels", []) or []),
             "vps_hard_sl": float(getattr(self, "tv_sl", 0) or 0),
@@ -2394,11 +2421,13 @@ class PositionSupervisor(
                 self._log("TRAIL", f"{label} → SL {new_sl}", trail_detail)
                 if sl_placed or first_arm:
                     alert_type = "RADAR_ARM" if first_arm else "TRAIL"
-                    title = "雷达激活·TP1成交保本" if first_arm else f"雷达·{label}"
+                    title = "雷达激活·路径达档位比例" if first_arm else f"雷达·{label}"
+                    eff = trail_detail.get("radar_activation_effective") or trail_detail.get("radar_activation") or 0.7
+                    base = trail_detail.get("radar_activation") or 0.7
                     self._alert(
                         "info", alert_type, title,
-                        f"TP1已成交触发 | 阶段{radar.get('stage')} SL {new_sl} | "
-                        f"进度 {trail_detail.get('radar_progress', 0):.0%}",
+                        f"路径启动 | 进度 {trail_detail.get('radar_progress', 0):.0%} "
+                        f"(档位{base:.0%}/有效{eff:.0%}) | 阶段{radar.get('stage')} SL {new_sl}",
                         trail_detail,
                     )
                 if hasattr(self, "_cancel_obsolete_tp_after_radar_move"):
@@ -2442,10 +2471,13 @@ class PositionSupervisor(
                 self._log("TRAIL", f"{label} → SL {new_sl}", trail_detail)
                 if sl_placed or first_arm:
                     alert_type = "RADAR_ARM" if first_arm else "TRAIL"
-                    title = "雷达激活·TP1成交保本" if first_arm else f"雷达·{label}"
+                    title = "雷达激活·路径达档位比例" if first_arm else f"雷达·{label}"
+                    eff = trail_detail.get("radar_activation_effective") or trail_detail.get("radar_activation") or 0.7
+                    base = trail_detail.get("radar_activation") or 0.7
                     self._alert(
                         "info", alert_type, title,
-                        f"TP1已成交触发 | 阶段{radar.get('stage')} SL {new_sl}",
+                        f"路径启动 | 进度 {trail_detail.get('radar_progress', 0):.0%} "
+                        f"(档位{base:.0%}/有效{eff:.0%}) | 阶段{radar.get('stage')} SL {new_sl}",
                         trail_detail,
                     )
                 if hasattr(self, "_cancel_obsolete_tp_after_radar_move"):

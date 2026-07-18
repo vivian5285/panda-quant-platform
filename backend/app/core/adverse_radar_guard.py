@@ -227,6 +227,10 @@ class AdverseRadarMixin:
             self._pending_adverse_algo_ids = []
         if not hasattr(self, "radar_latched"):
             self.radar_latched = False
+        if not hasattr(self, "_radar_path_ok_streak"):
+            self._radar_path_ok_streak = 0
+        if not hasattr(self, "_last_radar_arm_meta"):
+            self._last_radar_arm_meta = {}
 
     def _reset_adverse_radar(self, *, keep_tv_sl: bool = True) -> None:
         preserved = float(getattr(self, "tv_sl", 0) or 0) if keep_tv_sl else 0.0
@@ -237,6 +241,8 @@ class AdverseRadarMixin:
         self.adverse_arm_dingtalk_sent = False
         self._pending_adverse_algo_ids = []
         self.radar_latched = False
+        self._radar_path_ok_streak = 0
+        self._last_radar_arm_meta = {}
         self.tv_sl = preserved
 
     def _latch_radar(self) -> None:
@@ -250,21 +256,71 @@ class AdverseRadarMixin:
             )
 
     def _is_radar_engaged(self) -> bool:
-        """Radar active or latched — must stay on radar track until position closes."""
+        """Radar latched (confirmed path/TP) — SL>entry alone is not enough."""
         self._init_adverse_radar_fields()
         if self.radar_latched:
             return True
-        if hasattr(self, "_is_radar_active") and self._is_radar_active():
-            return True
+        # Only treat SL-above-entry as engaged when we already latched this trade
+        # (legacy sessions may have current_sl without latch — do not re-arm on that)
         return False
+
+    def _clear_premature_radar_arm(self, curr_px: float, reason: str) -> None:
+        """Undo a noise / grace-bypass radar SL and restore hard-stop defense."""
+        self._init_adverse_radar_fields()
+        old_sl = float(getattr(self, "current_sl", 0) or 0)
+        had = bool(self.radar_latched) or (
+            hasattr(self, "_is_radar_active") and self._is_radar_active()
+        )
+        self.radar_latched = False
+        self._radar_path_ok_streak = 0
+        if hasattr(self, "current_sl"):
+            self.current_sl = 0.0
+        live = float(getattr(self, "watched_qty", 0) or 0)
+        entry = float(getattr(self, "watched_entry", 0) or 0)
+        if live > 0 and entry > 0:
+            try:
+                if hasattr(self, "_smart_realign_defenses"):
+                    self._smart_realign_defenses(
+                        live, entry, reason=f"撤销过早雷达:{reason}"
+                    )
+                elif hasattr(self, "_arm_adverse_shield_at_open"):
+                    self._arm_adverse_shield_at_open(live)
+            except Exception as exc:
+                logger.warning(
+                    "[User %s] clear premature radar realign failed: %s",
+                    getattr(self, "user_id", "?"),
+                    exc,
+                )
+        if had:
+            logger.info(
+                "[User %s] ↩️ 撤销过早雷达 SL@%.2f → 硬止损 | px=%.2f | %s",
+                getattr(self, "user_id", "?"),
+                old_sl,
+                float(curr_px or 0),
+                reason,
+            )
+            if hasattr(self, "_alert"):
+                self._alert(
+                    "warning",
+                    "RADAR_REVOKE",
+                    "撤销过早雷达",
+                    f"未达档位有效激活距离即挂保本止损，已撤 @{old_sl:.2f} 恢复硬止损 | {reason}",
+                    {
+                        "old_sl": old_sl,
+                        "curr_px": curr_px,
+                        "reason": reason,
+                        "regime": getattr(self, "regime", None),
+                        **(getattr(self, "_last_radar_arm_meta", None) or {}),
+                    },
+                )
+            if hasattr(self, "_save_state"):
+                self._save_state()
 
     def _infer_radar_latched_from_state(self) -> None:
         """Backward compat: restore latch only when TP1+ actually filled (qty-backed)."""
         if getattr(self, "radar_latched", False):
             return
-        if hasattr(self, "_is_radar_active") and self._is_radar_active():
-            self.radar_latched = True
-            return
+        # Never infer latch from current_sl > entry alone (tight TP1 noise / clamped BE)
         from app.core.vps_radar_stages import tp1_filled_from_consumed
         consumed = list(getattr(self, "consumed_tp_levels", []) or [])
         if not tp1_filled_from_consumed(consumed):
@@ -967,25 +1023,80 @@ class AdverseRadarMixin:
 
     def _radar_activation_reached(self, curr_px: float) -> bool:
         """
-        True when path-to-TP1 ≥ regime activation (primary), or TP filled / already trailing.
+        True when path-to-TP1 ≥ effective regime activation (or TP filled / latched).
 
-        No longer requires qty+book+price triple confirmation — price progress is enough.
+        Global guards (all exchanges):
+        - open grace after entry
+        - tight TP1 span vs ATR raises required progress (often →95%)
+        - absolute favorable-move floor
+        - 2 consecutive sentinel confirms before latch
         """
-        if self._is_radar_engaged():
-            return True
-        from app.core.radar_trail import radar_may_arm
+        self._init_adverse_radar_fields()
+        from app.core.radar_trail import RADAR_OPEN_GRACE_SEC, evaluate_radar_arm_gate
         from app.core.vps_radar_stages import tp1_filled_from_consumed
 
+        tps = list(getattr(self, "tv_tps", []) or [])
+        tp1 = float(tps[0] or 0) if tps else 0.0
+        entry = float(getattr(self, "watched_entry", 0) or 0)
         progress = 0.0
         if hasattr(self, "_radar_activation_progress"):
             progress = float(self._radar_activation_progress(curr_px) or 0.0)
-        act = self._regime_radar_activation()
-        return radar_may_arm(
-            consumed_tp_levels=getattr(self, "consumed_tp_levels", None),
+        consumed = getattr(self, "consumed_tp_levels", None)
+        regime = int(getattr(self, "regime", 3) or 3)
+        atr = float(getattr(self, "current_atr", 0) or 0)
+        side = getattr(self, "current_side", None)
+        opened_at = getattr(self, "trade_opened_at", None)
+
+        # Re-evaluate without latch to detect false early latch (spike then pullback)
+        fresh = evaluate_radar_arm_gate(
+            consumed_tp_levels=consumed,
             progress=progress,
-            activation_ratio=act,
-            radar_active=bool(getattr(self, "radar_latched", False)),
+            regime=regime,
+            entry=entry,
+            tp1=tp1,
+            atr=atr,
+            curr_px=float(curr_px or 0),
+            side=side,
+            trade_opened_at=opened_at,
+            path_ok_streak=int(getattr(self, "_radar_path_ok_streak", 0) or 0),
+            radar_latched=False,
         )
+        self._last_radar_arm_meta = dict(fresh)
+        self._radar_path_ok_streak = int(fresh.get("path_ok_streak") or 0)
+
+        if getattr(self, "radar_latched", False):
+            # Keep trailing after confirmed arm, unless clearly premature in open window
+            if not tp1_filled_from_consumed(consumed):
+                age = fresh.get("open_age_sec")
+                prog = float(fresh.get("progress") or 0)
+                eff = float(fresh.get("activation_effective") or 0.7)
+                if (
+                    age is not None
+                    and age < max(RADAR_OPEN_GRACE_SEC * 2.5, 60.0)
+                    and prog + 1e-9 < eff * 0.55
+                    and not fresh.get("arm")
+                ):
+                    self._clear_premature_radar_arm(
+                        curr_px, "latched_but_path_collapsed"
+                    )
+                    return False
+            return True
+
+        if fresh.get("arm"):
+            self._latch_radar()
+            return True
+
+        # SL>entry without latch (legacy / mis-set) — revoke
+        premature_sl = (
+            hasattr(self, "_is_radar_active")
+            and self._is_radar_active()
+            and not tp1_filled_from_consumed(consumed)
+        )
+        if premature_sl:
+            self._clear_premature_radar_arm(
+                curr_px, str(fresh.get("arm_reason") or "path_not_ready")
+            )
+        return False
 
     def _tp1_limit_still_live_on_book(self) -> bool:
         """Exchange-first: open TP1 limit still present (slice accounting only; not an arm gate)."""
@@ -1926,7 +2037,7 @@ class AdverseRadarMixin:
 
         if progress >= 0.5 and getattr(self, "_scan_ticks", 0) % 5 == 0:
             logger.info(
-                "[User %s] 📡 TP1路径 %.0f%% | 现价 %.2f | 硬止损守护中（雷达待TP1成交激活）",
+                "[User %s] 📡 TP1路径 %.0f%% | 现价 %.2f | 硬止损守护中（雷达待路径达档位比例）",
                 self.user_id, progress * 100, curr_px,
             )
 

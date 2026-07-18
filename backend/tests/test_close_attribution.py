@@ -15,6 +15,7 @@ def supervisor(tmp_path, monkeypatch):
     client = MagicMock()
     client.get_current_price.return_value = 1780.43
     client.get_funding_fees.return_value = -0.0166
+    client.exchange_id = "binance"
     client.get_account_trades.return_value = [
         {
             "side": "SELL",
@@ -34,6 +35,37 @@ def supervisor(tmp_path, monkeypatch):
     sup.tv_tps = [1790.0, 1800.0, 1810.0]
     sup.regime = 3
     return sup
+
+
+def test_diagnose_near_entry_radar_stop_not_false_tp1():
+    """Incident: exit@1847 near radar SL, TP1@1849 — must not label exchange_limit_tp."""
+    attr = diagnose_flat_close(
+        client=MagicMock(get_account_trades=MagicMock(return_value=[
+            {
+                "side": "SELL",
+                "price": "1847.05",
+                "qty": "0.20",
+                "maker": False,
+                "time": int(datetime.now(timezone.utc).timestamp() * 1000),
+                "realizedPnl": "0.20",
+            },
+        ])),
+        symbol="ETHUSDT",
+        side="LONG",
+        qty=0.20,
+        entry=1845.91,
+        trade_opened_at=datetime.now(timezone.utc).timestamp() - 60,
+        consumed_tp_levels=[],
+        tv_tps=[1849.6471230213, 1852.885962973, 1855.87566139],
+        trigger="sentinel_zero",
+        had_position_before_close=False,
+        radar_active=True,
+        current_sl=1847.11,
+    )
+    assert attr["close_origin"] == "exchange_stop"
+    assert attr["evidence"]["tp_price_matches"] == []
+    assert "TP[1]" not in attr["human_reason"]
+    assert "止盈" not in attr["human_reason"] or "止损" in attr["human_reason"]
 
 
 def test_diagnose_consumed_tp1_does_not_fake_tp_on_stop_exit():

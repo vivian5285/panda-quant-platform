@@ -79,6 +79,7 @@ ALERT_TYPE_TAGS = {
     "DEFENSE_HEAL_FAIL": "止盈仍异常",
     "TRAIL": "雷达保本",
     "RADAR_ARM": "雷达激活",
+    "RADAR_REVOKE": "撤销过早雷达",
     "ADJUST": "人工异动",
     "MANUAL_ADJUST": "人工异动",
     "FORCE_ALIGN": "方向背离",
@@ -160,6 +161,7 @@ ADMIN_DINGTALK_KEY_TYPES = frozenset({
     "CLOSE_ATTRIBUTION",
     "TRAIL",
     "RADAR_ARM",
+    "RADAR_REVOKE",
 })
 
 DINGTALK_VERBOSE_EXCLUDED = frozenset({
@@ -360,6 +362,22 @@ def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
         lines.append(_line("实盘核实", str(detail["verify_note"])))
     if detail.get("attribution"):
         lines.append(_line("归因", str(detail["attribution"])))
+    # Radar path context on premature close / 换防清场
+    if detail.get("radar_progress") is not None:
+        base = detail.get("radar_activation")
+        eff = detail.get("radar_activation_effective") or base
+        prog = float(detail["radar_progress"])
+        if base is not None and eff is not None:
+            lines.append(
+                _line(
+                    "雷达路径",
+                    f"进度 {prog:.0%} · 档位需 {float(base):.0%} · 有效需 {float(eff):.0%}",
+                )
+            )
+        else:
+            lines.append(_line("雷达路径", f"进度 {prog:.0%}"))
+    if detail.get("radar_arm_reason"):
+        lines.append(_line("雷达判定", str(detail["radar_arm_reason"])))
     return "\n".join(lines)
 
 
@@ -443,17 +461,38 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             else:
                 lines.append(_line("雷达状态", "已激活"))
         else:
-            act = detail.get("radar_activation")
+            act = detail.get("radar_activation_effective") or detail.get("radar_activation")
+            base = detail.get("radar_activation")
             if act is None:
-                from app.core.radar_trail import REGIME_RADAR
+                from app.core.radar_trail import REGIME_RADAR, radar_effective_activation
                 regime = int(detail.get("regime") or 3)
-                act = REGIME_RADAR.get(regime, REGIME_RADAR[3])["activation"]
-            lines.append(
-                _line(
-                    "雷达状态",
-                    f"待命 · 价格达 TP1 路径 {float(act) * 100:.0f}% 后启动移动保本（随后 TP2/TP3 锁利）",
+                base = REGIME_RADAR.get(regime, REGIME_RADAR[3])["activation"]
+                entry = float(detail.get("entry") or detail.get("entry_price") or 0)
+                tp1 = 0.0
+                tps = detail.get("tv_tps") or []
+                if tps:
+                    try:
+                        tp1 = float(tps[0] or 0)
+                    except (TypeError, ValueError, IndexError):
+                        tp1 = 0.0
+                atr = float(detail.get("atr") or 0)
+                act = (
+                    radar_effective_activation(regime, entry, tp1, atr)
+                    if entry > 0 and tp1 > 0
+                    else base
                 )
-            )
+            base = base if base is not None else act
+            if abs(float(act) - float(base)) > 0.01:
+                arm_txt = (
+                    f"待命 · 档位 TP1 路径 {float(base) * 100:.0f}% "
+                    f"（本笔有效 {float(act) * 100:.0f}%：TP1 间距收紧）后启动"
+                )
+            else:
+                arm_txt = (
+                    f"待命 · 价格达 TP1 路径 {float(act) * 100:.0f}% 后启动移动保本"
+                    f"（随后 TP2/TP3 锁利）"
+                )
+            lines.append(_line("雷达状态", arm_txt))
         slices = detail.get("tp_slices") or []
         if slices:
             parts = []
@@ -595,6 +634,61 @@ def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
     return "\n".join(lines)
 
 
+def format_radar_arm_detail_cn(detail: dict, exchange: str | None = None) -> str:
+    """雷达激活 / 撤销 / 追踪 — 钉钉核实明细."""
+    sym = detail.get("symbol") or detail.get("canonical_symbol")
+    theme = resolve_exchange_theme(exchange or detail.get("exchange"), sym)
+    lines = [
+        _line("交易所", theme["label"]),
+        _line("合约", theme.get("symbol") or sym or "—"),
+    ]
+    if detail.get("regime") is not None:
+        lines.append(_line("档位", f"R{detail['regime']}"))
+    if detail.get("entry"):
+        lines.append(_line("开仓价", f"{float(detail['entry']):.2f}"))
+    if detail.get("tp1"):
+        lines.append(_line("TP1", f"{float(detail['tp1']):.2f}"))
+    if detail.get("curr_px"):
+        lines.append(_line("现价", f"{float(detail['curr_px']):.2f}"))
+    prog = detail.get("radar_progress")
+    base = detail.get("radar_activation")
+    eff = detail.get("radar_activation_effective") or base
+    if prog is not None:
+        if base is not None and eff is not None:
+            lines.append(
+                _line(
+                    "路径进度",
+                    f"{float(prog):.0%} · 档位需 {float(base):.0%} · 有效需 {float(eff):.0%}",
+                )
+            )
+        else:
+            lines.append(_line("路径进度", f"{float(prog):.0%}"))
+    if detail.get("tp1_span") is not None:
+        lines.append(_line("TP1间距", f"{float(detail['tp1_span']):.2f}"))
+    if detail.get("favorable_move") is not None and detail.get("min_abs_move") is not None:
+        lines.append(
+            _line(
+                "有利位移",
+                f"{float(detail['favorable_move']):.2f} / 下限 {float(detail['min_abs_move']):.2f}",
+            )
+        )
+    if detail.get("radar_arm_reason"):
+        lines.append(_line("启动原因", str(detail["radar_arm_reason"])))
+    if detail.get("new_sl") or detail.get("radar_sl"):
+        sl = detail.get("new_sl") or detail.get("radar_sl")
+        lines.append(_line("雷达止损", f"@{float(sl):.2f}"))
+    if detail.get("stage_label") or detail.get("radar_stage"):
+        lines.append(
+            _line(
+                "雷达阶段",
+                str(detail.get("stage_label") or f"阶段{detail.get('radar_stage')}"),
+            )
+        )
+    if detail.get("reason"):
+        lines.append(_line("说明", str(detail["reason"])))
+    return "\n".join(lines)
+
+
 def format_admin_detail_lines(
     alert_type: str,
     detail: dict | None,
@@ -612,6 +706,8 @@ def format_admin_detail_lines(
         return format_adverse_sl_detail_cn(detail, ex)
     if alert_type in ("CLOSE", "CLOSE_TP3", "CLOSE_PROTECT", "CLOSE_STOPLOSS", "CLOSE_ATTRIBUTION"):
         return format_close_detail_cn(detail, ex)
+    if alert_type in ("RADAR_ARM", "RADAR_REVOKE", "TRAIL"):
+        return format_radar_arm_detail_cn(detail, ex)
     if alert_type == "STARTUP":
         return format_startup_detail_cn(detail, ex)
     if alert_type == "FORCE_ALIGN":

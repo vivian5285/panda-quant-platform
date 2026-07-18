@@ -525,7 +525,7 @@ qty             = notional_usd / price   （DeepCoin 换算为合约张）
 ③ TP123               regime 比例 reduceOnly 限价
 ```
 
-- **路径启动**：`progress = |mark−entry|/|TP1−entry|` ≥ 档位激活比例即 Stage 1 保本（不再等 qty+book 三重验证）
+- **路径启动**：`progress = |mark−entry|/|TP1−entry|` ≥ 档位激活比例即 Stage 1 保本（R1/R2 70% · R3 75% · R4 80%）；TP1 间距 < 1×ATR 时抬高有效比例（常至 95%），开仓 25s 保护期 + 连续 2 轮哨兵确认，防刚开仓噪声误挂保本
 - **TP2/TP3 锁利**：过 TP1 后 Stage 2~5 收紧；qty/book 仍用于切片记账
 - **合并止损（Binance/OKX/Gate）：** LONG `max(vps_sl, radar)` / SHORT `min(...)`，Stop-Limit 优先
 - **DeepCoin 双轨：** TV SL 与雷达条件单并行
