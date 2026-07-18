@@ -114,6 +114,9 @@ ALERT_TYPE_TAGS = {
     "FALSE_FLAT": "误报空仓",
     "CLOSE_ATTRIBUTION": "平仓归因",
     "POSITION_RECONCILE": "头寸对账",
+    "TP_FILLED": "止盈成交",
+    "TP_SKIP_REHANG": "拒绝补挂已成交止盈",
+    "POSITION_QTY_CHANGE": "仓位异动",
     "API_OFFLINE": "API离线",
 }
 
@@ -161,6 +164,9 @@ ADMIN_DINGTALK_KEY_TYPES = frozenset({
     "FALSE_FLAT",
     "CLOSE_ATTRIBUTION",
     "POSITION_RECONCILE",
+    "TP_FILLED",
+    "TP_SKIP_REHANG",
+    "POSITION_QTY_CHANGE",
     "TRAIL",
     "RADAR_ARM",
     "RADAR_REVOKE",

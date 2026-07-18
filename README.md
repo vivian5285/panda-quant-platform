@@ -585,6 +585,16 @@ qty             = notional_usd / price   （DeepCoin 换算为合约张）
 3. **双轮确认**：连续 **2** 次哨兵轮询均达有效比例才 `_latch_radar`
 4. **误挂撤销**：未达条件却出现保本 SL → `RADAR_REVOKE` 恢复硬止损
 5. **TP 成交**：`tp1/2/3_filled` **强制**激活 + 合并单槽挂保本 STOP + 盘口核实钉钉（不与 TP 限价抢份额）
+6. **禁止死亡螺旋**：头寸因 TP1/2 成交减少后，**绝不**把「盘口 TP 限价消失」当成漏挂而按缩减后仓位重挂同价 TP1；`consumed_tp_levels` + 现价已达/qty+book 证据 → `TP_SKIP_REHANG` 钉钉拒绝补挂
+
+**止盈成交对账（全所）：**
+
+| 事件 | 系统行为 | 钉钉 |
+|------|----------|------|
+| 仓位减少 + TP 限价消失 | 记入 `consumed_tp_levels`，只补挂**未成交**更高档 | `TP_FILLED` |
+| 现价在 TP1 附近但 TP1 已成交 | 跳过补挂 TP1，剩余仓位只挂 TP2/TP3 | `TP_SKIP_REHANG` |
+| 路径≥85% 或 TP 吃单 | 雷达启动并随 TP2/TP3 阶段锁利 | `RADAR_ARM` / `TRAIL` |
+| 仓位异动无法归为 TP | 对账后增量对齐（禁核武全量重挂 TP123） | `POSITION_QTY_CHANGE` |
 
 **锁利阶段（启动后）：**
 

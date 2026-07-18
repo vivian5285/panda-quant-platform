@@ -1012,6 +1012,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
     def _classify_qty_change(self, old_qty, new_qty, curr_px=None):
         """与币安一致：当前盘口切片 + 开仓锚 + 盘口证据识别 TP 吃单。"""
+        from app.core.tp_slice_guard import compute_tp_slices, tp_limit_still_on_book
+        from app.core.position_supervisor import PositionSupervisor
+
         old_qty = float(self._safe_qty(old_qty))
         new_qty = float(self._safe_qty(new_qty))
         tol = self._qty_match_tol(old_qty, new_qty)
@@ -1025,6 +1028,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         anchor = float(self._safe_qty(self.initial_qty or old_qty))
         open_prices = [float(o.get("price", 0)) for o in self._collect_tp_limit_orders()]
+        px = float(curr_px or 0)
         level = resolve_tp_step_fill_level(
             old_qty=old_qty,
             new_qty=new_qty,
@@ -1033,7 +1037,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             tv_tps=list(self.tv_tps or []),
             regime_settings=self.regime_settings,
             consumed_levels=self.consumed_tp_levels,
-            curr_px=float(curr_px or 0),
+            curr_px=px,
             side=self.current_side,
             open_tp_prices=open_prices,
             is_contracts=True,
@@ -1043,15 +1047,37 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 self.consumed_tp_levels.append(level)
             if hasattr(self, "_save_state"):
                 self._save_state()
+            PositionSupervisor._notify_tp_fill_detected(self, level, old_qty, new_qty, px)
             return f"tp{level}_filled"
 
-        if curr_px is not None and float(curr_px) > 0:
-            before = set(int(x) for x in (self.consumed_tp_levels or []))
-            self._sync_consumed_tp_levels(new_qty, float(curr_px))
-            after = set(int(x) for x in (self.consumed_tp_levels or []))
-            gained = sorted(after - before)
-            if gained:
-                return f"tp{gained[0]}_filled"
+        before = set(int(x) for x in (self.consumed_tp_levels or []))
+        sync_px = px if px > 0 else float(self.client.get_current_price(self.symbol) or 0)
+        self._sync_consumed_tp_levels(new_qty, sync_px)
+        after = set(int(x) for x in (self.consumed_tp_levels or []))
+        gained = sorted(after - before)
+        if gained:
+            PositionSupervisor._notify_tp_fill_detected(self, gained[0], old_qty, new_qty, sync_px)
+            return f"tp{gained[0]}_filled"
+
+        if anchor > 0:
+            slices = compute_tp_slices(
+                anchor, self.regime, self.tv_tps, self.regime_settings, exclude_levels=set(),
+            )
+            if slices:
+                tp1_lvl, tp1_qty, tp1_px = slices[0]
+                if (
+                    tp1_lvl == 1
+                    and 1 not in after
+                    and not tp_limit_still_on_book(tp1_px, open_prices)
+                    and reduced + 1e-12 >= float(tp1_qty) * 0.5
+                ):
+                    self.consumed_tp_levels = sorted(after | {1})
+                    if hasattr(self, "_save_state"):
+                        self._save_state()
+                    PositionSupervisor._notify_tp_fill_detected(
+                        self, 1, old_qty, new_qty, sync_px, heuristic=True,
+                    )
+                    return "tp1_filled"
         return "manual_reduce"
 
     def _reconcile_radar_context(self, recovery: dict | None) -> dict:
@@ -1134,11 +1160,35 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return len(self._compute_tp_slices(live_qty, exclude_levels=exclude))
 
     def _expected_tp_levels(self, live_qty, curr_px=None):
+        from app.core.tp_slice_guard import should_skip_rehang_tp_level
+
         live_qty = float(self._resolve_live_qty(live_qty))
-        exclude = set(self.consumed_tp_levels or [])
-        if curr_px and curr_px > 0:
-            self._sync_consumed_tp_levels(live_qty, curr_px)
-            exclude = set(self.consumed_tp_levels or [])
+        px = float(curr_px or 0)
+        if px <= 0:
+            px = self._current_tp_price()
+        self._sync_consumed_tp_levels(live_qty, px)
+        exclude = set(int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3))
+        open_prices = [float(o.get("price", 0) or 0) for o in self._collect_tp_limit_orders()]
+        for i, tp_px in enumerate(list(self.tv_tps or [])[:3]):
+            level = i + 1
+            if level in exclude:
+                continue
+            skip, _ = should_skip_rehang_tp_level(
+                level,
+                float(tp_px or 0),
+                side=self.current_side,
+                curr_px=px,
+                consumed=exclude,
+                live_qty=live_qty,
+                initial_qty=float(self.initial_qty or live_qty),
+                regime=int(self.regime or 3),
+                tv_tps=list(self.tv_tps or []),
+                regime_settings=self.regime_settings,
+                open_tp_prices=open_prices,
+                is_contracts=True,
+            )
+            if skip:
+                exclude.add(level)
         slices = self._compute_tp_slices(live_qty, exclude_levels=exclude)
         return [{"level": lvl, "qty": self._safe_qty(q), "price": px} for lvl, q, px in slices]
 
@@ -1305,6 +1355,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return cancelled
 
     def _patch_missing_tp_levels(self, live_qty, tolerance=None, curr_px=None):
+        from app.core.tp_slice_guard import should_skip_rehang_tp_level
+
         price_tol = TP_PRICE_MATCH_TOL if tolerance is None else float(tolerance)
         close_side = "sell" if self.current_side == "LONG" else "buy"
         pos_side = "long" if self.current_side == "LONG" else "short"
@@ -1314,14 +1366,56 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 curr_px = float(self.client.get_current_price(self.symbol) or 0)
             except Exception:
                 curr_px = 0.0
-        self._sync_consumed_tp_levels(live_qty, float(curr_px or 0))
+        px_now = float(curr_px or 0)
+        self._sync_consumed_tp_levels(live_qty, px_now)
         self._cancel_tp_orders_for_consumed_levels()
         levels = self._expected_tp_levels(live_qty, curr_px)
         placed = 0
+        open_prices = [float(o.get("price", 0) or 0) for o in self._collect_tp_limit_orders()]
+        consumed = self._consumed_tp_level_set()
 
         for lv in levels:
             q, px = int(lv["qty"]), float(lv["price"])
+            level = int(lv.get("level") or 0)
             if q <= 0 or px <= 0:
+                continue
+            skip, skip_reason = should_skip_rehang_tp_level(
+                level,
+                px,
+                side=self.current_side,
+                curr_px=px_now,
+                consumed=consumed,
+                live_qty=live_qty,
+                initial_qty=float(self.initial_qty or live_qty),
+                regime=int(self.regime or 3),
+                tv_tps=list(self.tv_tps or []),
+                regime_settings=self.regime_settings,
+                open_tp_prices=open_prices,
+                is_contracts=True,
+            )
+            if skip:
+                logger.warning(
+                    f"  ⏭ 跳过补挂 TP{level} @ {px:.2f}（{skip_reason}·防死亡螺旋）"
+                )
+                if level and level not in consumed:
+                    consumed.add(level)
+                    self.consumed_tp_levels = sorted(consumed)
+                    if hasattr(self, "_save_state"):
+                        self._save_state()
+                    self._alert(
+                        "warning",
+                        "TP_SKIP_REHANG",
+                        f"止盈已成交·拒绝补挂TP{level}",
+                        f"原因={skip_reason} | 现价{px_now:.2f} | 实盘{live_qty}张",
+                        {
+                            "level": level,
+                            "skip_reason": skip_reason,
+                            "curr_px": px_now,
+                            "live_qty": live_qty,
+                            "consumed_tp_levels": sorted(consumed),
+                            "exchange": "deepcoin",
+                        },
+                    )
                 continue
             orders = self._collect_tp_limit_orders()
             at_px = [o for o in orders if tp_price_matches(o["price"], px, price_tol)]
@@ -1405,6 +1499,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             return False
         if any(lv.get("status") == "duplicate" for lv in audit.get("levels", [])):
             return False
+        # After TP fills, avoid nuclear full-grid rehang (death spiral)
+        consumed = self._consumed_tp_level_set()
+        live_qty = float(audit.get("live_qty") or getattr(self, "watched_qty", 0) or 0)
+        initial = float(getattr(self, "initial_qty", 0) or 0)
+        if consumed or (initial > 0 and live_qty > 0 and live_qty < initial * 0.92):
+            if audit.get("matched_full", 0) == 0 and audit.get("issues"):
+                return False
+            missing = sum(1 for lv in audit.get("levels", []) if lv.get("status") == "missing")
+            if missing >= 2:
+                return False
         orders = self._collect_tp_limit_orders()
         if len(orders) > expected * 2:
             return True

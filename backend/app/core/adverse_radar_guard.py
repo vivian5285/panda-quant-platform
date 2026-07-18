@@ -2265,6 +2265,17 @@ class AdverseRadarMixin:
         cause = self._classify_reduction_cause(old_qty, new_qty, curr_px=curr_px)
         result: dict[str, Any] = {"change_type": cause, "old_qty": old_qty, "new_qty": new_qty}
 
+        # If step-match missed but qty+book says TP filled, reclassify before heal
+        if cause == "manual_reduce" and hasattr(self, "_sync_consumed_tp_levels"):
+            before = set(int(x) for x in (getattr(self, "consumed_tp_levels", []) or []))
+            self._sync_consumed_tp_levels(new_qty, curr_px)
+            after = set(int(x) for x in (getattr(self, "consumed_tp_levels", []) or []))
+            gained = sorted(after - before)
+            if gained:
+                cause = f"tp{gained[0]}_filled"
+                result["change_type"] = cause
+                result["reclassified_from"] = "manual_reduce"
+
         if cause.startswith("adverse_sl_"):
             tier_key = cause.replace("adverse_sl_", "").replace("pct", "")
             try:
@@ -2300,7 +2311,7 @@ class AdverseRadarMixin:
                 new_qty,
                 entry,
                 dynamic_sl=sl_to_pass,
-                reason=f"止盈吃单 · {cause} · 仅挂剩余TP+雷达",
+                reason=f"止盈吃单 · {cause} · 仅挂剩余TP+雷达（禁止重挂已成交档）",
             )
             if hasattr(self, "_process_radar_trailing"):
                 self._process_radar_trailing(new_qty, curr_px)
@@ -2320,7 +2331,17 @@ class AdverseRadarMixin:
                     f"TP{''.join(str(x) for x in consumed)}已成交"
                     f" → 剩余{remaining}档止盈+雷达锁润"
                 ),
+                "consumed_tp_levels": consumed,
             })
+            if hasattr(self, "_alert"):
+                self._alert(
+                    "info",
+                    "TP_FILLED",
+                    f"止盈吃单·{cause}后对齐剩余档+雷达",
+                    result["action_msg"]
+                    + f" | 现价{float(curr_px or 0):.2f} | 头寸{old_qty}→{new_qty}",
+                    result,
+                )
             return result
 
         if cause == "manual_add":
@@ -2353,5 +2374,18 @@ class AdverseRadarMixin:
             dynamic_sl=sl_to_pass,
             reason=f"阵地异动: {action_msg}",
         )
-        result.update({"defense": defense, "action_msg": action_msg})
+        result.update({
+            "defense": defense,
+            "action_msg": action_msg,
+            "consumed_tp_levels": sorted(getattr(self, "consumed_tp_levels", []) or []),
+        })
+        if hasattr(self, "_alert"):
+            self._alert(
+                "warning" if cause == "manual_reduce" else "info",
+                "POSITION_QTY_CHANGE",
+                f"仓位异动·{action_msg}",
+                f"{old_qty}→{new_qty} @ {float(curr_px or 0):.2f} | "
+                f"已消费TP{result['consumed_tp_levels']}",
+                result,
+            )
         return result

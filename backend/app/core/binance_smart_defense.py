@@ -60,12 +60,40 @@ class BinanceSmartDefenseMixin:
         return 0.0
 
     def _tp_exclude_levels(self, live_qty: float, curr_px: float | None = None) -> set[int]:
+        from app.core.tp_slice_guard import should_skip_rehang_tp_level
+
         px = float(curr_px or 0) if curr_px else self._current_tp_price()
         if hasattr(self, "_sync_consumed_tp_levels"):
             self._sync_consumed_tp_levels(live_qty, px)
         exclude = self._consumed_tp_level_set()
         if hasattr(self, "_active_tp_exclude_levels") and px > 0:
             exclude |= self._active_tp_exclude_levels(live_qty, px)
+        # Hard exclude any tier that would instant-fill or qty+book implies filled
+        open_prices = []
+        if hasattr(self, "_open_tp_prices_on_book"):
+            open_prices = self._open_tp_prices_on_book()
+        elif hasattr(self, "_collect_tp_limit_orders"):
+            open_prices = [float(o.get("price", 0) or 0) for o in self._collect_tp_limit_orders()]
+        for i, tp_px in enumerate(list(getattr(self, "tv_tps", []) or [])[:3]):
+            level = i + 1
+            if level in exclude:
+                continue
+            skip, _reason = should_skip_rehang_tp_level(
+                level,
+                float(tp_px or 0),
+                side=getattr(self, "current_side", None),
+                curr_px=px,
+                consumed=exclude,
+                live_qty=float(live_qty or 0),
+                initial_qty=float(getattr(self, "initial_qty", 0) or live_qty or 0),
+                regime=int(getattr(self, "regime", 3) or 3),
+                tv_tps=list(getattr(self, "tv_tps", []) or []),
+                regime_settings=getattr(self, "regime_settings", {}) or {},
+                open_tp_prices=open_prices,
+                is_contracts=str(getattr(self, "exchange_id", "")).lower() == "deepcoin",
+            )
+            if skip:
+                exclude.add(level)
         return exclude
 
     def _active_tp_level_dicts(self, live_qty: float, curr_px: float | None = None) -> list[dict]:
@@ -586,16 +614,75 @@ class BinanceSmartDefenseMixin:
         self, live_qty: float, tolerance: float | None = None, qty_tol: float | None = None,
         curr_px: float | None = None,
     ) -> int:
+        from app.core.tp_slice_guard import should_skip_rehang_tp_level
+
         price_tol = self._tp_price_tol() if tolerance is None else float(tolerance)
         close_side = "SHORT" if self.current_side == "LONG" else "LONG"
         live_qty = self._resolve_live_qty(live_qty)
+        px_now = float(curr_px or 0) or self._current_tp_price()
+        if hasattr(self, "_sync_consumed_tp_levels"):
+            self._sync_consumed_tp_levels(live_qty, px_now)
         self._cancel_tp_orders_for_consumed_levels()
-        levels = self._expected_tp_levels(live_qty, curr_px)
+        levels = self._expected_tp_levels(live_qty, px_now)
         placed = 0
+        skipped = 0
+        open_prices = (
+            self._open_tp_prices_on_book()
+            if hasattr(self, "_open_tp_prices_on_book")
+            else [float(o.get("price", 0) or 0) for o in self._collect_tp_limit_orders()]
+        )
+        consumed = self._consumed_tp_level_set()
 
         for lv in levels:
             q, px = lv["qty"], lv["price"]
+            level = int(lv.get("level") or 0)
             if q <= 0 or px <= 0:
+                continue
+            skip, skip_reason = should_skip_rehang_tp_level(
+                level or 0,
+                px,
+                side=self.current_side,
+                curr_px=px_now,
+                consumed=consumed,
+                live_qty=live_qty,
+                initial_qty=float(getattr(self, "initial_qty", 0) or live_qty),
+                regime=int(getattr(self, "regime", 3) or 3),
+                tv_tps=list(getattr(self, "tv_tps", []) or []),
+                regime_settings=getattr(self, "regime_settings", {}) or {},
+                open_tp_prices=open_prices,
+                is_contracts=str(getattr(self, "exchange_id", "")).lower() == "deepcoin",
+            )
+            if skip:
+                skipped += 1
+                self._def_log(
+                    f"  ⏭ 跳过补挂 TP{level or '?'} @ {px:.2f}（{skip_reason}·防死亡螺旋）",
+                    logging.WARNING,
+                )
+                if level and level not in consumed:
+                    consumed.add(level)
+                    if hasattr(self, "consumed_tp_levels"):
+                        merged = sorted(consumed)
+                        if merged != sorted(getattr(self, "consumed_tp_levels", []) or []):
+                            self.consumed_tp_levels = merged
+                            if hasattr(self, "_save_state"):
+                                self._save_state()
+                            if hasattr(self, "_alert"):
+                                self._alert(
+                                    "warning",
+                                    "TP_SKIP_REHANG",
+                                    f"止盈已成交·拒绝补挂TP{level}",
+                                    f"原因={skip_reason} | 现价{px_now:.2f} | 实盘{live_qty} | "
+                                    f"已消费{merged} — 若再挂会在TP附近秒成",
+                                    {
+                                        "level": level,
+                                        "tp_price": px,
+                                        "skip_reason": skip_reason,
+                                        "curr_px": px_now,
+                                        "live_qty": live_qty,
+                                        "consumed_tp_levels": merged,
+                                        "exchange": getattr(self, "exchange_id", None),
+                                    },
+                                )
                 continue
             orders = self._collect_tp_limit_orders()
             at_px = [o for o in orders if tp_price_matches(o["price"], px, price_tol)]
@@ -619,6 +706,12 @@ class BinanceSmartDefenseMixin:
             ):
                 placed += 1
             time.sleep(0.4)
+        if skipped and hasattr(self, "_log"):
+            self._log(
+                "TP_SKIP_REHANG",
+                f"跳过 {skipped} 档已成交/已达价止盈补挂，实际补挂 {placed}",
+                {"skipped": skipped, "placed": placed, "consumed": sorted(consumed)},
+            )
         return placed
 
     def _audit_requires_nuclear(self, audit: dict) -> bool:
@@ -629,6 +722,18 @@ class BinanceSmartDefenseMixin:
             return False
         if any(lv.get("status") == "duplicate" for lv in audit.get("levels", [])):
             return False
+        # After TP fills, "all missing" is normal (only remaining tiers expected).
+        # Nuclear rebuild with empty/stale consumed recreates TP1 near mark → death spiral.
+        consumed = self._consumed_tp_level_set()
+        live_qty = float(audit.get("live_qty") or getattr(self, "watched_qty", 0) or 0)
+        initial = float(getattr(self, "initial_qty", 0) or 0)
+        if consumed or (initial > 0 and live_qty > 0 and live_qty < initial * 0.92):
+            # Prefer incremental patch only — never cancel-all+rehang full TP123
+            if audit.get("matched_full", 0) == 0 and audit.get("issues"):
+                return False
+            missing = sum(1 for lv in audit.get("levels", []) if lv.get("status") == "missing")
+            if missing >= 2:
+                return False
         orders = self._collect_tp_limit_orders()
         if len(orders) > expected * 2:
             return True
@@ -837,31 +942,65 @@ class BinanceSmartDefenseMixin:
             self.watched_qty = live_qty
             self._save_state()
 
+        from app.core.tp_slice_guard import should_skip_rehang_tp_level
+
         curr_px = self._current_tp_price()
         if hasattr(self, "_sync_consumed_tp_levels"):
             self._sync_consumed_tp_levels(live_qty, curr_px)
         self._cancel_tp_orders_for_consumed_levels()
         levels = self._expected_tp_levels(live_qty, curr_px)
         placed = 0
-        consumed = sorted(self._consumed_tp_level_set())
+        consumed = self._consumed_tp_level_set()
+        open_prices = (
+            self._open_tp_prices_on_book()
+            if hasattr(self, "_open_tp_prices_on_book")
+            else [float(o.get("price", 0) or 0) for o in self._collect_tp_limit_orders()]
+        )
         level_desc = " ".join(
             f"TP{lv['level']}={lv['qty']}@{lv['price']:.2f}" for lv in levels if lv["qty"] > 0
         )
         self._def_log(
             f"🕸️ 补挂剩余止盈: 持仓 {live_qty} {getattr(self, 'qty_unit', '')}"
-            + (f" | 已成交TP{''.join(str(x) for x in consumed)}" if consumed else "")
+            + (f" | 已成交TP{''.join(str(x) for x in sorted(consumed))}" if consumed else "")
             + f" → {level_desc or '无剩余档'}"
         )
 
         for lv in levels:
             q, px = lv["qty"], lv["price"]
-            if q > 0 and px > 0:
-                res = self.client.place_limit_order(
-                    close_side, q, px, symbol=self.symbol, reduce_only=True
+            level = int(lv.get("level") or 0)
+            if q <= 0 or px <= 0:
+                continue
+            skip, skip_reason = should_skip_rehang_tp_level(
+                level,
+                px,
+                side=self.current_side,
+                curr_px=curr_px,
+                consumed=consumed,
+                live_qty=live_qty,
+                initial_qty=float(getattr(self, "initial_qty", 0) or live_qty),
+                regime=int(getattr(self, "regime", 3) or 3),
+                tv_tps=list(getattr(self, "tv_tps", []) or []),
+                regime_settings=getattr(self, "regime_settings", {}) or {},
+                open_tp_prices=open_prices,
+                is_contracts=str(getattr(self, "exchange_id", "")).lower() == "deepcoin",
+            )
+            if skip:
+                self._def_log(
+                    f"  ⏭ 重建跳过 TP{level} @ {px:.2f}（{skip_reason}）",
+                    logging.WARNING,
                 )
-                if res:
-                    placed += 1
-                time.sleep(0.35)
+                if level and level not in consumed:
+                    consumed.add(level)
+                    self.consumed_tp_levels = sorted(consumed)
+                    if hasattr(self, "_save_state"):
+                        self._save_state()
+                continue
+            res = self.client.place_limit_order(
+                close_side, q, px, symbol=self.symbol, reduce_only=True
+            )
+            if res:
+                placed += 1
+            time.sleep(0.35)
 
         return placed
 

@@ -86,22 +86,67 @@ def test_tp1_still_on_book_blocks_fill_even_with_qty_and_price():
     assert filled == set()
 
 
-def test_price_not_at_tp1_blocks_fill():
+def test_price_pullback_after_tp1_still_infers_fill():
+    """Death-spiral fix: after TP1 fill mark often dips below TP1 — still consume."""
+    from app.core.tp_slice_guard import should_skip_rehang_tp_level
+
     slices = compute_tp_slices(INITIAL, 3, TV_TPS, REGIME_SETTINGS)
     tp1_qty = slices[0][1]
     live = round(INITIAL - tp1_qty, 3)
     filled = infer_filled_tp_levels(
         live,
-        1805.0,  # below TP1
+        1805.0,  # below TP1 after fill pullback
         "LONG",
         initial_qty=INITIAL,
         consumed_tp_levels=[],
         regime=3,
         tv_tps=TV_TPS,
         regime_settings=REGIME_SETTINGS,
+        open_tp_prices=[1829.88, 1847.32],  # TP1 gone
+    )
+    assert filled == {1}
+    skip, reason = should_skip_rehang_tp_level(
+        1,
+        TV_TPS[0],
+        side="LONG",
+        curr_px=1805.0,
+        consumed=filled,
+        live_qty=live,
+        initial_qty=INITIAL,
+        regime=3,
+        tv_tps=TV_TPS,
+        regime_settings=REGIME_SETTINGS,
         open_tp_prices=[1829.88, 1847.32],
     )
-    assert filled == set()
+    assert skip is True
+    assert reason in ("consumed", "qty_book_implies_filled", "price_past_tp")
+
+
+def test_prefix_tp1_tp2_multi_fill():
+    """TP1+TP2 fill in one poll must mark both — not fall through to empty consume."""
+    from app.core.tp_slice_guard import infer_prefix_filled_levels
+
+    slices = compute_tp_slices(INITIAL, 3, TV_TPS, REGIME_SETTINGS)
+    prefix12 = slices[0][1] + slices[1][1]
+    live = round(INITIAL - prefix12, 3)
+    filled = infer_filled_tp_levels(
+        live,
+        1830.0,
+        "LONG",
+        initial_qty=INITIAL,
+        consumed_tp_levels=[],
+        regime=3,
+        tv_tps=TV_TPS,
+        regime_settings=REGIME_SETTINGS,
+        open_tp_prices=[1847.32],  # only TP3 left
+    )
+    assert 1 in filled and 2 in filled
+    # Remaining plan must exclude TP1/TP2
+    remain = compute_tp_slices(
+        live, 3, TV_TPS, REGIME_SETTINGS, exclude_levels=filled,
+        round_qty_fn=lambda x: round(x, 3),
+    )
+    assert all(lvl == 3 for lvl, _, _ in remain)
 
 
 def test_micro_noise_reduction_does_not_infer_tp1():

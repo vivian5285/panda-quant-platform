@@ -1296,6 +1296,8 @@ class PositionSupervisor(
         return self._infer_filled_tp_levels(qty, curr_px)
 
     def _classify_qty_change(self, old_qty: float, new_qty: float, curr_px: float | None = None) -> str:
+        from app.core.tp_slice_guard import compute_tp_slices, tp_limit_still_on_book
+
         tol = self._qty_match_tol(old_qty, new_qty)
         if new_qty <= 0:
             return "full_close"
@@ -1311,6 +1313,7 @@ class PositionSupervisor(
             if hasattr(self, "_open_tp_prices_on_book")
             else []
         )
+        px = float(curr_px or 0)
         level = resolve_tp_step_fill_level(
             old_qty=old_qty,
             new_qty=new_qty,
@@ -1319,7 +1322,7 @@ class PositionSupervisor(
             tv_tps=list(self.tv_tps or []),
             regime_settings=self.regime_settings,
             consumed_levels=self.consumed_tp_levels,
-            curr_px=float(curr_px or 0),
+            curr_px=px,
             side=self.current_side,
             open_tp_prices=open_prices,
             is_contracts=self.exchange_id == "deepcoin",
@@ -1327,19 +1330,76 @@ class PositionSupervisor(
         if level is not None:
             if level not in self.consumed_tp_levels:
                 self.consumed_tp_levels.append(level)
-            # 不在此处全量 sync 抹档：盘口撤单可能滞后于仓位变化
             if hasattr(self, "_save_state"):
                 self._save_state()
+            self._notify_tp_fill_detected(level, old_qty, new_qty, px)
             return f"tp{level}_filled"
 
-        if curr_px is not None and curr_px > 0:
-            before = set(int(x) for x in (self.consumed_tp_levels or []))
-            self._sync_consumed_tp_levels(new_qty, curr_px)
-            after = set(int(x) for x in (self.consumed_tp_levels or []))
-            gained = sorted(after - before)
-            if gained:
-                return f"tp{gained[0]}_filled"
+        # Aggressive sync (qty+book; price pullback OK)
+        before = set(int(x) for x in (self.consumed_tp_levels or []))
+        self._sync_consumed_tp_levels(new_qty, px if px > 0 else (self.client.get_current_price(self.symbol) or 0))
+        after = set(int(x) for x in (self.consumed_tp_levels or []))
+        gained = sorted(after - before)
+        if gained:
+            self._notify_tp_fill_detected(gained[0], old_qty, new_qty, px)
+            return f"tp{gained[0]}_filled"
+
+        # Heuristic: TP1 book gone + reduced ≥ 50% TP1 slice → force consume
+        if anchor > 0:
+            slices = compute_tp_slices(
+                anchor, self.regime, self.tv_tps, self.regime_settings, exclude_levels=set(),
+            )
+            if slices:
+                tp1_lvl, tp1_qty, tp1_px = slices[0]
+                if (
+                    tp1_lvl == 1
+                    and 1 not in after
+                    and not tp_limit_still_on_book(tp1_px, open_prices)
+                    and reduced + 1e-12 >= float(tp1_qty) * 0.5
+                ):
+                    self.consumed_tp_levels = sorted(after | {1})
+                    if hasattr(self, "_save_state"):
+                        self._save_state()
+                    self._notify_tp_fill_detected(1, old_qty, new_qty, px, heuristic=True)
+                    return "tp1_filled"
+
         return "manual_reduce"
+
+    def _notify_tp_fill_detected(
+        self,
+        level: int,
+        old_qty: float,
+        new_qty: float,
+        curr_px: float,
+        *,
+        heuristic: bool = False,
+    ) -> None:
+        detail = {
+            "exchange": self.exchange_id,
+            "level": int(level),
+            "old_qty": float(old_qty),
+            "new_qty": float(new_qty),
+            "curr_px": float(curr_px or 0),
+            "consumed_tp_levels": list(self.consumed_tp_levels or []),
+            "tv_tps": list(self.tv_tps or []),
+            "initial_qty": float(self.initial_qty or 0),
+            "heuristic": heuristic,
+            "side": self.current_side,
+        }
+        note = "（头寸推断）" if heuristic else ""
+        self._log(
+            "TP_FILLED",
+            f"止盈TP{level}成交{note} {old_qty}→{new_qty} | 已消费{detail['consumed_tp_levels']}",
+            detail,
+        )
+        self._alert(
+            "info",
+            "TP_FILLED",
+            f"止盈TP{level}成交·头寸已减{note}",
+            f"{self.current_side} {old_qty}→{new_qty} @ {curr_px or '—'} | "
+            f"已成交档 {detail['consumed_tp_levels']} | 禁止再补挂该档",
+            detail,
+        )
 
     def _reconcile_radar_context(self, recovery: dict | None) -> dict:
         """重启：开仓日志 + 最新 TV + DB 交易 三方核实雷达参数。"""
