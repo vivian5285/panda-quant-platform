@@ -6,7 +6,7 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-07）：** 开仓盘口 = 基础单×3（TP123）+ 条件委托×1（VPS 硬止损 Stop-Limit）；雷达 = TP1 路径比例启动；OPEN 权重 8/14/20/26%；名义 cap 13×；硬止损忽略 TV `tv_sl`。禁止把硬止损挂成普通限价（会秒平）。
+> **文档同步（2026-07-19）：** 开仓盘口 = 基础单×3（TP123）+ 条件委托×1（VPS 硬止损 Stop-Limit）；**雷达监控 = 各所 markPrice WebSocket 实时推送**（节流 ~0.45s）+ 哨兵 REST 兜底；档位表 R1–R4：激活 85/80/75/70% · 步进 35/30/25/20% · 呼吸 1.0/0.8/0.65/0.5 ATR；OPEN 权重 8/14/20/26%；名义 cap 13×；硬止损忽略 TV `tv_sl`。禁止把硬止损挂成普通限价（会秒平）。详见 [更新记录](#更新记录)。
 
 | 生产域名 | [https://twinstar.pro](https://twinstar.pro) |
 |----------|---------------------------------------------|
@@ -49,7 +49,7 @@ trading_factory:
     deepcoin: backend/app/core/position_supervisor_deepcoin.py
   shared_mixins: [PositionCapGuardMixin, AdverseRadarMixin, StartupReconcileMixin]
   binance_only_mixin: BinanceSmartDefenseMixin      # OKX/Gate 复用同一 TP/雷达挂单实现
-  shared_modules: [radar_trail, vps_radar_stages, vps_hard_sl, tv_entry_sizing, tp_slice_guard, same_direction_policy, startup_reconcile, close_attribution, webhook_seq_gate]
+  shared_modules: [radar_trail, vps_radar_stages, vps_hard_sl, tv_entry_sizing, tp_slice_guard, same_direction_policy, startup_reconcile, close_attribution, webhook_seq_gate, ws_price_listeners, dingtalk_alert_dedupe]
   defense_route_a: |
     开仓盘口 = 基础单×3（TP123 只减仓限价）+ 条件委托×1（VPS硬止损 Stop-Limit）；禁止普通限价硬止损（会秒平）；
     TV tv_sl 仅钉钉/日志参考、绝不另挂；
@@ -68,7 +68,9 @@ rules:
   - PYRAMID / PROFIT_ADD：同向追加，数量 = base_qty × TV qty_ratio；**加仓后核武重挂 TP123（新价格×新总头寸）+ VPS 硬止损限价 + 雷达重置**
   - 开仓后挂 **基础单×3**：TP1/2/3（reduceOnly）+ **VPS 硬止损 Stop-Limit 条件单**（开仓价×档位%；禁止普通限价，否则会立刻成交秒平）
   - **硬止损**：`距离 = 开仓价 × 档位%`（R1~R4：2.78/3.89/5.56/8.33%；ETH/XAU 同比例）；**忽略 TV UPDATE_SL / tv_sl 挂单**
-  - **雷达**：距 TP1 还剩 **15%**（路径 ≥ **85%**，四档统一）即启动保本；TP1 间距过窄时有效比例抬至 ~92%；开仓 25s 保护期 + 连续 2 轮哨兵确认；TP 成交强制激活并盘口核实钉钉；误挂可 `RADAR_REVOKE`
+  - **雷达（宁松勿紧 · 适度追随）**：按档位 `REGIME_RADAR` 启动 — R1 **85%**/步进35%/呼吸1.0ATR · R2 **80%**/30%/0.8 · R3 **75%**/25%/0.65 · R4 **70%**/20%/0.5；**价格源 = markPrice WebSocket**（`ws_price_listeners`）；紧 TP1 有效比例抬至 ~92%；开仓 25s + 双轮确认；TP 成交强制激活；误挂 `RADAR_REVOKE`；与 TP123/VPS 宽止损互不抢份额
+  - **TV 雷达进行中**：新 OPEN 一律先平后开（清场 → 新 TP123 + 宽止损 · 雷达候命）；空仓仅 OPEN → 直接开仓挂防线、雷达候命
+  - **钉钉**：关键动作实盘核查后推送一次（`dingtalk_alert_dedupe` 去重）；监控循环不刷屏
   - 禁止与 TV 反向持仓：哨兵 / 重启 / 空闲巡检 → FORCE_ALIGN 全平
   - 人工/外部同向仓：manual adopt 后保留仓位，TV CLOSE 不强制全平，补挂 TP123 + **VPS 硬止损限价**（雷达按档位路径比例激活）
   - **人工/外部全平**：哨兵/空闲巡检检测到实盘归零 → **立即撤销 TP123 + 硬止损/STOP**（不等待平仓确认），防止孤儿止盈反向开仓
@@ -110,8 +112,9 @@ engine_deepcoin: backend/app/core/position_supervisor_deepcoin.py
 exchange_factory: backend/app/core/exchange_factory.py
 mixins: backend/app/core/{adverse_radar_guard,binance_smart_defense,startup_reconcile,position_cap_guard}.py
 sizing: backend/app/core/tv_entry_sizing.py
-radar: backend/app/core/{radar_trail,vps_radar_stages}.py
+radar: backend/app/core/{radar_trail,vps_radar_stages,ws_price_listeners}.py
 hard_sl: backend/app/core/vps_hard_sl.py
+dingtalk_dedupe: backend/app/services/dingtalk_alert_dedupe.py
 close_attr: backend/app/core/close_attribution.py
 admin_api: backend/app/api/admin.py
 admin_ui_system_tab: frontend/src/pages/admin/tabs/AdminSystemTab.tsx  # Webhook Secret 配置置顶
@@ -147,6 +150,7 @@ self_check: production_check.sh + backend/scripts/check_system.py
 23. [生产就绪清单](#生产就绪清单)
 24. [VPS 实盘自查清单](#vps-实盘自查清单)
 25. [技术栈与路线图](#技术栈与路线图)
+26. [更新记录](#更新记录)
 
 ---
 
@@ -230,7 +234,7 @@ TV 信号 → 用户交易所实盘 → 周期结束且全平仓
          ▼                   ▼                   ▼
   PositionSupervisor    PositionSupervisor    ...
   + Binance/OKX/Gate/DeepCoin Client
-  + 6s 哨兵 + 10s 空闲巡检（方向背离、人工 adopt、雷达、TP 成交）
+  + markPrice WS 雷达 tick（~0.45s）+ 自适应哨兵（远 5s / 近激活 1s / 雷达中 1.2s）+ 10s 空闲巡检
   + state/user_{id}.json
          │                   │
          ▼                   ▼
@@ -572,46 +576,59 @@ qty             = notional_usd / price   （DeepCoin 换算为合约张）
 | 币安「条件委托」 | **1**（VPS 硬止损 Stop-Limit；雷达启动前） | 硬止损缺失 / 降级 STOP_MARKET |
 | 钉钉开仓文案 | `盘口结构：基础单×3 + 条件委托×1…` · `TV 止损参考（仅参考·不挂单）` | 把 TV 参考价当成第二张止损 |
 
-#### 雷达启动（全所同一套 `evaluate_radar_arm_gate`）
+#### 雷达启动（全所同一套 `evaluate_radar_arm_gate` + `REGIME_RADAR`）
 
-| 档位 | 基准激活（entry→TP1 路径） | 说明 |
-|------|---------------------------|------|
-| R1~R4 | **85%** | 距 TP1 还剩 15% 即启动保本防回吐 |
+| 档位 | 激活（entry→TP1） | 前进步进 `move_step` | 呼吸 `trail_offset` | 说明 |
+|------|-------------------|----------------------|---------------------|------|
+| R1 震荡 | **85%** | **35%** | **1.0 ATR** | 宁松勿紧 · 适度追随 |
+| R2 弱势 | **80%** | **30%** | **0.8 ATR** | |
+| R3 中势 | **75%** | **25%** | **0.65 ATR** | |
+| R4 强势 | **70%** | **20%** | **0.5 ATR** | 非紧追 |
+
+**价格监控（最快路径）：**
+
+| 层 | 机制 | 周期 |
+|----|------|------|
+| **主** | 各所 `markPrice` WebSocket → `ws_price_listeners` → `_radar_ws_fast_tick` | 节流 **~0.45s** |
+| **兜底** | 哨兵 REST `get_current_price(prefer_ws=True)` | 远 **5s** / 近激活 **1s** / 雷达中 **1.2s** |
+
+WS tick 同步：剩余头寸、`consumed_tp_levels`、TP123 路径进度、按档位挂/移雷达止损。平仓后 `_unbind_price_ws_listener`。
 
 **附加全域护栏（防刚开仓噪声误挂保本）：**
 
 1. **有效激活**：若 `|TP1−entry| < 1×ATR`，有效路径抬至约 **92%**（再叠加绝对位移地板：`max(0.55×ATR, 0.15%×entry)`）
 2. **开仓保护期**：`trade_opened_at` 后 **25s** 内禁止路径启动
-3. **双轮确认**：连续 **2** 次哨兵轮询均达有效比例才 `_latch_radar`
+3. **双轮确认**：连续 **2** 次确认均达有效比例才 `_latch_radar`
 4. **误挂撤销**：未达条件却出现保本 SL → `RADAR_REVOKE` 恢复硬止损
 5. **TP 成交**：`tp1/2/3_filled` **强制**激活 + 合并单槽挂保本 STOP + 盘口核实钉钉（不与 TP 限价抢份额）
 6. **禁止死亡螺旋**：头寸因 TP1/2 成交减少后，**绝不**把「盘口 TP 限价消失」当成漏挂而按缩减后仓位重挂同价 TP1；`consumed_tp_levels` + 现价已达/qty+book 证据 → `TP_SKIP_REHANG` 钉钉拒绝补挂
+7. **防秒挂秒撤**：盘口已对齐 → `live_already_aligned` / `on_book` 跳过；WS 与哨兵共用锁，禁止新旧雷达/宽止损双系统抢权限
 
 **止盈成交对账（全所）：**
 
 | 事件 | 系统行为 | 钉钉 |
 |------|----------|------|
-| **TP 价已达 + 该档限价消失** | 认定成交，记入 `consumed`，**绝不重挂**该档，耐心等更高档 | `TP_FILLED` |
+| **TP 价已达 + 该档限价消失** | 认定成交，记入 `consumed`，**绝不重挂**该档，耐心等更高档 | `TP_FILLED`（一次） |
 | ETH/XAU 市价引起的细微 qty 漂移 | 忽略（漂移阈值 8%）；不以噪声当漏挂 | — |
 | 现价在 TP1 附近但 TP1 已成交 | 跳过补挂 TP1，剩余只挂 TP2/TP3 | `TP_SKIP_REHANG` |
-| 路径≥85% 或 TP 吃单 | 雷达启动并随 TP2/TP3 锁利（条件槽，不与 TP 抢份额） | `RADAR_ARM` / `TRAIL` |
-| VPS 宽硬止损 | `closePosition` 合并槽，与 TP123 限价互不抢 reduceOnly | 开仓钉钉 |
+| 路径达档位激活% 或 TP 吃单 | 雷达启动并按 `move_step` 随 TP2/TP3 前进（条件槽） | `RADAR_ARM` / `TRAIL`（一次） |
+| VPS 宽硬止损 | 合并槽 / DeepCoin 双轨，与 TP123 限价互不抢份额 | 开仓钉钉 |
 
-**三层分工（互不抢份额）：** `TP123 限价` ‖ `VPS 硬止损/雷达条件槽` ‖ 各自推进，定期补挂只动 TP 限价。
+**三层分工（互不抢份额）：** `TP123 限价` ‖ `VPS 宽硬止损` ‖ `雷达追踪条件槽` ‖ 各自推进，定期补挂只动 TP 限价。
 
-**锁利阶段（启动后）：**
+**锁利阶段（启动后 · 步进=档位 `move_step`，非固定 50%）：**
 
 | Stage | 含义 |
 |-------|------|
-| 0 | 仅硬止损防守 |
-| 1 | 路径达激活 · 保本 |
-| 2 | TP1→TP2 50% · 追踪 |
+| 0 | 仅硬止损防守 · 雷达候命 |
+| 1 | 路径达激活 · 保本锁润 |
+| 2 | TP1→TP2 达 `move_step` · 追踪前进 |
 | 3 | 到达 TP2 · 锁利 |
-| 4 | TP2→TP3 50% · 加深 |
+| 4 | TP2→TP3 达 `move_step` · 加深 |
 | 5 | 到达 TP3 · 极限保护 |
 
-- **合并语义（Binance/OKX/Gate）：** 开仓硬止损 = 限价；雷达激活后合并槽取 LONG `max(vps_sl, radar)` / SHORT `min(...)`（可变为条件追踪）
-- **DeepCoin：** VPS/条件止损与雷达条件单并行
+- **合并语义（Binance/OKX/Gate）：** 开仓硬止损 = Stop-Limit 条件单；雷达激活后合并槽取 LONG `max(vps_sl, radar)` / SHORT `min(...)`
+- **DeepCoin：** VPS/条件止损与雷达条件单并行（双轨）
 - **STOP 安全钳制：** `clamp_stop_market_safe()` 防止追踪 SL 越过 mark 瞬间全平
 - **平仓归因：** 近入场 + 近雷达 SL 优先判 `exchange_stop`，避免 0.15% 容差把保本误标成 TP1（`close_attribution.py`）
 
@@ -624,12 +641,14 @@ qty             = notional_usd / price   （DeepCoin 换算为合约张）
 与 Pine 策略 `strategy.exit` 的 `qty_percent` **逐档对齐**；四所共用 `build_regime_settings()`。
 OPEN 仓位权重见上节 `REGIME_MARGIN_*`（**8/14/20/26%**），勿与下表 TP 分批混淆。
 
-| Regime | OPEN 保证金权重 | TP 分批 (%) | 雷达基准路径 | Trail ATR× |
-|--------|-----------------|-------------|--------------|------------|
-| 1 | **8%** | **25/35/40** | **70%** | 0.75 |
-| 2 | **14%** | 20/35/45 | **70%** | 1.00 |
-| 3 | **20%** | 18/32/50 | **75%** | 1.35 |
-| 4 | **26%** | 5/20/75 | **80%** | 1.80 |
+| Regime | OPEN 保证金权重 | TP 分批 (%) | 雷达激活 | 步进 | 呼吸 ATR× |
+|--------|-----------------|-------------|----------|------|-----------|
+| 1 | **8%** | **25/35/40** | **85%** | **35%** | **1.00** |
+| 2 | **14%** | 20/35/45 | **80%** | **30%** | **0.80** |
+| 3 | **20%** | 18/32/50 | **75%** | **25%** | **0.65** |
+| 4 | **26%** | 5/20/75 | **70%** | **20%** | **0.50** |
+
+> 雷达参数唯一源码：`backend/app/core/radar_trail.py` → `REGIME_RADAR`（与上表一致）。
 
 钉钉开仓/加仓/重启明细会显示：`止盈比例 TP1/2/3 = xx/xx/xx%`、`雷达状态`（档位% / 本笔有效%）、`雷达触发价`、`盘口结构`。
 
@@ -643,7 +662,14 @@ OPEN 仓位权重见上节 `REGIME_MARGIN_*`（**8/14/20/26%**），勿与下表
 
 ---
 
-### 八、哨兵（~6s 自适应）
+### 八、哨兵 + WebSocket 雷达（自适应）
+
+| 模式 | 周期 | 用途 |
+|------|------|------|
+| WS mark 推送 | ~0.45s | TP1 路径 / 雷达激活与前进（主路径） |
+| 哨兵 · 远 TP1 | **5s** | 方向背离 · 仓异动 · cap · 敞口巡检 |
+| 哨兵 · 近激活 | **1s** | 路径接近档位激活比例 |
+| 哨兵 · 雷达中 | **1.2s** | 追踪 / TP 对账 / 补挂兜底 |
 
 方向背离 · 仓位异动(TP/人工) · 雷达追踪 · cap trim · 全平归因 · **头寸↔止盈挂单敞口巡检**
 
@@ -869,8 +895,9 @@ https://twinstar.pro/gemini/webhook
 
 配置：管理后台 **平台与钱包 → 钉钉告警**（或 `.env` `DINGTALK_*`）。
 
-### 发送节流与重试
+### 发送节流、去重与重试
 
+- **动作级去重**：`dingtalk_alert_dedupe.py` — 同类关键动作（开仓/雷达启动/TP 成交/追踪前进等）实盘核查后 **推送一次**，监控循环不刷屏
 - **攒批**：默认最多 `DINGTALK_BATCH_MAX=8` 条或 `DINGTALK_BATCH_FLUSH_SEC=6` 秒合并为一条 Markdown 摘要（规避 20 条/分钟限流）
 - **重试**：失败后指数退避 1s / 2s / 4s（`DINGTALK_RETRY_MAX`）
 - **兜底**：重试耗尽后若配置了 `WECOM_WEBHOOK`，改推企业微信群机器人
@@ -895,7 +922,7 @@ https://twinstar.pro/gemini/webhook
 
 | 场景 | 钉钉识别 |
 |------|----------|
-| 路径达 TP1 85% 首次挂保本 | `RADAR_ARM`「雷达启动·距TP1剩15%防回吐」· 启动来源=路径 |
+| 路径达档位激活%（R1 85% / R2 80% / R3 75% / R4 70%）首次挂保本 | `RADAR_ARM`「雷达启动·防回吐」· 启动来源=路径（每笔一次） |
 | TP1/2/3 限价吃单后强制保本 | `RADAR_ARM`「雷达启动·…后防回吐（止盈成交）」· 启动来源=TP成交 |
 | 盘口归零·限价止盈 | `CLOSE_ATTRIBUTION`「限价止盈成交·TP…」 |
 | 盘口归零·雷达/条件止损 | `CLOSE_STOPLOSS`「保本雷达/条件止损触发」 |
@@ -1324,13 +1351,13 @@ Cursor 开发与 VPS 上线前，按 **[`docs/VPS_LIVE_CHECKLIST.md`](docs/VPS_L
 | Webhook + ETH/XAU 路由 | 🔴 P0 | `symbol` 必填；`bar_index`+`seq` 有序 |
 | OPEN sizing + **13×** 名义 cap | 🔴 P0 | 总本金 × **8/14/20/26%** × 25× |
 | VPS 硬止损 Stop-Limit | 🔴 P0 | 忽略 TV `tv_sl`；基础单×3 + 条件委托×1；禁止普通限价硬止损 |
-| 路径雷达 + 有效比例护栏 | 🟡 P1 | 70/70/75/80% + 紧 TP1→95% + 25s + 双确认 |
-| 钉钉 | 🟢 P2 | 盘口结构 / 雷达触发价 / `RADAR_ARM`·`RADAR_REVOKE` / 平仓归因 |
+| 路径雷达 + WS 实时 + 档位呼吸 | 🟡 P1 | R1–R4：85/80/75/70% · move_step · ATR 呼吸 · markPrice WS · 25s + 双确认 |
+| 钉钉 | 🟢 P2 | 盘口结构 / 雷达触发价 / `RADAR_ARM`·`RADAR_REVOKE` / 动作去重一次推送 |
 
 自动化验收（`backend/`）：
 
 ```bash
-py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/test_radar_trail.py tests/test_vps_hard_sl.py tests/test_adverse_radar_guard.py tests/test_close_attribution.py tests/test_trading_alerts_tp_ratio.py -q
+py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/test_radar_trail.py tests/test_vps_radar_stages.py tests/test_ws_radar_tick.py tests/test_vps_hard_sl.py tests/test_adverse_radar_guard.py tests/test_close_attribution.py tests/test_trading_alerts_tp_ratio.py -q
 ```
 
 ---
@@ -1356,9 +1383,11 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 - [x] **ETH + XAU 双品种**：独立 supervisor + **13×** 名义 cap + 品种路由
 - [x] **OPEN 权重 8/14/20/26%**（总本金基准）
 - [x] **VPS 硬止损 Stop-Limit**：开仓价×档位%（ETH/XAU 同比例）；条件委托挂单；忽略 TV 紧止损；禁止普通限价（会秒平）
-- [x] **路径比例雷达 + 6 阶段锁利**（R1/R2 70% · R3 75% · R4 80%）+ 紧 TP1 有效比例 / 开仓保护期 / 双轮确认 / `RADAR_REVOKE`
-- [x] **Webhook `bar_index`+`seq` 有序门** + 24h 幂等 + 钉钉攒批/重试/企微兜底
+- [x] **路径比例雷达 + 阶段锁利**（R1–R4：85/80/75/70% · 步进 35/30/25/20% · 呼吸 1.0/0.8/0.65/0.5 ATR）+ 紧 TP1 有效比例 / 开仓保护期 / 双轮确认 / `RADAR_REVOKE`
+- [x] **markPrice WebSocket 雷达监控**（四所 `ws_price_listeners`）+ 自适应哨兵兜底
+- [x] **Webhook `bar_index`+`seq` 有序门** + 24h 幂等 + 钉钉攒批/去重/重试/企微兜底
 - [x] **平仓归因**：近入场雷达止损不误标 TP1
+- [x] **TV 同 bar 先平后开** + 雷达进行中强制清场再开；空仓仅 OPEN 直接开仓、雷达候命
 - [x] manual adopt：TV CLOSE 不误平同向人工仓；空闲巡检 10s
 - [x] TV 字段解析 + 网关极速 200
 - [x] 管理后台 Webhook/RPC/钉钉 可视化配置
@@ -1370,6 +1399,77 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 
 - [ ] Bybit 多用户
 - [ ] Regime 参数后台可配置
+
+---
+
+## 更新记录
+
+> 按时间倒序。生产 VPS：`git pull` → `docker compose up -d --build`（或既有部署脚本）后重启 supervisor。
+
+### 2026-07-19 · `ce2d3c9` — WebSocket 驱动雷达实时监控（四所统一）
+
+**目标：** 雷达监控必须用最快 mark 价，精密跟随 TP123 / 剩余头寸 / 档位呼吸，杜绝挂撤死循环；钉钉动作一次；TV 到达时序干净。
+
+| 项 | 内容 |
+|----|------|
+| 价格源 | Binance / OKX / Gate / DeepCoin 公共 `markPrice` WS → `_set_ws_price` → `notify_price_listeners` |
+| 绑定 | `ws_price_listeners.py`；supervisor `_ensure_price_ws` / `_on_ws_price_tick` / `_radar_ws_fast_tick` |
+| 节流 | `RADAR_WS_TICK_MIN_SEC ≈ 0.45`；与哨兵共用锁，避免双路径抢挂 |
+| 哨兵周期 | 正常 **5s** · 近激活 **1s** · 雷达中 **1.2s**（DeepCoin 与主 supervisor 对齐） |
+| 计算 | 实时 qty、TP 成交记账、路径进度、按 `REGIME_RADAR` 前进挂单 |
+| 共存 | TP123 限价 ‖ VPS 宽止损 ‖ 雷达条件槽；`live_already_aligned` / `on_book` 跳过重复挂撤 |
+| TV | 有仓/雷达中 → **一律先平后开**（清场 + 新 TP123 + 宽止损 · 雷达候命）；空仓仅 OPEN → 直接开仓、雷达候命 |
+| 钉钉 | 关键动作实盘核查后一次（既有 dedupe）；监控循环不推 |
+| 测试 | `tests/test_ws_radar_tick.py` |
+| 关键文件 | `ws_price_listeners.py` · `*_client.py` · `position_supervisor.py` · `position_supervisor_deepcoin.py` |
+
+### 2026-07-19 · `89e1446` — 档位雷达重调（宁松勿紧 · 适度追随）
+
+| 档位 | 激活 | 步进 | 呼吸 |
+|------|------|------|------|
+| R1 | 85% | 35% | 1.0 ATR |
+| R2 | 80% | 30% | 0.8 ATR |
+| R3 | 75% | 25% | 0.65 ATR |
+| R4 | 70% | 20% | 0.5 ATR |
+
+- 单一源码表 `REGIME_RADAR`（`radar_trail.py`）+ `vps_radar_stages` 按 `move_step` 前进（取消固定 50% 阶段）
+- 四所共用，避免新老雷达参数并存
+
+### 2026-07 · `7f1abdd` — 空仓 OPEN 禁「蚂蚁残仓」秒 trim
+
+- 空仓仅 OPEN：不再开仓后立刻 CAP 部分平仓
+- 穿市 TP 消毒 / OPEN grace 阻断 CAP
+- TP 成交认定需价格/峰值证据，防误标
+
+### 2026-07 · `4c5e3c7` — 钉钉监控刷屏治理
+
+- `dingtalk_alert_dedupe`：同类关键推送冷却去重
+- 修复 `consumed_tp_levels` 在 8% 漂移内被误清空导致 `TP_FILLED` 连发
+
+### 2026-07 · `6bda1dc` / `f67267a` / `4aacaaa` — 先平后开 · 份额共存 · TP 死亡螺旋
+
+- TV 同 bar：`bar_index`+`seq` 排序；CLOSE 先于 OPEN；干净归零再开
+- TP 成交优先「价到 + 簿口消失」证据；禁止成交后按缩量重挂同价 TP1（`TP_SKIP_REHANG`）
+- 硬止损 / 雷达 / TP123 **分槽**，不抢 reduceOnly 份额
+
+### 2026-07 · 更早 hardening（节选）
+
+| Commit | 摘要 |
+|--------|------|
+| `73a2815` | V1.6.10 seq 门 + 实盘雷达/对账钉钉强化 |
+| `ebe1ff6` | TP 成交勿标人工；硬止损与雷达 qty 互不打架 |
+| `38f970e` / `b0d6729` | 路径比例启动雷达；TP 成交强制激活 |
+| `9fedd66` / `a972298` / `b1714f2` | VPS 硬止损 Stop-Limit（禁普通限价秒平） |
+| `3c6c2ea` | 紧 TP1 噪声护栏 + 误归因防护 |
+
+### 铁律复核清单（每次大改后对照）
+
+1. **价格**：雷达决策读 WS mark，而非慢 REST 轮询为主  
+2. **档位**：激活 / 步进 / 呼吸只读 `REGIME_RADAR`  
+3. **份额**：TP123 · VPS 宽止损 · 雷达 三者共存、不挂撤死循环  
+4. **TV**：有仓或雷达中 → 先平后开；空仓仅 OPEN → 开仓 + 防线 + 雷达候命  
+5. **钉钉**：动作实盘后一次，日志干净  
+6. **四所**：Binance / OKX / Gate / DeepCoin 同一套逻辑，禁止新旧双系统并存  
 
 ---
 
