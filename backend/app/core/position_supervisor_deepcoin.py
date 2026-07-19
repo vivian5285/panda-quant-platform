@@ -58,7 +58,6 @@ from app.core.startup_reconcile import (
     apply_tv_sl_from_sources,
     finalize_recovery_tv_params,
     format_startup_defense_summary,
-    is_manual_same_direction_position,
     is_tv_close_action,
     prepare_manual_adopt,
     recovery_section,
@@ -2400,11 +2399,18 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return PositionSupervisor._force_flat_before_open(self, reason)
 
     def _handle_tv_entry(self, action, curr_px, *, has_pos, current_side):
+        """
+        铁律（四所统一）:
+          - 带开仓（OPEN）→ 一律先平现有仓/清挂单，再开新仓（刷新）
+          - 平仓+开仓同到 → 门控已先平后开；此处开仓侧仍先平后开
+          - PYRAMID/PROFIT_ADD 同向追加除外；降级 OPEN / 反向 → 先平后开
+        """
         entry_type = getattr(self, "_entry_type", "OPEN")
         if entry_type in ENTRY_TYPES_ADD:
             if not has_pos:
-                logger.info(f"⚠️ {entry_type} 无持仓，降级为 OPEN")
-                self._ensure_book_clean_before_open(f"{entry_type}降级OPEN前清场")
+                logger.info(f"⚠️ {entry_type} 无持仓，降级为 OPEN · 铁律先平后开")
+                if not self._force_flat_before_open(f"{entry_type}降级OPEN·先平后开"):
+                    return
                 self._open_position(action, curr_px)
                 return
             if current_side != action:
@@ -2438,27 +2444,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self._add_to_position(action, curr_px, entry_type)
             return
 
-        if has_pos:
-            if is_manual_same_direction_position(self, action):
-                self._preserve_manual_on_tv_open_reopen(action, curr_px)
-                return
-            radar_note = ""
-            if (
-                (hasattr(self, "_is_radar_engaged") and self._is_radar_engaged())
-                or bool(getattr(self, "radar_latched", False))
-            ):
-                radar_note = "（雷达进行中→一律先平后开）"
-            logger.info(
-                f"⚡ TV OPEN [{action}] 先平后开{radar_note}（清场后再挂新 TP123/硬止损·雷达候命）"
-            )
-            if not self._force_flat_before_open(f"TV OPEN 先平后开{radar_note}"):
-                return
-        else:
-            left = self._count_open_book_orders() if hasattr(self, "_count_open_book_orders") else 0
-            if left > 0:
-                self._ensure_book_clean_before_open("空仓OPEN清残留挂单")
-            else:
-                logger.info(f"空仓仅 OPEN [{action}] · 按档位直接开仓（雷达候命）")
+        logger.info(
+            f"⚡ TV OPEN [{action}] 铁律·先平后开（有仓则平仓刷新；无仓则清挂单后开仓·雷达候命）"
+        )
+        if not self._force_flat_before_open(f"TV OPEN [{action}] 铁律·先平后开"):
+            return
         self._open_position(action, curr_px)
 
     def _add_to_position(self, action, curr_px, entry_type):

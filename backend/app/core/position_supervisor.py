@@ -14,7 +14,6 @@ from app.core.startup_reconcile import (
     apply_tv_sl_from_sources,
     finalize_recovery_tv_params,
     format_startup_defense_summary,
-    is_manual_same_direction_position,
     is_tv_close_action,
     live_matches_entry_direction,
     prepare_manual_adopt,
@@ -772,16 +771,34 @@ class PositionSupervisor(
 
     def _force_flat_before_open(self, reason: str) -> bool:
         """
-        TV 刷新/反向：先干净平仓（仓位归零 + 撤尽 TP/雷达/硬止损），再允许开仓。
-        防止 CLOSE→OPEN 过快时历史挂单成交造成反手或超档位敞口。
+        铁律：任意带开仓的 TV → 先干净平仓（仓位归零 + 撤尽 TP/雷达/硬止损），再开新仓。
+        已空仓时仅清残留挂单/状态，不刷屏钉钉。
         """
-        self._alert(
-            "info",
-            "FLIP_CLEAN",
-            "先平后开·开始清场",
-            f"{reason} | 将市价归零并撤尽全部挂单后再开新仓",
-            {"reason": reason, "exchange": self.exchange_id, "side": self.current_side},
-        )
+        live = self._get_active_position() if hasattr(self, "_get_active_position") else None
+        if live is None and hasattr(self, "position_manager"):
+            raw = self.position_manager.get_position(self.symbol)
+            if raw and float(raw.get("positionAmt", 0) or 0) != 0:
+                amt = float(raw["positionAmt"])
+                live = {"size": abs(amt), "side": "LONG" if amt > 0 else "SHORT"}
+        already_flat = not live or float(live.get("size") or 0) <= 0
+
+        if already_flat:
+            self._log("SIGNAL", f"先平后开·已空仓→清挂单后开新仓 | {reason}")
+            clean = self._ensure_book_clean_before_open(reason)
+            self.watched_qty = 0.0
+            self.initial_qty = 0.0
+            self.base_qty = 0.0
+            self.add_count = 0
+            self.consumed_tp_levels = []
+            self._tp_fill_dingtalk_levels = set()
+            if hasattr(self, "radar_latched"):
+                self.radar_latched = False
+            self.current_side = None
+            if hasattr(self, "_save_state"):
+                self._save_state()
+            return bool(clean.get("ok", True))
+
+        self._log("SIGNAL", f"先平后开·清现有仓再刷新 | {reason}")
         # 先撤单再平仓，减少平仓瞬间旧 TP 误成
         if hasattr(self, "_purge_defense_orders_on_flat"):
             self._purge_defense_orders_on_flat("force_flat_pre", notify=False)
@@ -828,6 +845,7 @@ class PositionSupervisor(
         ok = book_ok and recon_ok
         book_txt = "清零✓" if book_ok else f"残留{clean.get('orders_after')}"
         recon_txt = "一致" if recon_ok else "异常"
+        # 实盘清场核实后推送一次（开仓钉钉随后由 _open_position 再发）
         self._alert(
             "info" if ok else "warning",
             "FLIP_CLEAN",
@@ -845,11 +863,18 @@ class PositionSupervisor(
         has_pos: bool,
         current_side: str | None,
     ) -> dict:
+        """
+        铁律（四所统一）:
+          - 带开仓（OPEN）→ 一律先平现有仓/清挂单，再开新仓（刷新）
+          - 平仓+开仓同到 → 门控已先平后开；此处开仓侧仍先平后开
+          - PYRAMID/PROFIT_ADD 同向追加除外；降级 OPEN / 反向 → 先平后开
+        """
         entry_type = getattr(self, "_entry_type", "OPEN")
         if entry_type in ENTRY_TYPES_ADD:
             if not has_pos:
-                self._log("SIGNAL", f"⚠️ {entry_type} 无持仓，降级为 OPEN")
-                self._ensure_book_clean_before_open(f"{entry_type}降级OPEN前清场")
+                self._log("SIGNAL", f"⚠️ {entry_type} 无持仓，降级为 OPEN · 铁律先平后开")
+                if not self._force_flat_before_open(f"{entry_type}降级OPEN·先平后开"):
+                    return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
                 return self._open_position(action, curr_px)
             if current_side != action:
                 self._log("SIGNAL", f"⚠️ {entry_type} 方向不一致，先平后开")
@@ -880,25 +905,13 @@ class PositionSupervisor(
                 return {"status": "skipped", "reason": "max_add_times", "message": skip_reason}
             return self._add_to_position(action, curr_px, entry_type)
 
-        if has_pos:
-            if is_manual_same_direction_position(self, action):
-                return self._preserve_manual_on_tv_open_reopen(action, curr_px)
-            radar_note = ""
-            if self._is_radar_engaged() or bool(getattr(self, "radar_latched", False)):
-                radar_note = "（雷达进行中→一律先平后开）"
-            self._log(
-                "SIGNAL",
-                f"⚡ TV OPEN [{action}] 先平后开{radar_note}（清场后再挂新 TP123/硬止损·雷达候命）",
-            )
-            if not self._force_flat_before_open(f"TV OPEN 先平后开{radar_note}"):
-                return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
-        else:
-            # 空仓仅 OPEN：轻量确认无残留挂单 → 直接开仓+TP123+硬止损，雷达候命
-            left = self._count_open_book_orders() if hasattr(self, "_count_open_book_orders") else 0
-            if left > 0:
-                self._ensure_book_clean_before_open("空仓OPEN清残留挂单")
-            else:
-                self._log("SIGNAL", f"空仓仅 OPEN [{action}] · 按档位直接开仓（雷达候命）")
+        # factory OPEN / LONG / SHORT：一律先平后开刷新仓位（含空仓清挂单）
+        self._log(
+            "SIGNAL",
+            f"⚡ TV OPEN [{action}] 铁律·先平后开（有仓则平仓刷新；无仓则清挂单后开仓·雷达候命）",
+        )
+        if not self._force_flat_before_open(f"TV OPEN [{action}] 铁律·先平后开"):
+            return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
         return self._open_position(action, curr_px)
 
     def _add_to_position(self, action: str, curr_px: float, entry_type: str) -> dict:

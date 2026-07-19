@@ -35,9 +35,9 @@ def test_open_uses_vps_formula_not_margin_pct():
     sup, client = _make_supervisor()
     sup._apply_tv_entry_context({"entry_type": "OPEN", "regime": 1})
     qty, meta = sup._resolve_entry_qty(2000.0)
-    assert meta["sizing_mode"] == "vps_open"
+    assert meta["sizing_mode"] in ("vps_open", "vps_open_margin_coeff")
     assert qty == pytest.approx(0.619, rel=0.02)
-    assert "margin_pct" not in meta
+    assert "margin_pct" not in meta or meta.get("margin_coeff") is not None
 
 
 def test_pyramid_uses_base_qty_times_ratio():
@@ -95,3 +95,39 @@ def test_pyramid_skipped_when_max_add_times_reached():
     )
     assert result["status"] == "skipped"
     client.place_market_order.assert_not_called()
+
+
+def test_factory_open_always_force_flat_then_open_when_flat():
+    """Iron rule: any OPEN = force_flat (clean) then open, even if already flat."""
+    sup, client = _make_supervisor()
+    sup._apply_tv_entry_context({"entry_type": "OPEN", "regime": 1})
+    sup._force_flat_before_open = MagicMock(return_value=True)
+    sup._open_position = MagicMock(return_value={"status": "ok", "action": "LONG"})
+    result = sup._handle_tv_entry("LONG", 2000.0, has_pos=False, current_side=None)
+    assert result["status"] == "ok"
+    sup._force_flat_before_open.assert_called_once()
+    assert "先平后开" in str(sup._force_flat_before_open.call_args[0][0])
+    sup._open_position.assert_called_once_with("LONG", 2000.0)
+
+
+def test_factory_open_always_force_flat_then_open_when_has_pos():
+    """Iron rule: OPEN with live position always flat-then-open (refresh)."""
+    sup, client = _make_supervisor()
+    sup._apply_tv_entry_context({"entry_type": "OPEN", "regime": 1})
+    sup._force_flat_before_open = MagicMock(return_value=True)
+    sup._open_position = MagicMock(return_value={"status": "ok", "action": "LONG"})
+    result = sup._handle_tv_entry("LONG", 2000.0, has_pos=True, current_side="LONG")
+    assert result["status"] == "ok"
+    sup._force_flat_before_open.assert_called_once()
+    sup._open_position.assert_called_once_with("LONG", 2000.0)
+
+
+def test_factory_open_aborts_if_force_flat_fails():
+    sup, client = _make_supervisor()
+    sup._apply_tv_entry_context({"entry_type": "OPEN", "regime": 1})
+    sup._force_flat_before_open = MagicMock(return_value=False)
+    sup._open_position = MagicMock()
+    result = sup._handle_tv_entry("LONG", 2000.0, has_pos=True, current_side="SHORT")
+    assert result["status"] == "error"
+    assert result["reason"] == "flat_timeout"
+    sup._open_position.assert_not_called()

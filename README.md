@@ -66,14 +66,14 @@ trading_factory:
 
 # 执行铁律（PositionSupervisor — 四所相同）
 rules:
-  - 永远一手、单向持仓 One-Way；工厂 OPEN 同向已有仓 → 先平后开（人工接管同向仓除外）
-  - 反方向 TV 信号：一律先平后开（cancel all → 市价全平 → 再开仓）
-  - PYRAMID / PROFIT_ADD：同向追加，数量 = base_qty × TV qty_ratio；**加仓后核武重挂 TP123（新价格×新总头寸）+ VPS 硬止损限价 + 雷达重置**
+  - 永远一手、单向持仓 One-Way
+  - **铁律 OPEN**：任意带开仓的 TV（LONG/SHORT OPEN）→ **一律先平现有仓/清挂单，再开新仓**（刷新）；同 bar 平+开亦然；最终必有仓
+  - **铁律 CLOSE**：单独平仓 TV → 全平 + 撤尽挂单 + 状态清零，干净等待下次 TV（不开新仓）
+  - 反方向 / 雷达进行中：同样先平后开
+  - PYRAMID / PROFIT_ADD：同向追加（不加强制先平）；无仓或反向则降级 OPEN → 先平后开
   - 开仓后挂 **基础单×3**：TP1/2/3（reduceOnly）+ **VPS 硬止损 Stop-Limit 条件单**（开仓价×档位%；禁止普通限价，否则会立刻成交秒平）
   - **硬止损**：`距离 = 开仓价 × 档位%`（R1~R4：2.78/3.89/5.56/8.33%；ETH/XAU 同比例）；**忽略 TV UPDATE_SL / tv_sl 挂单**
   - **雷达（宁松勿紧 · 适度追随）**：按档位 `REGIME_RADAR` 启动 — R1 **85%**/步进35%/呼吸1.0ATR · R2 **80%**/30%/0.8 · R3 **75%**/25%/0.65 · R4 **70%**/20%/0.5；**价格源 = markPrice WebSocket**（`ws_price_listeners`）；紧 TP1 有效比例抬至 ~92%；开仓 25s + 双轮确认；TP 成交强制激活；误挂 `RADAR_REVOKE`；与 TP123/VPS 宽止损互不抢份额
-  - **TV 同 bar OPEN+CLOSE（任意 seq）**：短暂缓冲 → **永远先平后开**，最终实盘必须有仓（禁开仓秒平）；钉钉实盘后一次
-  - **TV 雷达进行中**：新 OPEN 一律先平后开（清场 → 新 TP123 + 宽止损 · 雷达候命）；空仓仅 OPEN → 直接开仓挂防线、雷达候命
   - **钉钉**：关键动作实盘核查后推送一次（`dingtalk_alert_dedupe` 去重）；监控循环不刷屏
   - 禁止与 TV 反向持仓：哨兵 / 重启 / 空闲巡检 → FORCE_ALIGN 全平
   - 人工/外部同向仓：manual adopt 后保留仓位，TV CLOSE 不强制全平，补挂 TP123 + **VPS 硬止损限价**（雷达按档位路径比例激活）
@@ -1409,6 +1409,19 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 ## 更新记录
 
 > 按时间倒序。生产 VPS：`git pull` → `docker compose up -d --build`（或既有部署脚本）后重启 supervisor。
+
+### 2026-07-19 · 执行铁律简化：OPEN 一律先平后开 · CLOSE 单独清零等待
+
+| 信号 | 行为 |
+|------|------|
+| 任意带开仓 TV（OPEN） | **一律**先平现有仓 / 清挂单 → 再开新仓（刷新）；空仓亦先清场 |
+| 同 bar 平仓+开仓 | 门控先平后开 + 开仓侧仍先平后开；**最终必有仓** |
+| 单独平仓 TV | 全平 + 撤尽挂单 + 状态清零，干净等待下次 TV |
+| 钉钉 | 清场/开仓/平仓实盘核实后各推一次（去重） |
+
+四所：`position_supervisor` + `position_supervisor_deepcoin` 同一套 `_handle_tv_entry` / `_force_flat_before_open`。
+
+---
 
 ### 2026-07-19 · Webhook 同秒 OPEN+CLOSE 铁律（防开仓秒平）
 
