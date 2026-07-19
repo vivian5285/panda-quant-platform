@@ -1719,7 +1719,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             and not self._radar_activation_reached(curr_px)
         ):
             logger.info(
-                "⏸️ 雷达未达激活条件（待路径≥85%%或TP成交），跳过保本 STOP @ %.2f",
+                "⏸️ 雷达未达激活条件（待档位路径比例或TP成交），跳过保本 STOP @ %.2f",
                 float(sl_price),
             )
             return False
@@ -1769,12 +1769,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             clamp_fn=self._clamp_radar_sl_to_tv_floor,
             radar_latched=bool(getattr(self, "radar_latched", False)),
             tp1_filled=path_ok or tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
+            regime=int(self.regime or 3),
+            live_qty=float(getattr(self, "watched_qty", 0) or 0),
+            consumed_tp_levels=list(getattr(self, "consumed_tp_levels", None) or []),
         )
         if radar.get("armed") and radar.get("radar_sl", 0) > 0:
             self.current_sl = float(radar["radar_sl"])
             self._latch_radar()
             logger.info(
-                f"📡 重启雷达恢复: {radar.get('stage_label')} | "
+                f"📡 重启雷达恢复: R{self.regime} {radar.get('stage_label')} | "
+                f"步进{radar.get('move_step')} 呼吸{radar.get('trail_offset')}ATR | "
                 f"best={self.best_price:.2f} | SL={self.current_sl:.2f}"
             )
         else:
@@ -2827,6 +2831,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             clamp_fn=self._clamp_radar_sl_to_tv_floor,
             radar_latched=bool(getattr(self, "radar_latched", False)),
             tp1_filled=path_armed or tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
+            regime=int(self.regime or 3),
+            live_qty=float(real_amt or 0),
+            consumed_tp_levels=list(getattr(self, "consumed_tp_levels", None) or []),
         )
         new_sl = float(radar.get("radar_sl") or 0)
         if new_sl <= 0:
@@ -2888,7 +2895,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 )
                 if on_book_now or first_arm:
                     alert_type = "RADAR_ARM" if first_arm else "TRAIL"
-                    title = "雷达启动·距TP1剩15%防回吐" if first_arm else f"雷达·{label}"
+                    base = float(radar.get("activation") or 0.75)
+                    rem = max(0.0, 1.0 - base)
+                    title = (
+                        f"雷达启动·R{self.regime}路径{base:.0%}(剩{rem:.0%})适度追随"
+                        if first_arm
+                        else f"雷达·{label}"
+                    )
                     self._alert(
                         "info",
                         alert_type,
@@ -2953,7 +2966,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 )
                 if on_book_now or first_arm:
                     alert_type = "RADAR_ARM" if first_arm else "TRAIL"
-                    title = "雷达启动·距TP1剩15%防回吐" if first_arm else f"雷达·{label}"
+                    base = float(radar.get("activation") or 0.75)
+                    rem = max(0.0, 1.0 - base)
+                    title = (
+                        f"雷达启动·R{self.regime}路径{base:.0%}(剩{rem:.0%})适度追随"
+                        if first_arm
+                        else f"雷达·{label}"
+                    )
                     self._alert(
                         "info",
                         alert_type,

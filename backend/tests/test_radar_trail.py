@@ -24,11 +24,14 @@ from app.core.radar_trail import (
 
 
 def test_regime_activation_table():
+    """Screenshot V2: R1=85% … R4=70%; move_step / breath ATR per regime."""
     assert REGIME_RADAR[1]["activation"] == pytest.approx(0.85)
-    assert REGIME_RADAR[2]["activation"] == pytest.approx(0.85)
-    assert REGIME_RADAR[3]["activation"] == pytest.approx(0.85)
-    assert REGIME_RADAR[4]["activation"] == pytest.approx(0.85)
-    assert regime_radar_activation(3) == pytest.approx(0.85)
+    assert REGIME_RADAR[2]["activation"] == pytest.approx(0.80)
+    assert REGIME_RADAR[3]["activation"] == pytest.approx(0.75)
+    assert REGIME_RADAR[4]["activation"] == pytest.approx(0.70)
+    assert REGIME_RADAR[4]["move_step"] == pytest.approx(0.20)
+    assert REGIME_RADAR[1]["trail_offset"] == pytest.approx(1.00)
+    assert regime_radar_activation(3) == pytest.approx(0.75)
 
 
 def test_merge_regime_radar_overlays_looser_params():
@@ -93,13 +96,13 @@ def test_incident_tight_tp1_effective_activation_blocks_early_path():
     assert d85["activation_effective"] >= 0.92
 
 
-def test_path_85_arms_on_healthy_span():
-    """Healthy TP1 span: 85% path + confirms → arm (15% remaining to TP1)."""
+def test_path_regime_arms_on_healthy_span():
+    """Healthy TP1 span: R3 arms at 75% path + confirms."""
     entry, tp1, atr = 1800.0, 1900.0, 20.0
-    px = entry + 0.85 * (tp1 - entry)
+    px = entry + 0.75 * (tp1 - entry)
     d = evaluate_radar_arm_gate(
         consumed_tp_levels=[],
-        progress=0.85,
+        progress=0.75,
         regime=3,
         entry=entry,
         tp1=tp1,
@@ -111,7 +114,26 @@ def test_path_85_arms_on_healthy_span():
     )
     assert d["arm"] is True
     assert d["arm_reason"] == "path_effective"
-    assert d["activation_base"] == pytest.approx(0.85)
+    assert d["activation_base"] == pytest.approx(0.75)
+    assert d["move_step"] == pytest.approx(0.25)
+    assert d["trail_offset"] == pytest.approx(0.65)
+
+
+def test_r4_arms_earlier_than_r1():
+    entry, tp1, atr = 1800.0, 1900.0, 20.0
+    px = entry + 0.72 * (tp1 - entry)
+    d4 = evaluate_radar_arm_gate(
+        consumed_tp_levels=[], progress=0.72, regime=4,
+        entry=entry, tp1=tp1, atr=atr, curr_px=px, side="LONG",
+        trade_opened_at=time.time() - 120, path_ok_streak=RADAR_ARM_CONFIRM_POLLS,
+    )
+    d1 = evaluate_radar_arm_gate(
+        consumed_tp_levels=[], progress=0.72, regime=1,
+        entry=entry, tp1=tp1, atr=atr, curr_px=px, side="LONG",
+        trade_opened_at=time.time() - 120, path_ok_streak=RADAR_ARM_CONFIRM_POLLS,
+    )
+    assert d4["arm"] is True
+    assert d1["arm"] is False
 
 
 def test_tp1_fill_arms_immediately():

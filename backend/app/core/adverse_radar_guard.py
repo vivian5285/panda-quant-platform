@@ -2120,6 +2120,9 @@ class AdverseRadarMixin:
             clamp_fn=getattr(self, "_clamp_radar_sl_to_tv_floor", lambda x: x),
             radar_latched=True,
             tp1_filled=True,
+            regime=int(getattr(self, "regime", 3) or 3),
+            live_qty=float(live_qty or 0),
+            consumed_tp_levels=list(getattr(self, "consumed_tp_levels", None) or []),
         )
         sl_px = float(radar.get("radar_sl") or 0)
         if sl_px <= 0:
@@ -2188,7 +2191,7 @@ class AdverseRadarMixin:
                     "RADAR_ARM",
                     f"雷达启动·{change_type}后防回吐（止盈成交）",
                     f"{label} SL@{sl_px:.2f} | 现价{float(curr_px or 0):.2f} | "
-                    f"盘口{'✓核实' if on_book else '提交中'} | 来源=TP成交非路径85%",
+                    f"盘口{'✓核实' if on_book else '提交中'} | 来源=TP成交（价到+限价消失）",
                     detail,
                 )
         else:
@@ -2246,7 +2249,7 @@ class AdverseRadarMixin:
 
         if progress >= 0.5 and getattr(self, "_scan_ticks", 0) % 5 == 0:
             logger.info(
-                "[User %s] 📡 TP1路径 %.0f%% | 现价 %.2f | 硬止损守护中（雷达待路径≥85%%/TP成交）",
+                "[User %s] 📡 TP1路径 %.0f%% | 现价 %.2f | 硬止损守护中（雷达待档位路径比例/TP成交）",
                 self.user_id, progress * 100, curr_px,
             )
 

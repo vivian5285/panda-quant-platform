@@ -1,4 +1,11 @@
-"""Radar breakeven trailing — path-to-TP1 activation by regime, then ATR stages."""
+"""Radar breakeven trailing — regime path arm + ATR breathing (single source).
+
+Screenshot V2 (宁松勿紧 · 适度追随):
+  R1 震荡 85%启动 / 每35%步进 / 1.0 ATR 呼吸
+  R2 弱势 80% / 30% / 0.8 ATR
+  R3 中势 75% / 25% / 0.65 ATR
+  R4 强势 70% / 20% / 0.5 ATR（适度追随，非紧追）
+"""
 
 from __future__ import annotations
 
@@ -7,36 +14,46 @@ from typing import Any
 
 from app.core.symbol_precision import round_price
 
-# Min trail width as fraction of entry→TP1 (avoids ATR-only tight stops on ETH)
-RADAR_MIN_TRAIL_TP1_FRAC = 0.22
+# Min trail width as fraction of entry→TP1 (floor when ATR tiny)
+RADAR_MIN_TRAIL_TP1_FRAC = 0.18
 FEE_BUFFER_PCT = 0.0015
-# Breakeven floor slack (ATR) — wider before TP1, tighter after TP1 lock-in
+# Breakeven floor slack (ATR) — wider before TP1 fill, tighter after
 RADAR_BREAKEVEN_ATR_BEFORE_TP1 = 0.55
 RADAR_BREAKEVEN_ATR_AFTER_TP1 = 0.25
 
-# Compat aliases — unified path arm at 85% (15% remaining to TP1)
-RADAR_PRE_TP1_ARM_PROGRESS = 0.85
-RADAR_STARTUP_PROFIT_PROGRESS = 0.85
-
-# Path-to-TP1 arming (primary gate — all regimes same):
-# 距 TP1 还剩 15%（进度 ≥ 85%）即启动保本，继续追踪锁住 TP2/TP3 利润
+# Canonical regime table — ONLY source for activation / move_step / breath ATR
 REGIME_RADAR: dict[int, dict[str, float]] = {
-    1: {"activation": 0.85, "trail_offset": 0.75},
-    2: {"activation": 0.85, "trail_offset": 1.00},
-    3: {"activation": 0.85, "trail_offset": 1.35},
-    4: {"activation": 0.85, "trail_offset": 1.80},
+    1: {"activation": 0.85, "move_step": 0.35, "trail_offset": 1.00},
+    2: {"activation": 0.80, "move_step": 0.30, "trail_offset": 0.80},
+    3: {"activation": 0.75, "move_step": 0.25, "trail_offset": 0.65},
+    4: {"activation": 0.70, "move_step": 0.20, "trail_offset": 0.50},
 }
 
-# Global arm guards (all exchanges) — prevent noise on tight TV TP1 spans
+# Compat aliases — prefer regime_radar_activation(regime)
+RADAR_PRE_TP1_ARM_PROGRESS = REGIME_RADAR[1]["activation"]
+RADAR_STARTUP_PROFIT_PROGRESS = REGIME_RADAR[1]["activation"]
+
+# Global arm guards (all exchanges)
 RADAR_OPEN_GRACE_SEC = 25.0
 RADAR_ARM_CONFIRM_POLLS = 2
-# When entry→TP1 span < 1.0×ATR, raise required progress (still ≤ 92%)
 RADAR_TIGHT_SPAN_ATR_MULT = 1.0
 RADAR_TIGHT_SPAN_MIN_PROGRESS = 0.92
-# Absolute favorable-move floor so 85% of a tiny span cannot arm on a tick
 RADAR_MIN_ABS_ATR_MULT = 0.55
-RADAR_MIN_ABS_ENTRY_PCT = 0.0015  # 0.15% of entry
+RADAR_MIN_ABS_ENTRY_PCT = 0.0015
 RADAR_EFFECTIVE_CAP = 0.98
+
+
+def clamp_regime_id(regime: int) -> int:
+    r = int(regime or 3)
+    if r < 1:
+        return 1
+    if r > 4:
+        return 4
+    return r
+
+
+def regime_radar_row(regime: int) -> dict[str, float]:
+    return dict(REGIME_RADAR[clamp_regime_id(regime)])
 
 
 def merge_regime_radar(base: dict[int, dict]) -> dict[int, dict]:
@@ -44,19 +61,23 @@ def merge_regime_radar(base: dict[int, dict]) -> dict[int, dict]:
     merged: dict[int, dict] = {}
     for r, cfg in base.items():
         row = dict(cfg)
-        row.update(REGIME_RADAR.get(int(r), {}))
+        row.update(REGIME_RADAR.get(int(r), REGIME_RADAR[3]))
         merged[int(r)] = row
     return merged
 
 
 def regime_radar_activation(regime: int) -> float:
-    """TP1 path fraction required to arm radar for this regime."""
-    r = int(regime or 3)
-    if r < 1:
-        r = 1
-    if r > 4:
-        r = 4
-    return float(REGIME_RADAR[r]["activation"])
+    return float(regime_radar_row(regime)["activation"])
+
+
+def regime_radar_move_step(regime: int) -> float:
+    """Interval progress fraction before advancing trail stage (TP1→TP2 / TP2→TP3)."""
+    return float(regime_radar_row(regime)["move_step"])
+
+
+def regime_radar_trail_offset(regime: int) -> float:
+    """Breathing room in ATR multiples (宁松勿紧)."""
+    return float(regime_radar_row(regime)["trail_offset"])
 
 
 def tp1_distance(entry: float, tv_tps: list, atr: float) -> float:
@@ -81,7 +102,7 @@ def tp_path_progress(
     tp1: float,
     side: str | None,
 ) -> float:
-    """0→1 progress from entry toward TP1 (used for radar arming and trail pacing)."""
+    """0→1 progress from entry toward TP1 (radar arming)."""
     entry = float(entry or 0)
     tp1 = float(tp1 or 0)
     curr_px = float(curr_px or 0)
@@ -113,7 +134,6 @@ def favorable_move(entry: float, curr_px: float, side: str | None) -> float:
 
 
 def radar_min_absolute_move(entry: float, atr: float) -> float:
-    """Minimum favorable mark move (USD) before path-arm is allowed."""
     atr_floor = max(float(atr or 0), 0.0) * RADAR_MIN_ABS_ATR_MULT
     pct_floor = abs(float(entry or 0)) * RADAR_MIN_ABS_ENTRY_PCT
     return max(atr_floor, pct_floor)
@@ -126,10 +146,8 @@ def radar_effective_activation(
     atr: float,
 ) -> float:
     """
-    Regime path ratio raised when TV TP1 span is tight vs ATR / absolute floor.
-
-    Base = 85% (15% remaining to TP1). Tight spans raise toward ~92%, never block
-    a healthy absolute move once progress already meets the raised floor.
+    Regime path ratio; raised when TV TP1 span is tight vs ATR.
+    Never blocks a healthy absolute move once progress meets the raised floor.
     """
     base = regime_radar_activation(regime)
     entry = float(entry or 0)
@@ -168,11 +186,8 @@ def evaluate_radar_arm_gate(
 ) -> dict[str, Any]:
     """
     Full arm decision for all exchanges.
-
-    Returns ok/arm meta used by supervisors + DingTalk.
-    - TP fill / later TP → arm immediately (no grace/confirm)
+    - TP fill → arm immediately
     - Path arm → open grace + effective activation + confirm polls
-    - Already latched → keep trailing (caller decides clear-premature)
     """
     now = float(now_ts if now_ts is not None else time.time())
     base_act = regime_radar_activation(regime)
@@ -183,11 +198,14 @@ def evaluate_radar_arm_gate(
     age = None
     if trade_opened_at and float(trade_opened_at) > 0:
         age = max(0.0, now - float(trade_opened_at))
+    row = regime_radar_row(regime)
 
     meta: dict[str, Any] = {
         "progress": round(float(progress or 0), 4),
         "activation_base": base_act,
         "activation_effective": round(eff_act, 4),
+        "move_step": row["move_step"],
+        "trail_offset": row["trail_offset"],
         "favorable_move": round(move, 4),
         "min_abs_move": round(min_abs, 4),
         "tp1_span": round(span, 4),
@@ -256,7 +274,6 @@ def radar_may_arm(
     progress: float,
     activation_ratio: float,
     radar_active: bool = False,
-    # Optional global guards (preferred for live supervisors)
     regime: int | None = None,
     entry: float = 0.0,
     tp1: float = 0.0,
@@ -267,14 +284,6 @@ def radar_may_arm(
     path_ok_streak: int = 0,
     now_ts: float | None = None,
 ) -> bool:
-    """
-    When to place/move breakeven radar STOP:
-    - already armed and trailing
-    - path to TP1 ≥ 85% (15% remaining — primary; tight-span may raise effective)
-    - TP1+ filled (qty/book still used for slice accounting, not required to arm)
-
-    When entry/tp1/atr provided, applies tight-span effective activation + open grace + confirm.
-    """
     if radar_active:
         return True
     if regime is not None and entry > 0 and tp1 > 0:
@@ -347,7 +356,6 @@ def clamp_stop_market_safe(sl: float, curr_px: float, side: str | None) -> float
 
 
 def stop_would_trigger_immediately(sl: float, curr_px: float, side: str | None) -> bool:
-    """True when a closePosition STOP would fire as soon as it hits the book."""
     if sl <= 0 or curr_px <= 0:
         return False
     safe = clamp_stop_market_safe(sl, curr_px, side)
@@ -370,6 +378,7 @@ def compute_radar_sl(
     clamp_fn,
     trail_cap_px: float | None = None,
 ) -> float:
+    """Legacy helper for unit tests — live path uses compute_vps_radar_sl only."""
     trail = trail_distance(atr, trail_mult, tp1_dist)
     floor = clamp_fn(
         breakeven_floor(entry, side, atr, consumed_tp_levels=consumed_tp_levels)

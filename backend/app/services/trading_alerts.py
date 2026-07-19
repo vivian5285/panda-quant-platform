@@ -487,7 +487,7 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             lines.append(
                 _line(
                     "盘口结构",
-                    "基础单×3：TP1/2/3 限价 + 条件委托×1：硬止损/雷达合并槽 closePosition（互不抢 reduceOnly 份额；距TP1剩15%启动保本追踪）",
+                    "基础单×3：TP1/2/3 限价 + 条件委托×1：硬止损/雷达合并槽 closePosition（互不抢份额；R1-4按档位路径启动适度追随）",
                 )
             )
         if detail.get("tv_sl_reference"):
@@ -501,7 +501,7 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             lines.append(
                 _line("TV 止损参考", f"{float(detail['tv_sl_ref']):.2f}（仅参考·不挂单）")
             )
-        # Explicit: radar arms at 85% path-to-TP1 (15% remaining)
+        # Regime path arm R1=85%…R4=70% + ATR breath (适度追随)
         if detail.get("radar_armed") or detail.get("radar_active"):
             radar_sl = detail.get("radar_sl") or detail.get("current_sl")
             if radar_sl:
@@ -511,9 +511,9 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
         else:
             act = detail.get("radar_activation_effective") or detail.get("radar_activation")
             base = detail.get("radar_activation")
+            regime = int(detail.get("regime") or 3)
             if act is None:
                 from app.core.radar_trail import REGIME_RADAR, radar_effective_activation
-                regime = int(detail.get("regime") or 3)
                 base = REGIME_RADAR.get(regime, REGIME_RADAR[3])["activation"]
                 entry = float(detail.get("entry") or detail.get("entry_price") or 0)
                 tp1 = 0.0
@@ -532,15 +532,14 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             base = base if base is not None else act
             if abs(float(act) - float(base)) > 0.01:
                 arm_txt = (
-                    f"待命 · 档位 TP1 路径 {float(base) * 100:.0f}% "
-                    f"（本笔有效 {float(act) * 100:.0f}%：TP1 间距收紧）后启动 Stop-Limit 保本"
+                    f"待命 · R{regime}路径 {float(base) * 100:.0f}% "
+                    f"（有效 {float(act) * 100:.0f}%：TP1 间距收紧）后适度追随"
                 )
             else:
                 remain = max(0.0, 1.0 - float(act)) * 100.0
                 arm_txt = (
-                    f"待命 · 价格达 TP1 路径 {float(act) * 100:.0f}% "
-                    f"（距 TP1 剩 {remain:.0f}%）后启动移动保本"
-                    f"（Stop-Limit；随后 TP2/TP3 锁利）"
+                    f"待命 · R{regime}路径 {float(act) * 100:.0f}% "
+                    f"（距 TP1 剩 {remain:.0f}%）后启动适度追随（TP2/TP3 锁利）"
                 )
             # Show absolute trigger price for short/long when entry+tp1 known
             entry_r = float(detail.get("entry") or detail.get("entry_price") or 0)
@@ -673,7 +672,7 @@ def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
     if detail.get("adopted_manual"):
         lines.append(_line("接管类型", "人工/外部持仓 · 按最新 TV 补挂"))
         if detail.get("radar_permitted") is False and not detail.get("breakeven_active"):
-            lines.append(_line("雷达状态", "待距TP1剩15%（路径≥85%）或TP成交后启动移动保本"))
+            lines.append(_line("雷达状态", "待档位路径比例或TP成交后启动适度追随"))
     if detail.get("shield_stop_price") or detail.get("tv_sl"):
         stop_px = detail.get("shield_stop_price") or detail.get("tv_sl")
         if detail.get("breakeven_active"):

@@ -13,6 +13,7 @@ from app.core.startup_reconcile import classify_startup_pnl_track
 def supervisor(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     client = MagicMock()
+    client.configure_mock(exchange_id="binance", trading_symbol="ETHUSDT", trading_leverage=25)
     sup = PositionSupervisor(user_id=1, client=client)
     sup.current_side = "LONG"
     sup.watched_entry = 1786.17
@@ -31,6 +32,9 @@ def supervisor(tmp_path, monkeypatch):
 def deepcoin_supervisor(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     client = MagicMock()
+    client.configure_mock(
+        exchange_id="deepcoin", trading_symbol="ETH-USDT-SWAP", trading_leverage=20,
+    )
     with patch.object(DeepcoinPositionSupervisor, "_start_idle_flat_patrol"), patch.object(
         DeepcoinPositionSupervisor, "_start_signal_worker"
     ):

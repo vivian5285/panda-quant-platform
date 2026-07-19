@@ -1,12 +1,14 @@
-"""VPS radar — TP1-fill activation, 5-stage trail (unified all regimes)."""
+"""VPS radar — regime move_step + ATR breath (unified all exchanges)."""
 
 import pytest
 
+from app.core.radar_trail import REGIME_RADAR
 from app.core.vps_radar_stages import (
     detect_radar_stage,
     compute_vps_radar_sl,
     apply_radar_sl_direction,
     is_favorable_radar_sl,
+    stage_atr_mult,
     tp1_filled_from_consumed,
     BREAKEVEN_BUFFER_PCT,
 )
@@ -19,29 +21,42 @@ TP3 = 1863.96
 ATR = 16.36
 
 
-def test_stage0_before_tp1_fill_even_near_tp1():
-    """Breathing room: price at 90% TP1 path must NOT arm radar."""
+def test_regime_table_matches_screenshot():
+    assert REGIME_RADAR[1] == {"activation": 0.85, "move_step": 0.35, "trail_offset": 1.00}
+    assert REGIME_RADAR[2]["activation"] == pytest.approx(0.80)
+    assert REGIME_RADAR[3]["move_step"] == pytest.approx(0.25)
+    assert REGIME_RADAR[4]["trail_offset"] == pytest.approx(0.50)
+
+
+def test_stage0_before_arm():
     px = ENTRY + (TP1 - ENTRY) * 0.90
     assert detect_radar_stage(ENTRY, px, "LONG", TP1, TP2, TP3, tp1_filled=False) == 0
-    assert detect_radar_stage(ENTRY, TP1, "LONG", TP1, TP2, TP3, tp1_filled=False) == 0
 
 
-def test_stage1_on_tp1_fill():
+def test_stage1_on_arm():
     assert detect_radar_stage(ENTRY, TP1, "LONG", TP1, TP2, TP3, tp1_filled=True) == 1
 
 
-def test_stage2_at_halfway_tp1_to_tp2():
-    px = TP1 + (TP2 - TP1) * 0.50
-    assert detect_radar_stage(ENTRY, px, "LONG", TP1, TP2, TP3, tp1_filled=True) == 2
+def test_r4_move_step_20_enters_stage2_earlier_than_r1():
+    """Strong trend move_step=20% vs oscillation 35%."""
+    px20 = TP1 + (TP2 - TP1) * 0.22
+    assert detect_radar_stage(
+        ENTRY, px20, "LONG", TP1, TP2, TP3, tp1_filled=True, regime=4,
+    ) == 2
+    assert detect_radar_stage(
+        ENTRY, px20, "LONG", TP1, TP2, TP3, tp1_filled=True, regime=1,
+    ) == 1  # R1 needs 35%
 
 
 def test_stage3_at_tp2():
     assert detect_radar_stage(ENTRY, TP2, "LONG", TP1, TP2, TP3, tp1_filled=True) == 3
 
 
-def test_stage4_halfway_tp2_to_tp3():
-    px = TP2 + (TP3 - TP2) * 0.50
-    assert detect_radar_stage(ENTRY, px, "LONG", TP1, TP2, TP3, tp1_filled=True) == 4
+def test_stage4_uses_regime_step():
+    px = TP2 + (TP3 - TP2) * 0.22
+    assert detect_radar_stage(
+        ENTRY, px, "LONG", TP1, TP2, TP3, tp1_filled=True, regime=4,
+    ) == 4
 
 
 def test_stage5_at_tp3():
@@ -53,7 +68,7 @@ def test_radar_sl_only_moves_up_for_long():
     assert apply_radar_sl_direction(1810.0, 1805.0, "LONG") == 1810.0
 
 
-def test_compute_radar_stage1_breakeven_needs_tp1_fill():
+def test_compute_radar_stage1_breakeven_needs_arm():
     px = ENTRY + (TP1 - ENTRY) * 0.99
     unarmed = compute_vps_radar_sl(
         entry=ENTRY, curr_px=px, best_price=px, atr=ATR, side="LONG",
@@ -61,6 +76,7 @@ def test_compute_radar_stage1_breakeven_needs_tp1_fill():
         old_sl=0, hard_sl=1800.0,
         clamp_fn=lambda x: x,
         tp1_filled=False,
+        regime=3,
     )
     assert unarmed["armed"] is False
     assert unarmed["stage"] == 0
@@ -71,12 +87,14 @@ def test_compute_radar_stage1_breakeven_needs_tp1_fill():
         old_sl=0, hard_sl=1800.0,
         clamp_fn=lambda x: x,
         tp1_filled=True,
+        regime=3,
     )
     assert radar["stage"] == 1
     assert radar["radar_sl"] == pytest.approx(ENTRY * (1.0 + BREAKEVEN_BUFFER_PCT), abs=0.02)
+    assert radar["trail_offset"] == pytest.approx(0.65)
 
 
-def test_stage2_atr_trail():
+def test_stage2_uses_regime_breath_atr():
     px = TP1 + (TP2 - TP1) * 0.55
     radar = compute_vps_radar_sl(
         entry=ENTRY, curr_px=px, best_price=px, atr=ATR, side="LONG",
@@ -85,9 +103,12 @@ def test_stage2_atr_trail():
         clamp_fn=lambda x: x,
         tp1_filled=True,
         radar_latched=True,
+        regime=4,
     )
     assert radar["stage"] == 2
-    assert radar["radar_sl"] == pytest.approx(px - ATR * 1.0, abs=0.02)
+    # R4 breath 0.5 ATR at stage2 factor 1.0
+    assert radar["radar_sl"] == pytest.approx(px - ATR * 0.50, abs=0.05)
+    assert stage_atr_mult(2, 0.50) == pytest.approx(0.50)
 
 
 def test_stage_uses_peak_px_after_pullback():
@@ -96,10 +117,10 @@ def test_stage_uses_peak_px_after_pullback():
     best = 1770.0
     rebound = 1790.0
     assert detect_radar_stage(
-        entry, rebound, "SHORT", tp1, tp2, tp3, tp1_filled=True,
+        entry, rebound, "SHORT", tp1, tp2, tp3, tp1_filled=True, regime=3,
     ) == 1
     assert detect_radar_stage(
-        entry, rebound, "SHORT", tp1, tp2, tp3, peak_px=best, tp1_filled=True,
+        entry, rebound, "SHORT", tp1, tp2, tp3, peak_px=best, tp1_filled=True, regime=3,
     ) == 3
 
 
@@ -117,6 +138,7 @@ def test_short_rebound_holds_latched_radar_sl():
         clamp_fn=lambda x: x,
         radar_latched=True,
         tp1_filled=True,
+        regime=2,
     )
     assert radar["armed"] is True
     assert radar["radar_sl"] < entry
@@ -128,3 +150,21 @@ def test_tp1_filled_from_consumed():
     assert tp1_filled_from_consumed([]) is False
     assert tp1_filled_from_consumed([1]) is True
     assert tp1_filled_from_consumed([2]) is True
+
+
+def test_r1_looser_breath_than_r4():
+    px = TP1 + (TP2 - TP1) * 0.55
+    r1 = compute_vps_radar_sl(
+        entry=ENTRY, curr_px=px, best_price=px, atr=ATR, side="LONG",
+        tp1=TP1, tp2=TP2, tp3=TP3,
+        old_sl=ENTRY * 1.001, hard_sl=1800.0,
+        clamp_fn=lambda x: x, tp1_filled=True, radar_latched=True, regime=1,
+    )
+    r4 = compute_vps_radar_sl(
+        entry=ENTRY, curr_px=px, best_price=px, atr=ATR, side="LONG",
+        tp1=TP1, tp2=TP2, tp3=TP3,
+        old_sl=ENTRY * 1.001, hard_sl=1800.0,
+        clamp_fn=lambda x: x, tp1_filled=True, radar_latched=True, regime=4,
+    )
+    # Looser breath → lower SL for LONG (farther from best)
+    assert r1["radar_sl"] < r4["radar_sl"]

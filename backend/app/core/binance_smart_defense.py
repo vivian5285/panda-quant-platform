@@ -903,7 +903,7 @@ class BinanceSmartDefenseMixin:
             and not self._radar_activation_reached(curr_px)
         ):
             self._def_log(
-                f"⏸️ 雷达未达激活条件（待路径≥85%或TP成交），"
+                f"⏸️ 雷达未达激活条件（待档位路径比例或TP成交），"
                 f"跳过保本 STOP @ {float(dynamic_sl):.2f}",
             )
             return False

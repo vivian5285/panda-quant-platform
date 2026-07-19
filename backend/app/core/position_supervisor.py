@@ -2683,12 +2683,16 @@ class PositionSupervisor(
             clamp_fn=self._clamp_radar_sl_to_tv_floor,
             radar_latched=bool(getattr(self, "radar_latched", False)),
             tp1_filled=path_ok or tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
+            regime=int(self.regime or 3),
+            live_qty=float(getattr(self, "watched_qty", 0) or 0),
+            consumed_tp_levels=list(getattr(self, "consumed_tp_levels", None) or []),
         )
         if radar.get("armed") and radar.get("radar_sl", 0) > 0:
             self.current_sl = float(radar["radar_sl"])
             self._latch_radar()
             logger.info(
-                f"[User {self.user_id}] 📡 重启雷达恢复: {radar.get('stage_label')} | "
+                f"[User {self.user_id}] 📡 重启雷达恢复: R{self.regime} {radar.get('stage_label')} | "
+                f"步进{radar.get('move_step')} 呼吸{radar.get('trail_offset')}ATR | "
                 f"best={self.best_price:.2f} | SL={self.current_sl:.2f}"
             )
         else:
@@ -2719,13 +2723,15 @@ class PositionSupervisor(
                 tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None))
                 or bool(getattr(self, "radar_latched", False))
             ),
+            regime=int(self.regime or 3),
         )
         vps_meta = getattr(self, "_vps_hard_sl_meta", None) or {}
         arm_meta = getattr(self, "_last_radar_arm_meta", None) or {}
-        from app.core.radar_trail import radar_effective_activation
+        from app.core.radar_trail import radar_effective_activation, regime_radar_activation
 
         base_act = float(
-            (self.regime_settings.get(self.regime) or {}).get("activation") or 0.85
+            (self.regime_settings.get(self.regime) or {}).get("activation")
+            or regime_radar_activation(int(self.regime or 3))
         )
         eff_act = float(
             arm_meta.get("activation_effective")
@@ -2790,6 +2796,9 @@ class PositionSupervisor(
             clamp_fn=self._clamp_radar_sl_to_tv_floor,
             radar_latched=bool(getattr(self, "radar_latched", False)),
             tp1_filled=path_armed or tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
+            regime=int(self.regime or 3),
+            live_qty=float(real_amt or 0),
+            consumed_tp_levels=list(getattr(self, "consumed_tp_levels", None) or []),
         )
         new_sl = float(radar.get("radar_sl") or 0)
         if new_sl <= 0:
@@ -2834,6 +2843,9 @@ class PositionSupervisor(
                     stage_label=radar.get("stage_label"),
                     first_arm=first_arm,
                     arm_source="path_tp1",
+                    move_step=radar.get("move_step"),
+                    trail_offset=radar.get("trail_offset"),
+                    live_qty=float(real_amt or 0),
                 )
                 label = radar.get("stage_label") or "雷达锁润"
                 self._log(
@@ -2843,17 +2855,20 @@ class PositionSupervisor(
                 )
                 if sl_placed or first_arm or on_book:
                     alert_type = "RADAR_ARM" if first_arm else "TRAIL"
+                    base = trail_detail.get("radar_activation") or 0.75
+                    rem = max(0.0, 1.0 - float(base))
                     title = (
-                        "雷达启动·距TP1剩15%防回吐"
+                        f"雷达启动·R{self.regime}路径{base:.0%}(剩{rem:.0%})适度追随"
                         if first_arm
                         else f"雷达·{label}"
                     )
-                    eff = trail_detail.get("radar_activation_effective") or trail_detail.get("radar_activation") or 0.85
-                    base = trail_detail.get("radar_activation") or 0.85
+                    eff = trail_detail.get("radar_activation_effective") or base
                     self._alert(
                         "info", alert_type, title,
                         f"{'路径首次启动' if first_arm else '路径追踪'} | 进度 {trail_detail.get('radar_progress', 0):.0%} "
-                        f"(档位{base:.0%}/有效{eff:.0%}) | 阶段{radar.get('stage')} SL {new_sl} | 盘口{'✓' if (sl_placed or on_book) else '?'}",
+                        f"(档位{base:.0%}/有效{eff:.0%}) | 步进{radar.get('move_step')} "
+                        f"呼吸{radar.get('trail_offset')}ATR | 阶段{radar.get('stage')} "
+                        f"SL {new_sl} | 头寸{real_amt} | 盘口{'✓' if (sl_placed or on_book) else '?'}",
                         trail_detail,
                     )
                 if hasattr(self, "_cancel_obsolete_tp_after_radar_move"):
@@ -2893,6 +2908,9 @@ class PositionSupervisor(
                     stage_label=radar.get("stage_label"),
                     first_arm=first_arm,
                     arm_source="path_tp1",
+                    move_step=radar.get("move_step"),
+                    trail_offset=radar.get("trail_offset"),
+                    live_qty=float(real_amt or 0),
                 )
                 label = radar.get("stage_label") or "雷达锁润"
                 self._log(
@@ -2902,17 +2920,20 @@ class PositionSupervisor(
                 )
                 if sl_placed or first_arm or on_book:
                     alert_type = "RADAR_ARM" if first_arm else "TRAIL"
+                    base = trail_detail.get("radar_activation") or 0.75
+                    rem = max(0.0, 1.0 - float(base))
                     title = (
-                        "雷达启动·距TP1剩15%防回吐"
+                        f"雷达启动·R{self.regime}路径{base:.0%}(剩{rem:.0%})适度追随"
                         if first_arm
                         else f"雷达·{label}"
                     )
-                    eff = trail_detail.get("radar_activation_effective") or trail_detail.get("radar_activation") or 0.85
-                    base = trail_detail.get("radar_activation") or 0.85
+                    eff = trail_detail.get("radar_activation_effective") or base
                     self._alert(
                         "info", alert_type, title,
                         f"{'路径首次启动' if first_arm else '路径追踪'} | 进度 {trail_detail.get('radar_progress', 0):.0%} "
-                        f"(档位{base:.0%}/有效{eff:.0%}) | 阶段{radar.get('stage')} SL {new_sl} | 盘口{'✓' if (sl_placed or on_book) else '?'}",
+                        f"(档位{base:.0%}/有效{eff:.0%}) | 步进{radar.get('move_step')} "
+                        f"呼吸{radar.get('trail_offset')}ATR | 阶段{radar.get('stage')} "
+                        f"SL {new_sl} | 头寸{real_amt} | 盘口{'✓' if (sl_placed or on_book) else '?'}",
                         trail_detail,
                     )
                 if hasattr(self, "_cancel_obsolete_tp_after_radar_move"):
@@ -3117,7 +3138,7 @@ class PositionSupervisor(
                         ):
                             logger.info(
                                 f"[User {self.user_id}] 📡 TP1路径 {progress:.0%} | "
-                                f"现价 {curr_px:.2f} | 硬止损守护（雷达待路径≥85%/TP成交）"
+                                f"现价 {curr_px:.2f} | 硬止损守护（雷达待档位路径比例/TP成交）"
                             )
 
                     self._sentinel_error_notified = False
