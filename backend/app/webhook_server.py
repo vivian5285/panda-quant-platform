@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 webhook_app = Flask(__name__)
 
-# Per-symbol serial dispatch: seq gate releases CLOSE then OPEN in order, but
-# fire-and-forget threads can reorder queue.put() across users. One worker per
+# Per-symbol serial dispatch: seq gate always releases CLOSE before OPEN on the
+# same bar (even when TV sends OPEN seq=1 and CLOSE seq=2). One worker per
 # symbol runs _run_dispatch_async to completion before the next signal.
 _symbol_dispatch_queues: dict[str, queue.Queue] = {}
 _symbol_dispatch_lock = threading.Lock()

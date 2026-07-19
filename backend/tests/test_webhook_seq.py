@@ -102,7 +102,7 @@ def test_seq_gate_orders_same_bar_close_then_open():
         "seq:ETHUSDT_200_2",
         dispatch=dispatch,
     )
-    assert released == []
+    assert released == []  # lone OPEN holds for CLOSE companion
     assert gate.pending_depth() == 1
 
     gate.submit(
@@ -111,6 +111,50 @@ def test_seq_gate_orders_same_bar_close_then_open():
         dispatch=dispatch,
     )
     assert released == [(1, "CLOSE_PROTECT"), (2, "LONG")]
+    assert gate.pending_depth() == 0
+
+
+def test_seq_gate_v1610_open_seq1_close_seq2_final_open():
+    """Live bug: V1.6.10 emits OPEN seq=1 + CLOSE_PROTECT seq=2 same second.
+
+    Must NEVER open-then-flat. Always CLOSE first, OPEN last → position exists.
+    """
+    gate = reset_seq_gate_for_tests()
+    released: list[tuple[int, str]] = []
+
+    def dispatch(payload, fingerprint):
+        released.append((int(payload["seq"]), str(payload["action"])))
+
+    # Arrival order matches TV webhook log (OPEN first, then CLOSE)
+    gate.submit(
+        {
+            "action": "LONG",
+            "entry_type": "OPEN",
+            "symbol": "ETHUSDT.P",
+            "bar_index": 27096,
+            "seq": 1,
+            "price": 1867.93,
+        },
+        "fp-open-1",
+        dispatch=dispatch,
+    )
+    assert released == []
+    assert gate.pending_depth() == 1
+
+    gate.submit(
+        {
+            "action": "CLOSE_PROTECT",
+            "symbol": "ETHUSDT.P",
+            "bar_index": 27096,
+            "seq": 2,
+            "side": "LONG",
+            "reason": "保护性全平-清算模块确认",
+        },
+        "fp-close-2",
+        dispatch=dispatch,
+    )
+    assert released == [(2, "CLOSE_PROTECT"), (1, "LONG")]
+    assert released[-1][1] == "LONG"
     assert gate.pending_depth() == 0
 
 
@@ -158,40 +202,35 @@ def test_seq_gate_same_seq_close_then_open_companion():
     assert released == ["CLOSE_PROTECT", "LONG"]
 
 
-def test_seq_gate_cross_bar_order():
+def test_seq_gate_lone_open_holds_then_releases_on_timeout(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.webhook_seq_gate.get_settings",
+        lambda: MagicMock(WEBHOOK_SEQ_WAIT_SEC=0.05),
+    )
     gate = reset_seq_gate_for_tests()
-    released: list[tuple[int, int]] = []
+    released: list[str] = []
 
     def dispatch(payload, fingerprint):
-        released.append((int(payload["bar_index"]), int(payload["seq"])))
+        released.append(str(payload["action"]))
 
     gate.submit(
-        {"action": "LONG", "symbol": "ETHUSDT", "bar_index": 301, "seq": 1},
-        "a",
+        {"action": "LONG", "symbol": "ETHUSDT", "bar_index": 88, "seq": 1, "price": 1},
+        "fp-lone-open",
         dispatch=dispatch,
     )
-    # 301 waits? Actually next expected for bar 301 is seq=1 and it's present —
-    # but bar 300 isn't pending. Spec: process by bar_index ascending among pending.
-    # Only 301 is pending → releases 301 immediately.
-    assert released == [(301, 1)]
+    assert released == []
+    time.sleep(0.2)
+    gate.flush_now()
+    assert released == ["LONG"]
 
-    gate = reset_seq_gate_for_tests()
-    released.clear()
 
-    def dispatch2(payload, fingerprint):
-        released.append((int(payload["bar_index"]), int(payload["seq"])))
-
-    # Both pending: 301 first arrival, then 300 → must process 300 then 301
-    gate.submit(
-        {"action": "LONG", "symbol": "ETHUSDT", "bar_index": 301, "seq": 1},
-        "b",
-        dispatch=dispatch2,
+def test_seq_gate_cross_bar_order(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.webhook_seq_gate.get_settings",
+        lambda: MagicMock(WEBHOOK_SEQ_WAIT_SEC=0.05),
     )
-    # With only 301, it flushes. Re-buffer both before flush by submitting 300 while
-    # forcing wait: inject 301 then 300 with seq gap on 300? Better: submit 301 seq=2
-    # first (buffers), then 300 seq=1 (lower bar releases first).
     gate = reset_seq_gate_for_tests()
-    released.clear()
+    released: list[tuple[int, int]] = []
 
     def dispatch3(payload, fingerprint):
         released.append((int(payload["bar_index"]), int(payload["seq"])))
@@ -201,24 +240,30 @@ def test_seq_gate_cross_bar_order():
         "c",
         dispatch=dispatch3,
     )
-    assert released == []  # waiting for seq=1 on 301
+    assert released == []  # lone OPEN / gap holds
     gate.submit(
         {"action": "CLOSE_PROTECT", "symbol": "ETHUSDT", "bar_index": 300, "seq": 1},
         "d",
         dispatch=dispatch3,
     )
-    # bar 300 ready → release; bar 301 still gap
+    # bar 300 CLOSE ready → release; bar 301 still holding
     assert released == [(300, 1)]
     gate.submit(
         {"action": "LONG", "symbol": "ETHUSDT", "bar_index": 301, "seq": 1},
         "e",
         dispatch=dispatch3,
     )
-    assert released == [(300, 1), (301, 1), (301, 2)]
+    # bar 301 now has two OPENs only → still hold until timeout
+    assert (301, 1) not in released or released == [(300, 1)]
+    time.sleep(0.2)
+    gate.flush_now()
+    assert released[0] == (300, 1)
+    assert set(released[1:]) == {(301, 1), (301, 2)}
+    assert released[-1][0] == 301
 
 
 def test_seq_gate_cycle_1_2_1_releases_second_open():
-    """V1.6.10: open→close→open on same bar (seq 1-2-1) must all release."""
+    """V1.6.10: open+close+open on same bar — CLOSE runs before OPENs; final=OPEN."""
     gate = reset_seq_gate_for_tests()
     released: list[tuple[int, str]] = []
 
@@ -230,21 +275,25 @@ def test_seq_gate_cycle_1_2_1_releases_second_open():
         "fp-open-1",
         dispatch=dispatch,
     )
+    assert released == []  # hold for CLOSE
     gate.submit(
         {"action": "CLOSE_STOPLOSS", "symbol": "ETHUSDT", "bar_index": 200, "seq": 2},
         "fp-close-2",
         dispatch=dispatch,
     )
+    # Unit flush: CLOSE then first OPEN
+    assert released == [(2, "CLOSE_STOPLOSS"), (1, "LONG")]
     gate.submit(
         {"action": "LONG", "symbol": "ETHUSDT", "bar_index": 200, "seq": 1, "price": 3488},
         "fp-open-1b",
         dispatch=dispatch,
     )
     assert released == [
-        (1, "LONG"),
         (2, "CLOSE_STOPLOSS"),
         (1, "LONG"),
+        (1, "LONG"),
     ]
+    assert released[-1][1] == "LONG"
     assert gate.pending_depth() == 0
 
 
@@ -279,7 +328,8 @@ def test_dingtalk_batch_merges(monkeypatch):
         DINGTALK_RETRY_MAX=3,
         WECOM_WEBHOOK="",
     ))
-    # Reset batcher queue by flushing leftovers
+    # Reset batcher queue by flushing leftovers; cancel any seq-gate timers first
+    reset_seq_gate_for_tests()
     dn.flush_dingtalk_batch()
     time.sleep(0.05)
     sent.clear()

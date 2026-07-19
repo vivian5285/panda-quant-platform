@@ -59,7 +59,10 @@ trading_factory:
   sizing: |
     OPEN = total_equity × REGIME_MARGIN(8/14/20/26%) × 25× / price（忽略 TV qty_ratio）；
     ADD = base_qty × TV qty_ratio；ETH+XAU 合计名义 ≤ 13× 本金
-  webhook_order: bar_index 升序 + seq 升序；Redis 幂等 seq:{symbol}_{bar}_{seq} 24h；缺口等待 ~3s
+  webhook_order: |
+    同 bar OPEN+CLOSE（任意 seq，含 V1.6.10 OPEN:1 CLOSE:2）→ 短暂缓冲后一律先 CLOSE 再 OPEN，最终必须有仓；
+    单独 OPEN 等待 WEBHOOK_SEQ_WAIT_SEC 同伴 CLOSE；Redis 幂等 seq:{symbol}_{bar}_{seq} 24h；缺口超时强制先平后开释放
+
 
 # 执行铁律（PositionSupervisor — 四所相同）
 rules:
@@ -69,6 +72,7 @@ rules:
   - 开仓后挂 **基础单×3**：TP1/2/3（reduceOnly）+ **VPS 硬止损 Stop-Limit 条件单**（开仓价×档位%；禁止普通限价，否则会立刻成交秒平）
   - **硬止损**：`距离 = 开仓价 × 档位%`（R1~R4：2.78/3.89/5.56/8.33%；ETH/XAU 同比例）；**忽略 TV UPDATE_SL / tv_sl 挂单**
   - **雷达（宁松勿紧 · 适度追随）**：按档位 `REGIME_RADAR` 启动 — R1 **85%**/步进35%/呼吸1.0ATR · R2 **80%**/30%/0.8 · R3 **75%**/25%/0.65 · R4 **70%**/20%/0.5；**价格源 = markPrice WebSocket**（`ws_price_listeners`）；紧 TP1 有效比例抬至 ~92%；开仓 25s + 双轮确认；TP 成交强制激活；误挂 `RADAR_REVOKE`；与 TP123/VPS 宽止损互不抢份额
+  - **TV 同 bar OPEN+CLOSE（任意 seq）**：短暂缓冲 → **永远先平后开**，最终实盘必须有仓（禁开仓秒平）；钉钉实盘后一次
   - **TV 雷达进行中**：新 OPEN 一律先平后开（清场 → 新 TP123 + 宽止损 · 雷达候命）；空仓仅 OPEN → 直接开仓挂防线、雷达候命
   - **钉钉**：关键动作实盘核查后推送一次（`dingtalk_alert_dedupe` 去重）；监控循环不刷屏
   - 禁止与 TV 反向持仓：哨兵 / 重启 / 空闲巡检 → FORCE_ALIGN 全平
@@ -774,15 +778,15 @@ https://twinstar.pro/gemini/webhook
 }
 ```
 
-**TV 同 K 线只可能两种组合（VPS 必读）：**
+**TV 同 K 线 OPEN+CLOSE（VPS 铁律 · 四所统一）：**
 
 | TV 发出 | 含义 | VPS |
 |---------|------|-----|
-| 仅 `CLOSE_*` | 先开后平被拦截，只发平仓 | 执行平仓，仓位归零，撤尽挂单 |
-| `CLOSE_*` + `OPEN`（平 seq 小、开 seq 大） | 刷新仓位 | **先平后开**：干净归零+撤单 → 再挂新 TP123/硬止损/雷达待命 |
-| 仅 `OPEN` | 空仓开仓 | 先清残留挂单，再开仓 |
+| 仅 `CLOSE_*` | 保护性/止损全平 | 执行平仓，仓位归零，撤尽挂单 |
+| `CLOSE_*` + `OPEN`（**任意 seq**，含 V1.6.10：OPEN `seq=1` + CLOSE `seq=2`） | 同秒刷新 | **短暂缓冲 → 一律先平后开**；最终实盘**必须有仓**；再挂 TP123/硬止损/雷达候命；钉钉实盘后推一次 |
+| 仅 `OPEN` | 空仓开仓 | 等待 `WEBHOOK_SEQ_WAIT_SEC` 同伴 CLOSE；超时后开仓 |
 
-> 永远不会出现「开仓+平仓同时作为两条有效警报且开在平前」。同 seq 时门控仍 **CLOSE 优先于 OPEN**。
+> **禁止**按 seq 数字先开后平（会导致开仓秒平）。排序键：`先 CLOSE 再 OPEN`，seq 仅作次要键。单独 OPEN 会短暂停顿等同伴 CLOSE。
 
 **VPS 规则（全所共用）：**
 
@@ -1405,6 +1409,20 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 ## 更新记录
 
 > 按时间倒序。生产 VPS：`git pull` → `docker compose up -d --build`（或既有部署脚本）后重启 supervisor。
+
+### 2026-07-19 · Webhook 同秒 OPEN+CLOSE 铁律（防开仓秒平）
+
+**实盘事故：** V1.6.10 同 bar 发出 OPEN `seq=1` + CLOSE_PROTECT `seq=2`，旧门控按 seq 升序 → 先开后平 → 空仓。
+
+| 项 | 修复 |
+|----|------|
+| 排序 | `(CLOSE优先, seq, 到达时间)` — **不再**以 seq 决定开平先后 |
+| 同伴等待 | 单独 OPEN 缓冲 `WEBHOOK_SEQ_WAIT_SEC`，等可能的 CLOSE |
+| 成对释放 | 同 bar 同时有 OPEN+CLOSE → 单元释放：先全平再开仓，**最终必有仓** |
+| 范围 | 四所共用 `webhook_seq_gate` + per-symbol 串行 dispatch |
+| 测试 | `test_seq_gate_v1610_open_seq1_close_seq2_final_open` |
+
+---
 
 ### 2026-07-19 · `ce2d3c9` — WebSocket 驱动雷达实时监控（四所统一）
 
