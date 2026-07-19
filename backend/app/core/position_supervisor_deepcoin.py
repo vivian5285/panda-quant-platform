@@ -79,10 +79,11 @@ from app.services.close_alert_utils import (
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-DEEPCOIN_SUPERVISOR_VERSION = "v13.4.6-flat-reconcile"
-SENTINEL_POLL_NORMAL = 8.0
-SENTINEL_POLL_ARMING = 6.0
-SENTINEL_POLL_RADAR = 6.0
+DEEPCOIN_SUPERVISOR_VERSION = "v13.4.7-ws-radar"
+SENTINEL_POLL_NORMAL = 5.0
+SENTINEL_POLL_ARMING = 1.0
+SENTINEL_POLL_RADAR = 1.2
+RADAR_WS_TICK_MIN_SEC = 0.45
 DUST_ORPHAN_CONTRACTS = 1
 TP_COMPLETE_RESIDUAL_RATIO = 0.12
 FLAT_WAIT_TIMEOUT = 12.0
@@ -235,6 +236,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.last_tv_side = None
         self.last_tv_signal = None
         self._scan_ticks = 0
+        self._radar_ws_tick_ts: float = 0.0
+        self._radar_ws_bound: bool = False
         self._signal_queue = queue.Queue()
         self._signal_worker_started = False
         self._init_adverse_radar_fields()
@@ -2439,15 +2442,23 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             if is_manual_same_direction_position(self, action):
                 self._preserve_manual_on_tv_open_reopen(action, curr_px)
                 return
-            logger.info(f"⚡ TV OPEN [{action}] 先平后开（清场后再挂新 TP123/硬止损）")
-            if not self._force_flat_before_open("TV OPEN 先平后开"):
+            radar_note = ""
+            if (
+                (hasattr(self, "_is_radar_engaged") and self._is_radar_engaged())
+                or bool(getattr(self, "radar_latched", False))
+            ):
+                radar_note = "（雷达进行中→一律先平后开）"
+            logger.info(
+                f"⚡ TV OPEN [{action}] 先平后开{radar_note}（清场后再挂新 TP123/硬止损·雷达候命）"
+            )
+            if not self._force_flat_before_open(f"TV OPEN 先平后开{radar_note}"):
                 return
         else:
             left = self._count_open_book_orders() if hasattr(self, "_count_open_book_orders") else 0
             if left > 0:
                 self._ensure_book_clean_before_open("空仓OPEN清残留挂单")
             else:
-                logger.info(f"空仓仅 OPEN [{action}] · 按档位直接开仓")
+                logger.info(f"空仓仅 OPEN [{action}] · 按档位直接开仓（雷达候命）")
         self._open_position(action, curr_px)
 
     def _add_to_position(self, action, curr_px, entry_type):
@@ -2794,7 +2805,74 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         threading.Thread(target=self._sentinel_loop, daemon=True).start()
 
     def _ensure_price_ws(self):
-        self.client.start_public_price_ws(self.symbol)
+        """Keep markPrice WS alive and bind radar to every tick (fastest path)."""
+        if hasattr(self.client, "start_public_price_ws"):
+            self.client.start_public_price_ws(self.symbol)
+        if hasattr(self.client, "register_price_listener") and not self._radar_ws_bound:
+            self.client.register_price_listener(self._on_ws_price_tick)
+            self._radar_ws_bound = True
+
+    def _unbind_price_ws_listener(self):
+        if self._radar_ws_bound and hasattr(self.client, "unregister_price_listener"):
+            try:
+                self.client.unregister_price_listener(self._on_ws_price_tick)
+            except Exception:
+                pass
+        self._radar_ws_bound = False
+
+    def _on_ws_price_tick(self, symbol, price):
+        """WebSocket mark push → immediate TP1-path / trail evaluate (throttled)."""
+        if not self.monitoring or float(price or 0) <= 0:
+            return
+        want = str(getattr(self, "symbol", "") or "").upper()
+        got = str(symbol or "").upper()
+        if want and got and want != got:
+            a = want.replace("-", "").replace("_", "").replace("SWAP", "")
+            b = got.replace("-", "").replace("_", "").replace("SWAP", "")
+            if a != b and not (a.startswith(b[:6]) or b.startswith(a[:6])):
+                return
+        now = time.time()
+        if now - float(getattr(self, "_radar_ws_tick_ts", 0) or 0) < RADAR_WS_TICK_MIN_SEC:
+            return
+        if not self._lock.acquire(blocking=False):
+            return
+        try:
+            self._radar_ws_tick_ts = now
+            self._radar_ws_fast_tick(float(price))
+        except Exception as exc:
+            logger.debug("[User %s] WS radar tick: %s", self.user_id, exc)
+        finally:
+            self._lock.release()
+
+    def _radar_ws_fast_tick(self, curr_px):
+        """WS-driven radar: sync TP fills + arm/trail on remaining qty."""
+        if curr_px <= 0 or not self.monitoring:
+            return
+        pos = self._get_active_position()
+        if not pos or self._safe_qty(pos.get("size")) <= 0:
+            return
+        live_qty = self._safe_qty(pos["size"])
+        entry = float(pos.get("entry_price") or self.watched_entry or 0)
+        if self.current_side == "LONG":
+            self.best_price = max(float(self.best_price or entry or 0), curr_px)
+        elif self.current_side == "SHORT":
+            bp = float(self.best_price or entry or 0)
+            self.best_price = min(bp, curr_px) if bp > 0 else curr_px
+        before = set(int(x) for x in (self.consumed_tp_levels or []))
+        self._sync_consumed_tp_levels(live_qty, curr_px)
+        after = set(int(x) for x in (self.consumed_tp_levels or []))
+        gained = sorted(after - before)
+        if gained:
+            from app.core.position_supervisor import PositionSupervisor
+            PositionSupervisor._notify_tp_fill_detected(
+                self, gained[0], self.watched_qty or live_qty, live_qty, curr_px,
+            )
+            if hasattr(self, "_boost_radar_after_tp_fill"):
+                self._boost_radar_after_tp_fill(f"tp{gained[0]}_filled", curr_px, live_qty)
+        self.watched_qty = live_qty
+        if entry > 0:
+            self.watched_entry = entry
+        self._orchestrate_defense_monitoring(live_qty, curr_px)
 
     def _radar_activation_progress(self, curr_px):
         if curr_px <= 0 or not self.watched_entry:
@@ -2805,12 +2883,23 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return 0.0
 
     def _sentinel_poll_sec(self, curr_px=0.0):
+        """WS-aligned cadence: arming/trail ~1s; far from TP1 slightly slower."""
         if hasattr(self, "_is_radar_engaged") and self._is_radar_engaged():
             return SENTINEL_POLL_RADAR
         if self._is_radar_active():
             return SENTINEL_POLL_RADAR
         if tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)):
             return SENTINEL_POLL_RADAR
+        if curr_px > 0 and self.watched_entry and self.tv_tps:
+            progress = self._radar_activation_progress(curr_px)
+            act = 0.75
+            if hasattr(self, "_regime_radar_activation"):
+                act = float(self._regime_radar_activation() or 0.75)
+            else:
+                row = (self.regime_settings.get(self.regime) or {})
+                act = float(row.get("activation") or 0.75)
+            if progress + 1e-9 >= max(0.40, act * 0.55):
+                return SENTINEL_POLL_ARMING
         return SENTINEL_POLL_NORMAL
 
     def _process_radar_trailing(self, real_amt, curr_px):
@@ -2987,10 +3076,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return False
 
     def _sentinel_loop(self):
-        """哨兵：持仓/TP 防线 + 雷达移动保本（自适应轮询 2~6 秒）"""
+        """哨兵：持仓/TP 防线 + 雷达移动保本（WS tick 为主，REST 自适应轮询兜底）"""
         last_px = 0.0
         while self.monitoring:
             try:
+                self._ensure_price_ws()
                 if not self._lock.acquire(timeout=2.0):
                     continue
                 try:
@@ -3019,7 +3109,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         break
 
                     entry_px = float(pos.get("entry_price", 0) or self.watched_entry or 0) if pos else 0.0
-                    curr_px = self.client.get_current_price(self.symbol)
+                    curr_px = self.client.get_current_price(self.symbol, prefer_ws=True)
                     if curr_px <= 0:
                         curr_px = last_px
                     else:
@@ -3118,7 +3208,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                             logger.warning("人工异动钉钉跳过：实盘核查未通过")
 
                     self._scan_ticks += 1
-                    curr_px = self.client.get_current_price(self.symbol)
+                    curr_px = self.client.get_current_price(self.symbol, prefer_ws=True)
                     if curr_px <= 0:
                         curr_px = last_px
                     else:
@@ -3283,6 +3373,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 )
 
         self.monitoring = False
+        self._unbind_price_ws_listener()
         self._disarm_adverse_staged_stops(reason="flat_reset", notify=False)
         self._reset_adverse_radar(keep_tv_sl=False)
         self.watched_qty = 0

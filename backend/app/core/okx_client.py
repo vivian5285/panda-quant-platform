@@ -224,6 +224,16 @@ class OkxClient:
         with self._price_lock:
             self._price_cache[symbol] = price
             self._price_cache_ts[symbol] = time.time()
+        from app.core.ws_price_listeners import notify_price_listeners
+        notify_price_listeners(self, symbol, price)
+
+    def register_price_listener(self, callback) -> None:
+        from app.core.ws_price_listeners import register_price_listener
+        register_price_listener(self, callback)
+
+    def unregister_price_listener(self, callback) -> None:
+        from app.core.ws_price_listeners import unregister_price_listener
+        unregister_price_listener(self, callback)
 
     def _get_ws_price(self, symbol: str, max_age: float = 30.0) -> float | None:
         with self._price_lock:

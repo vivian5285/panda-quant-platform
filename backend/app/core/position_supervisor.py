@@ -79,9 +79,13 @@ CANCEL_VERIFY_ROUNDS = 5
 HEAL_PLACE_ROUNDS = 2
 SIGNAL_QUEUE_TTL = 120.0
 SIGNAL_LOCK_SLICE = 5.0
-SENTINEL_POLL_NORMAL = 8.0
-SENTINEL_POLL_ARMING = 6.0
-SENTINEL_POLL_RADAR = 6.0
+SENTINEL_POLL_NORMAL = 5.0
+# Near TP1 path / arming: match WS markPrice@1s cadence
+SENTINEL_POLL_ARMING = 1.0
+# Radar engaged: trail tightly on WS
+SENTINEL_POLL_RADAR = 1.2
+# WS tick → radar evaluate throttle (avoid place/cancel thrash)
+RADAR_WS_TICK_MIN_SEC = 0.45
 DUST_QTY_ETH = 0.004
 TP_COMPLETE_RESIDUAL_RATIO = 0.12
 RADAR_SL_MIN_MOVE = 1.0
@@ -157,8 +161,10 @@ class PositionSupervisor(
         self._queue_worker_lock = threading.Lock()
         self._queue_worker_started = False
         self.trade_opened_at: float | None = None
+        self._radar_ws_tick_ts: float = 0.0
+        self._radar_ws_bound: bool = False
 
-        # activation: TP1 路径比例（预热）；trail_offset: 锁润距极值 ATR 倍数（见 radar_trail.py）
+        # activation / move_step / trail_offset from REGIME_RADAR (radar_trail.py)
         self.regime_settings = build_regime_settings()
 
         self.regime = 3
@@ -877,16 +883,22 @@ class PositionSupervisor(
         if has_pos:
             if is_manual_same_direction_position(self, action):
                 return self._preserve_manual_on_tv_open_reopen(action, curr_px)
-            self._log("SIGNAL", f"⚡ TV OPEN [{action}] 先平后开（清场后再挂新 TP123/硬止损）")
-            if not self._force_flat_before_open("TV OPEN 先平后开"):
+            radar_note = ""
+            if self._is_radar_engaged() or bool(getattr(self, "radar_latched", False)):
+                radar_note = "（雷达进行中→一律先平后开）"
+            self._log(
+                "SIGNAL",
+                f"⚡ TV OPEN [{action}] 先平后开{radar_note}（清场后再挂新 TP123/硬止损·雷达候命）",
+            )
+            if not self._force_flat_before_open(f"TV OPEN 先平后开{radar_note}"):
                 return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
         else:
-            # 空仓仅 OPEN：轻量确认无残留挂单即可，不做先平后开
+            # 空仓仅 OPEN：轻量确认无残留挂单 → 直接开仓+TP123+硬止损，雷达候命
             left = self._count_open_book_orders() if hasattr(self, "_count_open_book_orders") else 0
             if left > 0:
                 self._ensure_book_clean_before_open("空仓OPEN清残留挂单")
             else:
-                self._log("SIGNAL", f"空仓仅 OPEN [{action}] · 按档位直接开仓")
+                self._log("SIGNAL", f"空仓仅 OPEN [{action}] · 按档位直接开仓（雷达候命）")
         return self._open_position(action, curr_px)
 
     def _add_to_position(self, action: str, curr_px: float, entry_type: str) -> dict:
@@ -2255,8 +2267,77 @@ class PositionSupervisor(
         return False
 
     def _ensure_price_ws(self) -> None:
+        """Keep markPrice WS alive and bind radar to every tick (fastest path)."""
         if hasattr(self.client, "start_public_price_ws"):
             self.client.start_public_price_ws(self.symbol)
+        if hasattr(self.client, "register_price_listener") and not self._radar_ws_bound:
+            self.client.register_price_listener(self._on_ws_price_tick)
+            self._radar_ws_bound = True
+
+    def _unbind_price_ws_listener(self) -> None:
+        if self._radar_ws_bound and hasattr(self.client, "unregister_price_listener"):
+            try:
+                self.client.unregister_price_listener(self._on_ws_price_tick)
+            except Exception:
+                pass
+        self._radar_ws_bound = False
+
+    def _on_ws_price_tick(self, symbol: str, price: float) -> None:
+        """WebSocket mark push → immediate TP1-path / trail evaluate (throttled)."""
+        if not self.monitoring or float(price or 0) <= 0:
+            return
+        want = str(getattr(self, "symbol", "") or "").upper()
+        got = str(symbol or "").upper()
+        if want and got and want != got:
+            # ETHUSDT vs ETH-USDT-SWAP / ETH_USDT
+            a = want.replace("-", "").replace("_", "").replace("SWAP", "")
+            b = got.replace("-", "").replace("_", "").replace("SWAP", "")
+            if a != b and not (a.startswith(b[:6]) or b.startswith(a[:6])):
+                return
+        now = time.time()
+        if now - float(getattr(self, "_radar_ws_tick_ts", 0) or 0) < RADAR_WS_TICK_MIN_SEC:
+            return
+        if not self._lock.acquire(blocking=False):
+            return
+        try:
+            self._radar_ws_tick_ts = now
+            self._radar_ws_fast_tick(float(price))
+        except Exception as exc:
+            logger.debug("[User %s] WS radar tick: %s", self.user_id, exc)
+        finally:
+            self._lock.release()
+
+    def _radar_ws_fast_tick(self, curr_px: float) -> None:
+        """
+        Lightweight WS-driven radar: sync TP fills + arm/trail on remaining qty.
+        Skips CAP/heavy heal — sentinel still does those on slower cadence.
+        """
+        if curr_px <= 0 or not self.monitoring:
+            return
+        pos = self._get_active_position()
+        if not pos or float(pos.get("size") or 0) <= 0:
+            return
+        live_qty = float(pos["size"])
+        entry = float(pos.get("entry_price") or self.watched_entry or 0)
+        if self.current_side == "LONG":
+            self.best_price = max(float(self.best_price or entry or 0), curr_px)
+        elif self.current_side == "SHORT":
+            bp = float(self.best_price or entry or 0)
+            self.best_price = min(bp, curr_px) if bp > 0 else curr_px
+        if hasattr(self, "_sync_consumed_tp_levels"):
+            before = set(int(x) for x in (self.consumed_tp_levels or []))
+            self._sync_consumed_tp_levels(live_qty, curr_px)
+            after = set(int(x) for x in (self.consumed_tp_levels or []))
+            gained = sorted(after - before)
+            if gained and hasattr(self, "_notify_tp_fill_detected"):
+                self._notify_tp_fill_detected(gained[0], self.watched_qty or live_qty, live_qty, curr_px)
+                if hasattr(self, "_boost_radar_after_tp_fill"):
+                    self._boost_radar_after_tp_fill(f"tp{gained[0]}_filled", curr_px, live_qty)
+        self.watched_qty = live_qty
+        if entry > 0:
+            self.watched_entry = entry
+        if hasattr(self, "_orchestrate_defense_monitoring"):
+            self._orchestrate_defense_monitoring(live_qty, curr_px)
 
     def _get_active_position(self) -> dict | None:
         pos = self.position_manager.get_position(self.symbol)
@@ -2769,10 +2850,22 @@ class PositionSupervisor(
         return detail
 
     def _sentinel_poll_sec(self, curr_px: float = 0.0) -> float:
+        """WS-aligned cadence: arming/trail ~1s; far from TP1 slightly slower."""
         if self._breakeven_sl_active() or self._is_radar_engaged():
             return SENTINEL_POLL_RADAR
         if curr_px > 0 and tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)):
             return SENTINEL_POLL_RADAR
+        if curr_px > 0 and self.watched_entry and self.tv_tps:
+            progress = self._radar_activation_progress(curr_px)
+            act = 0.75
+            if hasattr(self, "_regime_radar_activation"):
+                act = float(self._regime_radar_activation() or 0.75)
+            else:
+                row = (self.regime_settings.get(self.regime) or {})
+                act = float(row.get("activation") or 0.75)
+            # Approaching arm threshold → poll at WS markPrice@1s pace
+            if progress + 1e-9 >= max(0.40, act * 0.55):
+                return SENTINEL_POLL_ARMING
         return SENTINEL_POLL_NORMAL
 
     def _process_radar_trailing(self, real_amt: float, curr_px: float) -> bool:
@@ -2947,6 +3040,7 @@ class PositionSupervisor(
         last_px = 0.0
         while self.monitoring:
             try:
+                self._ensure_price_ws()
                 if not self._lock.acquire(timeout=2.0):
                     continue
                 try:
@@ -2977,7 +3071,7 @@ class PositionSupervisor(
                         break
 
                     entry_px = float(pos.get("entryPrice", 0) or self.watched_entry or 0)
-                    curr_px = self.client.get_current_price(self.symbol)
+                    curr_px = self.client.get_current_price(self.symbol, prefer_ws=True)
                     if curr_px <= 0:
                         curr_px = last_px
                     else:
@@ -3276,6 +3370,7 @@ class PositionSupervisor(
             )
 
         self.monitoring = False
+        self._unbind_price_ws_listener()
         self._disarm_adverse_staged_stops(reason="flat_reset", notify=False)
         self._reset_adverse_radar(keep_tv_sl=False)
         self.watched_qty = 0.0
