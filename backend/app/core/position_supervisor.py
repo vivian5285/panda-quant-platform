@@ -814,6 +814,7 @@ class PositionSupervisor(
         self.base_qty = 0.0
         self.add_count = 0
         self.consumed_tp_levels = []
+        self._tp_fill_dingtalk_levels = set()
         self.current_side = None
         recon = self._reconcile_live_vs_book(expect_flat=True, context="force_flat", notify_ok=False)
         book_ok = bool(clean.get("ok"))
@@ -1200,6 +1201,7 @@ class PositionSupervisor(
             self.initial_qty = real_qty
             self.add_count = 0
             self.consumed_tp_levels = []
+            self._tp_fill_dingtalk_levels = set()
             self.current_trade_id = self.on_trade_open(
                 self.user_id, action, real_qty, entry_price, self.regime, self.tv_tps,
                 symbol=self.canonical_symbol,
@@ -1359,13 +1361,21 @@ class PositionSupervisor(
         )
         reduced = abs(anchor - live)
         tp1_slice = float(slices[0][1]) if slices else 0.0
-        if tp1_slice > 0 and abs(live - anchor) <= max(tol, 1e-9) and self.consumed_tp_levels:
-            # 仓位回到开仓量 → 清空虚报（真·全仓恢复）
+        # 仅「真·全仓恢复」才清记账：用手数噪声带，绝不用 8% 漂移带
+        # （TP1 小减仓常落在 8% 内，误清会导致每轮哨兵重报 TP_FILLED）
+        restore_tol = 1.0 if is_dc else 0.001
+        if (
+            tp1_slice > 0
+            and abs(live - anchor) <= restore_tol
+            and self.consumed_tp_levels
+        ):
             logger.warning(
                 "[User %s] 仓位回到开仓锚，清除 TP 成交记账 %s",
                 self.user_id, self.consumed_tp_levels,
             )
             self.consumed_tp_levels = []
+            if hasattr(self, "_tp_fill_dingtalk_levels"):
+                self._tp_fill_dingtalk_levels = set()
             if hasattr(self, "_save_state"):
                 self._save_state()
             return []
@@ -1497,9 +1507,14 @@ class PositionSupervisor(
         *,
         heuristic: bool = False,
     ) -> None:
+        lvl = int(level)
+        alerted = getattr(self, "_tp_fill_dingtalk_levels", None)
+        if alerted is None:
+            self._tp_fill_dingtalk_levels = set()
+            alerted = self._tp_fill_dingtalk_levels
         detail = {
             "exchange": self.exchange_id,
-            "level": int(level),
+            "level": lvl,
             "old_qty": float(old_qty),
             "new_qty": float(new_qty),
             "curr_px": float(curr_px or 0),
@@ -1515,6 +1530,9 @@ class PositionSupervisor(
             f"止盈TP{level}成交{note} {old_qty}→{new_qty} | 已消费{detail['consumed_tp_levels']}",
             detail,
         )
+        if lvl in alerted:
+            return
+        alerted.add(lvl)
         self._alert(
             "info",
             "TP_FILLED",
@@ -2475,6 +2493,7 @@ class PositionSupervisor(
         self.add_count = 0
         self.current_side = None
         self.consumed_tp_levels = []
+        self._tp_fill_dingtalk_levels = set()
         self.current_trade_id = None
         self.trade_opened_at = None
         self._save_state()
@@ -3190,6 +3209,7 @@ class PositionSupervisor(
         self.base_qty = 0.0
         self.add_count = 0
         self.consumed_tp_levels = []
+        self._tp_fill_dingtalk_levels = set()
         self.current_trade_id = None
         self.trade_opened_at = None
         self._save_state()

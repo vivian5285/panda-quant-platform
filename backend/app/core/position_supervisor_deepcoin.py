@@ -940,13 +940,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             anchor, self.regime, self.tv_tps, self.regime_settings, exclude_levels=set(),
         )
         tp1_slice = float(slices[0][1]) if slices else 0.0
-        if tp1_slice > 0:
-            if abs(live - anchor) <= max(tol, 1e-9) and self.consumed_tp_levels:
-                logger.warning("仓位回到开仓锚，清除 TP 成交记账 %s", self.consumed_tp_levels)
-                self.consumed_tp_levels = []
-                if hasattr(self, "_save_state"):
-                    self._save_state()
-                return []
+        # 手数噪声带（1 张），不用 8% 漂移带 — 避免小减仓误清 → TP_FILLED 刷屏
+        restore_tol = 1.0
+        if tp1_slice > 0 and abs(live - anchor) <= restore_tol and self.consumed_tp_levels:
+            logger.warning("仓位回到开仓锚，清除 TP 成交记账 %s", self.consumed_tp_levels)
+            self.consumed_tp_levels = []
+            if hasattr(self, "_tp_fill_dingtalk_levels"):
+                self._tp_fill_dingtalk_levels = set()
+            if hasattr(self, "_save_state"):
+                self._save_state()
+            return []
         open_prices = [float(o.get("price", 0)) for o in self._collect_tp_limit_orders()]
         inferred = infer_filled_tp_levels(
             live,

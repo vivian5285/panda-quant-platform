@@ -53,6 +53,10 @@ def notify_admin(
 
         if not should_push_trading_dingtalk(alert_type, severity):
             return
+        from app.services.dingtalk_alert_dedupe import allow_trading_dingtalk
+
+        if not allow_trading_dingtalk(user_id, alert_type, title, message, detail):
+            return
         db = SessionLocal()
         try:
             user = db.query(User).filter(User.id == user_id).first()
