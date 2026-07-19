@@ -6,7 +6,7 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-07-19）：** 开仓盘口 = 基础单×3（TP123）+ 条件委托×1（VPS 硬止损 Stop-Limit）；**雷达监控 = 各所 markPrice WebSocket 实时推送**（节流 ~0.45s）+ 哨兵 REST 兜底；档位表 R1–R4：激活 85/80/75/70% · 步进 35/30/25/20% · 呼吸 1.0/0.8/0.65/0.5 ATR；OPEN 权重 8/14/20/26%；名义 cap 13×；硬止损忽略 TV `tv_sl`。禁止把硬止损挂成普通限价（会秒平）。详见 [更新记录](#更新记录)。
+> **文档同步（2026-07-20）：** 开仓盘口 = 基础单×3（TP123）+ 条件委托×1（VPS 硬止损 Stop-Limit）；**雷达 = markPrice WebSocket**；档位 R1–R4：85/80/75/70% · 步进 35/30/25/20% · 呼吸 ATR；**OPEN 一律先平后开**；同 bar 平+开永远 CLOSE→OPEN 最终有仓。实盘事故与优化见 [§实盘事故 · 注意事项 · 优化指南](#实盘事故--注意事项--优化指南)。
 
 | 生产域名 | [https://twinstar.pro](https://twinstar.pro) |
 |----------|---------------------------------------------|
@@ -154,7 +154,8 @@ self_check: production_check.sh + backend/scripts/check_system.py
 23. [生产就绪清单](#生产就绪清单)
 24. [VPS 实盘自查清单](#vps-实盘自查清单)
 25. [技术栈与路线图](#技术栈与路线图)
-26. [更新记录](#更新记录)
+26. [实盘事故 · 注意事项 · 优化指南](#实盘事故--注意事项--优化指南)
+27. [更新记录](#更新记录)
 
 ---
 
@@ -1311,8 +1312,14 @@ bash backend/scripts/backup_data.sh
 | 币安「多一张条件单」 | 开仓硬止损应为**基础限价**；若见条件委托 Stop-Limit/STOP_MARKET，属降级路径，查钉钉/日志为何 `place_limit_order` 失败 |
 | 基础单 ≠ 3 或条件委托缺失 | 应对齐：TP123 限价 + VPS 硬止损 Stop-Limit；少单查 `DEFENSE_HEAL` / 挂单失败 |
 | 雷达过早启动 / 近入场误标 TP1 | 查 `evaluate_radar_arm_gate`、有效比例、`RADAR_REVOKE`、平仓归因顺序（`close_attribution.py`） |
-| 同向重复信号仍平仓 | 工厂单 OPEN 设计为 **先平后开**；manual adopt 同向仓会 preserve |
-| 同向信号应忽略但仍开仓 | 确认是否为工厂单；manual adopt 走不同分支 |
+| 同向重复信号仍平仓 | **设计如此**：工厂 OPEN 铁律 = 先平后开刷新仓位；勿当 bug |
+| 同秒开多又秒平空仓 | 查 `webhook_seq_gate`：必须 CLOSE→OPEN；日志应有 `same-bar CLOSE→OPEN unit` / `hold OPEN for CLOSE companion` |
+| 开仓后立刻被 CAP 削仓（蚂蚁残仓） | 查 OPEN grace / `position_cap_guard`；空仓 OPEN 禁止秒 trim（`7f1abdd`） |
+| TP1 成交后反复挂撤同价 TP | 查 `consumed_tp_levels` / `TP_SKIP_REHANG`；禁止按缩量重挂已成交档 |
+| 钉钉 TP_FILLED / TRAIL 刷屏 | 查 `dingtalk_alert_dedupe`；监控循环不得推关键动作 |
+| 条件单秒挂秒撤死循环 | 查是否新旧雷达/宽止损双逻辑并存；应对齐则 `live_already_aligned` 跳过 |
+| 硬止损普通限价秒平 | **禁止**把 VPS 硬止损挂成可立即成交的普通限价；必须 Stop-Limit 条件单 |
+| 雷达太慢 / 保本晚 | 确认 markPrice WS 已绑；哨兵近激活应 ~1s，非 6–8s |
 | `supervisors=0` | 无用户绑定 API 或交易所未开放 |
 | Webhook 403 | secret 与后台/TV JSON 不一致 |
 | 重启后 TP 叠单 | 查 `DEFENSE_HEAL`；应对齐时 `skipped:true` |
@@ -1406,6 +1413,168 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 
 ---
 
+## 实盘事故 · 注意事项 · 优化指南
+
+> **给运维 / 后续 Agent 的实盘备忘（2026-07）。**  
+> 下列问题均在币安/OKX/Gate/DeepCoin 统一工厂上踩过或防过。改代码前先对照本节，改完跑对应 pytest，再 `git push` + VPS 拉新。
+
+### 一、执行铁律（必须永远成立）
+
+| # | 铁律 | 正确行为 | 错误行为（实盘事故） |
+|---|------|----------|----------------------|
+| 1 | **带开仓的 TV** | 一律先平现有仓 / 清挂单 → 再开新仓（刷新） | 有仓直接加仓或跳过清场 |
+| 2 | **同秒/同 bar 平+开** | 短暂缓冲 → **先 CLOSE 再 OPEN**，最终**必有仓** | 按 `seq` 数字先开后平 → 开仓秒平空仓 |
+| 3 | **单独平仓 TV** | 全平 + 撤尽 TP/雷达/硬止损 + 状态清零，干净等待下次 TV | 平完残留挂单、孤儿 TP 反向成交 |
+| 4 | **三层防线分槽** | TP123 限价 ‖ VPS 宽硬止损 ‖ 雷达条件槽互不抢份额 | 新旧双系统抢挂 → 秒挂秒撤 |
+| 5 | **钉钉** | 动作实盘核查后推送**一次**（去重） | 监控循环刷 `TP_FILLED` / `TRAIL` |
+| 6 | **四所一套逻辑** | Binance / OKX / Gate / DeepCoin 同一铁律 | 某所仍走旧雷达/旧宽止损 |
+
+**代码入口：**
+
+- 时序门：`backend/app/services/webhook_seq_gate.py`
+- 开仓侧：`_handle_tv_entry` / `_force_flat_before_open`（两 supervisor）
+- 平仓侧：`handle_signal` → `_close_all` + `_purge_defense_orders_on_flat`
+- 串行：`webhook_server.py` per-symbol 队列（禁止并发打乱 CLOSE/OPEN）
+
+---
+
+### 二、已发生 / 高危实盘事故档案
+
+#### A. 同秒 OPEN + CLOSE → 先开后平空仓（P0 · 2026-07-19）
+
+| 项 | 内容 |
+|----|------|
+| **现象** | TV 同秒发出开多 + 保护性全平；实盘先开仓再秒平，最终空仓 |
+| **TV 样例** | `LONG` `entry_type=OPEN` `seq=1` + `CLOSE_PROTECT` `seq=2`，同一 `bar_index`（V1.6.10） |
+| **根因** | 旧门控按 **seq 升序**释放；OPEN=1 先于 CLOSE=2。文档曾假设「平 seq 小、开 seq 大」，与 Pine 实际相反 |
+| **修复** | 排序改为 **CLOSE 优先于 OPEN**（seq 仅次要键）；单独 OPEN 等待同伴 CLOSE；成对单元释放 CLOSE→OPEN |
+| **验证日志** | `[WebhookSeq] hold OPEN for CLOSE companion` → `same-bar CLOSE→OPEN unit` → `release … CLOSE` 再 `… LONG` |
+| **测试** | `test_seq_gate_v1610_open_seq1_close_seq2_final_open` |
+| **Commit** | `c97e086` → 铁律再强化 `1156fba` |
+
+**注意：** 以后改 seq 门控时，**禁止**再以「seq 数字大小」决定开平先后。
+
+#### B. 硬止损挂成普通限价 → 开仓秒平（P0）
+
+| 项 | 内容 |
+|----|------|
+| **现象** | 开仓后瞬间全平；币安基础单异常 |
+| **根因** | VPS 硬止损被挂成**可立即成交的普通限价**（价格已在市价一侧） |
+| **修复** | 硬止损必须是 **Stop-Limit 条件单**；`tv_sl` 仅钉钉参考、绝不另挂 |
+| **注意** | 盘口期望：基础单×3（TP123）+ 条件委托×1（宽硬止损）；雷达启动前不要多一张 STOP |
+
+#### C. TP1 成交后重挂死亡螺旋（P0）
+
+| 项 | 内容 |
+|----|------|
+| **现象** | TP1 已吃单，系统按缩减后仓位反复挂/撤同价 TP1；钉钉狂刷 |
+| **根因** | 把「盘口 TP 限价消失」当成漏挂；未用价到+簿口证据记账 `consumed_tp_levels` |
+| **修复** | 价到 + 限价消失 → 记入 consumed，**永不重挂该档**（`TP_SKIP_REHANG`）；成交需价格/峰值证据 |
+| **注意** | ETH/XAU 市价细微 qty 漂移（约 8%）不要当漏挂/人工减仓 |
+
+#### D. 空仓 OPEN 后「蚂蚁残仓」秒 trim（P0）
+
+| 项 | 内容 |
+|----|------|
+| **现象** | 空仓刚 OPEN，立刻被 CAP/对齐逻辑部分平仓，仓位被削成蚂蚁 |
+| **根因** | 开仓后立刻做名义 cap / 敞口 trim，把正常新仓当成超限 |
+| **修复** | OPEN grace 阻断 CAP；禁止 flat-OPEN 后即时部分平；穿市 TP 消毒 |
+| **Commit** | `7f1abdd` |
+
+#### E. 雷达 / 硬止损 / TP 抢份额 · 秒挂秒撤（P0）
+
+| 项 | 内容 |
+|----|------|
+| **现象** | 条件单刚挂上又撤、再挂；盘口抖动；费率与拒单风险 |
+| **根因** | 新旧雷达逻辑并存，或定期补挂误动硬止损/雷达槽；WS tick 与哨兵双路径无锁 |
+| **修复** | Route A 分槽；已对齐 `live_already_aligned` / `on_book` 跳过；WS+哨兵共用锁 + 节流 |
+| **注意** | **禁止**同时跑两套雷达启动或两套宽止损；VPS 只保留一套代码路径 |
+
+#### F. 钉钉刷屏（P1）
+
+| 项 | 内容 |
+|----|------|
+| **现象** | `TP_FILLED`、雷达前进、对本金快照等连发；淹没真正关键告警 |
+| **根因** | 监控循环推送；`consumed` 被 8% 漂移误清空后重复认定成交 |
+| **修复** | `dingtalk_alert_dedupe`；关键动作实盘后一次；过程类仅 TradeLog |
+| **Commit** | `4c5e3c7` |
+
+#### G. 雷达监控过慢 / 保本晚（P1）
+
+| 项 | 内容 |
+|----|------|
+| **现象** | 价格已到档位激活路径，雷达仍数秒后才挂；利润回吐 |
+| **根因** | 仅靠 6–8s REST 哨兵轮询，未吃 markPrice WebSocket |
+| **修复** | WS 推送驱动 `_radar_ws_fast_tick`（~0.45s）；近激活哨兵 1s / 雷达中 1.2s |
+| **Commit** | `ce2d3c9` |
+| **档位表** | R1 85%/35%/1.0ATR · R2 80%/30%/0.8 · R3 75%/25%/0.65 · R4 70%/20%/0.5（宁松勿紧） |
+
+#### H. 雷达过早启动 / 近入场误标 TP1（P1）
+
+| 项 | 内容 |
+|----|------|
+| **现象** | 刚开仓噪声触发保本；或平仓归因把保本止损标成 TP1 |
+| **修复** | 25s 开仓保护期 + 双轮确认 + 紧 TP1 有效比例抬高；`RADAR_REVOKE`；平仓归因优先 `exchange_stop` |
+| **注意** | 雷达哲学是「适度追随」不是「紧追」；勿把 move_step 改回固定 50% 紧跟 |
+
+---
+
+### 三、日常运维要注意什么
+
+1. **VPS 更新后必须重启** webhook（6010）与 backend，否则仍跑旧 seq 门 / 旧雷达。  
+2. **看日志顺序**：同 bar 刷新应看到 CLOSE release → OPEN release → 开仓钉钉有仓；若先 OPEN 后 CLOSE，立即停机查版本。  
+3. **币安盘口对账**：开仓后基础单=3、条件委托=1；多一张条件单先查是否降级 STOP_MARKET。  
+4. **Pine 字段**：`bar_index`+`seq` 必填；`symbol` 必填（ETH/XAU）；`tv_sl` 可发但不挂单。  
+5. **不要手改 state.json 的 `consumed_tp_levels` / `radar_latched`**，除非知道在修死亡螺旋。  
+6. **禁止**在未跑测试时同时改 `webhook_seq_gate` + 两套 supervisor 的挂单路径。  
+7. **人工同向仓**：TV **CLOSE** 仍可走 manual 保护；TV **OPEN** 一律先平后开刷新（不再 preserve 开仓）。  
+8. **钉钉限流**：企业机器人 20 条/分钟；依赖攒批+去重，勿再加监控循环推送。
+
+**常用日志 grep：**
+
+```bash
+docker compose logs -f backend | grep -E \
+  "WebhookSeq|same-bar CLOSE|hold OPEN|先平后开|FLIP_CLEAN|TP_SKIP_REHANG|RADAR_ARM|live_already_aligned|FORCE_ALIGN"
+```
+
+---
+
+### 四、如何继续优化（优先级建议）
+
+| 优先级 | 方向 | 说明 |
+|--------|------|------|
+| P0 | 保持铁律单测绿灯 | `test_webhook_seq.py` + `test_vps_entry_routing.py`（OPEN 必调 `_force_flat_before_open`） |
+| P0 | 部署后冒烟 | 同 bar 模拟：先发 OPEN seq=1 再发 CLOSE seq=2，确认最终有仓 |
+| P1 | WS 健康 | 监控 `markPrice` 断线重连；WS 失效时哨兵 1s 兜底是否生效 |
+| P1 | 拒单/精度 | 各所 tick/lot 对齐；Stop-Limit 触发价与限价间距符合交易所规则 |
+| P2 | 钉钉文案 | 开仓/清场/雷达启动字段统一（盘口结构、档位激活%、剩余头寸） |
+| P2 | Regime 后台可配 | 激活/步进/呼吸进管理后台，但仍单一源码表，防双配置 |
+| P3 | 可观测性 | 对「同 bar CLOSE→OPEN 耗时」「force_flat 失败率」打点告警 |
+
+**回归命令（改执行/雷达/时序后必跑）：**
+
+```bash
+cd backend
+py -m pytest tests/test_webhook_seq.py tests/test_vps_entry_routing.py \
+  tests/test_ws_radar_tick.py tests/test_vps_radar_stages.py \
+  tests/test_radar_trail.py tests/test_adverse_radar_guard.py -q
+```
+
+---
+
+### 五、铁律复核清单（每次大改打勾）
+
+- [ ] 同 bar OPEN+CLOSE（任意 seq）→ 日志先 CLOSE 后 OPEN，最终有仓  
+- [ ] 任意 OPEN → 调用 `_force_flat_before_open`（有仓平仓 / 无仓清挂单）  
+- [ ] 单独 CLOSE → 仓位 0 + 挂单 0 + 雷达/consumed 复位  
+- [ ] 雷达读 WS mark；激活/步进/呼吸只读 `REGIME_RADAR`  
+- [ ] TP123 / 宽止损 / 雷达不互相撤挂；对齐则跳过  
+- [ ] 钉钉关键动作去重，无监控循环刷屏  
+- [ ] 四所行为一致；无旧逻辑双轨  
+- [ ] README 本节与代码同步；已 push `main`
+
+---
+
 ## 更新记录
 
 > 按时间倒序。生产 VPS：`git pull` → `docker compose up -d --build`（或既有部署脚本）后重启 supervisor。
@@ -1495,12 +1664,12 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 
 ### 铁律复核清单（每次大改后对照）
 
-1. **价格**：雷达决策读 WS mark，而非慢 REST 轮询为主  
-2. **档位**：激活 / 步进 / 呼吸只读 `REGIME_RADAR`  
-3. **份额**：TP123 · VPS 宽止损 · 雷达 三者共存、不挂撤死循环  
-4. **TV**：有仓或雷达中 → 先平后开；空仓仅 OPEN → 开仓 + 防线 + 雷达候命  
-5. **钉钉**：动作实盘后一次，日志干净  
-6. **四所**：Binance / OKX / Gate / DeepCoin 同一套逻辑，禁止新旧双系统并存  
+见上文 **[实盘事故 · 注意事项 · 优化指南 §五](#五铁律复核清单每次大改打勾)**。摘要：
+
+1. **时序**：同 bar 任意 seq → CLOSE 优先于 OPEN，最终必有仓  
+2. **OPEN**：一律 `_force_flat_before_open` 再开仓  
+3. **CLOSE**：单独平仓则清零等待  
+4. **价格 / 档位 / 份额 / 钉钉 / 四所一致** — 禁止双系统与刷屏  
 
 ---
 
