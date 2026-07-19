@@ -274,12 +274,8 @@ def format_cap_align_detail_cn(detail: dict, exchange: str | None = None) -> str
         _line("档位", f"{regime_txt}（保证金比例 {_pct_text(detail.get('margin_pct'))}）"),
     ]
 
-    principal = detail.get("initial_principal") or detail.get("sizing_base")
-    if principal:
-        lines.append(_line("本金快照", f"{float(principal):.2f} USDT"))
-    if detail.get("equity_balance"):
-        lines.append(_line("合约总权益", f"{float(detail['equity_balance']):.2f} USDT"))
-    if detail.get("margin_usd"):
+    # 开仓/纠偏不再单独刷「本金快照」条（与 OPEN 明细重复刷屏）
+    if detail.get("margin_usd") and str(detail.get("entry_type") or "").upper() != "OPEN":
         lines.append(_line("档位保证金", f"{float(detail['margin_usd']):.2f} USDT × {theme['leverage']}倍杠杆"))
 
     live = detail.get("live_qty")
@@ -429,9 +425,11 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
     if detail.get("tp_ratios_pct"):
         lines.append(_line("止盈比例", f"TP1/2/3 = {detail['tp_ratios_pct']}%（对齐 Pine qty_percent）"))
 
-    principal = detail.get("initial_principal") or detail.get("sizing_base")
-    if principal:
-        lines.append(_line("合约本金", f"{float(principal):.2f} USDT"))
+    # OPEN 不再附带本金快照行（头寸价值/保证金已足够）
+    if entry_type != "OPEN":
+        principal = detail.get("initial_principal") or detail.get("sizing_base")
+        if principal:
+            lines.append(_line("合约本金", f"{float(principal):.2f} USDT"))
 
     if entry_type == "OPEN":
         if detail.get("vps_risk_pct") is not None:

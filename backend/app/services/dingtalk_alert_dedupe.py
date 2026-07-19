@@ -15,24 +15,30 @@ logger = logging.getLogger(__name__)
 # Lifetime events: push at most once per fingerprint (TTL)
 ONCE_TTL_SEC = 6 * 3600
 
-# Same fingerprint within window → suppress
+# User rule: same behavior → at most once per 20s (default)
+DEFAULT_COOLDOWN_SEC = 20.0
+
+# Longer cooldowns for noisy heal/check types
 COOLDOWN_SEC: dict[str, float] = {
     "POSITION_RECONCILE": 180.0,
     "DEFENSE_HEAL_FAIL": 120.0,
     "CLOSE_FAIL": 60.0,
-    "POSITION_QTY_CHANGE": 90.0,
-    "MANUAL_ADJUST": 90.0,
-    "ADJUST": 90.0,
-    "TRAIL": 120.0,
-    "UPDATE_SL": 120.0,
-    "UPDATE_TP": 120.0,
-    "ADVERSE_SL_MISALIGN": 120.0,
+    "POSITION_QTY_CHANGE": 60.0,
+    "MANUAL_ADJUST": 60.0,
+    "ADJUST": 60.0,
+    "TRAIL": 90.0,
+    "UPDATE_SL": 60.0,
+    "UPDATE_TP": 60.0,
+    "ADVERSE_SL_MISALIGN": 90.0,
     "IDLE_WATCH": 300.0,
     "CAP_ALIGN": 120.0,
-    "FALSE_FLAT": 120.0,
-    "FLIP_CLEAN": 45.0,
-    "TP_ORPHAN_PURGE": 120.0,
-    "MANUAL_FLAT_TP_PURGE": 120.0,
+    "CAP_ALIGN_BLOCKED": 120.0,
+    "CAP_ALIGN_FAIL": 60.0,
+    "FALSE_FLAT": 90.0,
+    "FLIP_CLEAN": 20.0,
+    "TP_ORPHAN_PURGE": 90.0,
+    "MANUAL_FLAT_TP_PURGE": 90.0,
+    "DEFENSE": 60.0,
 }
 
 # Always once-per-fingerprint (no re-push until TTL)
@@ -115,7 +121,6 @@ def build_alert_fingerprint(
         parts.append(f"entry={_round_num(d.get('entry'), 2)}")
     if d.get("qty") is not None and at in ("OPEN", "PYRAMID", "PROFIT_ADD"):
         parts.append(f"qty={_round_num(d.get('qty'))}")
-    # Stable short hash of message body (ignore tiny float churn via round in detail only)
     msg_bit = hashlib.sha1(str(message or "").encode("utf-8", errors="ignore")).hexdigest()[:10]
     parts.append(msg_bit)
     raw = "|".join(parts)
@@ -131,15 +136,14 @@ def allow_trading_dingtalk(
 ) -> bool:
     """
     Return True if this trading alert may be pushed to DingTalk.
-    Important actions: once per fingerprint. Noisy heal/check types: cooldown.
+    Important actions: once per fingerprint. Others: default 20s cooldown.
     """
     at = str(alert_type or "").upper()
     fp = build_alert_fingerprint(user_id, at, title, message, detail)
     now = time.time()
-    ttl = ONCE_TTL_SEC if at in ONCE_TYPES else float(COOLDOWN_SEC.get(at, 60.0))
+    ttl = ONCE_TTL_SEC if at in ONCE_TYPES else float(COOLDOWN_SEC.get(at, DEFAULT_COOLDOWN_SEC))
 
     with _lock:
-        # prune old
         if len(_sent) > 4000:
             cutoff = now - ONCE_TTL_SEC
             stale = [k for k, ts in _sent.items() if ts < cutoff]

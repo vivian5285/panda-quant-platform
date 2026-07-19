@@ -161,9 +161,11 @@ def test_enforce_cap_trims_to_target_not_near_zero():
 
 def test_binance_supervisor_inherits_cap_guard():
     client = MagicMock()
+    client.configure_mock(exchange_id="binance", trading_symbol="ETHUSDT", trading_leverage=25)
     sup = PositionSupervisor(user_id=1, client=client)
     assert hasattr(sup, "_enforce_regime_cap_alignment")
     assert hasattr(sup, "_compute_regime_cap_target")
+    assert sup.exchange_id == "binance"
 
 
 class _DeepcoinCapProbe(PositionCapGuardMixin):
@@ -282,8 +284,10 @@ def test_gate_cap_uses_principal_not_available():
     assert probe._validate_cap_trim_plan(detail) is None
 
 
-def test_open_position_trims_oversize_after_fill():
+def test_open_position_skips_cap_trim_after_fill():
+    """User rule: flat OPEN must not instantly CAP-trim (ant residue)."""
     client = MagicMock()
+    client.configure_mock(exchange_id="binance", trading_symbol="ETHUSDT", trading_leverage=25)
     client.get_futures_account_summary.return_value = {"total_margin_balance": 1000.0}
     client.get_available_balance.return_value = 1000.0
     client.get_current_price.return_value = 1770.0
@@ -305,10 +309,9 @@ def test_open_position_trims_oversize_after_fill():
         return_value={"positionAmt": str(stacked_qty), "entryPrice": "1770.0"},
     ), patch.object(sup, "_protect_and_monitor") as mon, patch.object(
         sup, "_enforce_regime_cap_alignment",
-        return_value={"trimmed": 1.5, "new_qty": 1.977, "aligned": True},
     ) as cap:
         sup._open_position("LONG", 1770.0)
 
-    cap.assert_called_once()
+    cap.assert_not_called()
     mon.assert_called_once()
-    assert mon.call_args[0][0] == pytest.approx(1.977, rel=0.01)
+    assert mon.call_args[0][0] == pytest.approx(stacked_qty, rel=0.01)

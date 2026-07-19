@@ -1034,6 +1034,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             side=self.current_side,
             open_tp_prices=open_prices,
             is_contracts=True,
+            peak_px=float(getattr(self, "best_price", 0) or 0),
         )
         if level is not None:
             if level not in self.consumed_tp_levels:
@@ -1053,14 +1054,21 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             return f"tp{gained[0]}_filled"
 
         if anchor > 0:
+            from app.core.tp_slice_guard import price_reached_tp
+
             slices = compute_tp_slices(
                 anchor, self.regime, self.tv_tps, self.regime_settings, exclude_levels=set(),
             )
             if slices:
                 tp1_lvl, tp1_qty, tp1_px = slices[0]
+                peak = float(getattr(self, "best_price", 0) or 0)
+                px_ok = price_reached_tp(sync_px, tp1_px, self.current_side) or (
+                    peak > 0 and price_reached_tp(peak, tp1_px, self.current_side)
+                )
                 if (
                     tp1_lvl == 1
                     and 1 not in after
+                    and px_ok
                     and not tp_limit_still_on_book(tp1_px, open_prices)
                     and reduced + 1e-12 >= float(tp1_qty) * 0.5
                 ):
@@ -1388,11 +1396,17 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 is_contracts=True,
                 peak_px=float(getattr(self, "best_price", 0) or 0),
             )
-            if skip:
+            if skip and skip_reason in (
+                "consumed", "price_book_filled", "qty_book_implies_filled",
+            ):
                 logger.warning(
                     f"  ⏭ 跳过补挂 TP{level} @ {px:.2f}（{skip_reason}·防死亡螺旋）"
                 )
-                if level and level not in consumed:
+                if (
+                    level
+                    and level not in consumed
+                    and skip_reason in ("price_book_filled", "qty_book_implies_filled")
+                ):
                     consumed.add(level)
                     self.consumed_tp_levels = sorted(consumed)
                     if hasattr(self, "_save_state"):
@@ -1412,6 +1426,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         },
                     )
                 continue
+            if skip and skip_reason == "no_mark_price":
+                logger.warning(f"  ⏭ 无市价拒挂 TP{level}（防穿价秒成）")
+                continue
+            from app.core.tp_slice_guard import sanitize_tp_limit_price
+            place_px, adj = sanitize_tp_limit_price(self.current_side, px, px_now)
+            if place_px <= 0:
+                continue
+            if adj.startswith("pushed"):
+                logger.warning(f"  ↪ TP{level} 穿价推离 {px:.2f}→{place_px:.2f}")
+                px = place_px
             orders = self._collect_tp_limit_orders()
             at_px = [o for o in orders if tp_price_matches(o["price"], px, price_tol)]
             if len(at_px) == 1 and tp_qty_matches(q, at_px[0]["qty"], live_qty, is_contracts=True):
@@ -2415,7 +2439,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             if not self._force_flat_before_open("TV OPEN 先平后开"):
                 return
         else:
-            self._ensure_book_clean_before_open("TV OPEN 空仓清场（配套先平后开）")
+            left = self._count_open_book_orders() if hasattr(self, "_count_open_book_orders") else 0
+            if left > 0:
+                self._ensure_book_clean_before_open("空仓OPEN清残留挂单")
+            else:
+                logger.info(f"空仓仅 OPEN [{action}] · 按档位直接开仓")
         self._open_position(action, curr_px)
 
     def _add_to_position(self, action, curr_px, entry_type):
@@ -2693,23 +2721,19 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self.current_side = action
             real_qty = self._safe_qty(pos['size'])
             entry_price = float(pos.get('entry_price', 0) or 0)
-            cap_px = self.client.get_current_price(self.symbol) or curr_px
-            cap_result = self._enforce_regime_cap_alignment(
-                real_qty, entry_price, cap_px, reason="开仓后叠仓核验",
-            )
-            if cap_result.get("new_qty"):
-                real_qty = self._safe_qty(cap_result["new_qty"])
+            # 开仓宽限：禁止立刻 CAP 市价减仓
+            self.trade_opened_at = time.time()
             self.base_qty = real_qty
             self.initial_qty = real_qty
             self.add_count = 0
             self.consumed_tp_levels = []
+            self._tp_fill_dingtalk_levels = set()
             self.current_trade_id = self.on_trade_open(
                 self.user_id, action, real_qty, entry_price or float(pos.get("entry_price", 0) or 0),
                 self.regime, self.tv_tps,
                 symbol=self.canonical_symbol,
             )
             self.adopted_manual = False
-            self.trade_opened_at = time.time()
             self._protect_and_monitor(real_qty, entry_price or pos['entry_price'])
 
     def _protect_and_monitor(self, qty, entry_price):

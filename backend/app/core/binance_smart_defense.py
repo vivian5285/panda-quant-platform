@@ -654,38 +654,57 @@ class BinanceSmartDefenseMixin:
                 is_contracts=str(getattr(self, "exchange_id", "")).lower() == "deepcoin",
                 peak_px=float(getattr(self, "best_price", 0) or 0),
             )
-            if skip:
+            if skip and skip_reason in (
+                "consumed", "price_book_filled", "qty_book_implies_filled",
+            ):
                 skipped += 1
                 self._def_log(
                     f"  ⏭ 跳过补挂 TP{level or '?'} @ {px:.2f}（{skip_reason}·防死亡螺旋）",
                     logging.WARNING,
                 )
-                if level and level not in consumed:
-                    consumed.add(level)
-                    if hasattr(self, "consumed_tp_levels"):
-                        merged = sorted(consumed)
-                        if merged != sorted(getattr(self, "consumed_tp_levels", []) or []):
-                            self.consumed_tp_levels = merged
-                            if hasattr(self, "_save_state"):
-                                self._save_state()
-                            if hasattr(self, "_alert"):
-                                self._alert(
-                                    "warning",
-                                    "TP_SKIP_REHANG",
-                                    f"止盈已成交·拒绝补挂TP{level}",
-                                    f"原因={skip_reason} | 现价{px_now:.2f} | 实盘{live_qty} | "
-                                    f"已消费{merged} — 若再挂会在TP附近秒成",
-                                    {
-                                        "level": level,
-                                        "tp_price": px,
-                                        "skip_reason": skip_reason,
-                                        "curr_px": px_now,
-                                        "live_qty": live_qty,
-                                        "consumed_tp_levels": merged,
-                                        "exchange": getattr(self, "exchange_id", None),
-                                    },
-                                )
+                if level and level not in consumed and skip_reason != "consumed":
+                    # Only mark consumed when evidence says filled — not no_mark / past alone
+                    if skip_reason in ("price_book_filled", "qty_book_implies_filled"):
+                        consumed.add(level)
+                        if hasattr(self, "consumed_tp_levels"):
+                            merged = sorted(consumed)
+                            if merged != sorted(getattr(self, "consumed_tp_levels", []) or []):
+                                self.consumed_tp_levels = merged
+                                if hasattr(self, "_save_state"):
+                                    self._save_state()
+                                if hasattr(self, "_alert"):
+                                    self._alert(
+                                        "warning",
+                                        "TP_SKIP_REHANG",
+                                        f"止盈已成交·拒绝补挂TP{level}",
+                                        f"原因={skip_reason} | 现价{px_now:.2f} | 实盘{live_qty} | "
+                                        f"已消费{merged}",
+                                        {
+                                            "level": level,
+                                            "tp_price": px,
+                                            "skip_reason": skip_reason,
+                                            "curr_px": px_now,
+                                            "live_qty": live_qty,
+                                            "consumed_tp_levels": merged,
+                                            "exchange": getattr(self, "exchange_id", None),
+                                        },
+                                    )
                 continue
+            if skip and skip_reason == "no_mark_price":
+                skipped += 1
+                self._def_log(f"  ⏭ 无市价拒挂 TP{level}（防穿价秒成）", logging.WARNING)
+                continue
+            from app.core.tp_slice_guard import sanitize_tp_limit_price
+            place_px, adj = sanitize_tp_limit_price(self.current_side, px, px_now)
+            if place_px <= 0:
+                skipped += 1
+                continue
+            if adj.startswith("pushed"):
+                self._def_log(
+                    f"  ↪ TP{level} 穿价推离 {px:.2f}→{place_px:.2f} mark={px_now:.2f}",
+                    logging.WARNING,
+                )
+                px = place_px
             orders = self._collect_tp_limit_orders()
             at_px = [o for o in orders if tp_price_matches(o["price"], px, price_tol)]
             if len(at_px) == 1 and tp_qty_matches(q, at_px[0]["qty"], live_qty):

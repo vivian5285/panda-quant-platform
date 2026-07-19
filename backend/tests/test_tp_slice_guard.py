@@ -259,12 +259,19 @@ def test_infer_does_not_mark_all_tps_when_price_crossed_but_qty_only_tp1():
 
 
 def test_infer_tp_prefix_from_initial_qty_restart():
-    """Restart with curr_px=0: qty + book cleared is enough."""
+    """Restart: no mark → do not invent TP fills; with peak evidence OK."""
     slices = compute_tp_slices(
         1.0, 3, TV_TPS, REGIME_SETTINGS, round_qty_fn=lambda x: round(x, 3),
     )
     tp1_qty = slices[0][1]
     live = round(1.0 - tp1_qty, 3)
+    # No mark / peak → refuse (avoid CAP/穿价秒平误报 TP)
+    assert infer_filled_tp_levels(
+        live, 0.0, "LONG",
+        initial_qty=1.0, consumed_tp_levels=[], regime=3,
+        tv_tps=TV_TPS, regime_settings=REGIME_SETTINGS, open_tp_prices=[],
+    ) == set()
+    # Peak touched TP1 → OK
     filled = infer_filled_tp_levels(
         live,
         0.0,
@@ -275,6 +282,7 @@ def test_infer_tp_prefix_from_initial_qty_restart():
         tv_tps=TV_TPS,
         regime_settings=REGIME_SETTINGS,
         open_tp_prices=[],
+        peak_px=TV_TPS[0],
     )
     assert filled == {1}
 

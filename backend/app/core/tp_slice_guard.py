@@ -15,6 +15,51 @@ TP_REACH_PRICE_TOL_PCT = 0.0008
 TP_TOUCH_PEAK_TOL_PCT = 0.0015
 # Fill qty match: must track the slice itself, never the whole-position drift band
 TP_FILL_SLICE_FRAC = 0.35
+# Never place reduce-only TP at/through mark (instant partial close → ant residue)
+TP_SAFE_BUFFER_PCT = 0.002
+# After factory OPEN: forbid regime_cap market trim
+OPEN_CAP_ALIGN_GRACE_SEC = 60.0
+
+
+def tp_would_instant_fill(side: str | None, tp_price: float, mark_px: float) -> bool:
+    """True when a reduce-only TP limit would fill immediately at mark."""
+    mark = float(mark_px or 0)
+    tp = float(tp_price or 0)
+    if mark <= 0 or tp <= 0 or side not in ("LONG", "SHORT"):
+        return False
+    if side == "LONG":
+        return tp <= mark * (1.0 + TP_SAFE_BUFFER_PCT * 0.25)
+    return tp >= mark * (1.0 - TP_SAFE_BUFFER_PCT * 0.25)
+
+
+def sanitize_tp_limit_price(
+    side: str | None,
+    tp_price: float,
+    mark_px: float,
+    *,
+    buffer_pct: float = TP_SAFE_BUFFER_PCT,
+) -> tuple[float, str]:
+    """
+    Gate / push TP away from mark so place≠instant fill.
+
+    Returns (price, reason). price<=0 → do not place (no mark / invalid).
+    """
+    mark = float(mark_px or 0)
+    tp = float(tp_price or 0)
+    if mark <= 0:
+        return 0.0, "no_mark"
+    if tp <= 0 or side not in ("LONG", "SHORT"):
+        return 0.0, "invalid_tp"
+    buf = max(float(buffer_pct), 0.0005)
+    if side == "LONG":
+        floor = mark * (1.0 + buf)
+        if tp < floor:
+            return floor, "pushed_above_mark"
+        return tp, "ok"
+    ceil = mark * (1.0 - buf)
+    if tp > ceil:
+        return ceil, "pushed_below_mark"
+    return tp, "ok"
 
 
 def compute_tp_slices(
@@ -152,14 +197,12 @@ def resolve_tp_step_fill_level(
     side: str | None = None,
     open_tp_prices: list[float] | None = None,
     is_contracts: bool = False,
+    peak_px: float = 0.0,
 ) -> int | None:
     """
-    Classify one position reduction as TP1/2/3 fill (exchange-grade).
+    Classify one position reduction as TP1/2/3 fill.
 
-    Tries in order:
-    1. Step qty vs next slice of *current* remaining plan (post-heal TP23 sizes)
-    2. Step qty vs next slice of *original* open plan
-    3. Book cleared + price reached for next TP (qty already dropped)
+    Requires price/peak at TP — qty drop alone (CAP trim / through-market) is not a fill.
     """
     old_q = float(old_qty or 0)
     new_q = float(new_qty or 0)
@@ -169,39 +212,15 @@ def resolve_tp_step_fill_level(
     consumed = {int(x) for x in (consumed_levels or []) if int(x) in (1, 2, 3)}
     anchor = float(initial_qty or old_q or 0)
 
-    # 1) Current remaining book plan (after TP1 heal, TP2/TP3 are re-sliced on old_qty)
-    live_slices = compute_tp_slices(
-        old_q, regime, tv_tps, regime_settings, exclude_levels=consumed,
-    )
-    if live_slices:
-        level, slice_qty, tp_px = live_slices[0]
-        tol = tp_fill_qty_tolerance(slice_qty, is_contracts=is_contracts)
-        if abs(reduced - float(slice_qty)) <= tol:
-            return level
-
-    # 2) Original open plan next unconsumed tier
-    if anchor > 0:
-        level = match_qty_reduction_to_tp_level(
-            reduced,
-            anchor,
-            regime,
-            tv_tps,
-            regime_settings,
-            consumed_levels=consumed,
-            qty_tol=tp_fill_qty_tolerance(
-                max(reduced, 1e-9), is_contracts=is_contracts,
-            ),
-        )
-        if level is not None:
-            return level
-
-    # 3) Exchange book evidence: next TP limit gone + price touched
     all_slices = compute_tp_slices(
         anchor if anchor > 0 else old_q,
         regime,
         tv_tps,
         regime_settings,
         exclude_levels=set(),
+    )
+    live_slices = compute_tp_slices(
+        old_q, regime, tv_tps, regime_settings, exclude_levels=consumed,
     )
     next_level = (max(consumed) + 1) if consumed else 1
     for level, slice_qty, tp_px in all_slices:
@@ -211,19 +230,18 @@ def resolve_tp_step_fill_level(
             break
         if float(slice_qty) <= 0 or float(tp_px) <= 0:
             break
-        # Need a meaningful drop (at least ~40% of expected slice or live next slice)
         min_drop = float(slice_qty) * 0.4
         if live_slices:
             min_drop = min(min_drop, float(live_slices[0][1]) * 0.4)
         if reduced + 1e-12 < max(min_drop, 1e-9):
             break
+        px_ok = _price_or_peak_reached_tp(curr_px, tp_px, side, peak_px=peak_px)
+        if not px_ok:
+            break
         book_gone = not tp_limit_still_on_book(tp_px, open_tp_prices)
-        px_ok = (
-            price_reached_tp(curr_px, tp_px, side)
-            if float(curr_px or 0) > 0 and side in ("LONG", "SHORT")
-            else True
-        )
-        if book_gone and px_ok:
+        tol = tp_fill_qty_tolerance(slice_qty, is_contracts=is_contracts)
+        qty_match = abs(reduced - float(slice_qty)) <= tol
+        if book_gone and (qty_match or px_ok):
             return level
         break
     return None
@@ -350,19 +368,25 @@ def confirm_tp_tier_fill(
     )
     detail["price_ok"] = bool(price_ok)
 
-    # Primary: 价到 + 限价消失 → 认定成交（需有市价/峰值，避免空仓价误伤全档）
+    # Primary: 价到 + 限价消失 → 认定成交（必须有市价/峰值）
     if book_cleared and price_ok and has_mark:
         detail["confirmed"] = True
         detail["confirm_mode"] = "price_book"
         return detail
 
-    # Secondary: qty + book（重启无市价、或回撤后仍可靠）
-    if qty_ok and book_cleared:
+    # Secondary: qty + book only when price also touched (forbid CAP/穿价秒平成 TP)
+    if qty_ok and book_cleared and price_ok:
         detail["confirmed"] = True
         detail["confirm_mode"] = "qty_book"
         return detail
 
     if require_price and not price_ok:
+        return detail
+
+    # require_price=False (rare recovery): allow qty+book without mark
+    if not require_price and qty_ok and book_cleared:
+        detail["confirmed"] = True
+        detail["confirm_mode"] = "qty_book_no_mark"
         return detail
 
     detail["confirmed"] = bool(qty_ok and book_cleared and price_ok)
@@ -377,11 +401,14 @@ def infer_prefix_filled_levels(
     open_tp_prices: list[float] | None,
     is_contracts: bool = False,
     price_tol: float = 0.02,
+    curr_px: float = 0.0,
+    side: str | None = None,
+    peak_px: float = 0.0,
 ) -> set[int]:
     """
     If reduction matches sum(TP1..TPk) and those limits are gone, mark 1..k.
 
-    Fixes multi-tier fills in one poll (TP1+TP2) that broke single-step matching.
+    Requires price/peak at each tier — CAP/穿价秒平不得冒充 TP12 成交.
     """
     filled: set[int] = set()
     if reduced <= 0 or not all_slices:
@@ -390,14 +417,14 @@ def infer_prefix_filled_levels(
     for level, slice_qty, tp_price in all_slices:
         prefix += float(slice_qty)
         tol = tp_fill_qty_tolerance(prefix, is_contracts=is_contracts)
-        # Also accept reduced ≥ 55% of prefix (exchange rounding / dust)
         qty_ok = abs(float(reduced) - prefix) <= tol or float(reduced) + 1e-12 >= prefix * 0.55
         if not qty_ok:
+            break
+        if not _price_or_peak_reached_tp(curr_px, tp_price, side, peak_px=peak_px):
             break
         if tp_limit_still_on_book(tp_price, open_tp_prices, price_tol=price_tol):
             break
         filled.add(int(level))
-        # Stop when reduced is fully explained by this prefix (don't over-consume)
         if float(reduced) <= prefix + tol:
             break
     return filled
@@ -432,6 +459,9 @@ def should_skip_rehang_tp_level(
     tp = float(tp_price or 0)
     if tp <= 0:
         return True, "invalid_price"
+    # No mark → never place (would risk through-market instant fill)
+    if float(curr_px or 0) <= 0:
+        return True, "no_mark_price"
 
     book_gone = not tp_limit_still_on_book(tp, open_tp_prices)
     touched = _price_or_peak_reached_tp(curr_px, tp, side, peak_px=peak_px)
@@ -440,10 +470,9 @@ def should_skip_rehang_tp_level(
     if book_gone and touched:
         return True, "price_book_filled"
 
-    # Mark still at/past TP → rehang would instant-fill
-    if float(curr_px or 0) > 0 and side in ("LONG", "SHORT"):
-        if price_reached_tp(curr_px, tp, side, tol_pct=0.0015):
-            return True, "price_past_tp"
+    # Mark at/past TP → never place at raw TV price (caller may sanitize/push)
+    if side in ("LONG", "SHORT") and tp_would_instant_fill(side, tp, curr_px):
+        return True, "price_past_tp"
 
     anchor = float(initial_qty or 0)
     live = float(live_qty or 0)
@@ -521,23 +550,26 @@ def infer_filled_tp_levels(
             peak_px=peak,
         )
 
-    # Sanitize persisted
+    # Sanitize persisted — drop false consumes when TP limit still on book
     for level in sorted(persisted):
         if level not in by_level:
             continue
         slice_qty, tp_price = by_level[level]
-        ev = _confirm(level, slice_qty, tp_price, require_price=False)
-        if ev["confirmed"] or (ev["book_cleared"] and (ev["qty_ok"] or ev["price_ok"])):
+        ev = _confirm(level, slice_qty, tp_price, require_price=True)
+        if ev["confirmed"]:
             filled.add(level)
+        elif ev.get("price_ok") and ev.get("book_cleared"):
+            filled.add(level)
+        # else: stale consumed while limit still live → drop
 
-    # Discover contiguous tiers: price+book first (no min qty gate)
+    # Discover contiguous tiers: must have price/peak at TP
     next_level = (max(filled) + 1) if filled else 1
     for level, slice_qty, tp_price in all_slices:
         if level < next_level:
             continue
         if level > next_level:
             break
-        ev = _confirm(level, slice_qty, tp_price, require_price=False)
+        ev = _confirm(level, slice_qty, tp_price, require_price=True)
         if ev.get("confirm_mode") == "price_book" or (
             ev["confirmed"] and ev.get("confirm_mode") in ("price_book", "qty_book", "triple")
         ):
@@ -546,7 +578,7 @@ def infer_filled_tp_levels(
             continue
         break
 
-    # Prefix multi-fill when qty drop is material
+    # Prefix multi-fill when qty drop is material + price evidence
     tp1_slice = float(all_slices[0][1])
     min_reduce = max(
         tp1_slice * 0.5,
@@ -559,6 +591,9 @@ def infer_filled_tp_levels(
             open_tp_prices=open_tp_prices,
             is_contracts=is_contracts,
             price_tol=price_tol,
+            curr_px=curr_px,
+            side=side,
+            peak_px=peak,
         )
 
     return filled

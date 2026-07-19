@@ -881,8 +881,12 @@ class PositionSupervisor(
             if not self._force_flat_before_open("TV OPEN 先平后开"):
                 return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
         else:
-            # CLOSE 已先执行时：仓位可能已空，仍必须撤尽历史挂单再开
-            self._ensure_book_clean_before_open("TV OPEN 空仓清场（配套先平后开）")
+            # 空仓仅 OPEN：轻量确认无残留挂单即可，不做先平后开
+            left = self._count_open_book_orders() if hasattr(self, "_count_open_book_orders") else 0
+            if left > 0:
+                self._ensure_book_clean_before_open("空仓OPEN清残留挂单")
+            else:
+                self._log("SIGNAL", f"空仓仅 OPEN [{action}] · 按档位直接开仓")
         return self._open_position(action, curr_px)
 
     def _add_to_position(self, action: str, curr_px: float, entry_type: str) -> dict:
@@ -1191,12 +1195,8 @@ class PositionSupervisor(
             self.current_side = action
             real_qty = abs(float(pos["positionAmt"]))
             entry_price = float(pos["entryPrice"])
-            cap_px = self.client.get_current_price(self.symbol) or curr_px
-            cap_result = self._enforce_regime_cap_alignment(
-                real_qty, entry_price, cap_px, reason="开仓后叠仓核验",
-            )
-            if cap_result.get("new_qty"):
-                real_qty = float(cap_result["new_qty"])
+            # 开仓宽限：禁止立刻 CAP 市价减仓；trade_opened_at 先打点供 grace 判定
+            self.trade_opened_at = time.time()
             self.base_qty = real_qty
             self.initial_qty = real_qty
             self.add_count = 0
@@ -1207,7 +1207,6 @@ class PositionSupervisor(
                 symbol=self.canonical_symbol,
             )
             self.adopted_manual = False
-            self.trade_opened_at = time.time()
             slip = (entry_price - self.tv_price) if action == "LONG" else (self.tv_price - entry_price)
             theme = resolve_exchange_theme(self.exchange_id, self.canonical_symbol)
             detail = {
@@ -1459,6 +1458,7 @@ class PositionSupervisor(
             side=self.current_side,
             open_tp_prices=open_prices,
             is_contracts=self.exchange_id == "deepcoin",
+            peak_px=float(getattr(self, "best_price", 0) or 0),
         )
         if level is not None:
             if level not in self.consumed_tp_levels:
@@ -1477,16 +1477,23 @@ class PositionSupervisor(
             self._notify_tp_fill_detected(gained[0], old_qty, new_qty, px)
             return f"tp{gained[0]}_filled"
 
-        # Heuristic: TP1 book gone + reduced ≥ 50% TP1 slice → force consume
+        # Heuristic: must also have price/peak at TP1 (forbid CAP/穿价秒平误报)
         if anchor > 0:
+            from app.core.tp_slice_guard import price_reached_tp
+
             slices = compute_tp_slices(
                 anchor, self.regime, self.tv_tps, self.regime_settings, exclude_levels=set(),
             )
             if slices:
                 tp1_lvl, tp1_qty, tp1_px = slices[0]
+                peak = float(getattr(self, "best_price", 0) or 0)
+                px_ok = price_reached_tp(px, tp1_px, self.current_side) or (
+                    peak > 0 and price_reached_tp(peak, tp1_px, self.current_side)
+                )
                 if (
                     tp1_lvl == 1
                     and 1 not in after
+                    and px_ok
                     and not tp_limit_still_on_book(tp1_px, open_prices)
                     and reduced + 1e-12 >= float(tp1_qty) * 0.5
                 ):
@@ -1889,13 +1896,59 @@ class PositionSupervisor(
         slices: list[tuple[int, float, float]],
         dynamic_sl: float | None,
     ) -> tuple[list, list]:
+        from app.core.tp_slice_guard import sanitize_tp_limit_price, should_skip_rehang_tp_level
+
         close_side = "SHORT" if self.current_side == "LONG" else "LONG"
         placed: list = []
         failed: list = []
+        mark = 0.0
+        try:
+            mark = float(self.client.get_current_price(self.symbol) or 0)
+        except Exception:
+            mark = 0.0
+        open_prices = (
+            self._open_tp_prices_on_book()
+            if hasattr(self, "_open_tp_prices_on_book")
+            else []
+        )
+        consumed = {int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3)}
+        live_qty = float(getattr(self, "watched_qty", 0) or getattr(self, "initial_qty", 0) or 0)
         for level, qty, price in slices:
             if qty <= 0 or price <= 0:
                 continue
-            result = self._place_limit_with_retry(close_side, qty, price, f"TP{level}")
+            skip, skip_reason = should_skip_rehang_tp_level(
+                int(level),
+                float(price),
+                side=self.current_side,
+                curr_px=mark,
+                consumed=consumed,
+                live_qty=live_qty,
+                initial_qty=float(self.initial_qty or live_qty),
+                regime=int(self.regime or 3),
+                tv_tps=list(self.tv_tps or []),
+                regime_settings=self.regime_settings,
+                open_tp_prices=open_prices,
+                is_contracts=self.exchange_id == "deepcoin",
+                peak_px=float(getattr(self, "best_price", 0) or 0),
+            )
+            place_px = float(price)
+            if skip and skip_reason in ("consumed", "price_book_filled", "qty_book_implies_filled"):
+                self._log("TP_SKIP_REHANG", f"全量重挂跳过 TP{level}: {skip_reason}")
+                continue
+            if skip and skip_reason == "no_mark_price":
+                failed.append({"ok": False, "label": f"TP{level}", "reason": "no_mark_price"})
+                continue
+            # 穿价 → 推离市价，禁止挂出即成交
+            place_px, adj = sanitize_tp_limit_price(self.current_side, place_px, mark)
+            if place_px <= 0:
+                failed.append({"ok": False, "label": f"TP{level}", "reason": adj})
+                continue
+            if adj.startswith("pushed"):
+                self._log(
+                    "DEFENSE",
+                    f"TP{level} 穿价推离 {price:.4f}→{place_px:.4f}（禁秒成） mark={mark:.4f}",
+                )
+            result = self._place_limit_with_retry(close_side, qty, place_px, f"TP{level}")
             if result["ok"]:
                 placed.append(result)
             else:

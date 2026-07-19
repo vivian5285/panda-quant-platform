@@ -216,6 +216,17 @@ class PositionCapGuardMixin:
             return float(self._safe_qty(pos.get("size", 0))), float(pos.get("entry_price", 0) or 0)
         return float(pos.get("size", 0)), float(pos.get("entry_price", 0) or 0)
 
+    def _in_open_cap_grace(self) -> bool:
+        """Factory OPEN grace: do not market-trim (would look like instant partial close)."""
+        import time
+        from app.core.tp_slice_guard import OPEN_CAP_ALIGN_GRACE_SEC
+
+        opened = float(getattr(self, "trade_opened_at", 0) or 0)
+        if opened <= 0:
+            return False
+        age = time.time() - opened
+        return 0 <= age < float(OPEN_CAP_ALIGN_GRACE_SEC)
+
     def _enforce_regime_cap_alignment(
         self,
         live_qty: float,
@@ -228,13 +239,24 @@ class PositionCapGuardMixin:
         Radar-authority: trim excess over regime cap, then realign TP limits.
         Active radar SL (breakeven trail) is passed through and preserved.
         """
-        cap = self._cap_oversize_detail(live_qty, price)
         result: dict[str, Any] = {
-            "aligned": not cap["oversized"],
+            "aligned": True,
             "trimmed": 0.0,
-            "cap_meta": cap,
+            "cap_meta": {},
             "reason": reason,
         }
+        # 空仓仅 OPEN / 刚开仓：禁止叠仓市价减仓（否则秒平大半剩蚂蚁仓）
+        if self._in_open_cap_grace() or str(reason or "").startswith("开仓后"):
+            logger.info(
+                "[User %s] CAP_ALIGN skipped (open grace / post-open): reason=%s",
+                self.user_id, reason,
+            )
+            result["skipped"] = "open_grace"
+            return result
+
+        cap = self._cap_oversize_detail(live_qty, price)
+        result["aligned"] = not cap["oversized"]
+        result["cap_meta"] = cap
         if cap.get("max_qty", 0) <= 0:
             logger.debug("[User %s] cap guard skipped: max_qty unavailable", self.user_id)
             return result
