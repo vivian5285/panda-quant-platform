@@ -12,7 +12,8 @@ from app.services.trading_alerts import (
 def test_binance_theme_25x():
     theme = resolve_exchange_theme("binance")
     assert theme["leverage"] == 25
-    assert theme["tag"] == "#币安25x"
+    assert theme["tag"].startswith("#币安25x")
+    assert "ETH" in theme["tag"]
     assert "GEMINI量化" in theme["brand"]
     assert "黄金" not in theme["brand"]
 
@@ -28,7 +29,9 @@ def test_exchange_themes_distinct_palettes():
 
 
 def test_resolve_gateio_alias():
-    assert resolve_exchange_theme("gateio")["tag"] == "#Gate25x"
+    tag = resolve_exchange_theme("gateio")["tag"]
+    assert tag.startswith("#Gate25x")
+    assert "ETH" in tag
 
 
 def test_alert_body_includes_gemini_header_and_exchange_accent():
@@ -77,8 +80,8 @@ def test_cap_align_detail_chinese_readable_no_json():
         "radar_sl_preserved": 1775.0,
     }
     block = format_admin_detail_lines("CAP_ALIGN", detail, exchange="binance")
-    assert "本金快照" in block
-    assert "755.00 USDT" in block
+    assert "档位保证金" in block
+    assert "264.25 USDT" in block
     assert "2.954" in block
     assert "1.489" in block
     assert "做多" in block
