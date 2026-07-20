@@ -1,4 +1,4 @@
-"""TV risk-formula sizing — equity × risk_pct / |price-tv_sl|, capped by leverage & 50k."""
+"""TV risk-formula sizing — equity × risk_pct / |price-tv_sl|, capped by leverage only (no 50k hard cap)."""
 
 import pytest
 
@@ -77,15 +77,17 @@ def test_add_uses_same_formula_times_qty_ratio():
     assert meta["entry_type"] == "PYRAMID"
 
 
-def test_leverage_and_hard_cap_bind():
-    # Tiny stop → huge theoretical; leverage/hard should bind
+def test_leverage_binds_without_hard_notional_cap():
+    """Tiny stop → huge theoretical; only leverage_limit binds (no 50k hard cap)."""
     qty, meta = compute_tv_entry_qty(
         live_balance=1000, initial_principal=1000,
         price=2000, tv_sl=1999.5, risk_pct=50.0, leverage=5,
         qty_ratio=1.0, symbol="ETHUSDT",
     )
-    # leverage_limit = 1000*5/2000 = 2.5; hard = 50000/2000 = 25
+    # leverage_limit = 1000*5/2000 = 2.5
     assert meta["leverage_limit_qty"] == pytest.approx(2.5)
+    assert meta.get("hard_cap_removed") is True
+    assert meta.get("hard_cap_qty") is None
     assert qty == pytest.approx(2.5, abs=0.001)
     assert meta["binding"] == "leverage"
 

@@ -6,7 +6,7 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-07-20）：** 开仓盘口 = 基础单×3（TP123）+ 条件委托×1（**TV `tv_sl` 硬止损**）；**仓位 = TV `risk_pct`/`qty_ratio`/`leverage` 唯一公式**（已删除 REGIME_MARGIN 旧 sizing）；**雷达 = markPrice WebSocket**；**OPEN 一律先平后开**。实盘事故与优化见 [§实盘事故 · 注意事项 · 优化指南](#实盘事故--注意事项--优化指南)。
+> **文档同步（2026-07-20）：** 开仓盘口 = 基础单×3（TP123）+ 条件委托×1（**TV `tv_sl` 硬止损**）；**仓位 = TV `risk_pct`/`qty_ratio`/`leverage` 唯一公式（已删除 REGIME_MARGIN 与 maxNotionalUSDT/50000 硬上限）**；**雷达 = markPrice WebSocket（R1–R4:50/60/70/80%）**；**OPEN 一律先平后开**。实盘事故与优化见 [§实盘事故 · 注意事项 · 优化指南](#实盘事故--注意事项--优化指南)。
 
 | 生产域名 | [https://twinstar.pro](https://twinstar.pro) |
 |----------|---------------------------------------------|
@@ -59,7 +59,7 @@ trading_factory:
     开仓/加仓优先用 TV leverage 设交易所杠杆与算仓；config LEVERAGE/OKX/GATE/DEEPCOIN 仅作缺省回退
   sizing: |
     唯一公式：止损距离=|price-tv_sl|；风险金额=权益×(risk_pct/100)；理论仓位=风险/距离；
-    杠杆限制=权益×leverage/price；硬上限=50000/price；最终=min(三者)×qty_ratio；floor 到品种步长；
+    杠杆限制=权益×leverage/price；最终=min(理论仓位, 杠杆限制)×qty_ratio（已删除 maxNotionalUSDT/50000 硬上限）；floor 到品种步长；
     OPEN/ADD 同一公式；VPS 直接用 TV risk_pct/qty_ratio/leverage；禁止 REGIME_MARGIN 旧逻辑；
     硬止损挂失败 → 立即撤仓（禁止裸奔）
   webhook_order: |
@@ -539,10 +539,11 @@ UPDATE_SL  → 用新 tv_sl 强制改挂
 风险金额   = 账户权益 × (risk_pct / 100)     # risk_pct 由 TV 下发，如 0.81 / 2.03
 理论仓位   = 风险金额 / 止损距离
 杠杆限制   = 账户权益 × leverage / price     # leverage 由 TV 下发
-硬上限     = 50000 / price
-最终下单量 = min(理论仓位, 杠杆限制, 硬上限) × qty_ratio
+最终下单量 = min(理论仓位, 杠杆限制) × qty_ratio
 精度       = floor(量 / 步长) × 步长         # ETH 0.001 / XAU 0.01
 ```
+
+> **已删除** `maxNotionalUSDT` / `50000/price` 单笔名义硬上限。仓位只受理论仓位与杠杆限制约束。
 
 VPS **直接使用** TV 的 `risk_pct` / `qty_ratio` / `leverage`，不重新计算。OPEN 默认 `qty_ratio=1`；加仓用 TV `qty_ratio`（常见 0.3~0.5）。
 
@@ -550,8 +551,8 @@ VPS **直接使用** TV 的 `risk_pct` / `qty_ratio` / `leverage`，不重新计
 |------|------|------|
 | `risk_pct` / `qty_ratio` / `leverage` | **TV 必填** | 权威；缺则拒单 / 不下单 |
 | `tv_sl` | **TV 必填** | 同时用于 sizing 距离 + 硬止损挂单价 |
-| `HARD_NOTIONAL` | 50000 U | 单笔名义硬顶 |
-| `MAX_COMBINED_NOTIONAL_MULT` | **13.0** | ETH+XAU 合计名义上限（安全闸） |
+| ~~`HARD_NOTIONAL`~~ | ~~50000 U~~ | **已删除** |
+| `MAX_COMBINED_NOTIONAL_MULT` | **13.0** | ETH+XAU 合计名义安全闸（按权益倍率，非固定金额） |
 | `ADD_RATIO_REG1~4` | 0 / 0.3 / 0.5 / 0.7 | TV 未传 qty_ratio 时的加仓回退 |
 | `MAX_ADD_TIMES_REG1~4` | 1 / 2 / 2 / 3 | 各档位最大加仓次数 |
 
@@ -1599,6 +1600,16 @@ py -m pytest tests/test_webhook_seq.py tests/test_vps_entry_routing.py \
 | **实现** | `levels_past_by_mark` 写入 `consumed_tp_levels`；`_patch_missing` / `_place_all_defense` / Deepcoin 重建 **跳过 `price_past_tp`**；重启不无故平仓（仅方向背离 FORCE_ALIGN） |
 | **雷达** | 接管时按档位激活比例检查是否启动；已达则锁润追踪，勿空转补挂 TP1 |
 | **测试** | `tests/test_tp_past_mark_skip.py` |
+
+---
+
+### 2026-07-20 · 删除 maxNotionalUSDT 硬上限 · 仓位只受理论仓位+杠杆限制
+
+| 项 | 内容 |
+|----|------|
+| 公式 | `min(理论仓位, 杠杆限制) × qty_ratio` — **无** `50000/price` |
+| 删除 | `HARD_NOTIONAL_USD` / `maxNotionalUSDT` 单笔固定金额硬顶 |
+| 对照 | 自查清单「无硬上限版」R1–R4 @1000U 验收不变（理论仓位仍小于杠杆限制） |
 
 ---
 

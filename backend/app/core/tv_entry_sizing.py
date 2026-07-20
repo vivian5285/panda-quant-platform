@@ -1,15 +1,14 @@
 """TV-driven entry sizing — single formula for OPEN and ADD (all exchanges).
 
-Formula (VPS does NOT recompute risk_pct / qty_ratio / leverage):
+Formula (VPS does NOT recompute risk_pct / qty_ratio / leverage; NO fixed USD hard cap):
   stop_distance   = |price - tv_sl|
   risk_amount     = equity × (risk_pct / 100)
   theoretical     = risk_amount / stop_distance
   leverage_limit  = equity × leverage / price
-  hard_cap        = HARD_NOTIONAL_USD / price   (default 50000)
-  final_qty       = min(theoretical, leverage_limit, hard_cap) × qty_ratio
+  final_qty       = min(theoretical, leverage_limit) × qty_ratio
   precision       = floor(final_qty / step) × step   (ETH 0.001 / XAU 0.01)
 
-Legacy REGIME_MARGIN / VPS_RISK_PCT × scale paths are removed from live placement.
+Legacy REGIME_MARGIN / VPS_RISK_PCT / maxNotionalUSDT(50000) paths are removed.
 """
 
 from __future__ import annotations
@@ -25,9 +24,6 @@ settings = get_settings()
 
 ENTRY_TYPES = frozenset({"OPEN", "PYRAMID", "PROFIT_ADD"})
 ENTRY_TYPES_ADD = frozenset({"PYRAMID", "PROFIT_ADD"})
-
-# Per-order notional hard upper bound (USDT)
-HARD_NOTIONAL_USD = float(getattr(settings, "HARD_NOTIONAL_CAP_USD", 50000) or 50000)
 
 
 def _parse_float(raw, default: float | None = None) -> float | None:
@@ -147,11 +143,11 @@ def compute_tv_entry_qty(
     min_qty: float | None = None,
     max_qty: float | None = None,
     symbol: str | None = None,
-    hard_notional_usd: float | None = None,
 ) -> tuple[float, dict[str, Any]]:
     """
-    Unique TV sizing formula (OPEN and ADD).
+    Unique TV sizing formula (OPEN and ADD) — no maxNotionalUSDT hard cap.
     risk_pct is percent units (e.g. 0.81 = 0.81% of equity).
+    Binding: min(theoretical, leverage_limit) × qty_ratio.
     """
     from app.core.symbol_registry import normalize_canonical_symbol
 
@@ -165,7 +161,6 @@ def compute_tv_entry_qty(
     risk_f = float(risk_pct or 0)
     lev = max(float(leverage or 0), 0.0)
     qr = max(float(qty_ratio or 0), 0.0)
-    hard_cap_usd = float(hard_notional_usd if hard_notional_usd is not None else HARD_NOTIONAL_USD)
     can = normalize_canonical_symbol(symbol)
     step = _qty_step_for_symbol(symbol)
     mn = float(min_qty if min_qty is not None else step)
@@ -184,7 +179,8 @@ def compute_tv_entry_qty(
         "tv_sl": round(tv_sl_f, 4),
         "risk_pct": round(risk_f, 6),
         "qty_ratio": round(qr, 4),
-        "hard_notional_usd": hard_cap_usd,
+        "hard_notional_usd": None,
+        "hard_cap_removed": True,
         "symbol": can,
         "qty_step": step,
     }
@@ -217,20 +213,17 @@ def compute_tv_entry_qty(
     risk_amount = sizing_base * (risk_f / 100.0)
     theoretical = risk_amount / stop_distance
     leverage_limit = sizing_base * lev / price_f
-    hard_cap_qty = hard_cap_usd / price_f
-    capped = min(theoretical, leverage_limit, hard_cap_qty)
+    # 无 maxNotionalUSDT：只受理论仓位与杠杆限制
+    capped = min(theoretical, leverage_limit)
     raw_qty = capped * qr
 
     meta["risk_amount"] = round(risk_amount, 6)
     meta["theoretical_qty"] = round(theoretical, 6)
     meta["leverage_limit_qty"] = round(leverage_limit, 6)
-    meta["hard_cap_qty"] = round(hard_cap_qty, 6)
+    meta["hard_cap_qty"] = None
     meta["capped_qty"] = round(capped, 6)
     meta["raw_qty"] = round(raw_qty, 6)
-    meta["binding"] = (
-        "theoretical" if capped == theoretical
-        else ("leverage" if capped == leverage_limit else "hard_cap")
-    )
+    meta["binding"] = "theoretical" if capped == theoretical else "leverage"
 
     floored = floor_qty(raw_qty, step)
     if round_fn is not None:
