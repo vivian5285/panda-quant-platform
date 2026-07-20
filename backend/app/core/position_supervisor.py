@@ -3159,12 +3159,12 @@ class PositionSupervisor(
             return SENTINEL_POLL_RADAR
         if curr_px > 0 and self.watched_entry and self.tv_tps:
             progress = self._radar_activation_progress(curr_px)
-            act = 0.75
+            act = 0.70
             if hasattr(self, "_regime_radar_activation"):
-                act = float(self._regime_radar_activation() or 0.75)
+                act = float(self._regime_radar_activation() or 0.70)
             else:
                 row = (self.regime_settings.get(self.regime) or {})
-                act = float(row.get("activation") or 0.75)
+                act = float(row.get("activation") or 0.70)
             # Approaching arm threshold → poll at WS markPrice@1s pace
             if progress + 1e-9 >= max(0.40, act * 0.55):
                 return SENTINEL_POLL_ARMING
@@ -3250,7 +3250,9 @@ class PositionSupervisor(
                 )
                 if sl_placed or first_arm or on_book:
                     alert_type = "RADAR_ARM" if first_arm else "TRAIL"
-                    base = trail_detail.get("radar_activation") or 0.75
+                    base = trail_detail.get("radar_activation") or regime_radar_activation(
+                        int(self.regime or 3)
+                    )
                     rem = max(0.0, 1.0 - float(base))
                     title = (
                         f"雷达启动·R{self.regime}路径{base:.0%}(剩{rem:.0%})适度追随"
@@ -3315,7 +3317,9 @@ class PositionSupervisor(
                 )
                 if sl_placed or first_arm or on_book:
                     alert_type = "RADAR_ARM" if first_arm else "TRAIL"
-                    base = trail_detail.get("radar_activation") or 0.75
+                    base = trail_detail.get("radar_activation") or regime_radar_activation(
+                        int(self.regime or 3)
+                    )
                     rem = max(0.0, 1.0 - float(base))
                     title = (
                         f"雷达启动·R{self.regime}路径{base:.0%}(剩{rem:.0%})适度追随"

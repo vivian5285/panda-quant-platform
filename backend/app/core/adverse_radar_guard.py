@@ -289,7 +289,7 @@ class AdverseRadarMixin:
         if not self.radar_latched:
             self.radar_latched = True
             logger.info(
-                "[User %s] 📌 雷达已锁定 — 回调不回退硬止损",
+                "[User %s] 📌 雷达已锁定 — 回调不回退硬止损·只准前进",
                 getattr(self, "user_id", "?"),
             )
 
@@ -303,57 +303,19 @@ class AdverseRadarMixin:
         return False
 
     def _clear_premature_radar_arm(self, curr_px: float, reason: str) -> None:
-        """Undo a noise / grace-bypass radar SL and restore hard-stop defense."""
+        """
+        DEPRECATED no-op: 雷达挂上后只准前进、禁止解除。
+        历史「路径回撤→撤雷达」已废除；误挂靠开仓宽限+双确认防呆，不靠事后撤销。
+        """
         self._init_adverse_radar_fields()
-        old_sl = float(getattr(self, "current_sl", 0) or 0)
-        had = bool(self.radar_latched) or (
-            hasattr(self, "_is_radar_active") and self._is_radar_active()
+        logger.info(
+            "[User %s] ⏭️ 忽略雷达解除请求（只前进不撤）| px=%.2f | %s | latched=%s",
+            getattr(self, "user_id", "?"),
+            float(curr_px or 0),
+            reason,
+            bool(getattr(self, "radar_latched", False)),
         )
-        self.radar_latched = False
-        self._radar_path_ok_streak = 0
-        if hasattr(self, "current_sl"):
-            self.current_sl = 0.0
-        live = float(getattr(self, "watched_qty", 0) or 0)
-        entry = float(getattr(self, "watched_entry", 0) or 0)
-        if live > 0 and entry > 0:
-            try:
-                if hasattr(self, "_smart_realign_defenses"):
-                    self._smart_realign_defenses(
-                        live, entry, reason=f"撤销过早雷达:{reason}"
-                    )
-                elif hasattr(self, "_arm_adverse_shield_at_open"):
-                    self._arm_adverse_shield_at_open(live)
-            except Exception as exc:
-                logger.warning(
-                    "[User %s] clear premature radar realign failed: %s",
-                    getattr(self, "user_id", "?"),
-                    exc,
-                )
-        if had:
-            logger.info(
-                "[User %s] ↩️ 撤销过早雷达 SL@%.2f → 硬止损 | px=%.2f | %s",
-                getattr(self, "user_id", "?"),
-                old_sl,
-                float(curr_px or 0),
-                reason,
-            )
-            if hasattr(self, "_alert"):
-                self._alert(
-                    "warning",
-                    "RADAR_REVOKE",
-                    "撤销过早雷达",
-                    f"未达档位有效激活距离即挂保本止损，已撤 @{old_sl:.2f} 恢复硬止损 | {reason}",
-                    {
-                        "old_sl": old_sl,
-                        "curr_px": curr_px,
-                        "reason": reason,
-                        "regime": getattr(self, "regime", None),
-                        **(getattr(self, "_last_radar_arm_meta", None) or {}),
-                    },
-                )
-            if hasattr(self, "_save_state"):
-                self._save_state()
-
+        return
     def _infer_radar_latched_from_state(self) -> None:
         """Backward compat: restore latch only when TP1+ actually filled (qty-backed)."""
         if getattr(self, "radar_latched", False):
@@ -1164,39 +1126,16 @@ class AdverseRadarMixin:
         self._radar_path_ok_streak = int(fresh.get("path_ok_streak") or 0)
 
         if getattr(self, "radar_latched", False):
-            # Keep trailing after confirmed arm, unless clearly premature in open window
-            if not tp1_filled_from_consumed(consumed):
-                age = fresh.get("open_age_sec")
-                prog = float(fresh.get("progress") or 0)
-                eff = float(fresh.get("activation_effective") or 0.7)
-                if (
-                    age is not None
-                    and age < max(RADAR_OPEN_GRACE_SEC * 2.5, 60.0)
-                    and prog + 1e-9 < eff * 0.55
-                    and not fresh.get("arm")
-                ):
-                    self._clear_premature_radar_arm(
-                        curr_px, "latched_but_path_collapsed"
-                    )
-                    return False
+            # 铁律：雷达已挂/已锁 → 只准前进，永不因回撤解除
             return True
 
         if fresh.get("arm"):
             self._latch_radar()
             return True
 
-        # SL>entry without latch (legacy / mis-set) — revoke
-        premature_sl = (
-            hasattr(self, "_is_radar_active")
-            and self._is_radar_active()
-            and not tp1_filled_from_consumed(consumed)
-        )
-        if premature_sl:
-            self._clear_premature_radar_arm(
-                curr_px, str(fresh.get("arm_reason") or "path_not_ready")
-            )
+        # 未锁定时：若盘口已有保本样 SL，仍不「解除」——改由下次路径达标正式 latch
+        # （禁止 _clear_premature_radar_arm 撤雷达）
         return False
-
     def _tp1_limit_still_live_on_book(self) -> bool:
         """Exchange-first: open TP1 limit still present (slice accounting only; not an arm gate)."""
         tps = list(getattr(self, "tv_tps", []) or [])

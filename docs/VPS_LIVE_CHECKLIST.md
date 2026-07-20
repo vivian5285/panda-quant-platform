@@ -139,7 +139,12 @@ if progress ≥ REGIME_RADAR[regime].activation  →  arm Stage 1（保本）
 
 | 档位 | 激活路径（占 entry→TP1） |
 |------|--------------------------|
-| R1~R4 | **85%**（距 TP1 还剩 15%） |
+| R1 | **50%** |
+| R2 | **60%** |
+| R3 | **70%** |
+| R4 | **80%** |
+
+> 源码唯一表：`radar_trail.REGIME_RADAR`。雷达挂上后**只前进、禁止解除**。
 
 ### TP 切片（min_qty · 尽量保留 TP123）
 

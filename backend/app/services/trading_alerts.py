@@ -79,7 +79,7 @@ ALERT_TYPE_TAGS = {
     "DEFENSE_HEAL_FAIL": "止盈仍异常",
     "TRAIL": "雷达保本",
     "RADAR_ARM": "雷达激活",
-    "RADAR_REVOKE": "撤销过早雷达",
+    "RADAR_REVOKE": "雷达只前进(已禁用解除)",
     "ADJUST": "人工异动",
     "MANUAL_ADJUST": "人工异动",
     "FORCE_ALIGN": "方向背离",
@@ -186,6 +186,17 @@ DINGTALK_VERBOSE_EXCLUDED = frozenset({
     "ADVERSE_SL_REPAIR",
     "RECOVERY",
 })
+
+
+def format_regime_radar_activation_legend() -> str:
+    """钉钉统一文案：R1=50% · R2=60% · R3=70% · R4=80%（禁止写死旧 85%/70%）。"""
+    from app.core.radar_trail import REGIME_RADAR
+
+    parts = [
+        f"R{r}={int(REGIME_RADAR[r]['activation'] * 100)}%"
+        for r in (1, 2, 3, 4)
+    ]
+    return " · ".join(parts)
 
 
 def resolve_exchange_theme(
@@ -513,16 +524,18 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             lines.append(
                 _line(
                     "盘口结构",
-                    "基础单×3：TP1/2/3 限价 + 条件委托×1：TV硬止损/雷达合并槽（互不抢份额；R1-4按档位路径启动适度追随）",
+                    "基础单×3：TP1/2/3 限价 + 条件委托×1：TV硬止损/雷达合并槽"
+                    f"（互不抢份额；激活 {format_regime_radar_activation_legend()}；"
+                    "雷达挂上后只前进不撤）",
                 )
             )
-        # Regime path arm R1=85%…R4=70% + ATR breath (适度追随)
+        # Regime path arm R1=50%…R4=80% + ATR breath（与 REGIME_RADAR 同源）
         if detail.get("radar_armed") or detail.get("radar_active"):
             radar_sl = detail.get("radar_sl") or detail.get("current_sl")
             if radar_sl:
-                lines.append(_line("雷达状态", f"已激活 @{float(radar_sl):.2f}"))
+                lines.append(_line("雷达状态", f"已激活 @{float(radar_sl):.2f}（只前进不撤）"))
             else:
-                lines.append(_line("雷达状态", "已激活"))
+                lines.append(_line("雷达状态", "已激活（只前进不撤）"))
         else:
             act = detail.get("radar_activation_effective") or detail.get("radar_activation")
             base = detail.get("radar_activation")
@@ -548,13 +561,15 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             if abs(float(act) - float(base)) > 0.01:
                 arm_txt = (
                     f"待命 · R{regime}路径 {float(base) * 100:.0f}% "
-                    f"（有效 {float(act) * 100:.0f}%：TP1 间距收紧）后适度追随"
+                    f"（有效 {float(act) * 100:.0f}%：TP1 间距收紧）后启动 "
+                    f"[{format_regime_radar_activation_legend()}]"
                 )
             else:
                 remain = max(0.0, 1.0 - float(act)) * 100.0
                 arm_txt = (
                     f"待命 · R{regime}路径 {float(act) * 100:.0f}% "
-                    f"（距 TP1 剩 {remain:.0f}%）后启动适度追随（TP2/TP3 锁利）"
+                    f"（距 TP1 剩 {remain:.0f}%）后启动适度追随 "
+                    f"[{format_regime_radar_activation_legend()}]"
                 )
             # Show absolute trigger price for short/long when entry+tp1 known
             entry_r = float(detail.get("entry") or detail.get("entry_price") or 0)
@@ -723,12 +738,14 @@ def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
 
 
 def format_radar_arm_detail_cn(detail: dict, exchange: str | None = None) -> str:
-    """雷达激活 / 撤销 / 追踪 — 钉钉核实明细."""
+    """雷达激活 / 追踪 — 钉钉核实明细（禁止解除文案；比例读 REGIME_RADAR）。"""
     sym = detail.get("symbol") or detail.get("canonical_symbol")
     theme = resolve_exchange_theme(exchange or detail.get("exchange"), sym)
     lines = [
         _line("交易所", theme["label"]),
         _line("合约", theme.get("symbol") or sym or "—"),
+        _line("激活表", format_regime_radar_activation_legend()),
+        _line("铁律", "雷达挂上后只前进·禁止解除"),
     ]
     if detail.get("regime") is not None:
         lines.append(_line("档位", f"R{detail['regime']}"))

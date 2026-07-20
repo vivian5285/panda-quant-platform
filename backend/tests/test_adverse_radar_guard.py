@@ -133,6 +133,26 @@ class _AdverseProbe(AdverseRadarMixin):
         pass
 
 
+def test_latched_radar_never_revokes_on_path_collapse():
+    """铁律：雷达锁定后路径回撤也不得解除。"""
+    probe = _AdverseProbe()
+    probe.radar_latched = True
+    probe.current_sl = 2003.0
+    probe.watched_entry = 2000.0
+    probe.trade_opened_at = __import__("time").time() - 10.0
+    probe.consumed_tp_levels = []
+    probe._radar_activation_progress = lambda curr_px: 0.1  # collapsed path
+    probe._alert = MagicMock()
+    assert probe._radar_activation_reached(2001.0) is True
+    assert probe.radar_latched is True
+    assert float(probe.current_sl) == pytest.approx(2003.0)
+    probe._alert.assert_not_called()
+    # clear helper is no-op
+    probe._clear_premature_radar_arm(2001.0, "should_ignore")
+    assert probe.radar_latched is True
+    assert float(probe.current_sl) == pytest.approx(2003.0)
+
+
 def test_disarm_when_radar_activation_reached():
     probe = _AdverseProbe()
     probe.adverse_sl_armed = True

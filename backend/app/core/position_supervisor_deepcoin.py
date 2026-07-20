@@ -3059,12 +3059,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             return SENTINEL_POLL_RADAR
         if curr_px > 0 and self.watched_entry and self.tv_tps:
             progress = self._radar_activation_progress(curr_px)
-            act = 0.75
+            act = 0.70
             if hasattr(self, "_regime_radar_activation"):
-                act = float(self._regime_radar_activation() or 0.75)
+                act = float(self._regime_radar_activation() or 0.70)
             else:
                 row = (self.regime_settings.get(self.regime) or {})
-                act = float(row.get("activation") or 0.75)
+                act = float(row.get("activation") or 0.70)
             if progress + 1e-9 >= max(0.40, act * 0.55):
                 return SENTINEL_POLL_ARMING
         return SENTINEL_POLL_NORMAL
@@ -3151,7 +3151,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 )
                 if on_book_now or first_arm:
                     alert_type = "RADAR_ARM" if first_arm else "TRAIL"
-                    base = float(radar.get("activation") or 0.75)
+                    base = float(radar.get("activation") or 0.70)
                     rem = max(0.0, 1.0 - base)
                     title = (
                         f"雷达启动·R{self.regime}路径{base:.0%}(剩{rem:.0%})适度追随"
@@ -3222,7 +3222,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 )
                 if on_book_now or first_arm:
                     alert_type = "RADAR_ARM" if first_arm else "TRAIL"
-                    base = float(radar.get("activation") or 0.75)
+                    base = float(radar.get("activation") or 0.70)
                     rem = max(0.0, 1.0 - base)
                     title = (
                         f"雷达启动·R{self.regime}路径{base:.0%}(剩{rem:.0%})适度追随"

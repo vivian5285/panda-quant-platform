@@ -3,20 +3,11 @@
 from app.services.trading_alerts import format_vps_entry_detail_cn
 
 
-def test_open_detail_shows_pine_tp_ratio_pct():
-    body = format_vps_entry_detail_cn(
-        {
-            "entry_type": "OPEN",
-            "side": "LONG",
-            "regime": 1,
-            "tp_ratios_pct": "25/35/40",
-            "qty": 0.8,
-            "entry": 2000.0,
-        },
-        "binance",
-    )
-    assert "止盈比例" in body
-    assert "25/35/40" in body
+def test_format_regime_radar_activation_legend():
+    from app.services.trading_alerts import format_regime_radar_activation_legend
+
+    legend = format_regime_radar_activation_legend()
+    assert legend == "R1=50% · R2=60% · R3=70% · R4=80%"
 
 
 def test_open_detail_radar_standby_until_tp1():
@@ -33,7 +24,9 @@ def test_open_detail_radar_standby_until_tp1():
     )
     assert "雷达状态" in body
     assert "TP1" in body
-    assert "70%" in body or "85%" in body
+    assert "80%" in body  # R4 activation
+    assert "50%" in body or "R1=50%" in body or "R4=80%" in body
+    assert "85%" not in body
 
 
 def test_open_detail_book_structure_and_tv_hard_sl():
@@ -66,5 +59,7 @@ def test_open_detail_book_structure_and_tv_hard_sl():
     assert "仅参考" not in body
     assert "开仓价×" not in body
     assert "VPS 硬止损" not in body
-    assert "雷达触发价" in body or "85%" in body or "条件委托" in body
+    assert "雷达触发价" in body or "50%" in body or "条件委托" in body
     assert "条件委托" in body
+    assert "只前进" in body or "R1=50%" in body
+    assert "85%" not in body

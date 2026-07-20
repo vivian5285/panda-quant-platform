@@ -18,7 +18,7 @@ def test_classify_loss_shield_when_underwater():
 
 
 def test_classify_profit_radar_when_path_reaches_activation():
-    """路径达 85%（距TP1剩15%）→ 与实盘哨兵一致走雷达轨。"""
+    """路径达档位激活比例（R1=50%…R4=80%）→ 与实盘哨兵一致走雷达轨。"""
     assert classify_startup_pnl_track(2000.0, 2010.0, "LONG", radar_progress=0.85) == "profit_radar"
     assert classify_startup_pnl_track(2000.0, 2010.0, "LONG", radar_progress=1.0) == "profit_radar"
 
