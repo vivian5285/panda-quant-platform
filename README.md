@@ -1509,8 +1509,14 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 | **Commit** | `ce2d3c9` |
 | **档位表** | R1 85%/35%/1.0ATR · R2 80%/30%/0.8 · R3 75%/25%/0.65 · R4 70%/20%/0.5（宁松勿紧） |
 
-#### H. 雷达过早启动 / 近入场误标 TP1（P1）
+#### I. 重启接管反复补挂 TP1（P0 · 2026-07-20）
 
+| 项 | 内容 |
+|----|------|
+| **现象** | 重启后仓位在 TP1 附近被反复吃掉，到不了 TP2/TP3；日志狂刷补挂 |
+| **根因** | 现价已过 TP1 仍当「缺失」→ `sanitize` 推离市价再挂 → 立即成交 → 再判缺失 |
+| **修复** | 现价/峰值达 TPₙ → 记入 consumed，只挂更高档 + 雷达；禁止 push-and-place |
+| **接管步骤** | ①读开仓价/TV 方向 ②现价 vs TP123 ③达激活比例则雷达 ④只补真正缺失的更高档 ⑤不无故平仓 |
 | 项 | 内容 |
 |----|------|
 | **现象** | 刚开仓噪声触发保本；或平仓归因把保本止损标成 TP1 |
@@ -1578,6 +1584,18 @@ py -m pytest tests/test_webhook_seq.py tests/test_vps_entry_routing.py \
 ## 更新记录
 
 > 按时间倒序。生产 VPS：`git pull` → `docker compose up -d --build`（或既有部署脚本）后重启 supervisor。
+
+### 2026-07-20 · 重启接管：现价已过 TP 禁止补挂（防 TP1 死亡螺旋）
+
+| 项 | 内容 |
+|----|------|
+| **事故** | VPS 重启后反复「缺失 TP1」→ 推离市价补挂 → 秒成 → 再补挂；仓位耗在 TP1 附近，走不到 TP2/TP3 |
+| **铁律** | 开仓价 + 现价对账：现价/峰值已达 TP1 → **只挂 TP2/TP3** + 评估雷达激活；达 TP2 → 只挂 TP3；**禁止** sanitize 推离后挂穿市 TP |
+| **实现** | `levels_past_by_mark` 写入 `consumed_tp_levels`；`_patch_missing` / `_place_all_defense` / Deepcoin 重建 **跳过 `price_past_tp`**；重启不无故平仓（仅方向背离 FORCE_ALIGN） |
+| **雷达** | 接管时按档位激活比例检查是否启动；已达则锁润追踪，勿空转补挂 TP1 |
+| **测试** | `tests/test_tp_past_mark_skip.py` |
+
+---
 
 ### 2026-07-19 · 执行铁律简化：OPEN 一律先平后开 · CLOSE 单独清零等待
 

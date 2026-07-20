@@ -15,6 +15,61 @@ TP_REACH_PRICE_TOL_PCT = 0.0008
 TP_TOUCH_PEAK_TOL_PCT = 0.0015
 # Fill qty match: must track the slice itself, never the whole-position drift band
 TP_FILL_SLICE_FRAC = 0.35
+# Reasons that must never place a TP limit (death-spiral / instant fill)
+SKIP_REHANG_HARD = frozenset({
+    "consumed",
+    "price_book_filled",
+    "qty_book_implies_filled",
+    "price_past_tp",
+    "invalid_price",
+})
+# Persist into consumed_tp_levels so restart / heal never re-plan this tier
+SKIP_REHANG_PERSIST_CONSUMED = frozenset({
+    "price_book_filled",
+    "qty_book_implies_filled",
+    "price_past_tp",
+})
+
+
+def levels_past_by_mark(
+    curr_px: float,
+    side: str | None,
+    tv_tps: list[float] | None,
+    *,
+    peak_px: float = 0.0,
+) -> set[int]:
+    """
+    Contiguous TP tiers already reached by mark or peak (entry→TP path).
+
+    Restart / heal rule: if mark ≥ TP1 (LONG) do NOT hang TP1 — only TP2/TP3
+    (+ radar). Same for TP2→ only TP3. Never sanitize-and-place through-market TP1.
+    """
+    out: set[int] = set()
+    if side not in ("LONG", "SHORT"):
+        return out
+    mark = float(curr_px or 0)
+    peak = float(peak_px or 0)
+    if mark <= 0 and peak <= 0:
+        return out
+    for i, raw in enumerate(list(tv_tps or [])[:3]):
+        level = i + 1
+        tp = float(raw or 0)
+        if tp <= 0:
+            break
+        reached = False
+        if mark > 0 and (
+            price_reached_tp(mark, tp, side) or tp_would_instant_fill(side, tp, mark)
+        ):
+            reached = True
+        elif peak > 0 and price_reached_tp(peak, tp, side):
+            reached = True
+        if reached:
+            out.add(level)
+        else:
+            break
+    return out
+
+
 # Never place reduce-only TP at/through mark (instant partial close → ant residue)
 TP_SAFE_BUFFER_PCT = 0.002
 # After factory OPEN: forbid regime_cap market trim

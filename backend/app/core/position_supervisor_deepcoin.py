@@ -933,7 +933,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         )
 
     def _sync_consumed_tp_levels(self, live_qty, curr_px):
-        from app.core.tp_slice_guard import compute_tp_slices
+        from app.core.tp_slice_guard import compute_tp_slices, levels_past_by_mark
 
         anchor = float(self._safe_qty(self.initial_qty or live_qty))
         live = float(self._safe_qty(live_qty))
@@ -942,9 +942,20 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             anchor, self.regime, self.tv_tps, self.regime_settings, exclude_levels=set(),
         )
         tp1_slice = float(slices[0][1]) if slices else 0.0
-        # 手数噪声带（1 张），不用 8% 漂移带 — 避免小减仓误清 → TP_FILLED 刷屏
+        past_early = levels_past_by_mark(
+            float(curr_px or 0),
+            self.current_side,
+            list(self.tv_tps or []),
+            peak_px=float(getattr(self, "best_price", 0) or 0),
+        )
+        # 手数噪声带（1 张）；现价已过 TP 时禁止清记账再补挂 TP1
         restore_tol = 1.0
-        if tp1_slice > 0 and abs(live - anchor) <= restore_tol and self.consumed_tp_levels:
+        if (
+            tp1_slice > 0
+            and abs(live - anchor) <= restore_tol
+            and self.consumed_tp_levels
+            and not past_early
+        ):
             logger.warning("仓位回到开仓锚，清除 TP 成交记账 %s", self.consumed_tp_levels)
             self.consumed_tp_levels = []
             if hasattr(self, "_tp_fill_dingtalk_levels"):
@@ -968,7 +979,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             peak_px=float(getattr(self, "best_price", 0) or 0),
         )
         prev = {int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3)}
-        merged = sorted(prev | {int(x) for x in inferred if int(x) in (1, 2, 3)})
+        merged = sorted(
+            prev
+            | {int(x) for x in inferred if int(x) in (1, 2, 3)}
+            | {int(x) for x in past_early if int(x) in (1, 2, 3)}
+        )
+        if merged != sorted(self.consumed_tp_levels or []):
+            logger.info(
+                "TP 已成交/已过价档位更新: %s → %s | past=%s",
+                self.consumed_tp_levels, merged, sorted(past_early),
+            )
         self.consumed_tp_levels = merged
         if hasattr(self, "_save_state"):
             self._save_state()
@@ -1176,7 +1196,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             level = i + 1
             if level in exclude:
                 continue
-            skip, _ = should_skip_rehang_tp_level(
+            skip, skip_reason = should_skip_rehang_tp_level(
                 level,
                 float(tp_px or 0),
                 side=self.current_side,
@@ -1193,6 +1213,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             )
             if skip:
                 exclude.add(level)
+        if exclude != set(int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3)):
+            self.consumed_tp_levels = sorted(exclude)
+            if hasattr(self, "_save_state"):
+                self._save_state()
         slices = self._compute_tp_slices(live_qty, exclude_levels=exclude)
         return [{"level": lvl, "qty": self._safe_qty(q), "price": px} for lvl, q, px in slices]
 
@@ -1399,7 +1423,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 peak_px=float(getattr(self, "best_price", 0) or 0),
             )
             if skip and skip_reason in (
-                "consumed", "price_book_filled", "qty_book_implies_filled",
+                "consumed", "price_book_filled", "qty_book_implies_filled", "price_past_tp",
             ):
                 logger.warning(
                     f"  ⏭ 跳过补挂 TP{level} @ {px:.2f}（{skip_reason}·防死亡螺旋）"
@@ -1407,7 +1431,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 if (
                     level
                     and level not in consumed
-                    and skip_reason in ("price_book_filled", "qty_book_implies_filled")
+                    and skip_reason in ("price_book_filled", "qty_book_implies_filled", "price_past_tp")
                 ):
                     consumed.add(level)
                     self.consumed_tp_levels = sorted(consumed)
@@ -1416,7 +1440,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self._alert(
                         "warning",
                         "TP_SKIP_REHANG",
-                        f"止盈已成交·拒绝补挂TP{level}",
+                        f"现价已过/已成交·拒绝补挂TP{level}",
                         f"原因={skip_reason} | 现价{px_now:.2f} | 实盘{live_qty}张",
                         {
                             "level": level,
@@ -1431,13 +1455,27 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             if skip and skip_reason == "no_mark_price":
                 logger.warning(f"  ⏭ 无市价拒挂 TP{level}（防穿价秒成）")
                 continue
-            from app.core.tp_slice_guard import sanitize_tp_limit_price
-            place_px, adj = sanitize_tp_limit_price(self.current_side, px, px_now)
-            if place_px <= 0:
+            from app.core.tp_slice_guard import sanitize_tp_limit_price, tp_would_instant_fill
+            if tp_would_instant_fill(self.current_side, px, px_now):
+                if level and level not in consumed:
+                    consumed.add(level)
+                    self.consumed_tp_levels = sorted(consumed)
+                    if hasattr(self, "_save_state"):
+                        self._save_state()
+                logger.warning(
+                    f"  ⏭ 现价已过 TP{level} @ {px:.2f} mark={px_now:.2f}·禁止推离补挂"
+                )
                 continue
-            if adj.startswith("pushed"):
-                logger.warning(f"  ↪ TP{level} 穿价推离 {px:.2f}→{place_px:.2f}")
-                px = place_px
+            place_px, adj = sanitize_tp_limit_price(self.current_side, px, px_now)
+            if place_px <= 0 or adj.startswith("pushed"):
+                if level and level not in consumed:
+                    consumed.add(level)
+                    self.consumed_tp_levels = sorted(consumed)
+                    if hasattr(self, "_save_state"):
+                        self._save_state()
+                logger.warning(f"  ⏭ TP{level} 穿价拒绝补挂 {px:.2f} ({adj})")
+                continue
+            px = place_px
             orders = self._collect_tp_limit_orders()
             at_px = [o for o in orders if tp_price_matches(o["price"], px, price_tol)]
             if len(at_px) == 1 and tp_qty_matches(q, at_px[0]["qty"], live_qty, is_contracts=True):
@@ -3289,13 +3327,43 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         for lv in levels:
             q, px = int(lv["qty"]), float(lv["price"])
-            if q > 0 and px > 0:
-                res = self.client.place_limit_order(
-                    self.symbol, close_side, pos_side, px, q, reduce_only=True,
+            level = int(lv.get("level") or 0)
+            if q <= 0 or px <= 0:
+                continue
+            from app.core.tp_slice_guard import should_skip_rehang_tp_level, tp_would_instant_fill
+            open_prices = [float(o.get("price", 0) or 0) for o in self._collect_tp_limit_orders()]
+            consumed_now = self._consumed_tp_level_set()
+            skip, skip_reason = should_skip_rehang_tp_level(
+                level,
+                px,
+                side=self.current_side,
+                curr_px=curr_px,
+                consumed=consumed_now,
+                live_qty=live_qty,
+                initial_qty=float(self.initial_qty or live_qty),
+                regime=int(self.regime or 3),
+                tv_tps=list(self.tv_tps or []),
+                regime_settings=self.regime_settings,
+                open_tp_prices=open_prices,
+                is_contracts=True,
+                peak_px=float(getattr(self, "best_price", 0) or 0),
+            )
+            if skip or tp_would_instant_fill(self.current_side, px, curr_px):
+                logger.warning(
+                    f"  ⏭ 重建跳过 TP{level} @ {px:.2f}（{skip_reason or 'mark_past'}）"
                 )
-                if res and self.client._is_success(res):
-                    placed += 1
-                time.sleep(0.35)
+                if level and level not in consumed_now:
+                    consumed_now.add(level)
+                    self.consumed_tp_levels = sorted(consumed_now)
+                    if hasattr(self, "_save_state"):
+                        self._save_state()
+                continue
+            res = self.client.place_limit_order(
+                self.symbol, close_side, pos_side, px, q, reduce_only=True,
+            )
+            if res and self.client._is_success(res):
+                placed += 1
+            time.sleep(0.35)
 
         if dynamic_sl:
             sl_qty = self._resolve_live_qty(live_qty)

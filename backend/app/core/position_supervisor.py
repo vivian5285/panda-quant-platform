@@ -1373,8 +1373,12 @@ class PositionSupervisor(
         return prices
 
     def _sync_consumed_tp_levels(self, live_qty: float, curr_px: float) -> list[int]:
-        """Exchange-first: qty+book+price evidence merge (never mark TP1 on full open)."""
-        from app.core.tp_slice_guard import compute_tp_slices
+        """Exchange-first: qty+book+price evidence merge (never mark TP1 on full open).
+
+        Also mark contiguous tiers already past by mark/peak so restart never
+        rehangs TP1 when price already through (only TP2/TP3 + radar).
+        """
+        from app.core.tp_slice_guard import compute_tp_slices, levels_past_by_mark
 
         anchor = float(self.initial_qty or live_qty)
         live = float(live_qty or 0)
@@ -1385,13 +1389,19 @@ class PositionSupervisor(
         )
         reduced = abs(anchor - live)
         tp1_slice = float(slices[0][1]) if slices else 0.0
-        # 仅「真·全仓恢复」才清记账：用手数噪声带，绝不用 8% 漂移带
-        # （TP1 小减仓常落在 8% 内，误清会导致每轮哨兵重报 TP_FILLED）
+        past_early = levels_past_by_mark(
+            float(curr_px or 0),
+            self.current_side,
+            list(self.tv_tps or []),
+            peak_px=float(getattr(self, "best_price", 0) or 0),
+        )
+        # 仅「真·全仓恢复」且现价未过 TP 才清记账（现价已过 TP1 时禁止清掉再补挂）
         restore_tol = 1.0 if is_dc else 0.001
         if (
             tp1_slice > 0
             and abs(live - anchor) <= restore_tol
             and self.consumed_tp_levels
+            and not past_early
         ):
             logger.warning(
                 "[User %s] 仓位回到开仓锚，清除 TP 成交记账 %s",
@@ -1417,13 +1427,18 @@ class PositionSupervisor(
             is_contracts=is_dc,
             peak_px=float(getattr(self, "best_price", 0) or 0),
         )
+        past = past_early
         # 只增不减：哨兵已确认的档位不被盘口延迟/短暂回挂抹掉
         prev = {int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3)}
-        merged = sorted(prev | {int(x) for x in inferred if int(x) in (1, 2, 3)})
+        merged = sorted(
+            prev
+            | {int(x) for x in inferred if int(x) in (1, 2, 3)}
+            | {int(x) for x in past if int(x) in (1, 2, 3)}
+        )
         if merged != sorted(self.consumed_tp_levels or []):
             logger.info(
-                "[User %s] TP 已成交档位更新: %s → %s | 实盘 %s | 开仓锚 %s | 减仓 %.4f",
-                self.user_id, self.consumed_tp_levels, merged, live, anchor, reduced,
+                "[User %s] TP 已成交/已过价档位更新: %s → %s | 实盘 %s | 开仓锚 %s | 减仓 %.4f | past=%s",
+                self.user_id, self.consumed_tp_levels, merged, live, anchor, reduced, sorted(past),
             )
         self.consumed_tp_levels = merged
         if hasattr(self, "_save_state"):
@@ -1432,9 +1447,11 @@ class PositionSupervisor(
 
     def _infer_filled_tp_levels(self, qty: float, curr_px: float) -> set[int]:
         """推断已成交 TP 档位（state 记录 + 开仓量对比 + 价格越过且无挂单）。"""
+        from app.core.tp_slice_guard import levels_past_by_mark
+
         anchor = float(self.initial_qty or qty)
         tol = tp_slice_qty_tolerance(anchor, is_contracts=self.exchange_id == "deepcoin")
-        return infer_filled_tp_levels(
+        filled = infer_filled_tp_levels(
             qty,
             curr_px,
             self.current_side,
@@ -1448,9 +1465,46 @@ class PositionSupervisor(
             is_contracts=self.exchange_id == "deepcoin",
             peak_px=float(getattr(self, "best_price", 0) or 0),
         )
+        past = levels_past_by_mark(
+            float(curr_px or 0),
+            self.current_side,
+            list(self.tv_tps or []),
+            peak_px=float(getattr(self, "best_price", 0) or 0),
+        )
+        return set(filled) | set(past)
 
     def _active_tp_exclude_levels(self, qty: float, curr_px: float) -> set[int]:
-        return self._infer_filled_tp_levels(qty, curr_px)
+        """Exclude filled + mark-past tiers (restart must not replan TP1 when through)."""
+        from app.core.tp_slice_guard import should_skip_rehang_tp_level, SKIP_REHANG_HARD
+
+        exclude = self._infer_filled_tp_levels(qty, curr_px)
+        open_prices = (
+            self._open_tp_prices_on_book()
+            if hasattr(self, "_open_tp_prices_on_book")
+            else []
+        )
+        for i, tp_px in enumerate(list(self.tv_tps or [])[:3]):
+            level = i + 1
+            if level in exclude:
+                continue
+            skip, reason = should_skip_rehang_tp_level(
+                level,
+                float(tp_px or 0),
+                side=self.current_side,
+                curr_px=float(curr_px or 0),
+                consumed=exclude,
+                live_qty=float(qty or 0),
+                initial_qty=float(self.initial_qty or qty or 0),
+                regime=int(self.regime or 3),
+                tv_tps=list(self.tv_tps or []),
+                regime_settings=self.regime_settings,
+                open_tp_prices=open_prices,
+                is_contracts=self.exchange_id == "deepcoin",
+                peak_px=float(getattr(self, "best_price", 0) or 0),
+            )
+            if skip and reason in SKIP_REHANG_HARD:
+                exclude.add(level)
+        return exclude
 
     def _classify_qty_change(self, old_qty: float, new_qty: float, curr_px: float | None = None) -> str:
         from app.core.tp_slice_guard import compute_tp_slices, tp_limit_still_on_book
@@ -1957,22 +2011,37 @@ class PositionSupervisor(
                 peak_px=float(getattr(self, "best_price", 0) or 0),
             )
             place_px = float(price)
-            if skip and skip_reason in ("consumed", "price_book_filled", "qty_book_implies_filled"):
+            if skip and skip_reason in ("consumed", "price_book_filled", "qty_book_implies_filled", "price_past_tp"):
                 self._log("TP_SKIP_REHANG", f"全量重挂跳过 TP{level}: {skip_reason}")
+                if int(level) and int(level) not in consumed and skip_reason != "consumed":
+                    consumed.add(int(level))
+                    self.consumed_tp_levels = sorted(consumed)
+                    if hasattr(self, "_save_state"):
+                        self._save_state()
                 continue
             if skip and skip_reason == "no_mark_price":
                 failed.append({"ok": False, "label": f"TP{level}", "reason": "no_mark_price"})
                 continue
-            # 穿价 → 推离市价，禁止挂出即成交
-            place_px, adj = sanitize_tp_limit_price(self.current_side, place_px, mark)
-            if place_px <= 0:
-                failed.append({"ok": False, "label": f"TP{level}", "reason": adj})
+            from app.core.tp_slice_guard import tp_would_instant_fill
+            # 现价已过 → 禁止推离补挂（防 TP1 死亡螺旋）
+            if tp_would_instant_fill(self.current_side, place_px, mark):
+                self._log("TP_SKIP_REHANG", f"全量重挂跳过 TP{level}: mark_past")
+                if int(level) and int(level) not in consumed:
+                    consumed.add(int(level))
+                    self.consumed_tp_levels = sorted(consumed)
+                    if hasattr(self, "_save_state"):
+                        self._save_state()
                 continue
-            if adj.startswith("pushed"):
-                self._log(
-                    "DEFENSE",
-                    f"TP{level} 穿价推离 {price:.4f}→{place_px:.4f}（禁秒成） mark={mark:.4f}",
-                )
+            # 穿价 → 拒绝挂出（不再 push-and-place）
+            place_px, adj = sanitize_tp_limit_price(self.current_side, place_px, mark)
+            if place_px <= 0 or adj.startswith("pushed"):
+                self._log("TP_SKIP_REHANG", f"全量重挂跳过 TP{level}: {adj or 'unsafe'}")
+                if int(level) and int(level) not in consumed:
+                    consumed.add(int(level))
+                    self.consumed_tp_levels = sorted(consumed)
+                    if hasattr(self, "_save_state"):
+                        self._save_state()
+                continue
             result = self._place_limit_with_retry(close_side, qty, place_px, f"TP{level}")
             if result["ok"]:
                 placed.append(result)
@@ -2076,6 +2145,48 @@ class PositionSupervisor(
 
         for item in scan.get("missing_tps", []):
             label = f"TP{item['level']}"
+            level = int(item.get("level") or 0)
+            tp_px = float(item.get("price") or 0)
+            mark = 0.0
+            try:
+                mark = float(self.client.get_current_price(self.symbol) or 0)
+            except Exception:
+                mark = 0.0
+            from app.core.tp_slice_guard import (
+                should_skip_rehang_tp_level,
+                tp_would_instant_fill,
+                SKIP_REHANG_PERSIST_CONSUMED,
+            )
+            open_prices = (
+                self._open_tp_prices_on_book()
+                if hasattr(self, "_open_tp_prices_on_book")
+                else []
+            )
+            consumed = {int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3)}
+            skip, skip_reason = should_skip_rehang_tp_level(
+                level,
+                tp_px,
+                side=self.current_side,
+                curr_px=mark,
+                consumed=consumed,
+                live_qty=float(qty or 0),
+                initial_qty=float(self.initial_qty or qty or 0),
+                regime=int(self.regime or 3),
+                tv_tps=list(self.tv_tps or []),
+                regime_settings=self.regime_settings,
+                open_tp_prices=open_prices,
+                is_contracts=self.exchange_id == "deepcoin",
+                peak_px=float(getattr(self, "best_price", 0) or 0),
+            )
+            if skip or tp_would_instant_fill(self.current_side, tp_px, mark):
+                reason = skip_reason or "mark_past"
+                self._log("TP_SKIP_REHANG", f"缺失补挂跳过 {label}: {reason}")
+                if level and level not in consumed and reason in SKIP_REHANG_PERSIST_CONSUMED | {"mark_past"}:
+                    consumed.add(level)
+                    self.consumed_tp_levels = sorted(consumed)
+                    if hasattr(self, "_save_state"):
+                        self._save_state()
+                continue
             result = self._place_limit_with_retry(
                 close_side, item["qty"], item["price"], label
             )

@@ -655,7 +655,7 @@ class BinanceSmartDefenseMixin:
                 peak_px=float(getattr(self, "best_price", 0) or 0),
             )
             if skip and skip_reason in (
-                "consumed", "price_book_filled", "qty_book_implies_filled",
+                "consumed", "price_book_filled", "qty_book_implies_filled", "price_past_tp",
             ):
                 skipped += 1
                 self._def_log(
@@ -663,8 +663,9 @@ class BinanceSmartDefenseMixin:
                     logging.WARNING,
                 )
                 if level and level not in consumed and skip_reason != "consumed":
-                    # Only mark consumed when evidence says filled — not no_mark / past alone
-                    if skip_reason in ("price_book_filled", "qty_book_implies_filled"):
+                    if skip_reason in (
+                        "price_book_filled", "qty_book_implies_filled", "price_past_tp",
+                    ):
                         consumed.add(level)
                         if hasattr(self, "consumed_tp_levels"):
                             merged = sorted(consumed)
@@ -676,7 +677,7 @@ class BinanceSmartDefenseMixin:
                                     self._alert(
                                         "warning",
                                         "TP_SKIP_REHANG",
-                                        f"止盈已成交·拒绝补挂TP{level}",
+                                        f"现价已过/已成交·拒绝补挂TP{level}",
                                         f"原因={skip_reason} | 现价{px_now:.2f} | 实盘{live_qty} | "
                                         f"已消费{merged}",
                                         {
@@ -694,17 +695,38 @@ class BinanceSmartDefenseMixin:
                 skipped += 1
                 self._def_log(f"  ⏭ 无市价拒挂 TP{level}（防穿价秒成）", logging.WARNING)
                 continue
-            from app.core.tp_slice_guard import sanitize_tp_limit_price
+            # NEVER sanitize+place a through-market TP — that is the TP1 death spiral
+            from app.core.tp_slice_guard import sanitize_tp_limit_price, tp_would_instant_fill
+            if tp_would_instant_fill(self.current_side, px, px_now):
+                skipped += 1
+                if level and level not in consumed:
+                    consumed.add(level)
+                    self.consumed_tp_levels = sorted(consumed)
+                    if hasattr(self, "_save_state"):
+                        self._save_state()
+                self._def_log(
+                    f"  ⏭ 现价已过 TP{level} @ {px:.2f} mark={px_now:.2f}·禁止推离补挂",
+                    logging.WARNING,
+                )
+                continue
             place_px, adj = sanitize_tp_limit_price(self.current_side, px, px_now)
             if place_px <= 0:
                 skipped += 1
                 continue
             if adj.startswith("pushed"):
+                # Pushed = still through-ish; refuse rather than hang near mark
+                skipped += 1
+                if level and level not in consumed:
+                    consumed.add(level)
+                    self.consumed_tp_levels = sorted(consumed)
+                    if hasattr(self, "_save_state"):
+                        self._save_state()
                 self._def_log(
-                    f"  ↪ TP{level} 穿价推离 {px:.2f}→{place_px:.2f} mark={px_now:.2f}",
+                    f"  ⏭ TP{level} 穿价拒绝推离补挂 {px:.2f}→{place_px:.2f} mark={px_now:.2f}",
                     logging.WARNING,
                 )
-                px = place_px
+                continue
+            px = place_px
             orders = self._collect_tp_limit_orders()
             at_px = [o for o in orders if tp_price_matches(o["price"], px, price_tol)]
             if len(at_px) == 1 and tp_qty_matches(q, at_px[0]["qty"], live_qty):
