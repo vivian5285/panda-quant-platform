@@ -1640,7 +1640,7 @@ py -m pytest tests/test_webhook_seq.py tests/test_vps_entry_routing.py \
 | 节流 | `RADAR_WS_TICK_MIN_SEC ≈ 0.45`；与哨兵共用锁，避免双路径抢挂 |
 | 哨兵周期 | 正常 **5s** · 近激活 **1s** · 雷达中 **1.2s**（DeepCoin 与主 supervisor 对齐） |
 | 计算 | 实时 qty、TP 成交记账、路径进度、按 `REGIME_RADAR` 前进挂单 |
-| 共存 | TP123 限价 ‖ VPS 宽止损 ‖ 雷达条件槽；`live_already_aligned` / `on_book` 跳过重复挂撤 |
+| 共存 | TP123 限价 ‖ TV硬止损(tv_sl) ‖ 雷达条件槽；`live_already_aligned` / `on_book` 跳过重复挂撤 |
 | TV | 有仓/雷达中 → **一律先平后开**（清场 + 新 TP123 + 宽止损 · 雷达候命）；空仓仅 OPEN → 直接开仓、雷达候命 |
 | 钉钉 | 关键动作实盘核查后一次（既有 dedupe）；监控循环不推 |
 | 测试 | `tests/test_ws_radar_tick.py` |
