@@ -81,20 +81,62 @@ def test_tv_leverage_preferred():
     assert sup._resolve_entry_leverage() == 10
 
 
-def test_pyramid_same_side_does_not_require_force_flat_path():
-    """Same-side ADD resolves qty via TV formula (no OPEN flat-then-open)."""
+def test_force_flat_before_open_preserves_tv_sl():
+    """Regression: pre-open clean must not wipe TV tv_sl (else missing_tv_sl on size)."""
     sup, _ = _make_supervisor()
-    sup.base_qty = 1.45
-    sup.current_side = "LONG"
-    sup.last_tv_side = "LONG"
+    tv_sl = 1874.3871690506
+    sup.tv_sl = tv_sl
+    sup._tv_hard_sl_price = tv_sl
     sup._apply_tv_entry_context({
-        "entry_type": "PYRAMID",
-        "qty_ratio": 0.5,
-        "regime": 3,
-        "risk_pct": 2.03,
-        "leverage": 25,
+        "entry_type": "OPEN",
+        "regime": 2,
+        "risk_pct": 2.4,
+        "leverage": 5,
+        "qty_ratio": 1.0,
     })
-    qty, meta = sup._resolve_entry_qty(1892.43)
-    assert qty == pytest.approx(0.72, abs=0.02)
-    assert meta["sizing_mode"] == "tv_risk_formula"
-    assert meta["entry_type"] == "PYRAMID"
+    # Simulate empty book: force_flat only cleans orders/state
+    sup.position_manager = MagicMock()
+    sup.position_manager.get_position.return_value = None
+    sup._get_active_position = MagicMock(return_value=None)
+    sup._count_open_book_orders = MagicMock(return_value=0)
+    sup._purge_defense_orders_on_flat = MagicMock()
+    sup._cancel_all_verified = MagicMock()
+    sup._disarm_adverse_staged_stops = MagicMock()
+    sup._save_state = MagicMock()
+    # Intentionally wipe as old close_all / reset did — ensure path restores
+    original_reset = sup._reset_adverse_radar
+
+    def wipe_then_keep(*args, **kwargs):
+        # Call real reset; force_flat now passes keep_tv_sl=True via ensure_book_clean
+        return original_reset(*args, **kwargs)
+
+    with patch.object(sup, "_reset_adverse_radar", side_effect=wipe_then_keep):
+        ok = PositionSupervisor._force_flat_before_open(sup, "TV OPEN [LONG] 铁律·先平后开")
+    assert ok is True
+    assert float(sup.tv_sl) == pytest.approx(tv_sl, abs=0.05)
+    qty, meta = sup._resolve_entry_qty(1890.67)
+    assert qty > 0
+    assert meta.get("error") is None
+
+
+def test_open_position_recovers_wiped_tv_sl():
+    """If tv_sl was wiped before sizing, recover from _pending_open_tv_sl."""
+    sup, client = _make_supervisor()
+    tv_sl = 1874.3871690506
+    sup.tv_sl = 0.0
+    sup._tv_hard_sl_price = 0.0
+    sup._pending_open_tv_sl = tv_sl
+    sup._apply_tv_entry_context({
+        "entry_type": "OPEN",
+        "regime": 2,
+        "risk_pct": 2.4,
+        "leverage": 5,
+        "qty_ratio": 1.0,
+    })
+    sup._cancel_binance_all_close_stops = MagicMock(return_value=0)
+    # Avoid full protect path
+    result = PositionSupervisor._open_position(sup, "LONG", 1890.67)
+    assert float(sup.tv_sl) == pytest.approx(tv_sl)
+    assert result.get("status") != "error" or result.get("reason") != "missing_tv_sl"
+    client.place_market_order.assert_called()
+

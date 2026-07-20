@@ -764,8 +764,9 @@ class PositionSupervisor(
                 self.client.cancel_all_open_orders(self.symbol)
             if hasattr(self, "_disarm_adverse_staged_stops"):
                 self._disarm_adverse_staged_stops(reason="pre_open_clean", notify=False)
+            # 必须保留本笔 TV 刚写入的 tv_sl（清的是旧仓雷达状态，不是新信号硬止损）
             if hasattr(self, "_reset_adverse_radar"):
-                self._reset_adverse_radar(keep_tv_sl=False)
+                self._reset_adverse_radar(keep_tv_sl=True)
             self.consumed_tp_levels = []
             if hasattr(self, "radar_latched"):
                 self.radar_latched = False
@@ -799,7 +800,16 @@ class PositionSupervisor(
         """
         铁律：任意带开仓的 TV → 先干净平仓（仓位归零 + 撤尽 TP/雷达/硬止损），再开新仓。
         已空仓时仅清残留挂单/状态，不刷屏钉钉。
+        注意：清场不得抹掉本笔 TV 已下发的 tv_sl（否则开仓算仓会 missing_tv_sl）。
         """
+        # 本笔 OPEN 的 tv_sl 在 handle_signal 已写入；close_all 默认会 wipe，需保留并恢复
+        pending_tv_sl = float(getattr(self, "tv_sl", 0) or 0)
+        pending_hard = float(getattr(self, "_tv_hard_sl_price", 0) or 0)
+        if pending_hard <= 0:
+            pending_hard = pending_tv_sl
+        if pending_tv_sl > 0:
+            self._pending_open_tv_sl = pending_tv_sl
+
         live = self._get_active_position() if hasattr(self, "_get_active_position") else None
         if live is None and hasattr(self, "position_manager"):
             raw = self.position_manager.get_position(self.symbol)
@@ -808,9 +818,22 @@ class PositionSupervisor(
                 live = {"size": abs(amt), "side": "LONG" if amt > 0 else "SHORT"}
         already_flat = not live or float(live.get("size") or 0) <= 0
 
+        def _restore_pending_tv_sl() -> None:
+            if pending_tv_sl > 0:
+                self.tv_sl = pending_tv_sl
+                self._tv_hard_sl_price = pending_hard or pending_tv_sl
+                if hasattr(self, "_recompute_vps_hard_sl"):
+                    try:
+                        self._recompute_vps_hard_sl(
+                            payload={"tv_sl": pending_tv_sl},
+                        )
+                    except Exception:
+                        pass
+
         if already_flat:
             self._log("SIGNAL", f"先平后开·已空仓→清挂单后开新仓 | {reason}")
             clean = self._ensure_book_clean_before_open(reason)
+            _restore_pending_tv_sl()
             self.watched_qty = 0.0
             self.initial_qty = 0.0
             self.base_qty = 0.0
@@ -858,6 +881,7 @@ class PositionSupervisor(
             return False
 
         clean = self._ensure_book_clean_before_open(reason)
+        _restore_pending_tv_sl()
         self.watched_qty = 0.0
         self.initial_qty = 0.0
         self.base_qty = 0.0
@@ -876,8 +900,15 @@ class PositionSupervisor(
             "info" if ok else "warning",
             "FLIP_CLEAN",
             "先平后开·清场完成·准备开仓" if ok else "先平后开·清场有残留",
-            f"{reason} | 仓位归零✓ | 挂单{book_txt} | 对账{recon_txt}",
-            {"reason": reason, "clean": clean, "reconcile": recon, "exchange": self.exchange_id},
+            f"{reason} | 仓位归零✓ | 挂单{book_txt} | 对账{recon_txt}"
+            + (f" | tv_sl@{pending_tv_sl:.2f}" if pending_tv_sl > 0 else ""),
+            {
+                "reason": reason,
+                "clean": clean,
+                "reconcile": recon,
+                "exchange": self.exchange_id,
+                "pending_tv_sl": pending_tv_sl,
+            },
         )
         return True
 
@@ -1193,6 +1224,17 @@ class PositionSupervisor(
             if purged:
                 self._log("SIGNAL", f"🧹 开仓前清残留硬止损/条件单 ×{purged}")
         time.sleep(0.4)
+        # 双保险：先平后开清场若仍抹掉 tv_sl，从硬止损缓存/本笔字段恢复后再算仓
+        if float(getattr(self, "tv_sl", 0) or 0) <= 0:
+            recovered = float(
+                getattr(self, "_tv_hard_sl_price", 0)
+                or getattr(self, "_pending_open_tv_sl", 0)
+                or 0
+            )
+            if recovered > 0:
+                self.tv_sl = recovered
+                self._tv_hard_sl_price = recovered
+                self._log("SIGNAL", f"开仓前恢复 tv_sl@{recovered:.4f}（清场曾被抹掉）")
         qty, sizing_meta = self._resolve_entry_qty(curr_px)
         if qty <= 0:
             err = sizing_meta.get("error", "insufficient_balance")
@@ -1220,7 +1262,7 @@ class PositionSupervisor(
             return {
                 "status": "error",
                 "reason": err,
-                "message": "无法开仓（名义超限或余额/参数不足）",
+                "message": f"无法开仓（{err}）",
             }
 
         open_side = "BUY" if action == "LONG" else "SELL"

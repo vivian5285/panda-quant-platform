@@ -467,6 +467,7 @@ class AdverseRadarMixin:
         if ref and ref > 0:
             self._init_adverse_radar_fields()
             self._tv_hard_sl_price = float(ref)
+            self._pending_open_tv_sl = float(ref)
         meta = self._recompute_vps_hard_sl(payload=payload)
         px = float(meta.get("stop_price") or 0)
         return px if px > 0 else None

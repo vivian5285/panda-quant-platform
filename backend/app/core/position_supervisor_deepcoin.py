@@ -2737,6 +2737,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.client.set_leverage(self.symbol, leverage=leverage)
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.4)
+        if float(getattr(self, "tv_sl", 0) or 0) <= 0:
+            recovered = float(
+                getattr(self, "_tv_hard_sl_price", 0)
+                or getattr(self, "_pending_open_tv_sl", 0)
+                or 0
+            )
+            if recovered > 0:
+                self.tv_sl = recovered
+                self._tv_hard_sl_price = recovered
+                logger.info(f"开仓前恢复 tv_sl@{recovered:.4f}（清场曾被抹掉）")
         qty, sizing_meta = self._resolve_entry_qty(curr_px)
         if qty <= 0:
             err = sizing_meta.get("error", "insufficient_balance")
@@ -2760,7 +2770,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "max_combined_mult": sizing_meta.get("max_mult"),
                 },
             )
-            return
+            return {"status": "error", "reason": err, "message": f"无法开仓（{err}）"}
         open_side = "buy" if action == "LONG" else "sell"
         pos_side = "long" if action == "LONG" else "short"
         entry_type = getattr(self, "_entry_type", "OPEN")
