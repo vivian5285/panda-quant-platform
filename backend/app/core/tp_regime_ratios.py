@@ -18,11 +18,13 @@ PINE_TP_QTY_PERCENT: dict[int, tuple[int, int, int]] = {
     4: (5, 20, 75),
 }
 
+# Deprecated — NOT used for live OPEN sizing (TV risk_pct formula only).
+# Kept as inert key on regime_settings for older test fixtures that still assert "margin".
 REGIME_MARGIN_PCT: dict[int, float] = {
-    1: 0.15,
-    2: 0.25,
-    3: 0.35,
-    4: 0.50,
+    1: 0.0,
+    2: 0.0,
+    3: 0.0,
+    4: 0.0,
 }
 
 
@@ -46,9 +48,9 @@ def format_tp_ratio_pct(regime: int) -> str:
 
 
 def build_regime_settings() -> dict[int, dict[str, Any]]:
-    """Margin + Pine TP ratios + radar overlay — single source for all exchanges."""
+    """TP ratios + radar overlay — margin key is inert (live sizing is TV-only)."""
     base = {
-        r: {"margin": REGIME_MARGIN_PCT[r], "ratios": pine_tp_ratios_frac(r)}
+        r: {"margin": 0.0, "ratios": pine_tp_ratios_frac(r)}
         for r in PINE_TP_QTY_PERCENT
     }
     return merge_regime_radar(base)

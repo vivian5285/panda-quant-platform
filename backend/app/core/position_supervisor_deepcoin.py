@@ -136,7 +136,12 @@ class _DingtalkBridge:
         """OPEN with exchange theme title (pushes DingTalk)."""
         from app.services.trading_alerts import resolve_exchange_theme
 
-        theme = resolve_exchange_theme("deepcoin", getattr(self._sup, "canonical_symbol", None))
+        lev = kwargs.get("leverage") or getattr(self._sup, "leverage", None)
+        theme = resolve_exchange_theme(
+            "deepcoin",
+            getattr(self._sup, "canonical_symbol", None),
+            leverage=lev,
+        )
         side = args[0] if args else kwargs.get("side", "")
         entry = args[1] if len(args) > 1 else kwargs.get("entry", 0)
         qty = args[3] if len(args) > 3 else kwargs.get("qty", 0)
@@ -147,14 +152,17 @@ class _DingtalkBridge:
         detail.setdefault("entry", entry)
         detail.setdefault("qty", qty)
         detail.setdefault("radar_armed", False)
+        detail.setdefault("entry_type", "OPEN")
+        if lev:
+            detail["leverage"] = int(lev)
         title = (
             f"{theme['accent']} GEMINI开仓 · "
             f"{theme.get('symbol_label') or getattr(self._sup, 'canonical_symbol', '')} "
-            f"· {theme['label']} 档位{getattr(self._sup, 'regime', '')}"
+            f"· {theme['label']} 档位{getattr(self._sup, 'regime', '')} · {theme['leverage']}×"
         )
         message = (
             f"{getattr(self._sup, 'canonical_symbol', '')} {side} {qty} 张 @ {entry} | "
-            f"{verify_note}"
+            f"TV杠杆{theme['leverage']}× | {verify_note}"
         ).strip(" |")
         self._sup._alert("info", "OPEN", title, message, detail)
         if hasattr(self._sup, "_reconcile_live_vs_book"):
@@ -2793,8 +2801,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         logger.info(
             f"🚀 [VPS开仓] {open_side} {qty} 张 | {entry_type} R{self.regime} | "
-            f"名义{sizing_meta.get('order_amount')}U / sl_dist={sizing_meta.get('sl_distance')}"
+            f"名义{sizing_meta.get('order_amount')}U / sl_dist={sizing_meta.get('sl_distance')} "
+            f"| TV杠杆{leverage}×"
         )
+        self._last_open_sizing_meta = dict(sizing_meta or {})
+        self._last_open_sizing_meta["leverage"] = leverage
         self.client.place_market_order(self.symbol, open_side, pos_side, qty)
         time.sleep(2.0)
 
@@ -2945,6 +2956,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 radar_active=False,
                 radar_activation=radar_act,
                 radar_activation_effective=radar_eff,
+                leverage=int(getattr(self, "leverage", 0) or 0),
+                **(getattr(self, "_last_open_sizing_meta", None) or {}),
                 **enrich_tp_alert_detail({}, regime=self.regime),
             )
         else:

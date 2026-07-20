@@ -243,6 +243,11 @@ def compute_tv_entry_qty(
     meta["position_value"] = round(notional, 4)
     meta["order_amount"] = round(notional, 4)
     meta["notional_usd"] = round(notional, 4)
+    # 等效杠杆 = 名义 / 权益（与 TV leverage 上限不同；钉钉展示用）
+    meta["effective_leverage"] = (
+        round(notional / sizing_base, 2) if sizing_base > 0 else 0.0
+    )
+    meta["tv_leverage"] = int(lev) if lev > 0 else 0
     meta["base_qty"] = qty if str(entry_type or "").upper() == "OPEN" else None
     meta["add_qty"] = qty if str(entry_type or "").upper() in ENTRY_TYPES_ADD else None
     meta["add_qty_ratio"] = round(qr, 4)

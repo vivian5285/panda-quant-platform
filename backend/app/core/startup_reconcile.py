@@ -476,7 +476,7 @@ def classify_startup_pnl_track(
     activation: float | None = None,
 ) -> str:
     """
-    loss_shield — 未达雷达激活：保 TP123 + VPS 宽硬止损（给足呼吸空间）
+    loss_shield — 未达雷达激活：保 TP123 + TV tv_sl 硬止损（无 VPS 宽止损）
     profit_radar — TP1 已成交、雷达已锁、或路径进度 ≥ 档位激活比例（与实盘哨兵一致）
     """
     consumed = list(consumed_tp_levels or [])

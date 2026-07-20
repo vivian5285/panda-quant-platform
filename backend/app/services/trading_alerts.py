@@ -465,12 +465,7 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
         if detail.get("risk_pct") is not None:
             lines.append(_line("TV风险", f"{float(detail['risk_pct']):.2f}%（策略 risk_pct）"))
         elif detail.get("vps_risk_pct") is not None:
-            eff = detail.get("effective_risk_pct") or detail.get("scaled_risk_pct")
-            scale = detail.get("regime_scale")
-            if eff and scale:
-                lines.append(_line("VPS 风险", f"{float(detail['vps_risk_pct']):.2f}% × 档位系数 {float(scale):.2f} = {float(eff):.2f}%"))
-            else:
-                lines.append(_line("VPS 风险", f"{float(detail['vps_risk_pct']):.2f}%"))
+            lines.append(_line("TV风险", f"{float(detail['vps_risk_pct']):.2f}%"))
         if detail.get("qty_ratio") is not None:
             lines.append(_line("TV仓位系数", f"{float(detail['qty_ratio']):.4f}"))
         if detail.get("sl_distance") is not None or detail.get("stop_distance") is not None:
@@ -478,17 +473,17 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             lines.append(_line("止损距离", f"{float(dist):.4f}"))
         if detail.get("sizing_mode"):
             lines.append(_line("算仓模式", str(detail["sizing_mode"])))
+        tv_lev = detail.get("tv_leverage") or detail.get("leverage") or theme["leverage"]
+        lines.append(_line("TV杠杆", f"{int(tv_lev)}×（交易所已设）"))
+        if detail.get("effective_leverage") is not None:
+            lines.append(_line("等效杠杆", f"{float(detail['effective_leverage']):.2f}×（名义/权益）"))
         if detail.get("order_amount") is not None:
-            lev = detail.get("leverage") or theme["leverage"]
-            lines.append(_line("头寸价值", f"{float(detail['order_amount']):.2f} USDT（{lev}×）"))
+            lines.append(_line("头寸价值", f"{float(detail['order_amount']):.2f} USDT"))
         if detail.get("margin_usd") is not None:
             lines.append(_line("保证金", f"{float(detail['margin_usd']):.2f} USDT"))
-        if detail.get("margin_coeff") is not None and detail.get("risk_pct") is None and detail.get("vps_risk_pct") is None:
-            lines.append(_line("档位权重", f"{float(detail['margin_coeff']) * 100:.0f}% 总本金"))
         notional = detail.get("notional_usd") or detail.get("order_amount") or detail.get("position_value")
         if notional is not None and detail.get("order_amount") is None:
-            lev = detail.get("leverage") or theme["leverage"]
-            lines.append(_line("名义头寸", f"{float(notional):.2f} USDT（{lev}×）"))
+            lines.append(_line("名义头寸", f"{float(notional):.2f} USDT"))
         if detail.get("combined_notional") is not None or detail.get("proposed_notional") is not None:
             total_n = detail.get("proposed_notional") or detail.get("combined_notional")
             mult = detail.get("max_combined_mult") or detail.get("cap_mult") or detail.get("max_mult")

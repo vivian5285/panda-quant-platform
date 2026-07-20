@@ -35,50 +35,50 @@ class Settings(BaseSettings):
     # Dual-symbol: comma-separated canonical IDs (ETHUSDT,XAUUSDT)
     TRADING_SYMBOLS: str = "ETHUSDT,XAUUSDT"
     XAU_SYMBOL: str = "XAUUSDT"
-    LEVERAGE: int = 25
+    LEVERAGE: int = 25  # fallback ONLY if TV omits leverage (webhook normally requires TV leverage)
     DEEPCOIN_SYMBOL: str = "ETH-USDT-SWAP"
     DEEPCOIN_XAU_SYMBOL: str = "XAU-USDT-SWAP"
-    DEEPCOIN_LEVERAGE: int = 25
+    DEEPCOIN_LEVERAGE: int = 25  # fallback only
     OKX_SYMBOL: str = "ETH-USDT-SWAP"
     OKX_XAU_SYMBOL: str = "XAU-USDT-SWAP"
-    OKX_LEVERAGE: int = 25
+    OKX_LEVERAGE: int = 25  # fallback only
     OKX_CONTRACT_VALUE: float = 0.1
     OKX_LOT_SIZE: float = 0.01
     GATE_SYMBOL: str = "ETH_USDT"
     GATE_XAU_SYMBOL: str = "XAU_USDT"
-    GATE_LEVERAGE: int = 25
-    # Legacy OPEN path (kept for tests); dual-symbol OPEN uses REGIME_MARGIN_* below
+    GATE_LEVERAGE: int = 25  # fallback only
+    # DEPRECATED — not used for live OPEN (TV risk_pct formula)
     SIZING_MARGIN_LEVERAGE: int = 5
     GATE_QUANTO_MULTIPLIER: float = 0.01
 
     # Same-direction TV entry: skip re-open when |TV价−持仓价|/现价 below this % (regime unchanged)
     SAME_DIR_IGNORE_PRICE_DIFF_PCT: float = 0.20
 
-    # Dual-symbol OPEN: margin = TOTAL_EQUITY × regime_margin% ; notional = margin × LEVERAGE
-    # Spec (45m ETH / 50m XAU): R1 8% / R2 14% / R3 20% / R4 26% of equity
-    REGIME_MARGIN_1: float = 0.08
-    REGIME_MARGIN_2: float = 0.14
-    REGIME_MARGIN_3: float = 0.20
-    REGIME_MARGIN_4: float = 0.26
-    # Combined ETH+XAU notional hard cap vs equity (spec: ≤ 13×)
+    # DEPRECATED — live OPEN ignores REGIME_MARGIN_* (use TV risk_pct / qty_ratio / leverage)
+    REGIME_MARGIN_1: float = 0.0
+    REGIME_MARGIN_2: float = 0.0
+    REGIME_MARGIN_3: float = 0.0
+    REGIME_MARGIN_4: float = 0.0
+    # Combined ETH+XAU notional hard cap vs equity
     MAX_COMBINED_NOTIONAL_MULT: float = 13.0
 
-    # VPS 自主开仓风险（legacy / fallback — dual OPEN prefers REGIME_MARGIN_*）
-    VPS_RISK_PCT: float = 3.0
+    # DEPRECATED — risk_pct comes from TV only
+    VPS_RISK_PCT: float = 0.0
     GLOBAL_SCALE: float = 1.0
     MAX_RISK_PCT: float = 4.0
-    MIN_VPS_RISK_PCT: float = 0.5
+    MIN_VPS_RISK_PCT: float = 0.0
     MIN_ORDER_QTY_ETH: float = 0.001
     MIN_ORDER_QTY_XAU: float = 0.01
     MAX_POSITION_QTY: float = 9999.0
-    REGIME_SCALE_1: float = 0.55
-    REGIME_SCALE_2: float = 0.75
-    REGIME_SCALE_3: float = 0.95
-    REGIME_SCALE_4: float = 1.33
-    # Optional extra hard-SL breathing room (0.05 = +5%) — v6.9.103 VPS spec
+    # DEPRECATED — do not scale TV risk_pct
+    REGIME_SCALE_1: float = 1.0
+    REGIME_SCALE_2: float = 1.0
+    REGIME_SCALE_3: float = 1.0
+    REGIME_SCALE_4: float = 1.0
+    # DEPRECATED — hard SL = exact tv_sl (no buffer)
     VPS_SL_RELAX_PCT: float = 0.0
 
-    # 加仓：OPEN 由 VPS 算量；PYRAMID/PROFIT_ADD 用 TV qty_ratio × 首仓 base_qty
+    # 加仓：TV qty_ratio 权威；缺省时按档位回退
     ADD_QTY_RATIO: float = 0.5  # TV 未传 qty_ratio 时的全局回退
     ADD_RATIO_REG1: float = 0.0
     ADD_RATIO_REG2: float = 0.3

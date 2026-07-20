@@ -1319,7 +1319,9 @@ class PositionSupervisor(
             )
             self.adopted_manual = False
             slip = (entry_price - self.tv_price) if action == "LONG" else (self.tv_price - entry_price)
-            theme = resolve_exchange_theme(self.exchange_id, self.canonical_symbol)
+            theme = resolve_exchange_theme(
+                self.exchange_id, self.canonical_symbol, leverage=leverage,
+            )
             detail = {
                 "exchange": self.exchange_id,
                 "symbol": self.canonical_symbol,
@@ -1333,7 +1335,6 @@ class PositionSupervisor(
                 "tv_price": self.tv_price,
                 "slippage": round(slip, 2),
                 "tv_tps": list(self.tv_tps),
-                "risk_multiplier": self.risk_multiplier,
                 "leverage": leverage,
                 "atr": self.current_atr,
                 **sizing_meta,
@@ -1408,7 +1409,7 @@ class PositionSupervisor(
                 enrich_suffix = f" | {enrich_note}"
             open_title = (
                 f"{theme['accent']} GEMINI开仓 · {theme.get('symbol_label') or self.canonical_symbol} "
-                f"· {theme['label']} 档位{self.regime}"
+                f"· {theme['label']} 档位{self.regime} · {leverage}×"
             )
             self._log(
                 "OPEN",
@@ -1419,7 +1420,8 @@ class PositionSupervisor(
                 "info", "OPEN",
                 open_title,
                 f"{self.canonical_symbol} {action} {real_qty} {unit} @ {entry_price} | 滑点 {slip:+.2f} | "
-                f"TP {self.tv_tps} | ATR {self.current_atr} | {leverage}×{verify_note}{enrich_suffix}",
+                f"TV杠杆{leverage}× | 等效{detail.get('effective_leverage') or leverage}× | "
+                f"TP {self.tv_tps} | ATR {self.current_atr}{verify_note}{enrich_suffix}",
                 detail,
             )
             self._reconcile_live_vs_book(
