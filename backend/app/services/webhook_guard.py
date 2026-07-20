@@ -98,6 +98,8 @@ def validate_signal_payload(data: dict) -> tuple[bool, str]:
                     return False, "risk_pct must be > 0 when provided"
             except (TypeError, ValueError):
                 return False, "Invalid risk_pct"
+        else:
+            return False, f"Missing required field for {action}: risk_pct"
         if data.get("qty_ratio") is not None:
             try:
                 qr = float(data.get("qty_ratio") or 0)
@@ -111,6 +113,14 @@ def validate_signal_payload(data: dict) -> tuple[bool, str]:
                     return False, "leverage must be > 0 when provided"
             except (TypeError, ValueError):
                 return False, "Invalid leverage"
+        else:
+            return False, f"Missing required field for {action}: leverage"
+        # Sizing + hard SL both require tv_sl
+        try:
+            if float(data.get("tv_sl") or 0) <= 0:
+                return False, f"Missing required field for {action}: tv_sl"
+        except (TypeError, ValueError):
+            return False, "Invalid tv_sl"
 
     if action == "UPDATE_SL":
         side = str(data.get("side") or "").upper().strip()

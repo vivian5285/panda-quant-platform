@@ -9,7 +9,10 @@ from app.services.webhook_payload import parse_webhook_payload
 
 
 def test_v6975_minimal_long_entry_enriched():
-    raw = '{"action":"LONG","secret":"528586","price":3500.0}'
+    raw = (
+        '{"action":"LONG","secret":"528586","symbol":"ETHUSDT","price":3500.0,'
+        '"risk_pct":2.03,"leverage":25,"tv_sl":3450.0,"qty_ratio":1.0}'
+    )
     data, err = parse_webhook_payload(raw)
     assert err is None
     assert data["action"] == "LONG"
@@ -30,21 +33,22 @@ def test_compute_tv_tps_long_regime3():
 
 def test_close_stoploss_parsed():
     raw = (
-        '{"action":"CLOSE_STOPLOSS","secret":"528586","side":"LONG",'
+        '{"action":"CLOSE_STOPLOSS","secret":"528586","symbol":"ETHUSDT","side":"LONG",'
         '"reason":"触碰硬止损","price":1779.33,"pnl_pct":-0.38}'
     )
     data, err = parse_webhook_payload(raw)
     assert err is None
     assert data["action"] == "CLOSE_STOPLOSS"
-    ok, _ = validate_signal_payload(data)
-    assert ok
+    ok, msg = validate_signal_payload(data)
+    assert ok, msg
 
 
 def test_v6975_full_entry_pine_webhook_preserved():
     """Pine buildEntryWebhook — regime/atr/tv_tp* must not be overwritten by enrich."""
     raw = (
-        '{"action":"LONG","secret":"528586","price":3500.0,"regime":3,'
-        '"atr":25.5,"tv_tp1":3533.15,"tv_tp2":3566.3,"tv_tp3":3596.9}'
+        '{"action":"LONG","secret":"528586","symbol":"ETHUSDT","price":3500.0,"regime":3,'
+        '"atr":25.5,"tv_tp1":3533.15,"tv_tp2":3566.3,"tv_tp3":3596.9,'
+        '"tv_sl":3400,"risk_pct":2.03,"leverage":25,"qty_ratio":1.0}'
     )
     data, err = parse_webhook_payload(raw)
     assert err is None
@@ -60,7 +64,7 @@ def test_v6975_full_entry_pine_webhook_preserved():
 
 def test_v6975_full_close_protect_parsed():
     raw = (
-        '{"action":"CLOSE_PROTECT","secret":"528586","regime":2,"price":1779.5,'
+        '{"action":"CLOSE_PROTECT","secret":"528586","symbol":"ETHUSDT","regime":2,"price":1779.5,'
         '"atr":18.2,"side":"LONG","reason":"动能衰竭","pnl_pct":-1.23}'
     )
     data, err = parse_webhook_payload(raw)
@@ -68,8 +72,8 @@ def test_v6975_full_close_protect_parsed():
     assert data["regime"] == 2
     assert data["atr"] == 18.2
     assert data["side"] == "LONG"
-    ok, _ = validate_signal_payload(data)
-    assert ok
+    ok, msg = validate_signal_payload(data)
+    assert ok, msg
 
 
 def test_format_enrich_note_empty_when_pine_sent_full():

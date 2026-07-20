@@ -6,7 +6,7 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-07-20）：** 开仓盘口 = 基础单×3（TP123）+ 条件委托×1（**TV `tv_sl` 硬止损** Stop-Limit）；**已删除 VPS 开仓价×档位% 宽止损**；**雷达 = markPrice WebSocket**；档位 R1–R4：85/80/75/70% · 步进 35/30/25/20% · 呼吸 ATR；**OPEN 一律先平后开**；同 bar 平+开永远 CLOSE→OPEN 最终有仓。实盘事故与优化见 [§实盘事故 · 注意事项 · 优化指南](#实盘事故--注意事项--优化指南)。
+> **文档同步（2026-07-20）：** 开仓盘口 = 基础单×3（TP123）+ 条件委托×1（**TV `tv_sl` 硬止损**）；**仓位 = TV `risk_pct`/`qty_ratio`/`leverage` 唯一公式**（已删除 REGIME_MARGIN 旧 sizing）；**雷达 = markPrice WebSocket**；**OPEN 一律先平后开**。实盘事故与优化见 [§实盘事故 · 注意事项 · 优化指南](#实盘事故--注意事项--优化指南)。
 
 | 生产域名 | [https://twinstar.pro](https://twinstar.pro) |
 |----------|---------------------------------------------|
@@ -57,8 +57,9 @@ trading_factory:
     DeepCoin 双轨条件单并行
   leverage: 25× 全所统一（config LEVERAGE / OKX / GATE / DEEPCOIN，钉钉 #币安25x 动态读取）
   sizing: |
-    OPEN = total_equity × REGIME_MARGIN(8/14/20/26%) × 25× / price（忽略 TV qty_ratio）；
-    ADD = base_qty × TV qty_ratio；ETH+XAU 合计名义 ≤ 13× 本金
+    唯一公式：止损距离=|price-tv_sl|；风险金额=权益×(risk_pct/100)；理论仓位=风险/距离；
+    杠杆限制=权益×leverage/price；硬上限=50000/price；最终=min(三者)×qty_ratio；floor 到品种步长；
+    VPS 直接用 TV 下发的 risk_pct / qty_ratio / leverage，禁止 REGIME_MARGIN 旧逻辑
   webhook_order: |
     同 bar OPEN+CLOSE（任意 seq，含 V1.6.10 OPEN:1 CLOSE:2）→ 短暂缓冲后一律先 CLOSE 再 OPEN，最终必须有仓；
     单独 OPEN 等待 WEBHOOK_SEQ_WAIT_SEC 同伴 CLOSE；Redis 幂等 seq:{symbol}_{bar}_{seq} 24h；缺口超时强制先平后开释放
@@ -437,7 +438,7 @@ exchange_factory.create_supervisor(user, client)
 | **极速响应 TV** | 网关校验通过后 **立即 HTTP 200**，下单在后台线程异步执行 |
 | **永远一手** | 单向 One-Way；工厂 OPEN 同向已有仓 → **先平后开**（人工 adopt 同向仓除外） |
 | **策略价格由 TV 指挥** | `price/regime/atr/tv_tp1~3/tv_sl` 由 Pine 下发；VPS 执行、挂单、雷达、对齐 |
-| **VPS 独立 sizing** | OPEN：`margin = total_equity × REGIME_MARGIN` × 25×；忽略 TV `qty_ratio`；ADD = `base_qty × TV qty_ratio`；硬止损 = TV `tv_sl` |
+| **VPS 独立 sizing** | 唯一公式：权益×risk_pct/\|price−tv_sl\|，再与杠杆限制、50k 硬顶取 min × qty_ratio；硬止损 = TV `tv_sl` |
 | **逆势零容忍** | 实盘方向 ≠ `last_tv_side` → 哨兵/重启/空闲巡检 `FORCE_ALIGN` |
 | **人工仓保护** | manual adopt 后：TV CLOSE 不强制全平；补挂 TP123 + **TV硬止损** + 雷达待命 |
 | **全链路可审计** | 所有决策写 `trade_logs.detail_json`；关键动作钉钉（含盘口结构 / 雷达有效路径 / 平仓归因） |
@@ -527,36 +528,41 @@ UPDATE_SL  → 用新 tv_sl 强制改挂
 优先级：`CLOSE_STOPLOSS` 立即市价全平 > 盘口 TV硬止损成交 > `UPDATE_SL` 改挂。
 ---
 
-### 四、统一开仓 Sizing（VPS · 四所相同 · ETH+XAU）
+### 四、统一开仓 Sizing（TV 唯一公式 · 四所相同 · ETH+XAU）
 
-实现：`tv_entry_sizing.py` · 品种精度：`symbol_registry.py`
+实现：`tv_entry_sizing.py` · **已删除 REGIME_MARGIN 旧逻辑**
 
 ```
-margin_usd      = total_equity × REGIME_MARGIN_{1~4}   # R1 8% / R2 14% / R3 20% / R4 26%
-notional_usd    = margin_usd × exchange_leverage（25×）
-qty             = notional_usd / price   （DeepCoin 换算为合约张）
-双品种硬顶       = (ETH名义 + XAU名义) ≤ total_equity × 13
+止损距离   = |price − tv_sl|
+风险金额   = 账户权益 × (risk_pct / 100)     # risk_pct 由 TV 下发，如 0.81 / 2.03
+理论仓位   = 风险金额 / 止损距离
+杠杆限制   = 账户权益 × leverage / price     # leverage 由 TV 下发
+硬上限     = 50000 / price
+最终下单量 = min(理论仓位, 杠杆限制, 硬上限) × qty_ratio
+精度       = floor(量 / 步长) × 步长         # ETH 0.001 / XAU 0.01
 ```
 
-| 参数 | 默认 | 说明 |
+VPS **直接使用** TV 的 `risk_pct` / `qty_ratio` / `leverage`，不重新计算。OPEN 默认 `qty_ratio=1`；加仓用 TV `qty_ratio`（常见 0.3~0.5）。
+
+| 参数 | 来源 | 说明 |
 |------|------|------|
-| `LEVERAGE` / `OKX_*` / `GATE_*` / `DEEPCOIN_*` | **25** | 实盘杠杆 + 钉钉 `#币安25x` |
-| `REGIME_MARGIN_1~4` | **8 / 14 / 20 / 26%** | OPEN 保证金占 **账户总本金**（非可用余额） |
-| `MAX_COMBINED_NOTIONAL_MULT` | **13.0** | ETH+XAU 合计名义上限（超限钉钉 `NOTIONAL_CAP`） |
-| `TRADING_SYMBOLS` | ETHUSDT,XAUUSDT | 启用品种 |
-| `ADD_RATIO_REG1~4` | 0 / 0.3 / 0.5 / 0.7 | TV 未传 qty_ratio 时的档位默认 |
+| `risk_pct` / `qty_ratio` / `leverage` | **TV 必填** | 权威；缺则拒单 / 不下单 |
+| `tv_sl` | **TV 必填** | 同时用于 sizing 距离 + 硬止损挂单价 |
+| `HARD_NOTIONAL` | 50000 U | 单笔名义硬顶 |
+| `MAX_COMBINED_NOTIONAL_MULT` | **13.0** | ETH+XAU 合计名义上限（安全闸） |
+| `ADD_RATIO_REG1~4` | 0 / 0.3 / 0.5 / 0.7 | TV 未传 qty_ratio 时的加仓回退 |
 | `MAX_ADD_TIMES_REG1~4` | 1 / 2 / 2 / 3 | 各档位最大加仓次数 |
 
-算账示例（本金 1000 USDT · 25×）：
+算账示例（本金 1000 U · ETH@1892.43 · qty_ratio=1 · leverage=25）：
 
-| 档位 | 保证金 | 名义头寸 | ETH@1800 约 | XAU@2500 约 |
-|------|--------|----------|-------------|-------------|
-| R1 8% | 80 U | 2,000 U | ≈1.11 | ≈0.80 |
-| R2 14% | 140 U | 3,500 U | ≈1.94 | ≈1.40 |
-| R3 20% | 200 U | 5,000 U | ≈2.78 | ≈2.00 |
-| R4 26% | 260 U | 6,500 U | ≈3.61 | ≈2.60 |
+| Regime | risk_pct | 止损距离 | 下单量 |
+|--------|----------|----------|--------|
+| R1 | 0.81% | 12.08 | **0.67 ETH** |
+| R2 | 1.35% | 14.09 | **0.96 ETH** |
+| R3 | 2.03% | 14.02 | **1.45 ETH** |
+| R4 | 2.70% | 15.94 | **1.69 ETH** |
 
-`tv_sl` **不参与**张数计算；**硬止损挂单价 = tv_sl**（权威）。
+换算：任意本金下单量 = 上表(1000U) × (本金/1000)。硬止损挂单价 = TV `tv_sl`（权威）。
 
 ---
 
@@ -1355,7 +1361,7 @@ Cursor 开发与 VPS 上线前，按 **[`docs/VPS_LIVE_CHECKLIST.md`](docs/VPS_L
 | 模块 | 优先级 | 要点 |
 |------|--------|------|
 | Webhook + ETH/XAU 路由 | 🔴 P0 | `symbol` 必填；`bar_index`+`seq` 有序 |
-| OPEN sizing + **13×** 名义 cap | 🔴 P0 | 总本金 × **8/14/20/26%** × 25× |
+| OPEN sizing + **13×** 名义 cap | 🔴 P0 | TV `risk_pct`/`qty_ratio`/`leverage` 公式；ETH+XAU ≤13× |
 | TV硬止损 Stop-Limit | 🔴 P0 | 严格按 TV `tv_sl`；基础单×3 + 条件委托×1；禁止普通限价硬止损 |
 | 路径雷达 + WS 实时 + 档位呼吸 | 🟡 P1 | R1–R4：85/80/75/70% · move_step · ATR 呼吸 · markPrice WS · 25s + 双确认 |
 | 钉钉 | 🟢 P2 | 盘口结构 / 雷达触发价 / `RADAR_ARM`·`RADAR_REVOKE` / 动作去重一次推送 |
@@ -1387,7 +1393,7 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 - [x] 多交易所多用户执行（Binance/OKX/Gate/DeepCoin）
 - [x] **25× 杠杆**全所统一；保证金预算与交易所杠杆解耦
 - [x] **ETH + XAU 双品种**：独立 supervisor + **13×** 名义 cap + 品种路由
-- [x] **OPEN 权重 8/14/20/26%**（总本金基准）
+- [x] **TV risk 公式 sizing**：`risk_pct`/`qty_ratio`/`leverage` 权威；已删除 REGIME_MARGIN 旧逻辑
 - [x] **TV硬止损 Stop-Limit**：严格按 TV 	v_sl（多空·全所）；条件委托挂单；禁止开仓价×%旧宽止损；禁止普通限价（会秒平）
 - [x] **路径比例雷达 + 阶段锁利**（R1–R4：85/80/75/70% · 步进 35/30/25/20% · 呼吸 1.0/0.8/0.65/0.5 ATR）+ 紧 TP1 有效比例 / 开仓保护期 / 双轮确认 / `RADAR_REVOKE`
 - [x] **markPrice WebSocket 雷达监控**（四所 `ws_price_listeners`）+ 自适应哨兵兜底

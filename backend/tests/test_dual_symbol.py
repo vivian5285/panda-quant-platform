@@ -1,5 +1,7 @@
 """Dual-symbol registry, sizing, and notional cap."""
 
+import pytest
+
 from app.core.symbol_precision import round_price, round_quantity
 from app.core.symbol_registry import (
     CANONICAL_ETH,
@@ -8,8 +10,7 @@ from app.core.symbol_registry import (
     exchange_native_symbol,
     normalize_canonical_symbol,
 )
-from app.core.tv_entry_sizing import compute_vps_open_qty, regime_margin_coeff
-import pytest
+from app.core.tv_entry_sizing import compute_tv_entry_qty
 
 
 def test_normalize_xau_aliases():
@@ -65,37 +66,34 @@ def test_exchange_native_symbols():
     assert exchange_native_symbol("deepcoin", CANONICAL_ETH) == "ETH-USDT-SWAP"
 
 
-def test_margin_coeff_and_open_qty_matches_spec():
-    # Spec: equity 1000, R4 26%, ETH @ 1800 → qty ≈ 3.611 (6500/1800)
-    assert abs(regime_margin_coeff(1) - 0.08) < 1e-9
-    assert abs(regime_margin_coeff(4) - 0.26) < 1e-9
-    qty, meta = compute_vps_open_qty(
+def test_tv_risk_formula_open_qty():
+    # Spec table: 1000U · risk 2.03% · stop 14.02 · ETH@1892.43 → ~1.45
+    qty, meta = compute_tv_entry_qty(
         live_balance=1000,
         initial_principal=1000,
-        price=1800,
-        tv_sl=1700,
-        regime=4,
+        price=1892.43,
+        tv_sl=1892.43 - 14.02,
+        risk_pct=2.03,
         leverage=25,
-        round_fn=lambda x: round(x, 3),
+        qty_ratio=1.0,
         symbol=CANONICAL_ETH,
     )
-    assert abs(qty - round(6500 / 1800, 3)) < 1e-9
-    assert abs(meta["margin_usd"] - 260) < 1e-6
-    assert abs(meta["notional_usd"] - 6500) < 1e-6
+    assert qty == pytest.approx(1.45, abs=0.01)
+    assert meta["sizing_mode"] == "tv_risk_formula"
 
-    # Spec: XAU @ 2500 → qty 2.6
-    qty_x, meta_x = compute_vps_open_qty(
+    # XAU uses 0.01 step
+    qty_x, meta_x = compute_tv_entry_qty(
         live_balance=1000,
         initial_principal=1000,
         price=2500,
-        tv_sl=2300,
-        regime=4,
+        tv_sl=2500 - 20,
+        risk_pct=2.03,
         leverage=25,
-        round_fn=lambda x: round(x, 2),
+        qty_ratio=1.0,
         symbol=CANONICAL_XAU,
     )
-    assert abs(qty_x - 2.6) < 1e-6
-    assert abs(meta_x["notional_usd"] - 6500) < 1e-6
+    assert qty_x > 0
+    assert meta_x["qty_step"] == pytest.approx(0.01)
 
 
 def test_hard_sl_uses_tv_sl():

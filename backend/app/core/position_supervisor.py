@@ -546,8 +546,12 @@ class PositionSupervisor(
         return True
 
     def _resolve_entry_leverage(self) -> int:
-        """实盘杠杆固定为 VPS 配置（25×）。"""
-        return int(self.leverage)
+        """Prefer TV leverage; fall back to exchange config only if TV omitted."""
+        tv_fields = getattr(self, "_tv_entry_fields", None) or {}
+        tv_lev = tv_fields.get("leverage") or tv_fields.get("tv_leverage")
+        if tv_lev is not None and float(tv_lev) > 0:
+            return max(int(round(float(tv_lev))), 1)
+        return max(int(self.leverage or 1), 1)
 
     def _resolve_entry_qty(self, curr_px: float) -> tuple[float, dict]:
         equity = read_contract_equity(self.client)
@@ -555,6 +559,13 @@ class PositionSupervisor(
         tv_fields = getattr(self, "_tv_entry_fields", None) or {}
         entry_type = getattr(self, "_entry_type", "OPEN")
         regime = int(tv_fields.get("regime") or self.regime)
+        risk_pct = tv_fields.get("risk_pct")
+        if risk_pct is None:
+            return 0.0, {
+                "error": "missing_risk_pct",
+                "entry_type": entry_type,
+                "note": "TV must send risk_pct; VPS no longer uses REGIME_MARGIN",
+            }
         qty, meta = resolve_vps_entry_qty_eth(
             live_balance=equity,
             initial_principal=self.initial_principal,
@@ -569,6 +580,7 @@ class PositionSupervisor(
             qty_ratio_source=str(tv_fields.get("qty_ratio_source") or "tv_qty_ratio"),
             symbol=self.canonical_symbol,
             min_qty=float(getattr(self, "min_order_qty", 0) or 0) or None,
+            risk_pct=float(risk_pct),
         )
         if entry_type not in ENTRY_TYPES_ADD and qty > 0:
             from app.core.combined_notional import check_combined_notional_cap
@@ -2387,10 +2399,24 @@ class PositionSupervisor(
                 self._alert(
                     "critical",
                     "ADVERSE_SL",
-                    "开仓后硬止损未挂上",
+                    "开仓后硬止损未挂上·立即撤仓",
                     f"{self.current_side} {pos['size']} | {sl_label} @{getattr(self, 'tv_sl', 0):.2f} | {shield}",
                     shield,
                 )
+                # 硬止损挂单失败 → 立即平仓，禁止裸奔
+                try:
+                    self._close_all(
+                        "硬止损挂单失败·禁止裸奔",
+                        close_action="HARD_SL_FAIL_ABORT",
+                        close_trigger="hard_sl_place_failed",
+                    )
+                except Exception as e:
+                    logger.error(
+                        "[User %s] hard-SL fail abort close error: %s",
+                        getattr(self, "user_id", "?"),
+                        e,
+                    )
+                return
         self._save_state()
         threading.Thread(target=self._sentinel_loop, daemon=True).start()
 

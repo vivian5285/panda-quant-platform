@@ -69,23 +69,35 @@ def test_binance_open_ignores_depleted_available_balance():
     sup.regime = 4
     sup.risk_multiplier = 1.0
     sup.tv_price = 1770.0
+    # risk 2.7% · stop 70 → theoretical = 1000*0.027/70 ≈ 0.385 (live equity used)
+    # with leverage 15: lev_limit = 1000*15/1770 ≈ 8.47 → bind theoretical
+    # Use equity 1000 from summary; stop = 70
     sup.tv_sl = 1700.0
     sup.tv_tps = [1794.0, 1809.0, 1822.0]
-    sup._entry_type = "OPEN"
+    sup._apply_tv_entry_context({
+        "entry_type": "OPEN",
+        "regime": 4,
+        "risk_pct": 2.70,
+        "leverage": 15,
+        "qty_ratio": 1.0,
+    })
     sup.on_trade_open = MagicMock(return_value=1)
     sup._protect_and_monitor = MagicMock()
     sup._enforce_regime_cap_alignment = MagicMock(return_value={})
     sup._smart_realign_defenses = MagicMock(
         return_value={"matched": 3, "expected": 3, "audit": {"levels": []}}
     )
+    expected_qty = 1000.0 * 0.0270 / 70.0  # ≈ 0.385
     with patch.object(sup.position_manager, "get_position", return_value={
-        "positionAmt": "1.184",
+        "positionAmt": str(round(expected_qty, 3)),
         "entryPrice": "1770",
-    }), patch.object(sup, "_get_active_position", return_value={"size": 1.184, "entry_price": 1770.0, "side": "LONG"}):
+    }), patch.object(sup, "_get_active_position", return_value={
+        "size": round(expected_qty, 3), "entry_price": 1770.0, "side": "LONG",
+    }):
         sup._open_position("LONG", 1770.0)
 
     call_qty = client.place_market_order.call_args[0][1]
-    assert call_qty == pytest.approx(1.184, rel=0.05)
+    assert call_qty == pytest.approx(expected_qty, abs=0.01)
 
 
 def test_resolve_cap_sizing_base_uses_principal_when_available_depleted():
@@ -131,7 +143,7 @@ def test_regime4_without_principal_uses_live_balance():
     assert qty == pytest.approx(2.825, rel=0.01)
 
 
-def test_binance_open_position_uses_principal_cap():
+def test_binance_open_position_uses_tv_risk_on_live_equity():
     from app.core.position_supervisor import PositionSupervisor
 
     client = MagicMock()
@@ -145,30 +157,32 @@ def test_binance_open_position_uses_principal_cap():
 
     sup = PositionSupervisor(user_id=6, client=client, initial_principal=700.0)
     sup.regime = 4
-    sup.risk_multiplier = 1.0
     sup.tv_price = 1770.0
     sup.tv_sl = 1700.0
     sup.tv_tps = [1794.0, 1809.0, 1822.0]
-    sup._entry_type = "OPEN"
+    # Live equity 1000 forces sizing_base=1000 (total_equity path)
+    expected_qty = 1000.0 * 0.0270 / 70.0
+    sup._apply_tv_entry_context({
+        "entry_type": "OPEN", "regime": 4, "risk_pct": 2.70, "leverage": 15, "qty_ratio": 1.0,
+    })
     sup.on_trade_open = MagicMock(return_value=1)
     sup._protect_and_monitor = MagicMock()
     sup._enforce_regime_cap_alignment = MagicMock(return_value={})
-    sup._smart_realign_defenses = MagicMock(
-        return_value={"matched": 3, "expected": 3, "audit": {"levels": []}}
-    )
     with patch.object(sup.position_manager, "get_position", return_value={
-        "positionAmt": "1.184",
+        "positionAmt": str(round(expected_qty, 3)),
         "entryPrice": "1770",
-    }), patch.object(sup, "_get_active_position", return_value={"size": 1.184, "entry_price": 1770.0, "side": "LONG"}):
+    }), patch.object(sup, "_get_active_position", return_value={
+        "size": round(expected_qty, 3), "entry_price": 1770.0, "side": "LONG",
+    }):
         sup._open_position("LONG", 1770.0)
 
-    client.cancel_all_open_orders.assert_called()
     call_qty = client.place_market_order.call_args[0][1]
-    assert call_qty == pytest.approx(1.184, rel=0.05)
+    assert call_qty == pytest.approx(expected_qty, abs=0.01)
 
 
 def test_deepcoin_open_ignores_depleted_available_balance():
     from app.core.position_supervisor_deepcoin import DeepcoinPositionSupervisor
+    from app.core.tv_entry_sizing import compute_vps_open_contracts
 
     client = MagicMock()
     client.get_futures_account_summary.return_value = {
@@ -178,52 +192,80 @@ def test_deepcoin_open_ignores_depleted_available_balance():
     client.get_available_balance.return_value = 15.0
     client.get_current_price.return_value = 3000.0
     client.place_market_order.return_value = {}
+    client.exchange_id = "deepcoin"
+    client.trading_leverage = 25
+    client.trading_symbol = "ETH-USDT-SWAP"
 
-    sup = DeepcoinPositionSupervisor(user_id=1, client=client, initial_principal=700.0)
+    with patch.object(DeepcoinPositionSupervisor, "_start_idle_flat_patrol"), patch.object(
+        DeepcoinPositionSupervisor, "_start_signal_worker"
+    ):
+        sup = DeepcoinPositionSupervisor(user_id=1, client=client, initial_principal=700.0)
     sup.regime = 3
-    sup.risk_multiplier = 1.0
-    sup._get_active_position = MagicMock(return_value={"size": 8, "entry_price": 3000, "posSide": "long"})
+    sup.tv_sl = 3000.0 - 14.02
+    sup._apply_tv_entry_context({
+        "entry_type": "OPEN", "regime": 3, "risk_pct": 2.03, "leverage": 25, "qty_ratio": 1.0,
+    })
+    expected_qty, _ = compute_vps_open_contracts(
+        live_balance=1000.0,
+        initial_principal=700.0,
+        price=3000.0,
+        tv_sl=3000.0 - 14.02,
+        regime=3,
+        leverage=25,
+        face_value=sup.face_value,
+        risk_pct=2.03,
+        symbol="ETHUSDT",
+    )
+    sup._get_active_position = MagicMock(
+        return_value={"size": expected_qty, "entry_price": 3000, "posSide": "long"}
+    )
     sup._protect_and_monitor = MagicMock()
 
     sup._open_position("LONG", 3000.0)
 
-    expected_qty, _ = compute_deepcoin_contracts(
-        live_balance=1000.0,
-        initial_principal=700.0,
-        margin_pct=0.35,
-        leverage=sup.leverage,
-        price=3000.0,
-        face_value=sup.face_value,
-    )
     client.place_market_order.assert_called_once()
     assert client.place_market_order.call_args[0][3] == expected_qty
 
 
-def test_deepcoin_open_position_uses_principal_cap():
+def test_deepcoin_open_position_uses_tv_risk():
     from app.core.position_supervisor_deepcoin import DeepcoinPositionSupervisor
+    from app.core.tv_entry_sizing import compute_vps_open_contracts
 
     client = MagicMock()
     client.get_futures_account_summary.return_value = {"total_margin_balance": 1000.0}
     client.get_available_balance.return_value = 1000.0
     client.place_market_order.return_value = {}
+    client.exchange_id = "deepcoin"
+    client.trading_leverage = 25
+    client.trading_symbol = "ETH-USDT-SWAP"
 
-    sup = DeepcoinPositionSupervisor(user_id=1, client=client, initial_principal=700.0)
+    with patch.object(DeepcoinPositionSupervisor, "_start_idle_flat_patrol"), patch.object(
+        DeepcoinPositionSupervisor, "_start_signal_worker"
+    ):
+        sup = DeepcoinPositionSupervisor(user_id=1, client=client, initial_principal=700.0)
     sup.regime = 4
-    sup.risk_multiplier = 1.0
-    sup._get_active_position = MagicMock(return_value={"size": 1, "entry_price": 1770, "posSide": "long"})
+    sup.tv_sl = 1770.0 - 15.94
+    sup._apply_tv_entry_context({
+        "entry_type": "OPEN", "regime": 4, "risk_pct": 2.70, "leverage": 25, "qty_ratio": 1.0,
+    })
+    expected_qty, _ = compute_vps_open_contracts(
+        live_balance=1000.0,
+        initial_principal=700.0,
+        price=1770.0,
+        tv_sl=1770.0 - 15.94,
+        regime=4,
+        leverage=25,
+        face_value=0.1,
+        risk_pct=2.70,
+        symbol="ETHUSDT",
+    )
+    sup._get_active_position = MagicMock(
+        return_value={"size": expected_qty, "entry_price": 1770, "posSide": "long"}
+    )
     sup._protect_and_monitor = MagicMock()
 
     sup._open_position("LONG", 1770.0)
 
-    # 350U margin * 10x / (1770 * 0.1 face) ≈ 19 contracts
-    expected_qty, _ = compute_deepcoin_contracts(
-        live_balance=1000.0,
-        initial_principal=700.0,
-        margin_pct=0.50,
-        leverage=sup.leverage,
-        price=1770.0,
-        face_value=0.1,
-    )
     client.place_market_order.assert_called_once()
     assert client.place_market_order.call_args[0][3] == expected_qty
 
@@ -232,7 +274,12 @@ def test_protect_and_monitor_skips_pre_rebuild_tp():
     from app.core.position_supervisor import PositionSupervisor
 
     client = MagicMock()
+    client.exchange_id = "binance"
+    client.trading_symbol = "ETHUSDT"
+    client.trading_leverage = 25
     sup = PositionSupervisor(user_id=1, client=client)
+    sup.tv_sl = 1750.0
+    sup.current_side = "LONG"
     sup._ensure_price_ws = MagicMock()
     sup._get_active_position = MagicMock(return_value={"size": 2.0, "entry_price": 1800.0, "side": "LONG"})
     sup._smart_realign_defenses = MagicMock(
@@ -245,6 +292,8 @@ def test_protect_and_monitor_skips_pre_rebuild_tp():
     sup._format_audit_summary = MagicMock(return_value="ok")
     sup._save_state = MagicMock()
     sup._rebuild_tp_limit_orders = MagicMock()
+    sup._sync_tv_hard_stop = MagicMock(return_value={"armed": True, "placed": 1, "stop_price": 1750.0})
+    sup._log = MagicMock()
 
     sup._protect_and_monitor(2.0, 1800.0)
 

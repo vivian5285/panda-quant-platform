@@ -2363,7 +2363,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return True
 
     def _resolve_entry_leverage(self) -> int:
-        return int(self.leverage)
+        """Prefer TV leverage; fall back to exchange config only if TV omitted."""
+        tv_fields = getattr(self, "_tv_entry_fields", None) or {}
+        tv_lev = tv_fields.get("leverage") or tv_fields.get("tv_leverage")
+        if tv_lev is not None and float(tv_lev) > 0:
+            return max(int(round(float(tv_lev))), 1)
+        return max(int(self.leverage or 1), 1)
 
     def _resolve_entry_qty(self, curr_px: float) -> tuple[int, dict]:
         from app.core.tv_entry_sizing import ENTRY_TYPES_ADD
@@ -2373,6 +2378,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         tv_fields = getattr(self, "_tv_entry_fields", None) or {}
         entry_type = getattr(self, "_entry_type", "OPEN")
         regime = int(tv_fields.get("regime") or self.regime)
+        risk_pct = tv_fields.get("risk_pct")
+        if risk_pct is None:
+            return 0, {
+                "error": "missing_risk_pct",
+                "entry_type": entry_type,
+                "note": "TV must send risk_pct; VPS no longer uses REGIME_MARGIN",
+            }
         qty, meta = resolve_vps_entry_qty_deepcoin(
             live_balance=equity,
             initial_principal=self.initial_principal,
@@ -2386,13 +2398,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             tv_qty_ratio=tv_fields.get("qty_ratio"),
             qty_ratio_source=str(tv_fields.get("qty_ratio_source") or "tv_qty_ratio"),
             symbol=self.canonical_symbol,
+            risk_pct=float(risk_pct),
         )
         if entry_type not in ENTRY_TYPES_ADD and qty > 0:
             from app.core.combined_notional import check_combined_notional_cap
 
             notional = float(meta.get("notional_usd") or meta.get("position_value") or 0)
             if notional <= 0 and curr_px and self.face_value:
-                # Deepcoin contracts: approximate notional = qty × face × price
                 notional = float(qty) * float(self.face_value) * float(curr_px)
             ok, cap_meta = check_combined_notional_cap(
                 user_id=self.user_id,
@@ -2822,12 +2834,33 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             shield = self._sync_tv_hard_stop(
                 self._safe_qty(verified["size"]), at_open=True, force_replace=True,
             )
-            if shield.get("placed", 0) > 0:
+            armed = bool(
+                shield.get("placed", 0) > 0
+                or shield.get("armed")
+                or shield.get("aligned")
+                or shield.get("skipped") == "live_already_aligned"
+            )
+            if armed:
                 label = shield.get("label") or self._hard_stop_label()
                 logger.info(
                     f"🛡️ 开仓 {label}已挂 @{shield.get('stop_price', 0):.2f} | "
                     f"{verified['size']}张"
                 )
+            elif float(getattr(self, "tv_sl", 0) or 0) > 0:
+                self._dt.report_system_alert(
+                    "开仓后硬止损未挂上·立即撤仓",
+                    f"{self.current_side} {verified['size']}张 | "
+                    f"tv_sl={getattr(self, 'tv_sl', 0)} | {shield}",
+                )
+                try:
+                    self._close_all(
+                        "硬止损挂单失败·禁止裸奔",
+                        close_action="HARD_SL_FAIL_ABORT",
+                        close_trigger="hard_sl_place_failed",
+                    )
+                except Exception as e:
+                    logger.error(f"hard-SL fail abort close error: {e}")
+                return
         else:
             logger.warning("开仓钉钉跳过：实盘持仓核查未通过")
         threading.Thread(target=self._sentinel_loop, daemon=True).start()

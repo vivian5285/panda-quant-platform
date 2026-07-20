@@ -11,8 +11,7 @@ from app.core.position_supervisor import PositionSupervisor
 from app.core.position_supervisor_deepcoin import DeepcoinPositionSupervisor
 from app.core.startup_reconcile import StartupReconcileMixin
 from app.core.tv_entry_sizing import (
-    compute_vps_add_qty,
-    compute_vps_open_qty,
+    compute_tv_entry_qty,
     max_add_times_for_regime,
     parse_tv_entry_fields,
     regime_add_qty_ratio,
@@ -25,64 +24,81 @@ from app.services.webhook_payload import normalize_tv_payload
 from unittest.mock import MagicMock, patch
 
 
+# Spec table @1000U ETH 1892.43 — risk/stop → open; add = open × regime_add_ratio
 CHECKLIST_OPEN_TABLE = [
-    (1, 1.0, 0.0),       # 8%×25 / 2000
-    (2, 1.75, 0.525),    # 14% → add 0.3×
-    (3, 2.5, 1.25),      # 20% → add 0.5×
-    (4, 3.25, 2.275),    # 26% → add 0.7×
+    # regime, risk_pct, stop_dist, open_qty, add_ratio
+    (1, 0.81, 12.08, 0.67, 0.0),
+    (2, 1.35, 14.09, 0.96, 0.3),
+    (3, 2.03, 14.02, 1.45, 0.5),
+    (4, 2.70, 15.94, 1.69, 0.7),
 ]
 
 
-@pytest.mark.parametrize("regime,open_qty,add_qty", CHECKLIST_OPEN_TABLE)
-def test_checklist_open_and_add_table_1000u_2000(regime, open_qty, add_qty):
-    """对照清单：1000U 本金，价格=2000，REGIME_MARGIN × 25× 杠杆."""
-    qty, meta = compute_vps_open_qty(
+@pytest.mark.parametrize("regime,risk_pct,stop_dist,open_qty,add_ratio", CHECKLIST_OPEN_TABLE)
+def test_checklist_open_and_add_table_1000u(regime, risk_pct, stop_dist, open_qty, add_ratio):
+    """对照用户仓位表：1000U · ETH@1892.43 · TV risk 公式."""
+    price = 1892.43
+    tv_sl = price - stop_dist
+    qty, meta = compute_tv_entry_qty(
         live_balance=1000.0,
         initial_principal=1000.0,
-        price=2000.0,
-        tv_sl=1950.0,
-        regime=regime,
+        price=price,
+        tv_sl=tv_sl,
+        risk_pct=risk_pct,
         leverage=25,
-        round_fn=lambda x: round(x, 3),
+        qty_ratio=1.0,
+        regime=regime,
+        symbol="ETHUSDT",
     )
-    assert qty == pytest.approx(open_qty, rel=0.02)
-    assert meta["margin_usd"] > 0
-    assert meta["position_value"] == pytest.approx(meta["margin_usd"] * 25, rel=0.01)
+    assert qty == pytest.approx(open_qty, abs=0.01)
+    assert meta["sizing_mode"] == "tv_risk_formula"
 
-    tv_ratio = regime_add_qty_ratio(regime)
-    add, add_meta = compute_vps_add_qty(
-        base_qty=qty,
-        tv_qty_ratio=tv_ratio,
-        round_fn=lambda x: round(x, 3),
+    add, add_meta = compute_tv_entry_qty(
+        live_balance=1000.0,
+        initial_principal=1000.0,
+        price=price,
+        tv_sl=tv_sl,
+        risk_pct=risk_pct,
+        leverage=25,
+        qty_ratio=add_ratio if add_ratio > 0 else 0.0,
+        entry_type="PYRAMID",
+        regime=regime,
+        symbol="ETHUSDT",
     )
-    assert add == pytest.approx(add_qty, rel=0.02)
-    assert add_meta["add_qty_ratio"] == pytest.approx(tv_ratio)
+    if add_ratio <= 0:
+        assert add == 0.0
+    else:
+        assert add == pytest.approx(open_qty * add_ratio, abs=0.02)
+        assert add_meta["qty_ratio"] == pytest.approx(add_ratio)
 
 
-def test_checklist_tv_fields_parsed_and_ignored():
+def test_checklist_tv_fields_parsed_as_authoritative():
     raw = {
         "action": "LONG",
         "entry_type": "OPEN",
         "regime": "3",
-        "price": "2000",
-        "tv_sl": "1950",
+        "price": "1892.43",
+        "tv_sl": "1878.41",
         "tv_tp1": 2100,
         "tv_tp2": 2200,
         "tv_tp3": 2300,
-        "leverage": 10,
-        "risk_pct": 9.9,
-        "qty_ratio": 0.8,
+        "leverage": 25,
+        "risk_pct": 2.03,
+        "qty_ratio": 1.0,
     }
     norm = normalize_tv_payload(raw)
     assert norm["action"] == "LONG"
     assert norm["entry_type"] == "OPEN"
     assert norm["regime"] == 3
-    assert norm["tv_sl"] == 1950.0
+    assert norm["tv_sl"] == 1878.41
 
     fields = parse_tv_entry_fields(norm)
     assert fields["entry_type"] == "OPEN"
-    assert fields["uses_vps_sizing"] is True
-    assert fields["tv_qty_ratio_ignored"] is True
+    assert fields["uses_tv_sizing"] is True
+    assert fields["tv_qty_ratio_ignored"] is False
+    assert fields["risk_pct"] == pytest.approx(2.03)
+    assert fields["leverage"] == 25
+    assert fields["qty_ratio"] == pytest.approx(1.0)
 
 
 @pytest.mark.parametrize("exchange", ["binance", "okx", "gate", "deepcoin"])
@@ -141,70 +157,70 @@ def test_dingtalk_push_open_startup_radar_alerts():
 
 def test_config_matches_checklist_defaults():
     s = get_settings()
-    assert s.VPS_RISK_PCT == pytest.approx(3.0)
     assert s.ADD_QTY_RATIO == pytest.approx(0.5)
     assert s.MAX_ADD_TIMES == 2
     assert s.ADD_RATIO_REG4 == pytest.approx(0.7)
     assert max_add_times_for_regime(4) == 3
-    assert s.REGIME_SCALE_1 == pytest.approx(0.55)
-    assert s.REGIME_SCALE_4 == pytest.approx(1.33)
-    assert s.SIZING_MARGIN_LEVERAGE == 5
     assert s.LEVERAGE == 25
     assert s.DEEPCOIN_LEVERAGE == 25
     assert s.OKX_LEVERAGE == 25
     assert s.GATE_LEVERAGE == 25
-    assert s.REGIME_MARGIN_1 == pytest.approx(0.08)
-    assert s.REGIME_MARGIN_2 == pytest.approx(0.14)
-    assert s.REGIME_MARGIN_3 == pytest.approx(0.20)
-    assert s.REGIME_MARGIN_4 == pytest.approx(0.26)
     assert s.MAX_COMBINED_NOTIONAL_MULT == pytest.approx(13.0)
 
 
-def test_r4_strongest_open_260u_margin_6500u_position_at_25x():
-    """R4 最强趋势：1000U 本金 26% 保证金 ×25 杠杆 = 6500U 名义."""
-    qty, meta = compute_vps_open_qty(
+def test_r4_tv_formula_matches_user_table():
+    """R4 @1000U · risk 2.70% · stop 15.94 → ~1.69 ETH."""
+    price = 1892.43
+    qty, meta = compute_tv_entry_qty(
         live_balance=1000.0,
         initial_principal=1000.0,
-        price=2000.0,
-        tv_sl=1950.0,
-        regime=4,
+        price=price,
+        tv_sl=price - 15.94,
+        risk_pct=2.70,
         leverage=25,
-        round_fn=lambda x: round(x, 3),
+        qty_ratio=1.0,
+        regime=4,
+        symbol="ETHUSDT",
     )
-    assert meta["margin_usd"] == pytest.approx(260.0, rel=0.02)
-    assert meta["position_value"] == pytest.approx(6500.0, rel=0.02)
-    assert qty == pytest.approx(3.25, rel=0.02)
+    assert qty == pytest.approx(1.69, abs=0.01)
+    assert meta["sizing_mode"] == "tv_risk_formula"
+    assert meta["binding"] == "theoretical"
 
 
-def test_resolve_entry_qty_eth_open_uses_price_not_sl_distance():
+def test_resolve_entry_qty_eth_requires_tv_sl():
     qty, meta = resolve_vps_entry_qty_eth(
         live_balance=1000.0,
         initial_principal=1000.0,
         entry_type="OPEN",
         base_qty=0,
-        price=2000.0,
+        price=1892.43,
         tv_sl=0,
         regime=4,
         exchange_leverage=25,
-        round_fn=lambda x: round(x, 3),
+        round_fn=lambda x: x,
+        risk_pct=2.70,
     )
-    assert qty == pytest.approx(3.25, rel=0.02)
-    assert meta.get("error") is None
-    assert "margin_usd" in meta
+    assert qty == 0
+    assert meta.get("error") == "missing_tv_sl"
 
 
 def test_resolve_entry_qty_deepcoin_add():
+    price = 1892.43
     qty, meta = resolve_vps_entry_qty_deepcoin(
         live_balance=1000.0,
         initial_principal=1000.0,
         entry_type="PYRAMID",
-        base_qty=4,
-        price=2000.0,
-        tv_sl=1950.0,
+        base_qty=15,
+        price=price,
+        tv_sl=price - 14.02,
         regime=3,
-        exchange_leverage=15,
+        exchange_leverage=25,
         face_value=0.1,
         tv_qty_ratio=0.5,
+        risk_pct=2.03,
+        symbol="ETHUSDT",
     )
-    assert qty == 2
-    assert meta["add_qty"] == 2
+    assert qty > 0
+    assert meta["sizing_mode"] == "tv_risk_formula"
+    # ~0.72 ETH / 0.1 face → 7 contracts
+    assert qty == 7

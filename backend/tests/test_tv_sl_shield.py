@@ -144,5 +144,8 @@ def test_entry_payload_accepts_tv_sl():
         "regime": 3,
         "atr": 30,
         "tv_sl": 64428,
+        "risk_pct": 2.03,
+        "leverage": 25,
+        "qty_ratio": 1.0,
     })
     assert ok, msg
