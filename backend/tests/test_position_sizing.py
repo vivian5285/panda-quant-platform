@@ -295,7 +295,11 @@ def test_protect_and_monitor_skips_pre_rebuild_tp():
     sup._sync_tv_hard_stop = MagicMock(return_value={"armed": True, "placed": 1, "stop_price": 1750.0})
     sup._log = MagicMock()
 
-    sup._protect_and_monitor(2.0, 1800.0)
+    with patch("threading.Thread"):
+        out = sup._protect_and_monitor(2.0, 1800.0)
 
+    assert out["ok"] is True
+    assert out["aborted"] is False
     sup._rebuild_tp_limit_orders.assert_not_called()
     sup._smart_realign_defenses.assert_called_once()
+    assert out["radar_standby"] is True

@@ -1831,7 +1831,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 self.current_sl = 0.0
 
     def _nuclear_realign_tp(self, live_qty, entry, dynamic_sl=None, rounds=3):
-        sl_preserve = dynamic_sl is not None
+        """核武重挂：只撤 TP 限价，绝不 cancel_all（避免误撤 TV硬止损/雷达条件槽）。"""
         curr_px = self._current_tp_price()
         last_audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
         for r in range(rounds):
@@ -1840,20 +1840,20 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 f"当前 {last_audit['matched_full']}/{last_audit['expected']} | "
                 f"{self._format_audit_summary(last_audit)}"
             )
-            if sl_preserve:
-                self._cancel_all_tp_limit_orders()
-            else:
-                self.client.cancel_all_open_orders(self.symbol)
+            # Route A：TP123 ‖ 硬止损 ‖ 雷达 分槽；核武只动 TP 限价
+            self._cancel_all_tp_limit_orders()
             time.sleep(1.0)
-            tp_sl = None if sl_preserve else dynamic_sl
-            placed = self._rebuild_defenses(live_qty, entry, dynamic_sl=tp_sl)
+            placed = self._rebuild_defenses(live_qty, entry, dynamic_sl=None)
             logger.info(f"☢️ 核武轮 {r + 1} 新挂 {placed} 笔限价止盈")
-            if sl_preserve:
+            if dynamic_sl:
                 time.sleep(0.6)
                 self._ensure_radar_sl(live_qty, dynamic_sl)
             time.sleep(1.0)
             last_audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
-            if self._defenses_fully_ok(live_qty, dynamic_sl, curr_px=curr_px):
+            ok_sl = bool(dynamic_sl)
+            if self._defenses_fully_ok(
+                live_qty, dynamic_sl, curr_px=curr_px, require_sl=ok_sl,
+            ):
                 logger.info(f"☢️ 核武重挂成功: {self._format_audit_summary(last_audit)}")
                 return last_audit
             logger.warning(
@@ -1967,10 +1967,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 f"⚠️ 常规对齐未达标 ({audit['matched_full']}/{expected})，"
                 f"升级核武级清场重挂"
             )
-            audit = self._nuclear_realign_tp(live_qty, entry, dynamic_sl=dynamic_sl, rounds=3)
+            # 核武只动 TP；雷达另槽事后补挂，禁止与硬止损抢份额
+            audit = self._nuclear_realign_tp(live_qty, entry, dynamic_sl=None, rounds=3)
             matched = audit["matched_full"]
             pending_prices = audit["pending_prices"]
             rebuilt = nuclear = True
+            if dynamic_sl and hasattr(self, "_ensure_radar_sl"):
+                self._ensure_radar_sl(live_qty, dynamic_sl)
 
         return {
             "matched": matched,
@@ -1979,6 +1982,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             "rebuilt": rebuilt,
             "audit": audit,
             "nuclear": nuclear,
+            "aligned": audit["matched_full"] >= expected and expected > 0,
+            "summary": self._format_audit_summary(audit),
         }
 
     def _rebuild_defenses_after_tv_add(
@@ -2633,9 +2638,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self._handle_tv_entry(action, curr_px, has_pos=has_pos, current_side=current_side)
 
     def _close_then_open_entry(self, action, curr_px, ev):
+        """遗留同向换仓入口 → 统一走铁律先平后开。"""
         threshold = float(settings.SAME_DIR_IGNORE_PRICE_DIFF_PCT)
         reason = format_reopen_reason(ev, threshold)
-        logger.info(f"⚡ 收到建仓信号 [{action}]，{reason}")
+        logger.info(f"⚡ 收到建仓信号 [{action}]，{reason} → 铁律先平后开")
         theme = resolve_exchange_theme(self.exchange_id)
         detail = {
             "exchange": self.exchange_id,
@@ -2660,14 +2666,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             reason,
             detail,
         )
-        self.client.cancel_all_open_orders(self.symbol)
-        time.sleep(0.5)
-        self._close_all("同方向新指令到达，触发【先平后开】洗清旧阵地")
-        if not self._wait_until_flat():
+        if not self._force_flat_before_open(f"SAME_DIR_REOPEN·{reason}"):
             logger.error("同向换仓平仓后仍未归零，暂缓新开仓")
             return
-        self.client.cancel_all_open_orders(self.symbol)
-        time.sleep(0.4)
         self._open_position(action, curr_px)
 
     def _refresh_same_direction_tps(self, action, entry_price, ev, *, prev_tv_tps: list):
@@ -2789,9 +2790,17 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 symbol=self.canonical_symbol,
             )
             self.adopted_manual = False
-            self._protect_and_monitor(real_qty, entry_price or pos['entry_price'])
+            protect = self._protect_and_monitor(real_qty, entry_price or pos['entry_price'])
+            if isinstance(protect, dict) and protect.get("aborted"):
+                logger.error("开仓后硬止损失败已撤仓·跳过OPEN钉钉")
+                return {"status": "error", "reason": "hard_sl_fail_abort", "detail": protect}
+            return {"status": "ok", "action": action, "trade_id": self.current_trade_id}
 
     def _protect_and_monitor(self, qty, entry_price):
+        """
+        开仓后一次性挂好 TP123 + TV硬止损，雷达候命；实盘核实后才推钉钉。
+        返回 {ok, aborted, defense, shield}。
+        """
         self._reset_adverse_radar()
         self._recompute_vps_hard_sl(entry_px=entry_price)
         tp_pxs = self.tv_tps
@@ -2803,47 +2812,55 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         self._ensure_price_ws()
 
+        result: dict = {}
+        shield: dict = {}
         verified = self._wait_verify(lambda: self._verify_position(self.current_side))
         if verified:
+            live_qty = self._safe_qty(verified["size"])
+            entry = verified["entry_price"]
+            # ① 只挂 TP123
             result = self._smart_realign_defenses(
-                self._safe_qty(verified["size"]), verified["entry_price"],
-                reason="开仓后智能防线对齐",
+                live_qty, entry,
+                dynamic_sl=None,
+                reason="开仓后智能防线对齐·仅TP123",
             )
-            matched, expected = result["matched"], result["expected"]
-            audit = result["audit"]
-            verify_note = (
-                f"持仓 {verified['size']}张 @ {verified['entry_price']:.2f} | "
-                f"限价止盈 {matched}/{expected} 档 | {self._format_audit_summary(audit)}"
-            )
-            self._record_open_log(
-                self.current_side, self._safe_qty(verified["size"]), verified["entry_price"], source="open",
-            )
-            self._dt.report_supervisor_open(
-                self.current_side, verified['entry_price'], self.tv_price,
-                verified['size'], tp_pxs, self.current_atr, self.regime, self.tv_tps,
-                verify_note=verify_note,
-                tp_audit=audit,
-                **enrich_tp_alert_detail({}, regime=self.regime),
-            )
+            if (
+                result.get("expected", 0) > 0
+                and result.get("matched", 0) < result.get("expected", 0)
+            ):
+                logger.warning(
+                    f"开仓TP未齐 {result.get('matched')}/{result.get('expected')} → 再核武一轮"
+                )
+                audit = self._nuclear_realign_tp(live_qty, entry, dynamic_sl=None, rounds=2)
+                result = {
+                    **result,
+                    "matched": audit.get("matched_full", result.get("matched")),
+                    "expected": audit.get("expected", result.get("expected")),
+                    "audit": audit,
+                    "nuclear_retry": True,
+                }
+            self._last_defense_result = result
+            matched, expected = result.get("matched", 0), result.get("expected", 0)
+            audit = result.get("audit") or {}
             if expected > 0 and matched < expected:
                 self._dt.report_system_alert(
                     "开仓后限价止盈未全部挂上",
                     f"{self.current_side} {verified['size']}张 | 仅 {matched}/{expected} 档 | "
                     f"{self._format_audit_summary(audit)}",
                 )
-            shield = self._sync_tv_hard_stop(
-                self._safe_qty(verified["size"]), at_open=True, force_replace=True,
-            )
+            # ② 硬止损只挂一次
+            shield = self._sync_tv_hard_stop(live_qty, at_open=True, force_replace=True)
+            self._last_shield_result = shield
             armed = bool(
                 shield.get("placed", 0) > 0
                 or shield.get("armed")
                 or shield.get("aligned")
                 or shield.get("skipped") == "live_already_aligned"
             )
+            sl_label = shield.get("label") or self._hard_stop_label()
             if armed:
-                label = shield.get("label") or self._hard_stop_label()
                 logger.info(
-                    f"🛡️ 开仓 {label}已挂 @{shield.get('stop_price', 0):.2f} | "
+                    f"🛡️ 开仓 {sl_label}已挂 @{shield.get('stop_price', 0):.2f} | "
                     f"{verified['size']}张"
                 )
             elif float(getattr(self, "tv_sl", 0) or 0) > 0:
@@ -2860,10 +2877,73 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     )
                 except Exception as e:
                     logger.error(f"hard-SL fail abort close error: {e}")
-                return
+                self.monitoring = False
+                out = {
+                    "ok": False,
+                    "aborted": True,
+                    "reason": "hard_sl_fail_abort",
+                    "defense": result,
+                    "shield": shield,
+                }
+                self._last_protect_result = out
+                return out
+
+            # ③ 实盘核实（TP + 硬止损）后才推 OPEN 钉钉一次
+            verify_note = (
+                f"持仓 {verified['size']}张 @ {verified['entry_price']:.2f} | "
+                f"限价止盈 {matched}/{expected} 档 | {self._format_audit_summary(audit)}"
+            )
+            if armed:
+                verify_note += f" | {sl_label}已核实 @{shield.get('stop_price', 0):.2f}"
+            from app.core.radar_trail import radar_effective_activation, regime_radar_activation
+            radar_act = regime_radar_activation(int(self.regime or 3))
+            tps = list(self.tv_tps or [])
+            tp1 = float(tps[0] or 0) if tps else 0.0
+            radar_eff = radar_effective_activation(
+                int(self.regime or 3),
+                float(entry or 0),
+                tp1,
+                float(getattr(self, "current_atr", 0) or 0),
+            )
+            self._record_open_log(
+                self.current_side, live_qty, entry, source="open",
+            )
+            self._dt.report_supervisor_open(
+                self.current_side, verified['entry_price'], self.tv_price,
+                verified['size'], tp_pxs, self.current_atr, self.regime, self.tv_tps,
+                verify_note=verify_note,
+                tp_audit=audit,
+                shield=shield,
+                tv_sl=float(getattr(self, "tv_sl", 0) or 0),
+                radar_armed=False,
+                radar_active=False,
+                radar_activation=radar_act,
+                radar_activation_effective=radar_eff,
+                **enrich_tp_alert_detail({}, regime=self.regime),
+            )
         else:
             logger.warning("开仓钉钉跳过：实盘持仓核查未通过")
+            out = {
+                "ok": False,
+                "aborted": False,
+                "reason": "position_verify_failed",
+                "defense": result,
+                "shield": shield,
+            }
+            self._last_protect_result = out
+            threading.Thread(target=self._sentinel_loop, daemon=True).start()
+            return out
+
         threading.Thread(target=self._sentinel_loop, daemon=True).start()
+        out = {
+            "ok": True,
+            "aborted": False,
+            "defense": result,
+            "shield": shield,
+            "radar_standby": True,
+        }
+        self._last_protect_result = out
+        return out
 
     def _ensure_price_ws(self):
         """Keep markPrice WS alive and bind radar to every tick (fastest path)."""

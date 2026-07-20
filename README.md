@@ -1602,6 +1602,19 @@ py -m pytest tests/test_webhook_seq.py tests/test_vps_entry_routing.py \
 
 ---
 
+### 2026-07-20 · 开仓防线强壮版：TP123/硬止损/雷达分槽 · 先核实后钉钉
+
+| 项 | 内容 |
+|----|------|
+| 开仓顺序 | 先平后开 → 市价开仓 → **只挂一次** TP123 限价 → **只挂一次** TV `tv_sl` 硬止损 → 雷达候命 |
+| 互不抢份额 | 核武/heal **禁止** `cancel_all`；只撤 TP 限价；硬止损/雷达另槽 |
+| 禁止裸奔 | 硬止损挂失败 → 立即撤仓；**禁止**再推 OPEN 成功钉钉 |
+| DeepCoin | 与 Binance 对齐：TP+硬止损实盘核实后才推 OPEN |
+| 遗留路径 | `_close_then_open_entry` 统一走 `_force_flat_before_open` |
+| 测试 | `tests/test_open_protect_abort.py` |
+
+---
+
 ### 2026-07-19 · 执行铁律简化：OPEN 一律先平后开 · CLOSE 单独清零等待
 
 | 信号 | 行为 |

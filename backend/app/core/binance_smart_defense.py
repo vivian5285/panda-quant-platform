@@ -1049,7 +1049,7 @@ class BinanceSmartDefenseMixin:
         return placed
 
     def _nuclear_realign_tp(self, live_qty: float, entry: float, dynamic_sl=None, rounds: int = 3) -> dict:
-        sl_preserve = dynamic_sl is not None
+        """核武重挂：只撤 TP 限价，绝不 cancel_all（避免误撤 TV硬止损/雷达条件槽）。"""
         last_audit = self._audit_tp_levels(live_qty)
         for r in range(rounds):
             self._def_log(
@@ -1058,20 +1058,17 @@ class BinanceSmartDefenseMixin:
                 f"{self._format_audit_summary(last_audit)}",
                 logging.WARNING,
             )
-            if sl_preserve:
-                self._cancel_all_tp_limit_orders()
-            else:
-                self.client.cancel_all_open_orders(self.symbol)
+            # Route A：TP123 ‖ 硬止损 ‖ 雷达 分槽；核武只动 TP 限价
+            self._cancel_all_tp_limit_orders()
             time.sleep(1.0)
-            tp_sl = None if sl_preserve else dynamic_sl
-            placed = self._rebuild_tp_limit_orders(live_qty, entry, dynamic_sl=tp_sl)
+            placed = self._rebuild_tp_limit_orders(live_qty, entry, dynamic_sl=None)
             self._def_log(f"☢️ 核武轮 {r + 1} 新挂 {placed} 笔限价止盈")
-            if sl_preserve:
+            if dynamic_sl:
                 time.sleep(0.6)
                 self._ensure_radar_sl(dynamic_sl, live_qty)
             time.sleep(1.0)
             last_audit = self._audit_tp_levels(live_qty)
-            if self._defenses_fully_ok(live_qty, dynamic_sl):
+            if self._defenses_fully_ok(live_qty, dynamic_sl, require_sl=bool(dynamic_sl)):
                 self._def_log(f"☢️ 核武重挂成功: {self._format_audit_summary(last_audit)}")
                 return last_audit
             self._def_log(
@@ -1324,10 +1321,13 @@ class BinanceSmartDefenseMixin:
                 f"⚠️ 常规对齐未达标 ({audit['matched_full']}/{expected})，升级核武级清场重挂",
                 logging.WARNING,
             )
-            audit = self._nuclear_realign_tp(live_qty, entry, dynamic_sl=dynamic_sl, rounds=3)
+            # 核武只动 TP；雷达另槽事后补挂，禁止与硬止损抢份额
+            audit = self._nuclear_realign_tp(live_qty, entry, dynamic_sl=None, rounds=3)
             matched = audit["matched_full"]
             pending_prices = audit["pending_prices"]
             rebuilt = nuclear = True
+            if dynamic_sl and hasattr(self, "_ensure_radar_sl"):
+                self._ensure_radar_sl(dynamic_sl, live_qty)
 
         summary = self._format_audit_summary(audit)
         return {

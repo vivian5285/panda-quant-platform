@@ -1077,9 +1077,10 @@ class PositionSupervisor(
         )
 
     def _close_then_open_entry(self, action: str, curr_px: float, ev) -> dict:
+        """遗留同向换仓入口 → 统一走铁律先平后开（禁止与 _handle_tv_entry 双轨打架）。"""
         threshold = float(settings.SAME_DIR_IGNORE_PRICE_DIFF_PCT)
         reason = format_reopen_reason(ev, threshold)
-        self._log("SIGNAL", f"⚡ 收到建仓信号 [{action}]，{reason}")
+        self._log("SIGNAL", f"⚡ 收到建仓信号 [{action}]，{reason} → 铁律先平后开")
         theme = resolve_exchange_theme(self.exchange_id)
         detail = {
             "exchange": self.exchange_id,
@@ -1104,14 +1105,8 @@ class PositionSupervisor(
             reason,
             detail,
         )
-        self.client.cancel_all_open_orders(self.symbol)
-        time.sleep(0.5)
-        self._close_all("同方向新指令到达，触发【先平后开】洗清旧阵地")
-        if not self._wait_until_flat():
-            self._log("ERROR", "同向换仓平仓后仍未归零，暂缓新开仓")
+        if not self._force_flat_before_open(f"SAME_DIR_REOPEN·{reason}"):
             return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
-        self.client.cancel_all_open_orders(self.symbol)
-        time.sleep(0.4)
         return self._open_position(action, curr_px)
 
     def _refresh_same_direction_tps(
@@ -1279,7 +1274,20 @@ class PositionSupervisor(
                 **sizing_meta,
             }
             self._protect_and_monitor(real_qty, entry_price)
-            defense = getattr(self, "_last_defense_result", None) or {}
+            protect = getattr(self, "_last_protect_result", None) or {}
+            if protect.get("aborted"):
+                self._log(
+                    "ERROR",
+                    "开仓后硬止损失败已撤仓·跳过OPEN钉钉",
+                    protect,
+                )
+                return {
+                    "status": "error",
+                    "reason": "hard_sl_fail_abort",
+                    "message": "硬止损挂单失败·已撤仓禁止裸奔",
+                    "detail": protect,
+                }
+            defense = protect.get("defense") or getattr(self, "_last_defense_result", None) or {}
             if defense:
                 detail["defense_matched"] = defense.get("matched")
                 detail["defense_expected"] = defense.get("expected")
@@ -1290,7 +1298,7 @@ class PositionSupervisor(
                     f" | 实盘止盈 {detail.get('defense_matched')}/"
                     f"{detail.get('defense_expected')} 档"
                 )
-            shield = getattr(self, "_last_shield_result", None) or {}
+            shield = protect.get("shield") or getattr(self, "_last_shield_result", None) or {}
             sl_label = shield.get("label") or self._hard_stop_label()
             if shield.get("aligned") or shield.get("skipped") == "live_already_aligned":
                 verify_note += f" | {sl_label}已核实 @{shield.get('stop_price', 0):.2f}"
@@ -2092,8 +2100,8 @@ class PositionSupervisor(
         reason: str,
     ) -> dict:
         """
-        智能撤销重挂：重复/缺失/比例错 → 验证清空全部挂单 → 按当前头寸全量重挂。
-        （解决重启叠单、cancel 失败只告警不修复的问题）
+        智能撤销重挂：重复/缺失/比例错 → 只撤 TP 限价 → 按当前头寸重挂 TP。
+        绝不 cancel_all（禁止误撤 TV硬止损/雷达条件槽）。
         """
         before_summary = self._summarize_defense_scan(scan, slices)
         self._log(
@@ -2108,19 +2116,35 @@ class PositionSupervisor(
             {"scan": scan, "reason": reason},
         )
 
-        cancel_result = self._cancel_all_verified()
+        # Route A：只撤 TP 限价，保留硬止损/雷达条件槽
+        if hasattr(self, "_cancel_all_tp_limit_orders"):
+            purged = int(self._cancel_all_tp_limit_orders() or 0)
+            cancel_result = {"ok": True, "mode": "tp_only", "purged": purged}
+        else:
+            cancel_result = self._cancel_all_verified()
         placed: list = []
         failed: list = []
         post = scan
 
         for attempt in range(HEAL_PLACE_ROUNDS):
-            if not cancel_result.get("ok"):
-                cancel_result = self._cancel_all_verified()
-            placed, failed = self._place_all_defense_orders(slices, dynamic_sl)
+            # 重挂仅 TP；dynamic_sl 不在此槽挂（雷达另走 _ensure_radar_sl）
+            placed, failed = self._place_all_defense_orders(slices, dynamic_sl=None)
             time.sleep(0.5)
-            post = self._scan_open_defenses(slices, dynamic_sl)
+            post = self._scan_open_defenses(slices, dynamic_sl=None)
             if post.get("aligned") and not failed:
                 break
+
+        # 雷达另槽补挂；硬止损若被旧路径误撤则补回（只补缺失）
+        if dynamic_sl and hasattr(self, "_ensure_radar_sl"):
+            try:
+                self._ensure_radar_sl(dynamic_sl, qty)
+            except Exception as e:
+                logger.warning("[User %s] heal radar rehang: %s", self.user_id, e)
+        if float(getattr(self, "tv_sl", 0) or 0) > 0 and hasattr(self, "_sync_tv_hard_stop"):
+            try:
+                self._sync_tv_hard_stop(qty, force_replace=False)
+            except Exception as e:
+                logger.warning("[User %s] heal hard-SL rehang: %s", self.user_id, e)
 
         after_summary = self._summarize_defense_scan(post, slices)
         aligned = bool(post.get("aligned")) and not failed
@@ -2341,7 +2365,11 @@ class PositionSupervisor(
         """哨兵轮询：先核实再补挂，已对齐则不动作。"""
         return self._ensure_defenses(qty, entry, dynamic_sl, force_rebuild=False)
 
-    def _protect_and_monitor(self, qty: float, entry_price: float):
+    def _protect_and_monitor(self, qty: float, entry_price: float) -> dict:
+        """
+        开仓后一次性挂好 TP123 + TV硬止损，雷达候命；实盘核实后由 _open_position 推钉钉。
+        返回 {ok, aborted, defense, shield}；硬止损挂失败则撤仓并 aborted=True（禁止裸奔）。
+        """
         self._reset_adverse_radar()
         self._recompute_vps_hard_sl(entry_px=entry_price)
         # 雷达未激活时不要把 current_sl 写成入场价（避免合并单槽误用紧止损）
@@ -2351,30 +2379,57 @@ class PositionSupervisor(
         self.watched_entry = entry_price
         self.monitoring = True
         self._ensure_price_ws()
+        result: dict = {}
+        shield: dict = {}
         pos = self._get_active_position()
         if pos:
             if hasattr(self, "_cancel_binance_all_close_stops"):
                 self._cancel_binance_all_close_stops()
+            # ① 只挂 TP123 限价（不碰硬止损/雷达槽）
             result = self._smart_realign_defenses(
                 pos["size"],
                 pos["entry_price"],
-                reason="开仓后智能防线对齐",
+                dynamic_sl=None,
+                reason="开仓后智能防线对齐·仅TP123",
             )
+            # 一次补挂：若未齐再核武一轮（仍只动 TP）
+            if (
+                result.get("expected", 0) > 0
+                and result.get("matched", 0) < result.get("expected", 0)
+                and hasattr(self, "_nuclear_realign_tp")
+            ):
+                self._log(
+                    "DEFENSE",
+                    f"开仓TP未齐 {result.get('matched')}/{result.get('expected')} → 再核武一轮",
+                )
+                audit = self._nuclear_realign_tp(
+                    pos["size"], pos["entry_price"], dynamic_sl=None, rounds=2,
+                )
+                result = {
+                    **result,
+                    "matched": audit.get("matched_full", result.get("matched")),
+                    "expected": audit.get("expected", result.get("expected")),
+                    "audit": audit,
+                    "nuclear_retry": True,
+                    "summary": self._format_audit_summary(audit),
+                }
             self._last_defense_result = result
-            summary = self._format_audit_summary(result["audit"])
+            summary = self._format_audit_summary(result.get("audit") or {})
             self._log(
                 "DEFENSE",
-                f"🛡️ 开仓防线核查 {result['matched']}/{result['expected']} | {summary}",
+                f"🛡️ 开仓防线核查 {result.get('matched')}/{result.get('expected')} | {summary}",
                 result,
             )
-            if result["expected"] > 0 and result["matched"] < result["expected"]:
+            if result.get("expected", 0) > 0 and result.get("matched", 0) < result.get("expected", 0):
                 self._alert(
                     "warning",
                     "DEFENSE",
                     "开仓后限价止盈未全部挂上",
-                    f"{self.current_side} {pos['size']} {getattr(self, 'qty_unit', 'ETH')} | 仅 {result['matched']}/{result['expected']} 档 | {summary}",
+                    f"{self.current_side} {pos['size']} {getattr(self, 'qty_unit', 'ETH')} | "
+                    f"仅 {result.get('matched')}/{result.get('expected')} 档 | {summary}",
                     result,
                 )
+            # ② 硬止损只挂一次（价=TV tv_sl）
             shield = self._sync_tv_hard_stop(pos["size"], at_open=True, force_replace=True)
             self._last_shield_result = shield
             sl_label = shield.get("label") or self._hard_stop_label()
@@ -2416,9 +2471,27 @@ class PositionSupervisor(
                         getattr(self, "user_id", "?"),
                         e,
                     )
-                return
+                self.monitoring = False
+                out = {
+                    "ok": False,
+                    "aborted": True,
+                    "reason": "hard_sl_fail_abort",
+                    "defense": result,
+                    "shield": shield,
+                }
+                self._last_protect_result = out
+                return out
         self._save_state()
         threading.Thread(target=self._sentinel_loop, daemon=True).start()
+        out = {
+            "ok": True,
+            "aborted": False,
+            "defense": result,
+            "shield": shield,
+            "radar_standby": True,
+        }
+        self._last_protect_result = out
+        return out
 
     def _breakeven_sl_active(self) -> bool:
         """保本/锁润止损已激活（SL 越过入场价）。"""

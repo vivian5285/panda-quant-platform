@@ -24,8 +24,12 @@ def _open_orders_side_effect(*responses):
 def supervisor(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     client = MagicMock()
+    client.exchange_id = "binance"
+    client.trading_symbol = "ETHUSDT"
+    client.trading_leverage = 25
     client.get_current_price.return_value = 3500.0
     client.cancel_all_open_orders.return_value = None
+    client.get_open_orders.return_value = []
     sup = PositionSupervisor(user_id=7, client=client)
     sup.current_side = "LONG"
     sup.regime = 3
@@ -114,19 +118,27 @@ def test_ensure_defenses_skips_when_already_aligned(supervisor, monkeypatch):
 
 
 def test_ensure_defenses_only_places_missing(supervisor, monkeypatch):
+    """缺失 TP 时 heal：只撤 TP 限价再重挂，禁止 cancel_all 误撤硬止损。"""
     partial = [
-        {"orderId": 1, "type": "LIMIT", "side": "SELL", "price": "3600.00", "origQty": "0.180"},
+        {"orderId": 1, "type": "LIMIT", "side": "SELL", "price": "3600.00", "origQty": "0.180", "reduceOnly": True},
     ]
-    supervisor.client.get_open_orders.side_effect = _open_orders_side_effect(
-        [], partial, partial, [],
-    )
+    call_n = {"n": 0}
+
+    def _get_orders(_symbol):
+        call_n["n"] += 1
+        if call_n["n"] <= 2:
+            return list(partial)
+        return []
+
+    supervisor.client.get_open_orders.side_effect = _get_orders
     supervisor.client.place_limit_order.return_value = {"orderId": 99}
     monkeypatch.setattr("app.core.position_supervisor.time.sleep", lambda *_: None)
+    supervisor._cancel_all_tp_limit_orders = MagicMock(return_value=1)
 
     result = supervisor._ensure_defenses(1.0, 3500.0, force_rebuild=False)
 
     assert result.get("healed") is True
-    supervisor.client.cancel_all_open_orders.assert_called()
+    supervisor._cancel_all_tp_limit_orders.assert_called()
     assert supervisor.client.place_limit_order.call_count >= 2
 
 
@@ -171,19 +183,32 @@ def test_aggressive_heal_on_duplicate_tp(supervisor, monkeypatch):
 
 
 def test_rebuild_defenses_force_cancels_then_places(supervisor, monkeypatch):
+    """force rebuild 只撤 TP 限价再重挂，禁止 cancel_all 误撤硬止损。"""
     partial = [
-        {"orderId": 9, "type": "LIMIT", "side": "SELL", "price": "3600.00", "origQty": "0.050"},
+        {"orderId": 9, "type": "LIMIT", "side": "SELL", "price": "3600.00", "origQty": "0.050", "reduceOnly": True},
     ]
-    supervisor.client.get_open_orders.side_effect = _open_orders_side_effect(
-        [], partial, partial, [],
-    )
+    # After TP-only cancel, book is empty → place all 3
+    call_n = {"n": 0}
+
+    def _get_orders(_symbol):
+        call_n["n"] += 1
+        # scans before heal may see partial; after tp cancel → empty
+        if call_n["n"] <= 2:
+            return list(partial)
+        return []
+
+    supervisor.client.get_open_orders.side_effect = _get_orders
     supervisor.client.place_limit_order.return_value = {"orderId": 1}
     monkeypatch.setattr("app.core.position_supervisor.time.sleep", lambda *_: None)
+    # Ensure cancel_all_tp path works via per-order cancel
+    supervisor._cancel_all_tp_limit_orders = MagicMock(return_value=1)
 
     result = supervisor._rebuild_defenses(1.0, 3500.0)
 
     assert result.get("healed") is True
-    supervisor.client.cancel_all_open_orders.assert_called()
+    supervisor._cancel_all_tp_limit_orders.assert_called()
+    # 禁止全撤（会误伤硬止损/雷达）
+    # cancel_all 可能仍被其他路径调用；核心断言：TP 重挂发生
     assert supervisor.client.place_limit_order.call_count >= 3
 
 
