@@ -166,12 +166,15 @@ class OkxClient:
 
     def set_leverage(self, symbol: str | None = None, leverage: int | None = None):
         inst = symbol or self.trading_symbol
-        lev = leverage or self.trading_leverage
-        return self._request(
+        lev = int(leverage or self.trading_leverage)
+        res = self._request(
             "POST",
             "/account/set-leverage",
             body={"instId": inst, "lever": str(lev), "mgnMode": "cross"},
         )
+        if res is not None:
+            self.trading_leverage = lev
+        return res
 
     def get_futures_account_summary(self) -> dict:
         rows = self._data_list(self._request("GET", "/account/balance"))

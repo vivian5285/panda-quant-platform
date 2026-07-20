@@ -69,16 +69,25 @@ def test_pyramid_uses_tv_formula_times_ratio():
     assert qty == pytest.approx(0.72, abs=0.02)
 
 
-def test_tv_leverage_preferred():
-    sup, _ = _make_supervisor()
+def test_tv_leverage_preferred_and_bound():
+    sup, client = _make_supervisor()
+    client.trading_leverage = 25
+    client.set_leverage = MagicMock(return_value={})
     sup.leverage = 25
     sup._apply_tv_entry_context({
         "entry_type": "OPEN",
         "risk_pct": 2.03,
-        "leverage": 10,
+        "leverage": 5,
         "qty_ratio": 1.0,
     })
-    assert sup._resolve_entry_leverage() == 10
+    assert sup._resolve_entry_leverage() == 5
+    assert sup._bind_tv_leverage() == 5
+    assert sup.leverage == 5
+    assert client.trading_leverage == 5
+    qty, meta = sup._resolve_entry_qty(1892.43)
+    assert meta["leverage"] == 5
+    assert meta["sizing_mode"] == "tv_risk_formula"
+    assert qty > 0
 
 
 def test_force_flat_before_open_preserves_tv_sl():

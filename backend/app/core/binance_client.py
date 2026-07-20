@@ -109,7 +109,9 @@ class BinanceClient:
         symbol = symbol or self.trading_symbol
         leverage = int(leverage or self.trading_leverage)
         try:
-            return self.client.futures_change_leverage(symbol=symbol, leverage=leverage)
+            res = self.client.futures_change_leverage(symbol=symbol, leverage=leverage)
+            self.trading_leverage = leverage
+            return res
         except Exception as e:
             logger.error(f"[User {self.user_id}] set_leverage failed: {e}")
             return None

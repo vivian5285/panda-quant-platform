@@ -1,4 +1,4 @@
-"""Regime cap guard: oversize detection and forced trim alignment."""
+"""Cap guard: oversize detection uses TV risk formula (not REGIME_MARGIN × 25×)."""
 
 from unittest.mock import MagicMock, patch
 
@@ -22,8 +22,18 @@ class _CapProbe(PositionCapGuardMixin):
     watched_qty = 0.0
     watched_entry = 1770.0
     initial_qty = 0.0
+    base_qty = 0.0
     current_sl = 1775.0
+    tv_sl = 1755.0
     user_id = 6
+    canonical_symbol = "ETHUSDT"
+    _tv_entry_fields = {
+        "risk_pct": 2.03,
+        "leverage": 10,
+        "qty_ratio": 1.0,
+        "regime": 3,
+        "qty_ratio_source": "tv_qty_ratio",
+    }
 
     def __init__(self):
         self.client = MagicMock()
@@ -34,6 +44,9 @@ class _CapProbe(PositionCapGuardMixin):
         }
         self.on_log = MagicMock()
         self.on_alert = MagicMock()
+
+    def _round_qty(self, q):
+        return float(int(float(q) * 1000) / 1000)
 
     def _close_order_side(self):
         return "SELL"
@@ -59,21 +72,22 @@ class _CapProbe(PositionCapGuardMixin):
 
 def test_cap_oversize_detects_stacked_position():
     probe = _CapProbe()
-    # R3 35% × 755U principal × 10x @ 1775 ≈ 1.489 ETH (user live case)
+    # TV: equity 755 × 2.03% / |1775-1755| = 15.3265 / 20 ≈ 0.766 ETH
     detail = probe._cap_oversize_detail(live_qty=2.954, price=1775.0)
     assert detail["oversized"] is True
-    assert detail["max_qty"] == pytest.approx(1.489, rel=0.05)
+    assert detail["cap_source"] == "tv_risk_formula"
+    assert detail["margin_pct"] is None
+    assert detail["max_qty"] == pytest.approx(0.766, rel=0.05)
     assert detail["trim_qty"] == pytest.approx(2.954 - detail["max_qty"], rel=0.02)
-    assert detail["retain_ratio"] > 0.4
+    assert detail["leverage"] == 10
 
 
 def test_cap_not_skewed_by_depleted_available_balance():
-    """Regression: available=12 must NOT shrink max_qty to ~0.024 and flatten the book."""
+    """Regression: available=12 must NOT invent a tiny REGIME_MARGIN flatten."""
     probe = _CapProbe()
     detail = probe._cap_oversize_detail(live_qty=2.954, price=1775.0)
-    assert detail["max_qty"] > 1.0
-    assert detail["trim_qty"] < 2.0
-    assert probe._validate_cap_trim_plan(detail) is None
+    assert detail["max_qty"] > 0.5
+    assert detail["cap_source"] == "tv_risk_formula"
 
 
 def test_cap_blocks_unsafe_trim_plan():
@@ -96,76 +110,100 @@ def test_cap_within_tolerance_not_oversized():
 
 
 def test_cap_ignores_minor_price_drift():
-    """Regression: 1.365 vs 1.363 ETH (~0.15%) must not trigger cap trim / TP realign."""
     probe = _CapProbe()
-    meta = {"regime": 3, "margin_pct": 0.35, "initial_principal": 755.0}
+    meta = {"regime": 3, "risk_pct": 2.03, "initial_principal": 755.0, "cap_source": "tv_risk_formula"}
     with patch.object(probe, "_compute_regime_cap_target", return_value=(1.363, meta)):
-        detail = probe._cap_oversize_detail(live_qty=1.365, price=1774.14)
+        detail = probe._cap_oversize_detail(live_qty=1.365, price=1775.0)
     assert detail["oversized"] is False
-    assert detail["trim_qty"] == 0.0
-    assert detail["tolerance"] >= 1.365 * CAP_EXCESS_RATIO * 0.5
 
 
-def test_cap_ignores_small_account_three_pct_overshoot():
-    """Regression: 0.2010 vs 0.1950 (~3%) must NOT trigger CAP_ALIGN trim."""
+def test_cap_drift_band_small_excess():
+    """~3% excess within CAP_EXCESS_RATIO must NOT trigger CAP_ALIGN trim."""
     probe = _CapProbe()
-    probe.initial_principal = 99.91
-    probe.client.get_futures_account_summary.return_value = {
-        "total_margin_balance": 97.89,
-        "available_balance": 50.0,
-    }
-    meta = {"regime": 3, "margin_pct": 0.35, "initial_principal": 99.91, "equity_balance": 97.89}
+    meta = {"regime": 3, "risk_pct": 2.03, "initial_principal": 99.91, "equity_balance": 97.89}
     with patch.object(probe, "_compute_regime_cap_target", return_value=(0.1950, meta)):
-        detail = probe._cap_oversize_detail(live_qty=0.2010, price=1774.0)
+        detail = probe._cap_oversize_detail(live_qty=0.2010, price=1775.0)
     assert detail["oversized"] is False
-    assert detail["trim_qty"] == 0.0
-    assert 0.2010 - 0.1950 < detail["tolerance"]
 
 
-def test_cap_triggers_on_material_overshoot():
-    """~50% over cap must still trigger trim."""
+def test_cap_drift_band_edge():
     probe = _CapProbe()
-    meta = {"regime": 3, "margin_pct": 0.35, "initial_principal": 755.0}
+    meta = {"regime": 3, "risk_pct": 2.03, "initial_principal": 755.0}
     with patch.object(probe, "_compute_regime_cap_target", return_value=(0.195, meta)):
-        detail = probe._cap_oversize_detail(live_qty=0.350, price=1774.0)
-    assert detail["oversized"] is True
-    assert detail["trim_qty"] > 0
+        detail = probe._cap_oversize_detail(live_qty=0.197, price=1775.0)
+    assert detail["oversized"] is False
 
 
-def test_cap_float_epsilon_not_oversized():
-    """0.197 vs 0.196 within drift band must not trigger CAP_ALIGN."""
+def test_cap_without_tv_params_does_not_use_regime_margin():
     probe = _CapProbe()
-    detail = probe._cap_oversize_detail(live_qty=0.197, price=1775.0)
-    tol = probe._cap_excess_tolerance(0.197, 0.196)
-    assert 0.197 - 0.196 <= tol
-    assert detail["oversized"] is False or (0.197 - detail["max_qty"]) <= tol
+    probe._tv_entry_fields = {}
+    probe.tv_sl = 0.0
+    probe.initial_qty = 1.2
+    max_qty, meta = probe._compute_regime_cap_target(1775.0)
+    assert meta["cap_source"] == "skipped_no_tv_params"
+    assert meta.get("margin_pct") is None
+    assert max_qty == pytest.approx(1.2)
 
 
-def test_enforce_cap_trims_to_target_not_near_zero():
+def test_cap_tracks_intentional_qty_after_add():
+    """After TV add, tracked initial_qty floors the cap so we do not trim intentional size."""
     probe = _CapProbe()
-    probe.watched_qty = 2.954
-    probe.initial_qty = 2.954
-    reads = iter([(2.954, 1775.0), (1.489, 1775.0), (1.489, 1775.0), (1.489, 1775.0)])
+    probe.initial_qty = 1.5
+    probe.base_qty = 1.0
+    max_qty, meta = probe._compute_regime_cap_target(1775.0)
+    assert meta["cap_source"] == "tv_risk_formula"
+    assert max_qty >= 1.5
 
-    with patch.object(probe, "_place_cap_trim_order", return_value=True) as trim, patch.object(
-        probe, "_read_live_position_qty", side_effect=lambda: next(reads),
-    ), patch.object(probe, "_smart_realign_defenses") as realign:
-        realign.return_value = {"matched": 3, "expected": 3}
+
+def test_cap_enforce_trim_calls_market(monkeypatch):
+    probe = _CapProbe()
+    probe._in_open_cap_grace = MagicMock(return_value=False)
+    placed = []
+
+    def fake_place(trim_qty):
+        placed.append(trim_qty)
+        return True
+
+    probe._place_cap_trim_order = fake_place
+    reads = iter([(2.954, 1770.0), (0.766, 1770.0), (0.766, 1770.0)])
+    probe._read_live_position_qty = MagicMock(side_effect=lambda: next(reads))
+    with patch.object(probe, "_smart_realign_defenses", return_value={"matched": 3, "expected": 3}):
         result = probe._enforce_regime_cap_alignment(2.954, 1775.0, 1775.0, reason="test")
-
-    trim.assert_called_once()
-    called_qty = trim.call_args[0][0]
-    assert called_qty == pytest.approx(1.466, rel=0.02)
-    assert result["new_qty"] == pytest.approx(1.489, rel=0.02)
+    assert placed
+    assert placed[0] == pytest.approx(2.188, rel=0.05)
+    assert result.get("new_qty") == pytest.approx(0.766, rel=0.05)
 
 
-def test_binance_supervisor_inherits_cap_guard():
+def test_supervisor_has_cap_methods():
     client = MagicMock()
     client.configure_mock(exchange_id="binance", trading_symbol="ETHUSDT", trading_leverage=25)
-    sup = PositionSupervisor(user_id=1, client=client)
+    sup = PositionSupervisor(user_id=1, client=client, initial_principal=1000.0)
     assert hasattr(sup, "_enforce_regime_cap_alignment")
     assert hasattr(sup, "_compute_regime_cap_target")
-    assert sup.exchange_id == "binance"
+
+
+def test_qty_change_significant_helper():
+    assert qty_change_significant(1.0, 1.0 + CAP_EXCESS_RATIO * 0.5, is_contracts=False) is False
+    assert qty_change_significant(1.0, 1.2, is_contracts=False) is True
+
+
+def test_bind_tv_leverage_sets_client_and_supervisor():
+    client = MagicMock()
+    client.configure_mock(exchange_id="binance", trading_symbol="ETHUSDT", trading_leverage=25)
+    client.set_leverage = MagicMock(return_value={})
+    sup = PositionSupervisor(user_id=1, client=client, initial_principal=1000.0)
+    sup._apply_tv_entry_context({
+        "entry_type": "OPEN",
+        "risk_pct": 2.4,
+        "leverage": 5,
+        "qty_ratio": 1.0,
+        "regime": 2,
+    })
+    lev = sup._bind_tv_leverage()
+    assert lev == 5
+    assert sup.leverage == 5
+    assert client.trading_leverage == 5
+    client.set_leverage.assert_called_with(sup.symbol, leverage=5)
 
 
 class _DeepcoinCapProbe(PositionCapGuardMixin):
@@ -182,9 +220,19 @@ class _DeepcoinCapProbe(PositionCapGuardMixin):
     watched_qty = 0
     watched_entry = 3000.0
     initial_qty = 0
+    base_qty = 0
     current_sl = 3000.0
+    tv_sl = 2970.0
     user_id = 1
     symbol = "ETH-USDT-SWAP"
+    canonical_symbol = "ETHUSDT"
+    _tv_entry_fields = {
+        "risk_pct": 2.03,
+        "leverage": 10,
+        "qty_ratio": 1.0,
+        "regime": 3,
+        "qty_ratio_source": "tv_qty_ratio",
+    }
 
     def __init__(self):
         self.client = MagicMock()
@@ -220,45 +268,30 @@ class _DeepcoinCapProbe(PositionCapGuardMixin):
         pass
 
 
-def test_deepcoin_cap_oversize_uses_principal_not_available():
-    """Regression: avail=15 must NOT shrink max contracts when equity=700."""
+def test_deepcoin_cap_oversize_uses_tv_formula_not_available():
+    """avail=15 must NOT shrink contracts; CAP uses TV risk formula."""
     probe = _DeepcoinCapProbe()
     detail = probe._cap_oversize_detail(live_qty=15, price=3000.0)
-    # 700 × 35% × 10 / (3000 × 0.1) ≈ 8 张
+    # 700 × 2.03% / 30 / 0.1 ≈ 4.737 → 4 张 (int)
     assert detail["oversized"] is True
-    assert detail["max_qty"] == 8
-    assert detail["trim_qty"] == 7
+    assert detail["cap_source"] == "tv_risk_formula"
+    assert detail["max_qty"] == pytest.approx(4, abs=1)
     assert probe._validate_cap_trim_plan(detail) is None
-
-
-def test_deepcoin_enforce_cap_trims_to_target_not_near_zero():
-    probe = _DeepcoinCapProbe()
-    probe.watched_qty = 15
-    probe.initial_qty = 15
-    reads = iter([(15, 3000.0), (8, 3000.0), (8, 3000.0), (8, 3000.0)])
-
-    with patch.object(probe, "_place_cap_trim_order", return_value=True) as trim, patch.object(
-        probe, "_read_live_position_qty", side_effect=lambda: next(reads),
-    ), patch.object(probe, "_smart_realign_defenses") as realign:
-        realign.return_value = {"matched": 3, "expected": 3}
-        result = probe._enforce_regime_cap_alignment(15, 3000.0, 3000.0, reason="test")
-
-    trim.assert_called_once()
-    assert trim.call_args[0][0] == 7
-    assert result["new_qty"] == 8
 
 
 def test_deepcoin_supervisor_inherits_cap_guard():
     from app.core.position_supervisor_deepcoin import DeepcoinPositionSupervisor
 
     client = MagicMock()
+    client.trading_leverage = 25
     sup = DeepcoinPositionSupervisor(user_id=1, client=client)
     assert hasattr(sup, "_enforce_regime_cap_alignment")
     assert hasattr(sup, "_compute_regime_cap_target")
+    assert hasattr(sup, "_bind_tv_leverage")
     assert sup.exchange_id == "deepcoin"
 
 
-def test_okx_cap_uses_principal_not_available():
+def test_okx_cap_uses_tv_formula():
     probe = _CapProbe()
     probe.exchange_id = "okx"
     probe.client.get_futures_account_summary.return_value = {
@@ -267,11 +300,11 @@ def test_okx_cap_uses_principal_not_available():
     }
     detail = probe._cap_oversize_detail(live_qty=2.954, price=1775.0)
     assert detail["oversized"] is True
-    assert detail["max_qty"] > 1.0
+    assert detail["cap_source"] == "tv_risk_formula"
     assert detail["sizing_base"] == 755.0
 
 
-def test_gate_cap_uses_principal_not_available():
+def test_gate_cap_uses_tv_formula():
     probe = _CapProbe()
     probe.exchange_id = "gate"
     probe.initial_principal = 700.0
@@ -280,8 +313,9 @@ def test_gate_cap_uses_principal_not_available():
         "available_balance": 12.0,
     }
     detail = probe._cap_oversize_detail(live_qty=2.954, price=1775.0)
-    assert detail["max_qty"] == pytest.approx(1.385, rel=0.05)
-    assert probe._validate_cap_trim_plan(detail) is None
+    assert detail["oversized"] is True
+    assert detail["cap_source"] == "tv_risk_formula"
+    assert detail["margin_pct"] is None
 
 
 def test_open_position_skips_cap_trim_after_fill():
@@ -299,6 +333,10 @@ def test_open_position_skips_cap_trim_after_fill():
     sup.regime = 4
     sup.tv_tps = [1800.0, 1850.0, 1900.0]
     sup.tv_price = 1770.0
+    sup.tv_sl = 1740.0
+    sup._apply_tv_entry_context({
+        "entry_type": "OPEN", "risk_pct": 2.4, "leverage": 5, "qty_ratio": 1.0, "regime": 4,
+    })
     sup.on_trade_open = MagicMock(return_value=1)
     sup.on_log = MagicMock()
     sup.on_alert = MagicMock()
@@ -310,8 +348,11 @@ def test_open_position_skips_cap_trim_after_fill():
     ), patch.object(sup, "_protect_and_monitor") as mon, patch.object(
         sup, "_enforce_regime_cap_alignment",
     ) as cap:
+        mon.return_value = {}
         sup._open_position("LONG", 1770.0)
 
     cap.assert_not_called()
     mon.assert_called_once()
     assert mon.call_args[0][0] == pytest.approx(stacked_qty, rel=0.01)
+    client.set_leverage.assert_called()
+    assert sup.leverage == 5

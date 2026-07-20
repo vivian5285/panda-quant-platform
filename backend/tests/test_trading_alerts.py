@@ -104,7 +104,7 @@ def test_cap_align_detail_chinese_readable_no_json():
 
 
 def test_all_gemini_exchanges_share_principal_cap_guard():
-    """币安/OKX/Gate 共用 PositionSupervisor；深币共用同一套 cap mixin."""
+    """币安/OKX/Gate/深币 CAP 共用 TV risk 公式（非 REGIME_MARGIN×25×）."""
     from unittest.mock import MagicMock
 
     from app.core.exchange_factory import create_supervisor
@@ -125,8 +125,14 @@ def test_all_gemini_exchanges_share_principal_cap_guard():
         sup = create_supervisor(user, client)
         assert isinstance(sup, PositionSupervisor)
         assert sup.exchange_id == ex.value
+        sup.tv_sl = 1755.0
+        sup._tv_entry_fields = {
+            "risk_pct": 2.03, "leverage": 10, "qty_ratio": 1.0, "regime": 3,
+        }
         max_qty, meta = sup._compute_regime_cap_target(1775.0)
         assert meta["sizing_base"] == 700.0
+        assert meta["cap_source"] == "tv_risk_formula"
+        assert meta.get("margin_pct") is None
         assert max_qty > 0.5
 
     user = User(id=2, exchange=ExchangeType.DEEPCOIN.value, initial_principal=700.0)
@@ -142,6 +148,11 @@ def test_all_gemini_exchanges_share_principal_cap_guard():
     ):
         dc_sup = create_supervisor(user, dc)
     assert isinstance(dc_sup, DeepcoinPositionSupervisor)
+    dc_sup.tv_sl = 2970.0
+    dc_sup._tv_entry_fields = {
+        "risk_pct": 2.03, "leverage": 10, "qty_ratio": 1.0, "regime": 3,
+    }
     max_c, meta_c = dc_sup._compute_regime_cap_target(3000.0)
     assert meta_c["sizing_base"] == 700.0
+    assert meta_c["cap_source"] == "tv_risk_formula"
     assert max_c >= 1

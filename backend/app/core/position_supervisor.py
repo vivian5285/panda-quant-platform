@@ -255,6 +255,8 @@ class PositionSupervisor(
                         or getattr(self, "tv_sl", 0)
                         or 0
                     ),
+                    "leverage": int(getattr(self, "leverage", 0) or 0),
+                    "tv_entry_fields": dict(getattr(self, "_tv_entry_fields", None) or {}),
                     "adopted_manual": bool(getattr(self, "adopted_manual", False)),
                     "radar_latched": bool(getattr(self, "radar_latched", False)),
                     "current_trade_id": getattr(self, "current_trade_id", None),
@@ -299,6 +301,12 @@ class PositionSupervisor(
                     )
                     if self._tv_hard_sl_price <= 0 and self.tv_sl > 0:
                         self._tv_hard_sl_price = self.tv_sl
+                    lev = int(s.get("leverage", 0) or 0)
+                    if lev > 0:
+                        self.leverage = lev
+                    saved_fields = s.get("tv_entry_fields")
+                    if isinstance(saved_fields, dict) and saved_fields:
+                        self._tv_entry_fields = dict(saved_fields)
                     self.adopted_manual = bool(s.get("adopted_manual", False))
                     self.radar_latched = bool(s.get("radar_latched", False))
                     tid = s.get("current_trade_id")
@@ -541,6 +549,9 @@ class PositionSupervisor(
             self._tv_entry_fields["regime"] = fields["regime"]
         elif getattr(self, "regime", None):
             self._tv_entry_fields["regime"] = self.regime
+        # Persist TV leverage on supervisor immediately (config 25× is fallback only)
+        if fields.get("leverage") is not None and int(fields["leverage"]) > 0:
+            self.leverage = int(fields["leverage"])
 
     def _uses_tv_entry_routing(self) -> bool:
         return True
@@ -552,6 +563,20 @@ class PositionSupervisor(
         if tv_lev is not None and float(tv_lev) > 0:
             return max(int(round(float(tv_lev))), 1)
         return max(int(self.leverage or 1), 1)
+
+    def _bind_tv_leverage(self) -> int:
+        """Apply TV leverage to supervisor + exchange client before sizing/order."""
+        lev = self._resolve_entry_leverage()
+        self.leverage = lev
+        client = getattr(self, "client", None)
+        if client is not None:
+            try:
+                client.trading_leverage = lev
+            except Exception:
+                pass
+            if hasattr(client, "set_leverage"):
+                client.set_leverage(self.symbol, leverage=lev)
+        return lev
 
     def _resolve_entry_qty(self, curr_px: float) -> tuple[float, dict]:
         equity = read_contract_equity(self.client)
@@ -974,8 +999,7 @@ class PositionSupervisor(
     def _add_to_position(self, action: str, curr_px: float, entry_type: str) -> dict:
         pos_before = self.position_manager.get_position(self.symbol)
         prev_qty = abs(float(pos_before.get("positionAmt", 0) or 0)) if pos_before else 0.0
-        leverage = self._resolve_entry_leverage()
-        self.client.set_leverage(self.symbol, leverage=leverage)
+        leverage = self._bind_tv_leverage()
 
         qty, sizing_meta = self._resolve_entry_qty(curr_px)
         if qty <= 0:
@@ -1216,8 +1240,7 @@ class PositionSupervisor(
         }
 
     def _open_position(self, action: str, curr_px: float) -> dict:
-        leverage = self._resolve_entry_leverage()
-        self.client.set_leverage(self.symbol, leverage=leverage)
+        leverage = self._bind_tv_leverage()
         self.client.cancel_all_open_orders(self.symbol)
         if hasattr(self, "_cancel_binance_all_close_stops"):
             purged = int(self._cancel_binance_all_close_stops() or 0)
@@ -1396,7 +1419,7 @@ class PositionSupervisor(
                 "info", "OPEN",
                 open_title,
                 f"{self.canonical_symbol} {action} {real_qty} {unit} @ {entry_price} | 滑点 {slip:+.2f} | "
-                f"TP {self.tv_tps} | ATR {self.current_atr} | {theme['leverage']}×{verify_note}{enrich_suffix}",
+                f"TP {self.tv_tps} | ATR {self.current_atr} | {leverage}×{verify_note}{enrich_suffix}",
                 detail,
             )
             self._reconcile_live_vs_book(

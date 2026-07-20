@@ -1,4 +1,4 @@
-"""Regime cap guard: radar-authority trim when live position exceeds tier margin limit."""
+"""Position cap guard: trim only when live qty exceeds TV risk-formula size."""
 from __future__ import annotations
 
 import logging
@@ -24,14 +24,10 @@ CAP_MIN_RETAIN_RATIO = 0.25
 
 class PositionCapGuardMixin:
     """
-    Highest-priority sizing alignment: if live qty exceeds regime cap (principal% × leverage),
-    market-reduce excess then realign TP1/2/3 while preserving active radar trailing SL.
+    Anti-stack guard: if live qty greatly exceeds the TV risk-formula size
+    (or tracked intentional qty after TV adds), market-reduce excess then realign TP.
+    Does NOT use REGIME_MARGIN × config leverage — that path is retired.
     """
-
-    def _regime_margin_pct(self) -> float:
-        return float(self.regime_settings[self.regime]["margin"]) * float(
-            getattr(self, "risk_multiplier", 1.0) or 1.0
-        )
 
     def _is_deepcoin_cap(self) -> bool:
         return getattr(self, "exchange_id", "") == "deepcoin"
@@ -40,7 +36,7 @@ class PositionCapGuardMixin:
         return 0.0 if self._is_deepcoin_cap() else CAP_TOLERANCE_ETH
 
     def _cap_excess_tolerance(self, live_qty: float, target_qty: float) -> float:
-        """Only trim when live exceeds regime cap by a large margin (default 10%)."""
+        """Only trim when live exceeds TV/target size by a large margin (default 10%)."""
         drift = cap_excess_tolerance(
             live_qty,
             target_qty,
@@ -49,7 +45,7 @@ class PositionCapGuardMixin:
         return max(drift, self._cap_tolerance())
 
     def _cap_qty_within_target(self, qty: float, target_qty: float) -> bool:
-        """True when live qty is at or below regime cap (float-safe + drift band)."""
+        """True when live qty is at or below target (float-safe + drift band)."""
         tol = self._cap_excess_tolerance(qty, target_qty)
         return float(qty) <= float(target_qty) + tol + 1e-9
 
@@ -77,7 +73,7 @@ class PositionCapGuardMixin:
     ) -> str:
         unit = self._cap_qty_unit()
         regime = f"R{self.regime}"
-        base = f"【{regime}档位】实盘 {live_qty:.4f}{unit} 超过本金比例上限 {target_qty:.4f}{unit}"
+        base = f"【{regime}档位】实盘 {live_qty:.4f}{unit} 超过TV公式上限 {target_qty:.4f}{unit}"
         if err:
             return f"{base}，纠偏已中止：{err}"
         if new_qty is not None and trimmed > 0:
@@ -91,52 +87,122 @@ class PositionCapGuardMixin:
         """Total contract equity for cap math — same anchor as open-order sizing."""
         return read_contract_equity(self.client)
 
+    def _resolve_cap_leverage(self) -> int:
+        if hasattr(self, "_resolve_entry_leverage"):
+            try:
+                return max(int(self._resolve_entry_leverage()), 1)
+            except Exception:
+                pass
+        return max(int(getattr(self, "leverage", 0) or settings.LEVERAGE or 1), 1)
+
     def _compute_regime_cap_target(self, price: float) -> tuple[float, dict[str, Any]]:
+        """
+        Cap = TV risk-formula OPEN size (risk_pct/tv_sl/leverage/qty_ratio),
+        floored by intentional tracked qty (base/initial after TV adds).
+        Never uses REGIME_MARGIN × config 25×.
+        """
+        from app.core.tv_entry_sizing import (
+            resolve_vps_entry_qty_deepcoin,
+            resolve_vps_entry_qty_eth,
+        )
+
         equity = self._cap_equity_balance()
         principal = float(getattr(self, "initial_principal", 0) or 0)
         sizing_base, sizing_source = resolve_cap_sizing_base(equity, principal)
-        margin_pct = self._regime_margin_pct()
         px = float(price or 0)
-        if self._is_deepcoin_cap():
-            face_value = float(getattr(self, "face_value", 0.1) or 0.1)
-            leverage = int(getattr(self, "leverage", settings.LEVERAGE) or settings.LEVERAGE)
-            margin_usd = sizing_base * margin_pct
-            notional = margin_usd * leverage
-            denom = px * face_value
-            contracts = max(int(notional / denom), 1) if denom > 0 else 1
-            meta = {
-                "sizing_base": round(sizing_base, 2),
-                "sizing_source": sizing_source,
-                "equity_balance": round(equity, 2),
-                "margin_pct": round(margin_pct, 4),
-                "margin_usd": round(margin_usd, 2),
-                "notional_usd": round(notional, 2),
-                "initial_principal": round(principal, 2),
-                "leverage": leverage,
-                "price": round(px, 2),
-                "face_value": face_value,
-                "regime": self.regime,
-            }
-            return float(contracts), meta
+        leverage = self._resolve_cap_leverage()
+        tv_fields = getattr(self, "_tv_entry_fields", None) or {}
+        risk_pct = tv_fields.get("risk_pct")
+        tv_sl = float(getattr(self, "tv_sl", 0) or 0)
+        regime = int(tv_fields.get("regime") or getattr(self, "regime", 3) or 3)
+        qty_ratio = float(tv_fields.get("qty_ratio") or 1.0)
+        if qty_ratio <= 0:
+            qty_ratio = 1.0
 
-        from app.core.symbol_precision import round_quantity
-
-        margin_usd = sizing_base * margin_pct
-        notional = margin_usd * int(getattr(self, "leverage", settings.LEVERAGE) or settings.LEVERAGE)
-        qty = round_quantity(notional / px) if px > 0 else 0.0
-        meta = {
+        meta: dict[str, Any] = {
             "sizing_base": round(sizing_base, 2),
             "sizing_source": sizing_source,
             "equity_balance": round(equity, 2),
-            "margin_pct": round(margin_pct, 4),
-            "margin_usd": round(margin_usd, 2),
-            "notional_usd": round(notional, 2),
             "initial_principal": round(principal, 2),
-            "leverage": int(getattr(self, "leverage", settings.LEVERAGE) or settings.LEVERAGE),
+            "leverage": leverage,
             "price": round(px, 2),
-            "regime": self.regime,
+            "regime": regime,
+            "risk_pct": risk_pct,
+            "tv_sl": round(tv_sl, 4) if tv_sl else 0,
+            "margin_pct": None,
+            "cap_source": "tv_risk_formula",
         }
-        return float(qty), meta
+
+        tracked = max(
+            float(getattr(self, "initial_qty", 0) or 0),
+            float(getattr(self, "base_qty", 0) or 0),
+            float(getattr(self, "watched_qty", 0) or 0),
+        )
+
+        if risk_pct is None or tv_sl <= 0 or px <= 0:
+            meta["cap_source"] = "skipped_no_tv_params"
+            meta["notional_usd"] = 0.0
+            if tracked > 0:
+                return tracked, meta
+            return 1e18, meta
+
+        if self._is_deepcoin_cap():
+            face_value = float(getattr(self, "face_value", 0.1) or 0.1)
+            qty, sizing_meta = resolve_vps_entry_qty_deepcoin(
+                live_balance=equity,
+                initial_principal=principal,
+                entry_type="OPEN",
+                base_qty=0.0,
+                price=px,
+                tv_sl=tv_sl,
+                regime=regime,
+                exchange_leverage=leverage,
+                face_value=face_value,
+                tv_qty_ratio=qty_ratio,
+                qty_ratio_source=str(tv_fields.get("qty_ratio_source") or "tv_qty_ratio"),
+                symbol=getattr(self, "canonical_symbol", None),
+                risk_pct=float(risk_pct),
+            )
+            meta.update({
+                k: sizing_meta[k]
+                for k in (
+                    "margin_usd", "notional_usd", "order_amount", "sl_distance",
+                    "sizing_mode", "binding", "risk_amount",
+                )
+                if k in sizing_meta
+            })
+            meta["face_value"] = face_value
+            meta["margin_pct"] = None
+            return max(float(qty or 0), tracked), meta
+
+        qty, sizing_meta = resolve_vps_entry_qty_eth(
+            live_balance=equity,
+            initial_principal=principal,
+            entry_type="OPEN",
+            base_qty=0.0,
+            price=px,
+            tv_sl=tv_sl,
+            regime=regime,
+            exchange_leverage=leverage,
+            round_fn=(
+                self._round_qty if hasattr(self, "_round_qty") else (lambda q: float(q))
+            ),
+            tv_qty_ratio=qty_ratio,
+            qty_ratio_source=str(tv_fields.get("qty_ratio_source") or "tv_qty_ratio"),
+            symbol=getattr(self, "canonical_symbol", None),
+            min_qty=float(getattr(self, "min_order_qty", 0) or 0) or None,
+            risk_pct=float(risk_pct),
+        )
+        meta.update({
+            k: sizing_meta[k]
+            for k in (
+                "margin_usd", "notional_usd", "order_amount", "sl_distance",
+                "sizing_mode", "binding", "risk_amount",
+            )
+            if k in sizing_meta
+        })
+        meta["margin_pct"] = None
+        return max(float(qty or 0), tracked), meta
 
     def _cap_oversize_detail(self, live_qty: float, price: float) -> dict[str, Any]:
         max_qty, cap_meta = self._compute_regime_cap_target(price)

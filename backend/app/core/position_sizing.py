@@ -1,10 +1,8 @@
-"""Position sizing: regime margin% always applies to principal snapshot (USDT contract equity anchor).
+"""Position sizing helpers — equity read + legacy margin helpers (tests only).
 
-Rules (single source of truth):
-- After flat close / settlement, ``initial_principal`` is reset to live contract equity.
-- Open size = initial_principal × regime_margin% × leverage (never availableBalance).
-- Cap / oversize check uses the same principal anchor (not depleted available margin).
-- Only floor the anchor when total equity has fallen below principal (realized losses).
+Live OPEN/ADD sizing is TV-only via ``tv_entry_sizing.py``
+(risk_pct / qty_ratio / leverage). Do not use ``compute_eth_qty`` /
+``compute_deepcoin_contracts`` for live entry.
 """
 from __future__ import annotations
 

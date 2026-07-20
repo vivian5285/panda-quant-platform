@@ -146,12 +146,15 @@ class GateClient:
 
     def set_leverage(self, symbol: str | None = None, leverage: int | None = None):
         contract = symbol or self.trading_symbol
-        lev = leverage or self.trading_leverage
-        return self._request(
+        lev = int(leverage or self.trading_leverage)
+        res = self._request(
             "POST",
             f"/futures/usdt/positions/{contract}/leverage",
             body={"leverage": str(lev)},
         )
+        if res is not None:
+            self.trading_leverage = lev
+        return res
 
     def get_futures_account_summary(self) -> dict:
         row = self._request("GET", "/futures/usdt/accounts")

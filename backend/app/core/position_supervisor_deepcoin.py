@@ -579,6 +579,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         or getattr(self, "tv_sl", 0)
                         or 0
                     ),
+                    "leverage": int(getattr(self, "leverage", 0) or 0),
+                    "tv_entry_fields": dict(getattr(self, "_tv_entry_fields", None) or {}),
                     "adopted_manual": bool(getattr(self, "adopted_manual", False)),
                     "radar_latched": bool(getattr(self, "radar_latched", False)),
                     "current_trade_id": getattr(self, "current_trade_id", None),
@@ -2363,6 +2365,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self._tv_entry_fields["regime"] = fields["regime"]
         elif getattr(self, "regime", None):
             self._tv_entry_fields["regime"] = self.regime
+        if fields.get("leverage") is not None and int(fields["leverage"]) > 0:
+            self.leverage = int(fields["leverage"])
 
     def _uses_tv_entry_routing(self) -> bool:
         return True
@@ -2374,6 +2378,20 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if tv_lev is not None and float(tv_lev) > 0:
             return max(int(round(float(tv_lev))), 1)
         return max(int(self.leverage or 1), 1)
+
+    def _bind_tv_leverage(self) -> int:
+        """Apply TV leverage to supervisor + exchange client before sizing/order."""
+        lev = self._resolve_entry_leverage()
+        self.leverage = lev
+        client = getattr(self, "client", None)
+        if client is not None:
+            try:
+                client.trading_leverage = lev
+            except Exception:
+                pass
+            if hasattr(client, "set_leverage"):
+                client.set_leverage(self.symbol, leverage=lev)
+        return lev
 
     def _resolve_entry_qty(self, curr_px: float) -> tuple[int, dict]:
         from app.core.tv_entry_sizing import ENTRY_TYPES_ADD
@@ -2509,8 +2527,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
     def _add_to_position(self, action, curr_px, entry_type):
         pos_before = self._get_active_position()
         prev_qty = self._safe_qty(pos_before.get("size", 0)) if pos_before else 0
-        leverage = self._resolve_entry_leverage()
-        self.client.set_leverage(self.symbol, leverage=leverage)
+        leverage = self._bind_tv_leverage()
 
         qty, sizing_meta = self._resolve_entry_qty(curr_px)
         if qty <= 0:
@@ -2733,8 +2750,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self._save_state()
 
     def _open_position(self, action, curr_px):
-        leverage = self._resolve_entry_leverage()
-        self.client.set_leverage(self.symbol, leverage=leverage)
+        leverage = self._bind_tv_leverage()
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.4)
         if float(getattr(self, "tv_sl", 0) or 0) <= 0:
@@ -3627,6 +3643,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     )
                     if self._tv_hard_sl_price <= 0 and self.tv_sl > 0:
                         self._tv_hard_sl_price = self.tv_sl
+                    lev = int(s.get("leverage", 0) or 0)
+                    if lev > 0:
+                        self.leverage = lev
+                    saved_fields = s.get("tv_entry_fields")
+                    if isinstance(saved_fields, dict) and saved_fields:
+                        self._tv_entry_fields = dict(saved_fields)
                     self.adopted_manual = bool(s.get("adopted_manual", False))
                     self.radar_latched = bool(s.get("radar_latched", False))
                     tid = s.get("current_trade_id")

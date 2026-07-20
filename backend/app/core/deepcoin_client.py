@@ -422,6 +422,7 @@ class DeepcoinClient:
             "mrgPosition": mrg_position,
         })
         if res and self._is_success(res):
+            self.trading_leverage = int(leverage)
             logger.info(f"[设置杠杆成功] {symbol} → {leverage}x")
         elif res:
             logger.warning(f"[设置杠杆失败] {symbol} → {leverage}x | {res}")

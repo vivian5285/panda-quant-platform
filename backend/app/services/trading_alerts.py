@@ -188,7 +188,11 @@ DINGTALK_VERBOSE_EXCLUDED = frozenset({
 })
 
 
-def resolve_exchange_theme(exchange: str | None = None, symbol: str | None = None) -> dict:
+def resolve_exchange_theme(
+    exchange: str | None = None,
+    symbol: str | None = None,
+    leverage: int | float | None = None,
+) -> dict:
     from app.core.symbol_registry import (
         exchange_native_symbol,
         label_for_symbol,
@@ -201,7 +205,11 @@ def resolve_exchange_theme(exchange: str | None = None, symbol: str | None = Non
     if key == "gateio":
         key = "gate"
     base = dict(EXCHANGE_THEMES.get(key, DEFAULT_THEME))
-    lev = exchange_leverage(key)
+    try:
+        override = int(round(float(leverage))) if leverage is not None else 0
+    except (TypeError, ValueError):
+        override = 0
+    lev = override if override > 0 else exchange_leverage(key)
     prefix = _EXCHANGE_TAG_PREFIX.get(key, "币安")
     base["leverage"] = lev
     can = normalize_canonical_symbol(symbol) or DEFAULT_CANONICAL
@@ -271,12 +279,19 @@ def format_cap_align_detail_cn(detail: dict, exchange: str | None = None) -> str
         _line("交易所", theme["label"]),
         _line("合约", theme["symbol"]),
         _line("方向", side_txt),
-        _line("档位", f"{regime_txt}（保证金比例 {_pct_text(detail.get('margin_pct'))}）"),
+        _line("档位", f"{regime_txt}" + (
+            f"（保证金比例 {_pct_text(detail.get('margin_pct'))}）"
+            if detail.get("margin_pct") is not None else (
+                f"（TV风险 {float(detail['risk_pct']):.2f}%）"
+                if detail.get("risk_pct") is not None else ""
+            )
+        )),
     ]
 
     # 开仓/纠偏不再单独刷「本金快照」条（与 OPEN 明细重复刷屏）
     if detail.get("margin_usd") and str(detail.get("entry_type") or "").upper() != "OPEN":
-        lines.append(_line("档位保证金", f"{float(detail['margin_usd']):.2f} USDT × {theme['leverage']}倍杠杆"))
+        lev = detail.get("leverage") or theme["leverage"]
+        lines.append(_line("档位保证金", f"{float(detail['margin_usd']):.2f} USDT × {lev}倍杠杆"))
 
     live = detail.get("live_qty")
     target = detail.get("target_qty") or detail.get("max_qty")
@@ -403,9 +418,13 @@ def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
 
 
 def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str:
-    """VPS 开仓/加仓 — 风险系数口径（非档位保证金百分比）."""
+    """VPS 开仓/加仓 — TV risk_pct / leverage / qty_ratio 口径."""
     sym = detail.get("symbol") or detail.get("canonical_symbol")
-    theme = resolve_exchange_theme(exchange or detail.get("exchange"), sym)
+    theme = resolve_exchange_theme(
+        exchange or detail.get("exchange"),
+        sym,
+        leverage=detail.get("leverage"),
+    )
     unit = detail.get("qty_unit") or theme["qty_unit"]
     entry_type = str(detail.get("entry_type") or "OPEN").upper()
     regime = detail.get("regime")
@@ -432,19 +451,28 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
             lines.append(_line("合约本金", f"{float(principal):.2f} USDT"))
 
     if entry_type == "OPEN":
-        if detail.get("vps_risk_pct") is not None:
+        if detail.get("risk_pct") is not None:
+            lines.append(_line("TV风险", f"{float(detail['risk_pct']):.2f}%（策略 risk_pct）"))
+        elif detail.get("vps_risk_pct") is not None:
             eff = detail.get("effective_risk_pct") or detail.get("scaled_risk_pct")
             scale = detail.get("regime_scale")
             if eff and scale:
                 lines.append(_line("VPS 风险", f"{float(detail['vps_risk_pct']):.2f}% × 档位系数 {float(scale):.2f} = {float(eff):.2f}%"))
             else:
                 lines.append(_line("VPS 风险", f"{float(detail['vps_risk_pct']):.2f}%"))
+        if detail.get("qty_ratio") is not None:
+            lines.append(_line("TV仓位系数", f"{float(detail['qty_ratio']):.4f}"))
+        if detail.get("sl_distance") is not None or detail.get("stop_distance") is not None:
+            dist = detail.get("sl_distance") or detail.get("stop_distance")
+            lines.append(_line("止损距离", f"{float(dist):.4f}"))
+        if detail.get("sizing_mode"):
+            lines.append(_line("算仓模式", str(detail["sizing_mode"])))
         if detail.get("order_amount") is not None:
             lev = detail.get("leverage") or theme["leverage"]
             lines.append(_line("头寸价值", f"{float(detail['order_amount']):.2f} USDT（{lev}×）"))
         if detail.get("margin_usd") is not None:
             lines.append(_line("保证金", f"{float(detail['margin_usd']):.2f} USDT"))
-        if detail.get("margin_coeff") is not None and detail.get("vps_risk_pct") is None:
+        if detail.get("margin_coeff") is not None and detail.get("risk_pct") is None and detail.get("vps_risk_pct") is None:
             lines.append(_line("档位权重", f"{float(detail['margin_coeff']) * 100:.0f}% 总本金"))
         notional = detail.get("notional_usd") or detail.get("order_amount") or detail.get("position_value")
         if notional is not None and detail.get("order_amount") is None:
@@ -884,7 +912,7 @@ def push_trading_alert(
 ) -> None:
     ex = exchange or (detail or {}).get("exchange") or (detail or {}).get("exchange_id")
     sym = (detail or {}).get("symbol") or (detail or {}).get("canonical_symbol")
-    theme = resolve_exchange_theme(ex, sym)
+    theme = resolve_exchange_theme(ex, sym, leverage=(detail or {}).get("leverage"))
     body = format_trading_alert_body(
         theme=theme,
         severity=severity,
