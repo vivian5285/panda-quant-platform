@@ -39,28 +39,6 @@ def _parse_float(raw, default: float | None = None) -> float | None:
         return default
 
 
-def regime_scale(regime: int) -> float:
-    """Deprecated legacy helper — not used for live sizing."""
-    r = clamp_regime(int(regime or 3))
-    return {
-        1: float(settings.REGIME_SCALE_1),
-        2: float(settings.REGIME_SCALE_2),
-        3: float(settings.REGIME_SCALE_3),
-        4: float(settings.REGIME_SCALE_4),
-    }.get(r, 1.0)
-
-
-def regime_margin_coeff(regime: int) -> float:
-    """Deprecated — REGIME_MARGIN no longer drives live qty."""
-    r = clamp_regime(int(regime or 3))
-    return {
-        1: float(getattr(settings, "REGIME_MARGIN_1", 0.08) or 0.08),
-        2: float(getattr(settings, "REGIME_MARGIN_2", 0.14) or 0.14),
-        3: float(getattr(settings, "REGIME_MARGIN_3", 0.20) or 0.20),
-        4: float(getattr(settings, "REGIME_MARGIN_4", 0.26) or 0.26),
-    }.get(r, float(getattr(settings, "REGIME_MARGIN_3", 0.20) or 0.20))
-
-
 def regime_add_qty_ratio(regime: int) -> float:
     """Fallback ADD qty_ratio when TV omits it (align Pine defaults)."""
     r = clamp_regime(int(regime or 3))
@@ -90,28 +68,6 @@ def resolve_tv_add_qty_ratio(data: dict | None, regime: int) -> tuple[float, str
     if raw is not None:
         return max(raw, 0.0), "tv_qty_ratio"
     return regime_add_qty_ratio(regime), "regime_default"
-
-
-def effective_vps_risk_pct(regime: int) -> tuple[float, dict[str, Any]]:
-    """Deprecated legacy helper — live path uses TV risk_pct only."""
-    r = clamp_regime(int(regime or 3))
-    scale = regime_scale(r)
-    global_scale = float(settings.GLOBAL_SCALE or 1.0)
-    raw = float(settings.VPS_RISK_PCT) * scale * global_scale
-    cap = float(settings.MAX_RISK_PCT)
-    floor = float(settings.MIN_VPS_RISK_PCT)
-    effective = max(min(raw, cap), floor) if cap > 0 else raw
-    return effective, {
-        "regime": r,
-        "vps_risk_pct": round(float(settings.VPS_RISK_PCT), 4),
-        "regime_scale": round(scale, 4),
-        "global_scale": round(global_scale, 4),
-        "scaled_risk_pct": round(raw, 4),
-        "effective_risk_pct": round(effective, 4),
-        "risk_clamped": bool(cap > 0 and raw > cap + 1e-9),
-        "max_risk_pct": round(cap, 4),
-        "deprecated": True,
-    }
 
 
 def floor_qty(qty: float, step: float = 0.001) -> float:
@@ -384,28 +340,22 @@ def compute_vps_add_qty(
         meta["legacy_base_qty"] = round(float(base_qty or 0), 6)
         return qty, meta
 
-    # Fallback only for unit tests that still pass base_qty alone — mark deprecated
-    bq = max(float(base_qty or 0), 0.0)
-    raw = bq * qr
-    step = float(min_qty if min_qty is not None else 0.001)
-    qty = float(round_fn(floor_qty(raw, step))) if qr > 0 else 0.0
+    # 禁止旧 base×ratio 路径：缺 TV 参数则拒绝加仓
     meta = {
-        "sizing_mode": "legacy_base_x_ratio_deprecated",
+        "sizing_mode": "tv_risk_formula",
         "entry_type": entry_type,
-        "base_qty": round(bq, 6),
+        "base_qty": round(float(base_qty or 0), 6),
         "add_qty_ratio": round(qr, 4),
         "qty_ratio": round(qr, 4),
         "qty_ratio_source": qty_ratio_source,
-        "add_qty": qty,
-        "final_qty": qty,
-        "error": "legacy_add_path" if qr > 0 else "zero_qty_ratio",
+        "add_qty": 0.0,
+        "final_qty": 0.0,
+        "error": "missing_tv_sizing_params" if qr > 0 else "zero_qty_ratio",
     }
     if regime is not None:
         meta["regime"] = clamp_regime(int(regime))
         meta["max_add_times"] = max_add_times_for_regime(int(regime))
-    if qr <= 0:
-        meta["error"] = "zero_qty_ratio"
-    return qty, meta
+    return 0.0, meta
 
 
 def compute_vps_open_contracts(

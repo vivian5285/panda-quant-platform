@@ -1,10 +1,11 @@
 """Radar breakeven trailing — regime path arm + ATR breathing (single source).
 
-Screenshot V2 (宁松勿紧 · 适度追随):
-  R1 震荡 85%启动 / 每35%步进 / 1.0 ATR 呼吸
-  R2 弱势 80% / 30% / 0.8 ATR
-  R3 中势 75% / 25% / 0.65 ATR
-  R4 强势 70% / 20% / 0.5 ATR（适度追随，非紧追）
+VPS 自查清单 · 按档位激活（接近 TP1 路径比例）:
+  R1 极弱 50%启动 / 步进35% / 1.0 ATR 呼吸
+  R2 弱势 60% / 30% / 0.8 ATR
+  R3 中势 70% / 25% / 0.65 ATR
+  R4 强势 80% / 20% / 0.5 ATR
+雷达只做移动止损，不干预 TP123 / TV硬止损挂单。
 """
 
 from __future__ import annotations
@@ -22,11 +23,12 @@ RADAR_BREAKEVEN_ATR_BEFORE_TP1 = 0.55
 RADAR_BREAKEVEN_ATR_AFTER_TP1 = 0.25
 
 # Canonical regime table — ONLY source for activation / move_step / breath ATR
+# 与《VPS 实盘增强执行自查清单》§五 一致
 REGIME_RADAR: dict[int, dict[str, float]] = {
-    1: {"activation": 0.85, "move_step": 0.35, "trail_offset": 1.00},
-    2: {"activation": 0.80, "move_step": 0.30, "trail_offset": 0.80},
-    3: {"activation": 0.75, "move_step": 0.25, "trail_offset": 0.65},
-    4: {"activation": 0.70, "move_step": 0.20, "trail_offset": 0.50},
+    1: {"activation": 0.50, "move_step": 0.35, "trail_offset": 1.00},
+    2: {"activation": 0.60, "move_step": 0.30, "trail_offset": 0.80},
+    3: {"activation": 0.70, "move_step": 0.25, "trail_offset": 0.65},
+    4: {"activation": 0.80, "move_step": 0.20, "trail_offset": 0.50},
 }
 
 # Compat aliases — prefer regime_radar_activation(regime)
@@ -37,7 +39,8 @@ RADAR_STARTUP_PROFIT_PROGRESS = REGIME_RADAR[1]["activation"]
 RADAR_OPEN_GRACE_SEC = 25.0
 RADAR_ARM_CONFIRM_POLLS = 2
 RADAR_TIGHT_SPAN_ATR_MULT = 1.0
-RADAR_TIGHT_SPAN_MIN_PROGRESS = 0.92
+# 紧 TP1：有效激活抬高，避免噪声秒挂
+RADAR_TIGHT_SPAN_MIN_PROGRESS = 0.85
 RADAR_MIN_ABS_ATR_MULT = 0.55
 RADAR_MIN_ABS_ENTRY_PCT = 0.0015
 RADAR_EFFECTIVE_CAP = 0.98

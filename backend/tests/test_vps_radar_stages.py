@@ -21,11 +21,12 @@ TP3 = 1863.96
 ATR = 16.36
 
 
-def test_regime_table_matches_screenshot():
-    assert REGIME_RADAR[1] == {"activation": 0.85, "move_step": 0.35, "trail_offset": 1.00}
-    assert REGIME_RADAR[2]["activation"] == pytest.approx(0.80)
+def test_regime_table_matches_checklist():
+    assert REGIME_RADAR[1] == {"activation": 0.50, "move_step": 0.35, "trail_offset": 1.00}
+    assert REGIME_RADAR[2]["activation"] == pytest.approx(0.60)
     assert REGIME_RADAR[3]["move_step"] == pytest.approx(0.25)
     assert REGIME_RADAR[4]["trail_offset"] == pytest.approx(0.50)
+    assert REGIME_RADAR[4]["activation"] == pytest.approx(0.80)
 
 
 def test_stage0_before_arm():

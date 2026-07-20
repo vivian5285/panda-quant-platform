@@ -1,6 +1,6 @@
 """Hard stop placement — authoritative stop = TradingView ``tv_sl``.
 
-VPS entry×regime% wide SL has been REMOVED from live placement.
+VPS entry×regime% wide SL has been DELETED. No buffer on tv_sl.
 All exchanges (LONG/SHORT) hang Stop-Limit at TV ``tv_sl`` only.
 """
 
@@ -11,44 +11,8 @@ from typing import Any
 from app.core.regime_utils import clamp_regime
 from app.core.symbol_precision import round_price
 
-# Legacy table retained only for docs/audit — NOT used for live placement
-REGIME_HARD_SL_PCT: dict[int, float] = {
-    1: 0.0278,
-    2: 0.0389,
-    3: 0.0556,
-    4: 0.0833,
-}
-
-HARD_SL_LIMIT_PCT = 0.0015  # 0.15%
+HARD_SL_LIMIT_PCT = 0.0015  # 0.15% Stop-Limit fill buffer (NOT a wider stop)
 HARD_SL_STOP_LIMIT_OFFSET = 0.5
-
-
-def hard_sl_pct(regime: int) -> float:
-    """Deprecated legacy helper — not used for live hard-SL placement."""
-    return float(REGIME_HARD_SL_PCT[clamp_regime(regime)])
-
-
-def hard_sl_final_multiplier(regime: int) -> float:
-    return hard_sl_pct(regime)
-
-
-def compute_hard_sl_distance(
-    entry: float,
-    regime: int,
-    *,
-    atr: float = 0.0,
-    relax_pct: float = 0.0,
-) -> float:
-    """Deprecated — VPS distance formula no longer drives live stops."""
-    e = max(float(entry or 0), 0.0)
-    if e <= 0:
-        return 0.0
-    _ = atr
-    dist = e * hard_sl_pct(regime)
-    rp = max(float(relax_pct or 0), 0.0)
-    if rp > 0:
-        dist *= 1.0 + rp
-    return dist
 
 
 def compute_vps_hard_sl(
@@ -63,10 +27,10 @@ def compute_vps_hard_sl(
     """
     Resolve live hard-stop price from TradingView ``tv_sl`` only.
 
-    ``tv_sl_reference`` is the authoritative stop. Entry×regime% is NOT applied.
-    Returns ``error=no_tv_sl`` when TV stop missing — caller must alert / not place VPS.
+    ``tv_sl_reference`` is the authoritative stop — no entry×% / buffer.
+    Returns ``error=no_tv_sl`` when TV stop missing — caller must alert / abort naked.
     """
-    _ = atr, relax_pct  # legacy kwargs ignored for placement
+    _ = atr, relax_pct  # ignored — no VPS wide-SL math
     entry_f = float(entry or 0)
     side_u = str(side or "").upper()
     r = clamp_regime(regime)
@@ -96,7 +60,6 @@ def compute_vps_hard_sl(
         meta["error"] = "invalid_side"
         return meta
 
-    # Soft sanity: LONG stop should be below entry; SHORT above (log only, still hang TV)
     if entry_f > 0:
         if side_u == "LONG" and tv >= entry_f:
             meta["warn"] = "tv_sl_not_below_entry_long"
@@ -117,7 +80,8 @@ def compute_hard_sl_limit_price(
     pct: float = HARD_SL_LIMIT_PCT,
 ) -> float:
     """
-    Stop-Limit execution price buffer.
+    Stop-Limit execution price near trigger (exchange fill buffer only).
+    Does NOT widen the stop trigger — trigger remains exact tv_sl.
     LONG: limit = trigger − pct×trigger; SHORT: limit = trigger + pct×trigger.
     """
     sp = float(stop_price or 0)

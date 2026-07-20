@@ -1957,11 +1957,12 @@ class AdverseRadarMixin:
         self, live_qty: float, adverse_pct: float, *, repair: bool = False, at_open: bool = False,
     ) -> dict[str, Any]:
         """
-        10% hard stop arm sequence (exchange-first):
+        TV tv_sl hard stop arm sequence (exchange-first):
         1) sync live position + open stops
         2) skip if already aligned
         3) purge duplicates only
         4) place ONLY if missing (never cancel-all + blind re-arm)
+        禁止 VPS 10%/宽止损兜底。
         """
         live_qty = self._resolve_adverse_live_qty(live_qty)
         if live_qty <= 0:
@@ -2058,9 +2059,7 @@ class AdverseRadarMixin:
             "open_adverse_stops": open_count,
             "purged_duplicates": purged,
             "consumed_tiers": list(self.adverse_consumed_tiers),
-            "stop_price": plan[0]["stop_price"] if plan else adverse_hard_stop_price(
-                float(self.watched_entry or 0), str(self.current_side or "LONG"),
-            ),
+            "stop_price": plan[0]["stop_price"] if plan else float(getattr(self, "tv_sl", 0) or 0),
             "repair": repair,
             "at_open": at_open,
             "synced_from_exchange": True,
