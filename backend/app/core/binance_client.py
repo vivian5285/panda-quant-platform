@@ -428,7 +428,15 @@ class BinanceClient:
             logger.error(f"[User {self.user_id}] market order failed: {e}")
             return None
 
-    def place_limit_order(self, side, quantity, price, symbol=None, reduce_only=True):
+    def place_limit_order(
+        self,
+        side,
+        quantity,
+        price,
+        symbol=None,
+        reduce_only=True,
+        time_in_force: str = "GTC",
+    ):
         symbol = self._sym(symbol)
         can = self._can_sym()
         try:
@@ -440,11 +448,14 @@ class BinanceClient:
                     f"[User {self.user_id}] limit order invalid qty={quantity} price={price} symbol={symbol}"
                 )
                 return None
+            tif = str(time_in_force or "GTC").upper()
+            if tif not in ("GTC", "IOC", "FOK"):
+                tif = "GTC"
             params = {
                 "symbol": symbol,
                 "side": binance_side,
                 "type": "LIMIT",
-                "timeInForce": "GTC",
+                "timeInForce": tif,
                 "quantity": qty_str,
                 "price": price_str,
             }
@@ -452,7 +463,8 @@ class BinanceClient:
                 params["reduceOnly"] = "true"
             order = self.client.futures_create_order(**params)
             logger.info(
-                f"[User {self.user_id}] limit {side} {qty_str} @ {price_str} {symbol} reduce={reduce_only}"
+                f"[User {self.user_id}] limit {side} {qty_str} @ {price_str} {symbol} "
+                f"tif={tif} reduce={reduce_only}"
             )
             return order
         except Exception as e:

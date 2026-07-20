@@ -380,18 +380,29 @@ class GateClient:
             body["reduce_only"] = True
         return self._request("POST", "/futures/usdt/orders", body=body)
 
-    def place_limit_order(self, side, quantity, price, symbol: str | None = None, reduce_only: bool = True):
+    def place_limit_order(
+        self,
+        side,
+        quantity,
+        price,
+        symbol: str | None = None,
+        reduce_only: bool = True,
+        time_in_force: str = "GTC",
+    ):
         contract = symbol or self.trading_symbol
         size = self._eth_to_contracts(float(quantity))
         if str(side).upper() in ("SELL", "SHORT"):
             size = -abs(size)
         else:
             size = abs(size)
+        tif = str(time_in_force or "GTC").lower()
+        if tif not in ("gtc", "ioc", "fok", "poc"):
+            tif = "gtc"
         body: dict[str, Any] = {
             "contract": contract,
             "size": size,
             "price": format_price(price),
-            "tif": "gtc",
+            "tif": tif,
         }
         if reduce_only:
             body["reduce_only"] = True

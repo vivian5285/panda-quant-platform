@@ -370,14 +370,30 @@ class OkxClient:
             body["reduceOnly"] = True
         return self._place_order(body)
 
-    def place_limit_order(self, side, quantity, price, symbol: str | None = None, reduce_only: bool = True):
+    def place_limit_order(
+        self,
+        side,
+        quantity,
+        price,
+        symbol: str | None = None,
+        reduce_only: bool = True,
+        time_in_force: str = "GTC",
+    ):
         inst = symbol or self.trading_symbol
         okx_side = "buy" if str(side).upper() in ("BUY", "LONG") else "sell"
+        tif = str(time_in_force or "GTC").upper()
+        # OKX: ioc/fok are ordType; gtc uses limit
+        if tif == "IOC":
+            ord_type = "ioc"
+        elif tif == "FOK":
+            ord_type = "fok"
+        else:
+            ord_type = "limit"
         body = {
             "instId": inst,
             "tdMode": "cross",
             "side": okx_side,
-            "ordType": "limit",
+            "ordType": ord_type,
             "px": format_price(price),
             "sz": self._eth_to_contracts(float(quantity)),
         }

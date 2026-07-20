@@ -591,6 +591,15 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
                     )
                 )
             lines.append(_line("雷达状态", arm_txt))
+        # Checklist §6 — mount confirm block (OPEN only)
+        mc = detail.get("mount_confirm") or {}
+        if mc or detail.get("hard_sl_mounted") is not None:
+            hs = mc.get("hard_sl") or ("✅" if detail.get("hard_sl_mounted") else "❌")
+            tp = mc.get("tp123") or ("✅" if detail.get("tp123_mounted") else "❌")
+            rd = mc.get("radar") or ("✅" if detail.get("radar_standby") is not False else "❌")
+            lines.append(_line("硬止损已挂载", hs))
+            lines.append(_line("TP1/TP2/TP3已挂载", tp))
+            lines.append(_line("雷达候命", rd))
         slices = detail.get("tp_slices") or []
         if slices:
             parts = []

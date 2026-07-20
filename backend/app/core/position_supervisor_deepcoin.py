@@ -2543,14 +2543,15 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self._alert("warning", "INSUFFICIENT_BALANCE", "余额不足", f"用户 {self.user_id} {entry_type} 无法加仓")
             return
 
-        open_side = "buy" if action == "LONG" else "sell"
-        pos_side = "long" if action == "LONG" else "short"
         logger.info(
-            f"📈 [{entry_type}] 同向追加: {open_side} +{qty} 张 | "
+            f"📈 [{entry_type}] 同向追加: {action} +{qty} 张 | "
+            f"LIMIT@{float(getattr(self, 'tv_price', 0) or curr_px or 0):.4f} | "
             f"base={sizing_meta.get('base_qty')} × {sizing_meta.get('add_qty_ratio')}",
         )
-        self.client.place_market_order(self.symbol, open_side, pos_side, qty)
-        time.sleep(2.0)
+        self._place_tv_entry_order(
+            action, qty, float(getattr(self, "tv_price", 0) or curr_px or 0),
+        )
+        time.sleep(1.2)
 
         pos = self._get_active_position()
         if not pos or self._safe_qty(pos.get("size", 0)) <= 0:
@@ -2757,6 +2758,53 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 detail["tv_sl_reference"] = vps_meta["tv_sl_reference"]
         self._save_state()
 
+    def _place_tv_entry_order(self, action: str, qty: float, limit_px: float) -> dict:
+        """
+        Checklist: LIMIT @ TV price first; unfilled → market remainder.
+        Deepcoin has no IOC — brief GTC then cancel leftover.
+        """
+        px = float(limit_px or getattr(self, "tv_price", 0) or 0)
+        open_side = "buy" if action == "LONG" else "sell"
+        pos_side = "long" if action == "LONG" else "short"
+        meta: dict = {"entry_order_style": "market", "limit_price": px, "qty": float(qty)}
+        if px > 0:
+            try:
+                res = self.client.place_limit_order(
+                    self.symbol, open_side, pos_side, px, qty, reduce_only=False,
+                )
+                meta["limit_order"] = res
+                time.sleep(0.8)
+                pos = self._get_active_position()
+                filled = self._safe_qty((pos or {}).get("size", 0))
+                target = float(self._safe_qty(qty) or qty)
+                if filled + 1e-9 >= target * 0.85:
+                    meta["entry_order_style"] = "limit"
+                    meta["filled_qty"] = filled
+                    return meta
+                try:
+                    self.client.cancel_all_open_orders(self.symbol)
+                except Exception:
+                    pass
+                remain = max(target - filled, 0)
+                if remain >= 1:
+                    logger.info(
+                        f"LIMIT 未足额 filled={filled}/{target} → 市价补 {remain}"
+                    )
+                    self.client.place_market_order(
+                        self.symbol, open_side, pos_side, remain,
+                    )
+                    meta["entry_order_style"] = "limit_then_market"
+                    meta["market_remainder"] = remain
+                else:
+                    meta["entry_order_style"] = "limit"
+                    meta["filled_qty"] = filled
+                return meta
+            except Exception as exc:
+                logger.error(f"LIMIT 开仓失败→市价: {exc}")
+        self.client.place_market_order(self.symbol, open_side, pos_side, qty)
+        meta["entry_order_style"] = "market"
+        return meta
+
     def _open_position(self, action, curr_px):
         leverage = self._bind_tv_leverage()
         self.client.cancel_all_open_orders(self.symbol)
@@ -2796,18 +2844,20 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             )
             return {"status": "error", "reason": err, "message": f"无法开仓（{err}）"}
         open_side = "buy" if action == "LONG" else "sell"
-        pos_side = "long" if action == "LONG" else "short"
         entry_type = getattr(self, "_entry_type", "OPEN")
+        limit_px = float(getattr(self, "tv_price", 0) or curr_px or 0)
 
         logger.info(
             f"🚀 [VPS开仓] {open_side} {qty} 张 | {entry_type} R{self.regime} | "
+            f"LIMIT@{limit_px:.4f}→市价补 | "
             f"名义{sizing_meta.get('order_amount')}U / sl_dist={sizing_meta.get('sl_distance')} "
             f"| TV杠杆{leverage}×"
         )
         self._last_open_sizing_meta = dict(sizing_meta or {})
         self._last_open_sizing_meta["leverage"] = leverage
-        self.client.place_market_order(self.symbol, open_side, pos_side, qty)
-        time.sleep(2.0)
+        entry_meta = self._place_tv_entry_order(action, qty, limit_px)
+        self._last_open_sizing_meta["entry_order"] = entry_meta
+        time.sleep(1.2)
 
         pos = self._get_active_position()
         if pos and pos.get('size', 0) > 0:
@@ -2954,6 +3004,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 tv_sl=float(getattr(self, "tv_sl", 0) or 0),
                 radar_armed=False,
                 radar_active=False,
+                radar_standby=True,
+                hard_sl_mounted=bool(armed),
+                tp123_mounted=bool(expected > 0 and matched >= expected) or (expected == 0),
+                mount_confirm={
+                    "hard_sl": "✅" if armed else "❌",
+                    "tp123": "✅" if (expected == 0 or matched >= expected) else "❌",
+                    "radar": "✅",
+                },
                 radar_activation=radar_act,
                 radar_activation_effective=radar_eff,
                 leverage=int(getattr(self, "leverage", 0) or 0),

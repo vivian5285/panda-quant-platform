@@ -1008,13 +1008,15 @@ class PositionSupervisor(
             self._alert("warning", "INSUFFICIENT_BALANCE", "加仓失败", f"用户 {self.user_id} {entry_type}: {err}")
             return {"status": "error", "reason": err, "message": "加仓数量无效"}
 
+        limit_px = float(getattr(self, "tv_price", 0) or curr_px or 0)
         self._log(
             "SIGNAL",
             f"📈 [{entry_type}] 同向追加: {action} +{qty} {getattr(self, 'qty_unit', 'ETH')} | "
-            f"base={sizing_meta.get('base_qty')} × {sizing_meta.get('add_qty_ratio')}",
+            f"LIMIT@{limit_px:.4f} | base={sizing_meta.get('base_qty')} × {sizing_meta.get('add_qty_ratio')}",
         )
-        self.client.place_market_order(action, qty, self.symbol)
-        time.sleep(2.0)
+        entry_meta = self._place_tv_entry_order(action, qty, limit_px)
+        sizing_meta["entry_order"] = entry_meta
+        time.sleep(1.2)
 
         pos = self.position_manager.get_position(self.symbol)
         if not pos or float(pos.get("positionAmt", 0)) == 0:
@@ -1239,6 +1241,53 @@ class PositionSupervisor(
             },
         }
 
+    def _place_tv_entry_order(self, action: str, qty: float, limit_px: float) -> dict:
+        """
+        Checklist: LIMIT @ TV price first (IOC, reduceOnly=False);
+        if not filled, market remainder so we never miss the TV entry.
+        """
+        px = float(limit_px or getattr(self, "tv_price", 0) or 0)
+        meta: dict = {"entry_order_style": "market", "limit_price": px, "qty": float(qty)}
+        if px > 0 and hasattr(self.client, "place_limit_order"):
+            try:
+                order = self.client.place_limit_order(
+                    action,
+                    qty,
+                    px,
+                    self.symbol,
+                    reduce_only=False,
+                    time_in_force="IOC",
+                )
+                meta["limit_order"] = order
+                time.sleep(0.6)
+                pos = self.position_manager.get_position(self.symbol)
+                filled = abs(float((pos or {}).get("positionAmt", 0) or 0))
+                if filled + 1e-9 >= float(qty) * 0.85:
+                    meta["entry_order_style"] = "limit_ioc"
+                    meta["filled_qty"] = filled
+                    return meta
+                remain = max(float(qty) - filled, 0.0)
+                if remain > float(getattr(self, "min_order_qty", 0) or 0.001):
+                    self._log(
+                        "SIGNAL",
+                        f"LIMIT@IOC 未足额 filled={filled:.4f}/{qty} → 市价补 {remain:.4f}",
+                    )
+                    self.client.place_market_order(action, remain, self.symbol)
+                    meta["entry_order_style"] = "limit_ioc_then_market"
+                    meta["market_remainder"] = remain
+                else:
+                    meta["entry_order_style"] = "limit_ioc"
+                    meta["filled_qty"] = filled
+                return meta
+            except TypeError:
+                # Client without time_in_force kw — fall through to market
+                pass
+            except Exception as exc:
+                self._log("ERROR", f"LIMIT 开仓失败→市价: {exc}")
+        self.client.place_market_order(action, qty, self.symbol)
+        meta["entry_order_style"] = "market"
+        return meta
+
     def _open_position(self, action: str, curr_px: float) -> dict:
         leverage = self._bind_tv_leverage()
         self.client.cancel_all_open_orders(self.symbol)
@@ -1291,15 +1340,21 @@ class PositionSupervisor(
         open_side = "BUY" if action == "LONG" else "SELL"
         entry_type = getattr(self, "_entry_type", "OPEN")
         unit = getattr(self, "qty_unit", "ETH")
+        limit_px = float(
+            getattr(self, "tv_price", 0)
+            or curr_px
+            or 0
+        )
         self._log(
             "SIGNAL",
             f"🚀 [VPS开仓] {open_side} {qty} {unit} | {getattr(self, 'canonical_symbol', '')} "
-            f"{entry_type} R{self.regime} | "
+            f"{entry_type} R{self.regime} | LIMIT@{limit_px:.4f}→IOC/市价补 | "
             f"名义{sizing_meta.get('order_amount')}U / sl_dist={sizing_meta.get('sl_distance')} "
             f"({sizing_meta.get('sizing_source')})",
         )
-        self.client.place_market_order(action, qty, self.symbol)
-        time.sleep(2.0)
+        entry_meta = self._place_tv_entry_order(action, qty, limit_px)
+        sizing_meta["entry_order"] = entry_meta
+        time.sleep(1.2)
 
         pos = self.position_manager.get_position(self.symbol)
         if pos and float(pos.get("positionAmt", 0)) != 0:
@@ -1392,6 +1447,25 @@ class PositionSupervisor(
                 detail["tp_slices"] = slices
             detail["radar_armed"] = False
             detail["radar_active"] = False
+            # Checklist §6 confirm mounts
+            shield_ok = bool(
+                shield.get("aligned")
+                or shield.get("armed")
+                or shield.get("skipped") == "live_already_aligned"
+            )
+            tp_ok = bool(
+                defense.get("matched", 0) >= max(int(defense.get("expected", 0) or 0), 1)
+                if defense.get("expected")
+                else bool(slices)
+            )
+            detail["hard_sl_mounted"] = shield_ok
+            detail["tp123_mounted"] = tp_ok
+            detail["radar_standby"] = True
+            detail["mount_confirm"] = {
+                "hard_sl": "✅" if shield_ok else "❌",
+                "tp123": "✅" if tp_ok else "❌",
+                "radar": "✅",  # 候命（开仓时未激活，监控已启动）
+            }
             from app.core.radar_trail import radar_effective_activation, regime_radar_activation
             detail["radar_activation"] = regime_radar_activation(int(self.regime or 3))
             tps = list(self.tv_tps or [])
