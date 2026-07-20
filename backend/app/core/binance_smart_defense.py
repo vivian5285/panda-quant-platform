@@ -1173,22 +1173,17 @@ class BinanceSmartDefenseMixin:
         side = getattr(self, "current_side", None)
         prev_sl = float(getattr(self, "tv_sl", 0) or 0)
 
-        # 合并硬止损：多头取更低（更宽），空头取更高
+        # 硬止损：沿用已存 TV tv_sl（加仓不重算 VPS 宽止损，禁止旧逻辑）
         if hasattr(self, "_recompute_vps_hard_sl"):
             sl_meta = self._recompute_vps_hard_sl(entry_px=entry, side=side)
-            new_sl = float(getattr(self, "tv_sl", 0) or 0)
-            if prev_sl > 0 and new_sl > 0:
-                if side == "LONG":
-                    self.tv_sl = min(prev_sl, new_sl)
-                elif side == "SHORT":
-                    self.tv_sl = max(prev_sl, new_sl)
-                sl_meta["merged_prev_sl"] = prev_sl
-                sl_meta["merged_new_sl"] = new_sl
-                sl_meta["stop_price"] = self.tv_sl
+            if float(getattr(self, "tv_sl", 0) or 0) <= 0 and prev_sl > 0:
+                self.tv_sl = prev_sl
+                sl_meta["restored_prev_tv_sl"] = prev_sl
+                sl_meta["stop_price"] = prev_sl
                 self._vps_hard_sl_meta = sl_meta
-                self._def_log(
-                    f"📐 加仓合并硬止损: {prev_sl:.2f} + {new_sl:.2f} → {self.tv_sl:.2f} ({side})",
-                )
+            self._def_log(
+                f"📐 加仓硬止损(TV): {float(getattr(self, 'tv_sl', 0) or 0):.2f} ({side})",
+            )
 
         # 重置雷达追踪器（新加权均价为基准）；未达 TP1 路径比例前 SL=0
         self.best_price = entry

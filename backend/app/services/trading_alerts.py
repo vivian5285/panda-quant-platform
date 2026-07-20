@@ -103,7 +103,7 @@ ALERT_TYPE_TAGS = {
     "CAP_ALIGN_BLOCKED": "叠仓纠偏中止",
     "CAP_ALIGN_FAIL": "叠仓减仓失败",
     "CAP_ALIGN_OVERTRIM": "叠仓过度减仓",
-    "UPDATE_SL": "VPS硬止损更新",
+    "UPDATE_SL": "TV硬止损更新",
     "UPDATE_TP": "动能止盈升级",
     "SIGNAL_RECV": "TV信号接收",
     "ADVERSE_SL": "TV硬止损",
@@ -466,8 +466,8 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
                 )
             else:
                 lines.append(_line("当前总敞口", f"{float(total_n):.2f} USDT（{float(mult):.0f}倍本金上限）"))
-        if detail.get("tv_sl"):
-            pct = detail.get("hard_sl_pct_display") or detail.get("vps_hard_sl_pct")
+        if detail.get("tv_sl") or detail.get("tv_sl_reference") or detail.get("tv_sl_ref"):
+            hang = float(detail.get("tv_sl") or detail.get("tv_sl_reference") or detail.get("tv_sl_ref") or 0)
             style = detail.get("hard_sl_order_style") or (detail.get("shield") or {}).get("order_style")
             style_cn = {
                 "reduce_only_limit": "只减仓限价（已废弃·会秒平）",
@@ -477,29 +477,16 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
                 "deepcoin_trigger_limit": "条件限价",
                 "deepcoin_trigger_market": "条件市价",
             }.get(str(style or ""), "")
-            if pct:
-                line = f"@{float(detail['tv_sl']):.2f}（开仓价×{pct}）"
+            if hang > 0:
+                line = f"@{hang:.2f}（已挂单·严格按TV tv_sl）"
                 if style_cn:
                     line += f" · {style_cn}"
-                lines.append(_line("VPS 硬止损", line))
-            else:
-                lines.append(_line("VPS 硬止损", f"@{float(detail['tv_sl']):.2f}"))
+                lines.append(_line("TV硬止损", line))
             lines.append(
                 _line(
                     "盘口结构",
-                    "基础单×3：TP1/2/3 限价 + 条件委托×1：硬止损/雷达合并槽 closePosition（互不抢份额；R1-4按档位路径启动适度追随）",
+                    "基础单×3：TP1/2/3 限价 + 条件委托×1：TV硬止损/雷达合并槽（互不抢份额；R1-4按档位路径启动适度追随）",
                 )
-            )
-        if detail.get("tv_sl_reference"):
-            ref = float(detail["tv_sl_reference"])
-            vps = float(detail.get("tv_sl") or 0)
-            note = "（仅参考·不挂单）"
-            if vps > 0 and abs(ref - vps) < 0.02:
-                note = "（与 VPS 同价·仍只挂 1 张硬止损）"
-            lines.append(_line("TV 止损参考", f"{ref:.2f}{note}"))
-        elif detail.get("tv_sl_ref"):
-            lines.append(
-                _line("TV 止损参考", f"{float(detail['tv_sl_ref']):.2f}（仅参考·不挂单）")
             )
         # Regime path arm R1=85%…R4=70% + ATR breath (适度追随)
         if detail.get("radar_armed") or detail.get("radar_active"):
@@ -679,10 +666,10 @@ def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
             lines.append(_line("雷达止损", f"@{float(stop_px):.2f}（已激活）"))
         else:
             pct = detail.get("hard_sl_pct_display")
-            suffix = f" · 开仓价×{pct}" if pct else ""
-            lines.append(_line("VPS 硬止损", f"@{float(stop_px):.2f}（雷达未激活）{suffix}"))
+            suffix = " · TV tv_sl" if pct in (None, "TV") else f" · {pct}"
+            lines.append(_line("TV硬止损", f"@{float(stop_px):.2f}（雷达未激活）{suffix}"))
         if detail.get("tv_sl_reference"):
-            lines.append(_line("TV 止损参考", f"{float(detail['tv_sl_reference']):.2f}"))
+            lines.append(_line("TV tv_sl", f"{float(detail['tv_sl_reference']):.2f}"))
     if detail.get("force_aligned"):
         lines.append(_line("逆势处理", "已强平对齐 TV 方向"))
     if detail.get("startup_summary"):

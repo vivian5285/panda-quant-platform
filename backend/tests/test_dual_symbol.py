@@ -9,7 +9,7 @@ from app.core.symbol_registry import (
     normalize_canonical_symbol,
 )
 from app.core.tv_entry_sizing import compute_vps_open_qty, regime_margin_coeff
-from app.core.vps_hard_sl import REGIME_HARD_SL_PCT
+import pytest
 
 
 def test_normalize_xau_aliases():
@@ -98,18 +98,21 @@ def test_margin_coeff_and_open_qty_matches_spec():
     assert abs(meta_x["notional_usd"] - 6500) < 1e-6
 
 
-def test_hard_sl_pct_table():
+def test_hard_sl_uses_tv_sl():
     from app.core.vps_hard_sl import compute_vps_hard_sl
 
-    assert abs(REGIME_HARD_SL_PCT[1] - 0.0278) < 1e-6
-    assert abs(REGIME_HARD_SL_PCT[4] - 0.0833) < 1e-6
-    # ETH long R4 @ 1800 → ~1650.06
-    meta = compute_vps_hard_sl(entry=1800, side="LONG", regime=4)
-    sl = float(meta.get("stop_price") or 0)
-    assert abs(sl - (1800 - 1800 * 0.0833)) < 0.02
-    # XAU short R3: same 5.56% of entry
-    xau = compute_vps_hard_sl(entry=4004.27, side="SHORT", atr=15.16, regime=3)
-    assert abs(float(xau["stop_price"]) - (4004.27 * (1 + 0.0556))) < 0.05
+    # Without tv_sl → no placement (no VPS fallback)
+    bare = compute_vps_hard_sl(entry=1800, side="LONG", regime=4)
+    assert float(bare.get("stop_price") or 0) == 0.0
+    assert bare.get("error") == "no_tv_sl"
+    # With TV tv_sl → hang exactly that price
+    meta = compute_vps_hard_sl(entry=1800, side="LONG", regime=4, tv_sl_reference=1650.0)
+    assert float(meta.get("stop_price") or 0) == pytest.approx(1650.0)
+    assert meta.get("source") == "tv_sl"
+    xau = compute_vps_hard_sl(
+        entry=4004.27, side="SHORT", atr=15.16, regime=3, tv_sl_reference=4226.91,
+    )
+    assert float(xau["stop_price"]) == pytest.approx(4226.91)
 
 
 def test_xau_qty_precision():

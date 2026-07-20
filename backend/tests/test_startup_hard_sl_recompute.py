@@ -1,9 +1,9 @@
-"""Startup VPS hard SL recompute — must replace stale TV/persisted stops."""
+"""Startup hard SL — must use TV tv_sl, never VPS entry×regime overwrite."""
 
 import pytest
 from unittest.mock import MagicMock
 
-from app.core.adverse_radar_guard import AdverseRadarMixin, ADVERSE_STOP_TOLERANCE
+from app.core.adverse_radar_guard import AdverseRadarMixin
 from app.core.startup_reconcile import (
     extract_tv_sl_reference,
     finalize_recovery_tv_params,
@@ -16,24 +16,27 @@ def test_extract_tv_sl_reference():
     assert extract_tv_sl_reference(None, {"tv_sl": 0}) == 0.0
 
 
-def test_recompute_overwrites_tight_tv_sl():
+def test_recompute_uses_tv_sl_not_regime_pct():
     class Host(AdverseRadarMixin):
         user_id = 1
         watched_entry = 1819.0
         current_side = "LONG"
         regime = 2
         current_atr = 16.65
-        tv_sl = 1787.0  # old tight value from state/DB
+        tv_sl = 0.0
 
     host = Host()
     host._init_adverse_radar_fields()
-    meta = recompute_vps_hard_sl_on_recovery(host, entry_px=1819.0, side="LONG", tv_sl_reference=1787.0)
-    assert meta.get("sl_changed") is True
-    assert host.tv_sl == pytest.approx(1819.0 * (1 - 0.0389), rel=0.01)
-    assert meta["prev_sl"] == pytest.approx(1787.0)
+    meta = recompute_vps_hard_sl_on_recovery(
+        host, entry_px=1819.0, side="LONG", tv_sl_reference=1787.0,
+    )
+    assert host.tv_sl == pytest.approx(1787.0)
+    assert meta.get("source") == "tv_sl"
+    # Must NOT become entry × (1 - 3.89%)
+    assert host.tv_sl != pytest.approx(1819.0 * (1 - 0.0389), rel=0.01)
 
 
-def test_finalize_recovery_recomputes_not_tv_sl():
+def test_finalize_recovery_uses_tv_sl():
     class Sup:
         tv_tps = [0.0, 0.0, 0.0]
         watched_entry = 1819.0
@@ -41,16 +44,20 @@ def test_finalize_recovery_recomputes_not_tv_sl():
         last_tv_side = "LONG"
         regime = 2
         current_atr = 16.65
-        tv_sl = 1787.0
+        tv_sl = 0.0
+        _tv_hard_sl_price = 0.0
 
         def _recompute_vps_hard_sl(self, entry_px=None, *, payload=None, side=None):
             from app.core.vps_hard_sl import compute_vps_hard_sl
+            ref = float((payload or {}).get("tv_sl") or 0) or None
             meta = compute_vps_hard_sl(
                 float(entry_px or self.watched_entry), side or self.current_side,
                 self.current_atr, self.regime,
-                tv_sl_reference=float((payload or {}).get("tv_sl") or 0) or None,
+                tv_sl_reference=ref,
             )
             self.tv_sl = float(meta.get("stop_price") or 0)
+            if ref:
+                self._tv_hard_sl_price = float(ref)
             return meta
 
     sup = Sup()
@@ -60,9 +67,8 @@ def test_finalize_recovery_recomputes_not_tv_sl():
         "open_log": {"entry": 1819.0, "side": "LONG"},
     }
     finalize_recovery_tv_params(sup, report, recovery)
-    assert sup.tv_sl == pytest.approx(1819.0 * (1 - 0.0389), rel=0.01)
+    assert sup.tv_sl == pytest.approx(1787.0)
     assert report.get("tv_sl_reference") == pytest.approx(1787.0)
-    assert report["vps_hard_sl_meta"]["sl_changed"] is True
 
 
 class _StartupProbe(AdverseRadarMixin):
@@ -71,7 +77,8 @@ class _StartupProbe(AdverseRadarMixin):
     symbol = "ETHUSDT"
     current_side = "LONG"
     watched_entry = 1819.0
-    tv_sl = 1766.55
+    tv_sl = 1787.0
+    _tv_hard_sl_price = 1787.0
     regime = 2
     current_atr = 16.65
     adverse_sl_armed = False
@@ -81,12 +88,13 @@ class _StartupProbe(AdverseRadarMixin):
 
     def _recompute_vps_hard_sl(self, entry_px=None, *, payload=None, side=None):
         from app.core.vps_hard_sl import compute_vps_hard_sl
+        ref = float((payload or {}).get("tv_sl") or getattr(self, "_tv_hard_sl_price", 0) or 0) or None
         meta = compute_vps_hard_sl(
             float(entry_px or self.watched_entry),
             side or self.current_side,
             self.current_atr,
             self.regime,
-            tv_sl_reference=float((payload or {}).get("tv_sl") or 0) or None,
+            tv_sl_reference=ref,
         )
         self.tv_sl = float(meta.get("stop_price") or 0)
         return meta
@@ -113,6 +121,8 @@ class _StartupProbe(AdverseRadarMixin):
 def test_startup_reconcile_upgrades_stale_stop_on_book():
     probe = _StartupProbe()
     probe._init_adverse_radar_fields()
+    probe._tv_hard_sl_price = 1748.06
+    probe.tv_sl = 1748.06
     stale_px = 1787.0
     stop_order = {
         "type": "STOP",

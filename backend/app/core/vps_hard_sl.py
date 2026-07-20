@@ -1,4 +1,8 @@
-"""VPS-computed hard stop — regime % of entry price (scales with ETH/XAU price)."""
+"""Hard stop placement — authoritative stop = TradingView ``tv_sl``.
+
+VPS entry×regime% wide SL has been REMOVED from live placement.
+All exchanges (LONG/SHORT) hang Stop-Limit at TV ``tv_sl`` only.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +11,7 @@ from typing import Any
 from app.core.regime_utils import clamp_regime
 from app.core.symbol_precision import round_price
 
-# Hard stop distance = entry × regime_pct（ETH / XAU 共用同一开仓价比例）
-# Spec @ ETH 1800 参考：R1≈50u / R2≈70u / R3≈100u / R4≈150u
-# R1 2.78% / R2 3.89% / R3 5.56% / R4 8.33%
+# Legacy table retained only for docs/audit — NOT used for live placement
 REGIME_HARD_SL_PCT: dict[int, float] = {
     1: 0.0278,
     2: 0.0389,
@@ -17,19 +19,16 @@ REGIME_HARD_SL_PCT: dict[int, float] = {
     4: 0.0833,
 }
 
-# Stop-Limit: limit worse than trigger by this fraction of trigger (0.1%~0.2%)
 HARD_SL_LIMIT_PCT = 0.0015  # 0.15%
-# Legacy absolute offset kept for callers that still pass fixed USD
 HARD_SL_STOP_LIMIT_OFFSET = 0.5
 
 
 def hard_sl_pct(regime: int) -> float:
-    """Regime breathing-room as fraction of entry price."""
+    """Deprecated legacy helper — not used for live hard-SL placement."""
     return float(REGIME_HARD_SL_PCT[clamp_regime(regime)])
 
 
 def hard_sl_final_multiplier(regime: int) -> float:
-    """Alias for hard_sl_pct — retained for older call sites / logs."""
     return hard_sl_pct(regime)
 
 
@@ -40,10 +39,7 @@ def compute_hard_sl_distance(
     atr: float = 0.0,
     relax_pct: float = 0.0,
 ) -> float:
-    """
-    Breathing space in price units: entry × regime_pct (+ optional relax).
-    `atr` is ignored (kept for backward-compatible callers).
-    """
+    """Deprecated — VPS distance formula no longer drives live stops."""
     e = max(float(entry or 0), 0.0)
     if e <= 0:
         return 0.0
@@ -65,41 +61,51 @@ def compute_vps_hard_sl(
     tv_sl_reference: float | None = None,
 ) -> dict[str, Any]:
     """
-    VPS authoritative hard stop from entry × regime % (TV tv_sl reference-only).
-    LONG: entry − distance; SHORT: entry + distance.
-    ETH / XAU 同一比例；`atr` 忽略 — 距离随开仓价缩放。
+    Resolve live hard-stop price from TradingView ``tv_sl`` only.
+
+    ``tv_sl_reference`` is the authoritative stop. Entry×regime% is NOT applied.
+    Returns ``error=no_tv_sl`` when TV stop missing — caller must alert / not place VPS.
     """
+    _ = atr, relax_pct  # legacy kwargs ignored for placement
     entry_f = float(entry or 0)
     side_u = str(side or "").upper()
     r = clamp_regime(regime)
-    pct = hard_sl_pct(r)
-    dist = compute_hard_sl_distance(entry_f, r, atr=atr, relax_pct=relax_pct)
+    tv = float(tv_sl_reference or 0)
     meta: dict[str, Any] = {
-        "source": "vps_computed",
-        "method": "entry_pct",
+        "source": "tv_sl",
+        "method": "tv_hard_sl",
         "regime": r,
-        "atr": round(float(atr or 0), 4),
-        "hard_sl_pct": round(pct, 4),
-        "hard_sl_pct_display": f"{pct * 100:.1f}%",
-        "final_multiplier": round(pct, 4),
-        "sl_distance": round(dist, 4),
-        "relax_pct": round(float(relax_pct or 0), 4),
         "entry": round(entry_f, 2),
         "side": side_u,
+        "hard_sl_pct": None,
+        "hard_sl_pct_display": "TV",
+        "final_multiplier": None,
+        "sl_distance": round(abs(entry_f - tv), 4) if entry_f > 0 and tv > 0 else 0.0,
+        "relax_pct": 0.0,
+        "tv_sl": round(tv, 2) if tv > 0 else None,
     }
-    if tv_sl_reference and float(tv_sl_reference) > 0:
-        meta["tv_sl_reference"] = round(float(tv_sl_reference), 2)
 
-    if entry_f <= 0 or dist <= 0 or side_u not in ("LONG", "SHORT"):
+    if tv <= 0:
         meta["stop_price"] = 0.0
-        meta["error"] = "invalid_inputs"
+        meta["error"] = "no_tv_sl"
+        meta["source"] = "missing_tv_sl"
         return meta
 
-    if side_u == "LONG":
-        meta["stop_price"] = round_price(entry_f - dist)
-    else:
-        meta["stop_price"] = round_price(entry_f + dist)
+    if side_u not in ("LONG", "SHORT"):
+        meta["stop_price"] = 0.0
+        meta["error"] = "invalid_side"
+        return meta
+
+    # Soft sanity: LONG stop should be below entry; SHORT above (log only, still hang TV)
+    if entry_f > 0:
+        if side_u == "LONG" and tv >= entry_f:
+            meta["warn"] = "tv_sl_not_below_entry_long"
+        elif side_u == "SHORT" and tv <= entry_f:
+            meta["warn"] = "tv_sl_not_above_entry_short"
+
+    meta["stop_price"] = round_price(tv)
     meta["limit_price"] = compute_hard_sl_limit_price(meta["stop_price"], side_u)
+    meta["tv_sl_reference"] = round(tv, 2)
     return meta
 
 
@@ -111,17 +117,16 @@ def compute_hard_sl_limit_price(
     pct: float = HARD_SL_LIMIT_PCT,
 ) -> float:
     """
-    Stop-Limit execution price for buffer hard stop.
-    LONG: limit = trigger − (pct × trigger); SHORT: limit = trigger + (pct × trigger).
-    Optional fixed `offset` (USD) overrides pct when provided explicitly as positive.
+    Stop-Limit execution price buffer.
+    LONG: limit = trigger − pct×trigger; SHORT: limit = trigger + pct×trigger.
     """
     sp = float(stop_price or 0)
     if sp <= 0 or side not in ("LONG", "SHORT"):
         return round_price(sp)
     if offset is not None and float(offset) > 0:
-        off = float(offset)
+        delta = float(offset)
     else:
-        off = max(sp * max(float(pct or 0), 0.0), HARD_SL_STOP_LIMIT_OFFSET * 0.2)
+        delta = sp * float(pct or HARD_SL_LIMIT_PCT)
     if side == "LONG":
-        return round_price(sp - off)
-    return round_price(sp + off)
+        return round_price(sp - delta)
+    return round_price(sp + delta)

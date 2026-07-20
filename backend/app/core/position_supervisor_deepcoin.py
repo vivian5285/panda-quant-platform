@@ -574,6 +574,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "adverse_arm_dingtalk_sent": bool(getattr(self, "adverse_arm_dingtalk_sent", False)),
                     "adverse_last_repair_ts": float(getattr(self, "_adverse_last_repair_ts", 0) or 0),
                     "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
+                    "tv_hard_sl_price": float(
+                        getattr(self, "_tv_hard_sl_price", 0)
+                        or getattr(self, "tv_sl", 0)
+                        or 0
+                    ),
                     "adopted_manual": bool(getattr(self, "adopted_manual", False)),
                     "radar_latched": bool(getattr(self, "radar_latched", False)),
                     "current_trade_id": getattr(self, "current_trade_id", None),
@@ -1994,19 +1999,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         if hasattr(self, "_recompute_vps_hard_sl"):
             sl_meta = self._recompute_vps_hard_sl(entry_px=entry, side=side)
-            new_sl = float(getattr(self, "tv_sl", 0) or 0)
-            if prev_sl > 0 and new_sl > 0:
-                if side == "LONG":
-                    self.tv_sl = min(prev_sl, new_sl)
-                elif side == "SHORT":
-                    self.tv_sl = max(prev_sl, new_sl)
-                sl_meta["merged_prev_sl"] = prev_sl
-                sl_meta["merged_new_sl"] = new_sl
-                sl_meta["stop_price"] = self.tv_sl
+            if float(getattr(self, "tv_sl", 0) or 0) <= 0 and prev_sl > 0:
+                self.tv_sl = prev_sl
+                sl_meta["restored_prev_tv_sl"] = prev_sl
+                sl_meta["stop_price"] = prev_sl
                 self._vps_hard_sl_meta = sl_meta
-                logger.info(
-                    f"📐 加仓合并硬止损: {prev_sl:.2f} + {new_sl:.2f} → {self.tv_sl:.2f} ({side})",
-                )
+            logger.info(
+                f"📐 加仓硬止损(TV): {float(getattr(self, 'tv_sl', 0) or 0):.2f} ({side})",
+            )
 
         self.best_price = entry
         self.consumed_tp_levels = []
@@ -3499,6 +3499,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self._adverse_last_repair_ts = float(s.get("adverse_last_repair_ts", 0) or 0)
                     self.adverse_arm_dingtalk_sent = bool(s.get("adverse_arm_dingtalk_sent", False))
                     self.tv_sl = float(s.get("tv_sl", 0) or 0)
+                    self._tv_hard_sl_price = float(
+                        s.get("tv_hard_sl_price") or s.get("tv_sl", 0) or 0
+                    )
+                    if self._tv_hard_sl_price <= 0 and self.tv_sl > 0:
+                        self._tv_hard_sl_price = self.tv_sl
                     self.adopted_manual = bool(s.get("adopted_manual", False))
                     self.radar_latched = bool(s.get("radar_latched", False))
                     tid = s.get("current_trade_id")

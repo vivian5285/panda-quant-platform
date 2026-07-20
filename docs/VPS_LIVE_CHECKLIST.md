@@ -11,7 +11,7 @@
 | # | 原则 | 源码锚点 |
 |---|------|----------|
 | P0 | TV 只发信号，不执行实盘决策 | `webhook_server.py` → `dispatcher.py` → `position_supervisor*.py` |
-| P0 | `tv_sl` **仅供日志参考**，绝不作为实盘硬止损挂单依据 | `vps_hard_sl.py` · `adverse_radar_guard.py`（`UPDATE_SL` 忽略） |
+| P0 | 硬止损严格按 TV `tv_sl` 挂单（多空·全所）；**禁止**开仓价×档位% 旧宽止损 | `vps_hard_sl.py` · `adverse_radar_guard.py` |
 | P1 | 雷达移动保本 **距 TP1 剩 15%（路径≥85%）** 启动（四档统一；TP1 间距过窄时抬高有效比例 + 开仓保护期 + 双轮确认；TP 成交强制激活） | `evaluate_radar_arm_gate()` · `_radar_activation_reached()` |
 | P0 | ETH / XAU **独立** supervisor 状态，互不串单 | `symbol_registry.py` · `dispatcher.UserSupervisorPool` |
 | P0 | 所有 OPEN sizing 基于 **账户总本金（Total Equity）**，非可用余额 | `position_sizing.resolve_principal_sizing_base()` · `tv_entry_sizing.py` |
@@ -90,43 +90,30 @@ py -m pytest tests/test_dual_symbol.py tests/test_vps_dev_checklist.py tests/tes
 
 ---
 
-## 模块三：硬止损（VPS 自主，忽略 TV 紧止损）🔴 P0
+## 模块三：硬止损（严格按 TV `tv_sl` · 禁止 VPS 宽止损）🔴 P0
 
 | # | 检查项 | 状态 | 源码 |
 |---|--------|------|------|
-| 3.1 | 硬止损 = 开仓价 × 档位百分比 | ✅ | `vps_hard_sl.REGIME_HARD_SL_PCT` |
-| 3.2 | ETH / XAU **同一开仓价比例** | ✅ | R1~R4：2.78/3.89/5.56/8.33% |
-| 3.3 | 多：止损 = entry × (1 − pct) | ✅ | `compute_vps_hard_sl()` |
-| 3.4 | 空：止损 = entry × (1 + pct) | ✅ | 同上 |
-| 3.5 | 开仓成交后立即挂 **Stop-Limit 条件单**（禁止普通限价硬止损，否则会秒平；基础单仍为 TP123×3） | ✅ | `adverse_radar_guard._place_adverse_stop_slice` |
-| 3.6 | 止损只收紧不放松 | ✅ | `max(vps_sl, radar)` 合并逻辑 |
-| 3.7 | `tv_sl` 仅日志，不用于挂单 | ✅ | `tv_sl_ignored` 元数据 |
-| 3.8 | 雷达启动前币安条件委托 = 0 | ✅ | 限价失败才降级 Stop-Limit / STOP_MARKET |
-
-### 硬止损比例（占开仓价 % · ETH/XAU 共用）
-
-| 档位 | 比例 | ETH@1800 示例 |
-|------|------|---------------|
-| R1 | 2.78% | ≈50u / 止损≈1750 |
-| R2 | 3.89% | ≈70u |
-| R3 | 5.56% | ≈100u |
-| R4 | 8.33% | ≈150u |
-
-执行优先：**只减仓限价** `LIMIT reduceOnly`（基础单）。  
-降级：限价失败 → Stop-Limit（缓冲 `HARD_SL_LIMIT_PCT` 0.15%）→ STOP_MARKET（qty）→ closePosition。
+| 3.1 | 硬止损 = TV `tv_sl`（权威价） | ✅ | `vps_hard_sl.compute_vps_hard_sl(tv_sl_reference=…)` |
+| 3.2 | 缺 `tv_sl` → 不挂、告警 `HARD_SL_MISSING`（无开仓价%兜底） | ✅ | `error=no_tv_sl` |
+| 3.3 | 多空 · ETH/XAU · 四所同一套 | ✅ | `AdverseRadarMixin._sync_tv_hard_stop` |
+| 3.4 | OPEN / UPDATE_SL 均按 TV 价挂/改挂 | ✅ | `_apply_tv_sl_from_payload` / `_handle_update_sl` |
+| 3.5 | 开仓成交后立即挂 **Stop-Limit / 条件槽**（禁止普通限价硬止损） | ✅ | `adverse_radar_guard._place_adverse_stop_slice` |
+| 3.6 | 雷达合并槽：LONG max(tv,radar) / SHORT min | ✅ | `_merged_stop_price` |
+| 3.7 | ~~`tv_sl` 仅日志~~ **已废止** — `tv_sl` 即挂单价 | ✅ | 删除 VPS entry% 挂单路径 |
+| 3.8 | 雷达启动前币安条件委托 = 1（TV硬止损） | ✅ | 合并单槽 |
 
 ### 实盘场景
 
 | 场景 | VPS 预期 |
 |------|----------|
-| XAU R3 SHORT @4004.27 | 止损 ≈ **4226.91**（4004.27 × 5.56%） |
-| ETH R4 LONG @1800 | 止损 ≈ 1650.06（1800 × 8.33%） |
-| 开仓后币安盘口 | 基础单 **3**（TP123）+ 条件委托 **1**（VPS 硬止损 Stop-Limit）；雷达前勿把硬止损挂成普通限价 |
-| TV 发来紧 `tv_sl` | 日志参考，挂单用 VPS 开仓价% |
-| `UPDATE_SL` | 记录并跳过（`vps_self_managed`） |
+| TV `tv_sl=1787` LONG | 条件单触发价 **1787**（不是开仓价×%） |
+| 开仓后币安盘口 | 基础单 **3**（TP123）+ 条件委托 **1**（TV硬止损）；勿挂普通限价硬止损 |
+| 缺 `tv_sl` | `HARD_SL_MISSING`；**不**用旧宽止损兜底 |
+| `UPDATE_SL` | 按新 `tv_sl` **改挂** |
 | `CLOSE_STOPLOSS` | **第一优先级**立即市价全平 |
 
-**测试**：`test_vps_hard_sl.py` · `test_dual_symbol.py::test_hard_sl_pct_table`
+**测试**：`test_vps_hard_sl.py` · `test_dual_symbol.py::test_hard_sl_uses_tv_sl` · `test_startup_hard_sl_recompute.py`
 
 ---
 
@@ -262,9 +249,9 @@ if progress ≥ REGIME_RADAR[regime].activation  →  arm Stage 1（保本）
 ### 场景 4：TV 紧止损被忽略
 
 ```
-1. TV tv_sl=1910（ATR 紧止损）
-2. VPS 日志 tv_sl_ignored
-3. 实际挂单：entry × (1 − regime_pct)
+1. TV tv_sl=1910
+2. 盘口条件单触发价 = 1910（严格按 TV）
+3. 不再使用 entry × regime_pct 宽止损
 ```
 
 ---
@@ -274,7 +261,7 @@ if progress ≥ REGIME_RADAR[regime].activation  →  arm Stage 1（保本）
 | 能力 | Binance | OKX | Gate | DeepCoin |
 |------|---------|-----|------|----------|
 | OPEN sizing | ✅ | ✅ | ✅ | ✅（张） |
-| VPS 硬止损 | ✅ | ✅ | ✅ | ✅ 双轨 |
+| TV 硬止损 | ✅ | ✅ | ✅ | ✅ 双轨 |
 | 路径雷达激活 | ✅ | ✅ | ✅ | ✅ |
 | 6 阶段雷达 | ✅ | ✅ | ✅ | ✅ |
 | ETH + XAU | ✅ | ✅ | ✅ | ✅ |
@@ -292,13 +279,14 @@ DeepCoin 差异：合约张、`face_value=0.1`、双轨 STOP（TV SL + 雷达条
 |------|--------|------------------|
 | Webhook + 品种路由 | 🔴 P0 | `test_dual_symbol` · `test_webhook_payload` |
 | OPEN sizing + 13× cap | 🔴 P0 | `test_dual_symbol` · `test_tv_v6985_sizing` |
-| VPS 硬止损 | 🔴 P0 | `test_vps_hard_sl` |
+| TV 硬止损 | 🔴 P0 | `test_vps_hard_sl` · `test_tv_sl_shield` |
 | 路径雷达 + Stage 锁利 | 🟡 P1 | `test_radar_trail` · `test_vps_radar_stages` |
 | 钉钉 | 🟢 P2 | `test_vps_dev_checklist` |
 
 **禁止事项**：
 
-- 不要用 TV `tv_sl` 挂实盘 STOP
+- 不要用开仓价×档位% 挂实盘硬止损（旧 VPS 宽止损已删除）
+- 不要在缺 `tv_sl` 时用假宽止损兜底（应告警 `HARD_SL_MISSING`）
 - 不要仅凭头寸细微变化（R4 TP1≈5%）启动雷达
 - 不要让 ETH 信号路由到 XAU supervisor
 - 不要用可用余额代替 total equity 做 OPEN sizing
@@ -310,7 +298,7 @@ DeepCoin 差异：合约张、`face_value=0.1`、双轨 STOP（TV SL + 雷达条
 ```
 backend/app/core/symbol_registry.py      # 品种归一化 + 四所符号表
 backend/app/core/tv_entry_sizing.py      # OPEN/ADD  sizing
-backend/app/core/vps_hard_sl.py          # 硬止损公式
+backend/app/core/vps_hard_sl.py          # TV tv_sl 硬止损（权威挂单价）
 backend/app/core/tp_slice_guard.py       # 三重 TP 验证
 backend/app/core/vps_radar_stages.py     # 雷达 6 阶段
 backend/app/core/combined_notional.py    # 13× 名义 cap

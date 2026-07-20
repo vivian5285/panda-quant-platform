@@ -198,7 +198,7 @@ def compute_adverse_stop_plan(
         "stop_price": tv_px,
         "qty": qty,
         "level": 1,
-        "source": "vps_hard_sl",
+        "source": "tv_hard_sl",
     }]
 
 
@@ -259,9 +259,16 @@ class AdverseRadarMixin:
             self._radar_path_ok_streak = 0
         if not hasattr(self, "_last_radar_arm_meta"):
             self._last_radar_arm_meta = {}
+        if not hasattr(self, "_tv_hard_sl_price"):
+            self._tv_hard_sl_price = 0.0
+        if not hasattr(self, "_vps_hard_sl_meta"):
+            self._vps_hard_sl_meta = {}
 
     def _reset_adverse_radar(self, *, keep_tv_sl: bool = True) -> None:
         preserved = float(getattr(self, "tv_sl", 0) or 0) if keep_tv_sl else 0.0
+        preserved_tv = float(getattr(self, "_tv_hard_sl_price", 0) or 0) if keep_tv_sl else 0.0
+        if keep_tv_sl and preserved_tv <= 0 and preserved > 0:
+            preserved_tv = preserved
         self.adverse_sl_armed = False
         self.adverse_sl_prices = []
         self.adverse_consumed_tiers = []
@@ -272,6 +279,9 @@ class AdverseRadarMixin:
         self._radar_path_ok_streak = 0
         self._last_radar_arm_meta = {}
         self.tv_sl = preserved
+        self._tv_hard_sl_price = preserved_tv
+        if not keep_tv_sl:
+            self._vps_hard_sl_meta = {}
 
     def _latch_radar(self) -> None:
         """Once radar arms, never revert to hard-only defense until flat."""
@@ -366,7 +376,7 @@ class AdverseRadarMixin:
         self.radar_latched = True
 
     def _hard_stop_label(self) -> str:
-        return "VPS硬止损"
+        return "TV硬止损"
 
     def _recompute_vps_hard_sl(
         self,
@@ -375,9 +385,7 @@ class AdverseRadarMixin:
         payload: dict | None = None,
         side: str | None = None,
     ) -> dict:
-        """Authoritative hard SL from entry × regime % (TV tv_sl reference-only)."""
-        from app.config import get_settings
-
+        """Authoritative hard SL = TradingView tv_sl (all exchanges). No VPS wide SL."""
         self._init_adverse_radar_fields()
         entry = float(
             entry_px
@@ -403,38 +411,68 @@ class AdverseRadarMixin:
             elif payload.get("side"):
                 side_u = str(payload.get("side")).upper()
 
-        relax = float(getattr(get_settings(), "VPS_SL_RELAX_PCT", 0) or 0)
         ref = parse_tv_sl(payload.get("tv_sl")) if payload else None
+        if not ref or ref <= 0:
+            ref = float(getattr(self, "_tv_hard_sl_price", 0) or 0)
+        if (not ref or ref <= 0) and payload is None:
+            # Keep last TV-sourced stop across protect/recover recalcs
+            prev_meta = getattr(self, "_vps_hard_sl_meta", None) or {}
+            if str(prev_meta.get("source") or "") in ("tv_sl", "tv_hard_sl"):
+                ref = float(getattr(self, "tv_sl", 0) or 0)
+
+        if ref and ref > 0:
+            self._tv_hard_sl_price = float(ref)
+
         meta = compute_vps_hard_sl(
             entry, side_u, atr, regime,
-            relax_pct=relax,
-            tv_sl_reference=ref,
+            tv_sl_reference=ref if ref and ref > 0 else None,
         )
         if meta.get("stop_price", 0) > 0:
             self.tv_sl = float(meta["stop_price"])
             self._vps_hard_sl_meta = meta
-        logger.info(
-            "VPS硬止损计算: entry=%.2f side=%s regime=%s pct=%s → stop=%.2f dist=%.2f | %s",
-            entry,
-            side_u,
-            regime,
-            meta.get("hard_sl_pct_display"),
-            float(meta.get("stop_price") or 0),
-            float(meta.get("sl_distance") or 0),
-            meta,
-        )
+            logger.info(
+                "TV硬止损: entry=%.2f side=%s → stop=%.2f (tv_sl) | %s",
+                entry,
+                side_u,
+                float(meta.get("stop_price") or 0),
+                meta,
+            )
+        else:
+            self._vps_hard_sl_meta = meta
+            logger.error(
+                "TV硬止损缺失: entry=%.2f side=%s — 禁止VPS宽止损兜底，请检查 TV 是否下发 tv_sl | %s",
+                entry,
+                side_u,
+                meta,
+            )
+            if hasattr(self, "_alert"):
+                try:
+                    self._alert(
+                        "critical",
+                        "HARD_SL_MISSING",
+                        "TV硬止损缺失·禁止漏挂",
+                        f"entry={entry:.2f} side={side_u} — 未收到有效 tv_sl，未挂宽止损旧逻辑",
+                        {"entry": entry, "side": side_u, "meta": meta,
+                         "exchange": getattr(self, "exchange_id", None)},
+                    )
+                except Exception:
+                    pass
         return meta
 
     def _apply_tv_sl_from_payload(self, payload: dict | None) -> float | None:
-        """Compute VPS hard SL from entry × regime %; TV tv_sl stored as reference only."""
+        """Apply TradingView tv_sl as the only live hard-stop price."""
         if not payload:
             return None
+        ref = parse_tv_sl(payload.get("tv_sl"))
+        if ref and ref > 0:
+            self._init_adverse_radar_fields()
+            self._tv_hard_sl_price = float(ref)
         meta = self._recompute_vps_hard_sl(payload=payload)
         px = float(meta.get("stop_price") or 0)
         return px if px > 0 else None
 
     def _clamp_radar_sl_to_tv_floor(self, sl: float) -> float:
-        """Radar must never sit below VPS hard stop (LONG) or above it (SHORT)."""
+        """Radar must never sit worse than TV hard stop (LONG below / SHORT above)."""
         tv_sl = float(getattr(self, "tv_sl", 0) or 0)
         if tv_sl <= 0 or sl <= 0:
             return sl
@@ -788,33 +826,59 @@ class AdverseRadarMixin:
             self.adverse_sl_armed = False
             self.adverse_sl_prices = []
 
-        if at_open and tv_sl <= 0:
-            return {"armed": False, "reason": "no_tv_sl", "skipped": "await_tv_sl"}
+        if tv_sl <= 0:
+            return {"armed": False, "reason": "no_tv_sl", "skipped": "await_tv_sl", "label": label}
 
         return self._arm_adverse_staged_stops(
             live_qty, 0.0, repair=force_replace or tv_sl > 0, at_open=at_open,
         )
 
     def _handle_update_sl(self, payload: dict) -> dict[str, Any]:
-        """UPDATE_SL ignored — VPS computes hard SL from regime+ATR; radar managed locally."""
+        """UPDATE_SL → apply TV tv_sl and rehang hard stop (all exchanges)."""
         self._init_adverse_radar_fields()
-        detail: dict[str, Any] = {
+        new_sl = parse_tv_sl(payload.get("tv_sl"))
+        if not new_sl or new_sl <= 0:
+            detail = {
+                "action": "UPDATE_SL",
+                "ignored": True,
+                "reason": "missing_tv_sl",
+                "note": "UPDATE_SL 缺少有效 tv_sl，未改硬止损",
+            }
+            self._log("UPDATE_SL", "UPDATE_SL 无有效 tv_sl", detail)
+            return {"status": "skipped", "reason": "missing_tv_sl", "action": "UPDATE_SL", "detail": detail}
+
+        self._tv_hard_sl_price = float(new_sl)
+        meta = self._recompute_vps_hard_sl(payload=payload)
+        live_qty = float(getattr(self, "watched_qty", 0) or 0)
+        if live_qty <= 0 and hasattr(self, "_get_active_position"):
+            try:
+                pos = self._get_active_position()
+                if pos:
+                    live_qty = float(pos.get("size") or 0)
+            except Exception:
+                pass
+        shield: dict[str, Any] = {}
+        if live_qty > 0 and float(getattr(self, "tv_sl", 0) or 0) > 0:
+            shield = self._sync_tv_hard_stop(live_qty, force_replace=True) or {}
+        detail = {
             "action": "UPDATE_SL",
-            "ignored": True,
-            "reason": "vps_self_managed",
-            "note": "VPS 自主计算硬止损与雷达，忽略 TV UPDATE_SL",
-            "tv_sl_reference": parse_tv_sl(payload.get("tv_sl")),
-            "vps_sl": float(getattr(self, "tv_sl", 0) or 0),
-            "regime": getattr(self, "regime", None),
-            "atr": getattr(self, "current_atr", None),
+            "ignored": False,
+            "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
+            "meta": meta,
+            "shield": shield,
+            "live_qty": live_qty,
+            "note": "已按 TV tv_sl 更新硬止损并同步盘口",
         }
-        self._log("UPDATE_SL", "忽略 TV UPDATE_SL — VPS 自主管理硬止损", detail)
-        return {
-            "status": "skipped",
-            "reason": "update_sl_ignored",
-            "action": "UPDATE_SL",
-            "detail": detail,
-        }
+        self._log("UPDATE_SL", f"TV硬止损更新 → {self.tv_sl}", detail)
+        if hasattr(self, "_alert"):
+            self._alert(
+                "info",
+                "UPDATE_SL",
+                f"{self._hard_stop_label()}已更新",
+                f"tv_sl={self.tv_sl} | 实盘qty={live_qty}",
+                detail,
+            )
+        return {"status": "ok", "action": "UPDATE_SL", "detail": detail}
 
     def _live_side_from_pos(self, pos: dict | None) -> str | None:
         if not pos:

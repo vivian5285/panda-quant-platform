@@ -250,6 +250,11 @@ class PositionSupervisor(
                     "adverse_arm_dingtalk_sent": bool(getattr(self, "adverse_arm_dingtalk_sent", False)),
                     "adverse_last_repair_ts": float(getattr(self, "_adverse_last_repair_ts", 0) or 0),
                     "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
+                    "tv_hard_sl_price": float(
+                        getattr(self, "_tv_hard_sl_price", 0)
+                        or getattr(self, "tv_sl", 0)
+                        or 0
+                    ),
                     "adopted_manual": bool(getattr(self, "adopted_manual", False)),
                     "radar_latched": bool(getattr(self, "radar_latched", False)),
                     "current_trade_id": getattr(self, "current_trade_id", None),
@@ -289,6 +294,11 @@ class PositionSupervisor(
                     self._adverse_last_repair_ts = float(s.get("adverse_last_repair_ts", 0) or 0)
                     self.adverse_arm_dingtalk_sent = bool(s.get("adverse_arm_dingtalk_sent", False))
                     self.tv_sl = float(s.get("tv_sl", 0) or 0)
+                    self._tv_hard_sl_price = float(
+                        s.get("tv_hard_sl_price") or s.get("tv_sl", 0) or 0
+                    )
+                    if self._tv_hard_sl_price <= 0 and self.tv_sl > 0:
+                        self._tv_hard_sl_price = self.tv_sl
                     self.adopted_manual = bool(s.get("adopted_manual", False))
                     self.radar_latched = bool(s.get("radar_latched", False))
                     tid = s.get("current_trade_id")
@@ -484,14 +494,18 @@ class PositionSupervisor(
         if raw_action == "CLOSE_STOPLOSS":
             sl_reason = tv_reason or "触碰硬止损或追踪保本线"
             tv_sl_ref = parse_tv_sl(payload.get("tv_sl"))
-            vps_sl = float(getattr(self, "tv_sl", 0) or 0)
+            hung_sl = float(getattr(self, "tv_sl", 0) or 0)
             sl_compare = {
                 "tv_sl_reference": tv_sl_ref,
-                "vps_hard_sl": vps_sl,
-                "vps_hard_sl_meta": getattr(self, "_vps_hard_sl_meta", None),
-                "note": "TV紧止损为第一指令立即全平；VPS宽止损为备用保险",
+                "tv_hard_sl": hung_sl,
+                "tv_hard_sl_meta": getattr(self, "_vps_hard_sl_meta", None),
+                "note": "TV CLOSE_STOPLOSS 立即全平；盘口硬止损亦按 TV tv_sl 挂单",
             }
-            self._log("CLOSE_STOPLOSS", f"TV止损 → 立即全平 | TV ref {tv_sl_ref} vs VPS {vps_sl}", sl_compare)
+            self._log(
+                "CLOSE_STOPLOSS",
+                f"TV止损 → 立即全平 | TV ref {tv_sl_ref} | 盘口硬止损 {hung_sl}",
+                sl_compare,
+            )
             self._close_all(
                 f"🛑 {sl_reason}",
                 close_action=raw_action,

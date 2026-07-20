@@ -62,7 +62,7 @@ def recompute_vps_hard_sl_on_recovery(
     side: str | None = None,
     tv_sl_reference: float | None = None,
 ) -> dict:
-    """Recompute authoritative VPS hard SL from regime×ATR (never trust persisted/TV tv_sl)."""
+    """Recovery: hard SL = TradingView tv_sl only (no VPS entry×regime fallback)."""
     if not hasattr(supervisor, "_recompute_vps_hard_sl"):
         return {}
     entry = float(
@@ -81,12 +81,21 @@ def recompute_vps_hard_sl_on_recovery(
 
     prev_sl = float(getattr(supervisor, "tv_sl", 0) or 0)
     ref = float(tv_sl_reference or 0)
+    if ref <= 0:
+        ref = float(getattr(supervisor, "_tv_hard_sl_price", 0) or 0)
+    if ref <= 0:
+        ref = extract_tv_sl_reference(
+            getattr(supervisor, "last_tv_signal", None),
+            {"tv_sl": getattr(supervisor, "tv_sl", 0)},
+        )
     payload: dict = {
         "regime": int(getattr(supervisor, "regime", 3) or 3),
         "atr": float(getattr(supervisor, "current_atr", 0) or 30.0),
     }
     if ref > 0:
         payload["tv_sl"] = ref
+        if hasattr(supervisor, "_tv_hard_sl_price"):
+            supervisor._tv_hard_sl_price = ref
     meta = supervisor._recompute_vps_hard_sl(entry_px=entry, side=side_u, payload=payload)
     new_sl = float(meta.get("stop_price") or 0)
     if prev_sl > 0 and new_sl > 0:
