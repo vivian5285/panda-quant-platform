@@ -169,6 +169,7 @@ trail_distance = ADX 在 1.2×ATR ~ 2.5×ATR 插值（ADX 15→1.2，35→2.5）
 ## 六、行情 / 保留删除 / 验收
 
 - 行情：30m → 90m；ATR(14)/ADX(14)；webhook **不读** atr/adx  
+- **90m 锚点（已实现）**：`bucket = (open_time_ms // 5_400_000) * 5_400_000`（UTC Unix epoch 地板，非进程启动时刻）。因 `1440÷90=16`，UTC 日界自然对齐。上线前须与 TV 90m 图逐根核对 `open_time`（见附件）。  
 - 保留：`HARD_SL_FAIL_ABORT`、`FORCE_ALIGN`  
 - 删除：`CAP_ALIGN` 减仓、加仓、旧雷达 activated/2.0ATR、保护性全平、挂 TP3  
 
@@ -176,5 +177,44 @@ trail_distance = ADX 在 1.2×ATR ~ 2.5×ATR 插值（ADX 15→1.2，35→2.5）
 cd backend
 py -m pytest tests/test_breathing_stop.py tests/test_tv_v6985_sizing.py \
   tests/test_vps_entry_routing.py tests/test_pine_tp_regime_ratios.py \
-  tests/test_market_indicators.py tests/test_close_alert_utils.py -q
+  tests/test_market_indicators.py tests/test_close_alert_utils.py \
+  tests/test_webhook_bar_time.py -q
 ```
+
+---
+
+## 附件 · 实现细节严谨性检查（三项）
+
+> 非架构变更；策略参数与止损引擎逻辑不变。开发/模拟盘逐项确认。
+
+### 一、90 分钟合成 K 线边界对齐（阻塞上线）
+
+| 项 | 状态 |
+|----|------|
+| 实现 | UTC epoch 90m 地板桶（见上）；`utc_90m_bucket_ms` + 单测覆盖非零日界 |
+| 上线前人工验证 | 取历史段：TV 90m vs VPS `bar_open_ms` 逐根对齐；抽样 ATR/ADX 误差 **≤5%** |
+| 未通过 | **禁止凑合上线**；先改锚点再复验 |
+
+### 二、Webhook `bar_time` 乱序兜底（非阻塞）
+
+| 项 | 状态 |
+|----|------|
+| 字段 | 可选 `"bar_time": <ms>`（或 Pine `time`）；缺省不拦截 |
+| 行为 | OPEN：若 `bar_time` < 该 symbol 已接受水位 → `ignored/stale_bar_time`，不交易 |
+| CLOSE | **永不**因过期丢弃（反转保护优先）；仅向前推进水位 |
+| 实现 | `webhook_bar_time.py` + `webhook_server` |
+
+### 三、ATR 异常值兜底（阻塞上线 · 已实现）
+
+| 项 | 状态 |
+|----|------|
+| ATR≤0 / 缺失 | 拒开仓 + 钉钉 `ATR_INVALID`（critical）；**不**永久暂停 |
+| 当前 ATR < 近 50 根 ATR 中位数 × 0.3 | 拒开仓 + 钉钉 `ATR_ANOMALY`；后续信号仍可再试 |
+| 配置 | `ATR_MEDIAN_LOOKBACK=50`、`ATR_MEDIAN_FLOOR_RATIO=0.30`；K 线拉取 ≥250 根 30m |
+| 实现 | `evaluate_atr_sanity` + `open_atr_guard`（全交易所共用） |
+
+| 项目 | 优先级 | 阻塞上线 |
+|------|--------|----------|
+| 90m 边界对齐验证 | 高 | 是（人工核对仍待做） |
+| `bar_time` 序号 | 中 | 否 |
+| ATR 异常兜底 | 高 | 是（代码已落地） |

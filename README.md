@@ -471,12 +471,14 @@ currentStop = max/min(currentStop, extreme ∓ trail_dist)
 | 项 | 值 |
 |----|-----|
 | 源 | 各所 `fetch_klines`；失败可回落 Binance 公共 |
-| 合成 | 每 3 根 **30m** → 1 根 **90m**（开首/收末/高低极值/量求和） |
+| 合成 | 每 3 根 **30m** → 1 根 **90m**；锚点 `bucket=(t_ms//5400000)*5400000`（UTC epoch，非进程启动） |
 | 指标 | 闭合 90m 后 Wilder **ATR(14)** / **ADX(14)** |
+| ATR 容错 | ≤0 或 < 近50根中位数×0.3 → **拒本次开仓**+钉钉（不永久暂停） |
 | 消费方 | 开仓算 `initialStop`、呼吸 tick、阶段二 trail |
-| Webhook | **禁止**用 `msg.atr` / `msg.adx` 驱动决策 |
+| Webhook | **禁止**用 `msg.atr` / `msg.adx` 驱动决策；可选 `bar_time` 防 OPEN 乱序 |
 
-配置：`STRATEGY_BAR_MINUTES=90`，`KLINE_BASE_INTERVAL=30m`。
+配置：`STRATEGY_BAR_MINUTES=90`，`KLINE_BASE_INTERVAL=30m`，`KLINE_FETCH_LIMIT=250`。  
+上线前核对：TV 90m vs VPS `bar_open_ms`（见 `docs/VPS_LIVE_CHECKLIST.md` 附件）。
 
 ---
 

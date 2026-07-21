@@ -100,13 +100,18 @@ class Settings(BaseSettings):
     IDLE_PATROL_INTERVAL_SEC: float = 10.0
     IDLE_ADOPT_RETRY_COOLDOWN_SEC: float = 45.0
 
-    # VPS 行情引擎：4H 原生 K 线 → ATR/ADX(14)；与妈妈版主图对齐
+    # VPS 行情引擎：30m → 合成 90m（UTC epoch 90m 桶对齐）→ ATR/ADX(14)
+    # 桶公式：bucket = (open_time_ms // 5_400_000) * 5_400_000；1440÷90=16 → UTC 日界自然对齐
     STRATEGY_BAR_MINUTES: int = 90
     KLINE_BASE_INTERVAL: str = "30m"
     ATR_ADX_PERIOD: int = 14
-    KLINE_FETCH_LIMIT_30M: int = 100  # compat alias name; used as fetch limit
-    KLINE_FETCH_LIMIT: int = 100
+    # ≥ ~65 根闭合 90m（warmup+median50）→ 约 200+ 根 30m；留余量用 250
+    KLINE_FETCH_LIMIT_30M: int = 250
+    KLINE_FETCH_LIMIT: int = 250
     ATR_COMPARE_WARN_PCT: float = 0.20
+    ATR_MEDIAN_LOOKBACK: int = 50
+    ATR_MEDIAN_FLOOR_RATIO: float = 0.30  # 当前 ATR < median×0.3 → 拒开仓
+    WEBHOOK_BAR_TIME_ENABLED: bool = True  # 有 bar_time 才校验；缺省字段不拦截
 
     SETTLEMENT_PRIMARY_DAYS: int = 30
     SETTLEMENT_EXTENDED_DAYS: int = 35

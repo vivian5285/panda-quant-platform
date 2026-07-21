@@ -106,6 +106,19 @@ def normalize_tv_payload(data: dict) -> dict:
             except (TypeError, ValueError):
                 pass
 
+    # Optional bar_time (ms); Pine `time` often = bar open — fine for monotonic order
+    raw_bt = out.get("bar_time")
+    if raw_bt is None or raw_bt == "":
+        raw_bt = out.get("time")
+    if raw_bt is not None and raw_bt != "":
+        try:
+            bt = float(raw_bt)
+            if bt > 0 and bt < 1e11:
+                bt *= 1000.0
+            out["bar_time"] = int(bt) if bt > 0 else None
+        except (TypeError, ValueError):
+            out["bar_time"] = None
+
     out.setdefault("strategy_version", "v6.5.6")
     return out
 

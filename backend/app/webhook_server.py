@@ -236,6 +236,43 @@ def webhook():
         )
         return jsonify({"status": "error", "message": "Platform trading globally paused"}), 503
 
+    from app.services.webhook_bar_time import check_and_accept_bar_time
+
+    # CLOSE 永不因 bar_time 过期被丢弃（反转保护优先）；仅 OPEN 做乱序丢弃
+    if not is_close:
+        bt_ok, bt_reason, bt_meta = check_and_accept_bar_time(
+            symbol=data.get("symbol") or data.get("ticker"),
+            bar_time=data.get("bar_time"),
+        )
+        if not bt_ok:
+            logger.info(
+                "[Webhook] stale_bar_time reject symbol=%s bar_time=%s last=%s",
+                bt_meta.get("symbol"),
+                bt_meta.get("bar_time"),
+                bt_meta.get("last_bar_time"),
+            )
+            _log_reject_async(
+                payload=data,
+                event_status="rejected",
+                http_status=200,
+                error_message=f"stale_bar_time:{bt_reason}",
+                response_status="ignored",
+            )
+            return jsonify({
+                "status": "ignored",
+                "reason": "stale_bar_time",
+                "message": "bar_time older than last processed for symbol — no trade",
+                "bar_time": bt_meta.get("bar_time"),
+                "last_bar_time": bt_meta.get("last_bar_time"),
+            }), 200
+    else:
+        # CLOSE：永不因 bar_time 丢弃；仅向前推进水位
+        from app.services.webhook_bar_time import note_bar_time_watermark
+        note_bar_time_watermark(
+            symbol=data.get("symbol") or data.get("ticker"),
+            bar_time=data.get("bar_time"),
+        )
+
     from app.database import SessionLocal
     from app.services.webhook_idempotency import compute_fingerprint, try_acquire
     from app.services.webhook_symbol_coalesce import get_coalesce

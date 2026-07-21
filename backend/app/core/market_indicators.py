@@ -2,10 +2,16 @@
 
 Strategy bar = 90m (exchanges lack native 90m → aggregate 3×30m).
 ATR(14) / ADX(14) use Wilder's smoothing.
+
+90m time anchor (must match TradingView custom 90m):
+  bucket_open_ms = (open_time_ms // 5_400_000) * 5_400_000
+  i.e. Unix-epoch UTC floors of 90 minutes — NOT "from process start".
+  Because 24h/90m = 16 exactly, UTC midnight is always a bucket boundary.
 """
 
 from __future__ import annotations
 
+import statistics
 from typing import Any, Sequence
 
 DEFAULT_PERIOD = 14
@@ -43,6 +49,13 @@ def normalize_candle(row: Sequence | dict) -> dict[str, float]:
     }
 
 
+def utc_90m_bucket_ms(open_time_ms: float | int, bar_ms: int = BAR_MS_90M) -> int:
+    """TradingView-compatible 90m bucket open = UTC Unix epoch floor."""
+    ot = int(open_time_ms)
+    bm = int(bar_ms)
+    return (ot // bm) * bm
+
+
 def aggregate_30m_to_90m(
     candles_30m: Sequence[Sequence | dict],
     *,
@@ -52,8 +65,9 @@ def aggregate_30m_to_90m(
 ) -> list[dict[str, float]]:
     """Merge consecutive 30m candles into closed 90m bars (UTC epoch aligned).
 
-    Incomplete groups (< 3 base bars) and the still-open 90m bucket are dropped
-    when now_ms is provided.
+    Anchor: ``bucket = (open_time_ms // 5_400_000) * 5_400_000`` (same for every
+    exchange / process restart). Incomplete groups (< 3 base bars) and the
+    still-open 90m bucket are dropped when now_ms is provided.
     """
     if not candles_30m:
         return []
@@ -63,8 +77,7 @@ def aggregate_30m_to_90m(
 
     groups: dict[int, list[dict[str, float]]] = {}
     for b in bars:
-        ot = int(b["open_time"])
-        bucket = (ot // bar_ms) * bar_ms
+        bucket = utc_90m_bucket_ms(b["open_time"], bar_ms)
         groups.setdefault(bucket, []).append(b)
 
     out: list[dict[str, float]] = []
@@ -94,26 +107,81 @@ def true_range(high: float, low: float, prev_close: float) -> float:
     return max(high - low, abs(high - prev_close), abs(low - prev_close))
 
 
+def wilder_atr_series(
+    candles: Sequence[dict[str, float]],
+    period: int = DEFAULT_PERIOD,
+) -> list[float]:
+    """Running Wilder ATR after each bar once warm (length = len(candles)-period)."""
+    n = int(period or DEFAULT_PERIOD)
+    if n < 1 or len(candles) < n + 1:
+        return []
+    trs: list[float] = []
+    for i in range(1, len(candles)):
+        trs.append(true_range(
+            candles[i]["high"], candles[i]["low"], candles[i - 1]["close"],
+        ))
+    if len(trs) < n:
+        return []
+    atr = sum(trs[:n]) / n
+    series = [float(atr)]
+    for tr in trs[n:]:
+        atr = (atr * (n - 1) + tr) / n
+        series.append(float(atr))
+    return series
+
+
 def wilder_atr(
     candles: Sequence[dict[str, float]],
     period: int = DEFAULT_PERIOD,
 ) -> float:
     """Wilder ATR on closed OHLCV bars. Returns 0 if insufficient history."""
-    n = int(period or DEFAULT_PERIOD)
-    if n < 1 or len(candles) < n + 1:
-        return 0.0
-    trs: list[float] = []
-    for i in range(1, len(candles)):
-        h = candles[i]["high"]
-        l = candles[i]["low"]
-        pc = candles[i - 1]["close"]
-        trs.append(true_range(h, l, pc))
-    if len(trs) < n:
-        return 0.0
-    atr = sum(trs[:n]) / n
-    for tr in trs[n:]:
-        atr = (atr * (n - 1) + tr) / n
-    return float(atr)
+    series = wilder_atr_series(candles, period)
+    return float(series[-1]) if series else 0.0
+
+
+def evaluate_atr_sanity(
+    atr: float,
+    atr_series: Sequence[float] | None = None,
+    *,
+    lookback: int = 50,
+    floor_ratio: float = 0.30,
+    min_samples: int = 10,
+) -> dict[str, Any]:
+    """Open-time ATR guard: reject if ATR≤0 or << recent median (not a permanent pause)."""
+    atr_f = float(atr or 0)
+    meta: dict[str, Any] = {
+        "atr": round(atr_f, 6),
+        "atr_median": None,
+        "atr_floor_ratio": float(floor_ratio),
+        "lookback": int(lookback),
+    }
+    if atr_f <= 0:
+        meta["ok"] = False
+        meta["error"] = "atr_invalid"
+        return meta
+
+    series = [float(x) for x in (atr_series or []) if float(x or 0) > 0]
+    window = series[-int(lookback) :] if series else []
+    meta["atr_series_len"] = len(series)
+    meta["atr_window_len"] = len(window)
+    if len(window) < int(min_samples):
+        # Not enough history for median — allow if atr>0 (warmup)
+        meta["ok"] = True
+        meta["median_check"] = "skipped_insufficient_history"
+        return meta
+
+    med = float(statistics.median(window))
+    meta["atr_median"] = round(med, 6)
+    floor = med * float(floor_ratio)
+    meta["atr_floor"] = round(floor, 6)
+    if atr_f < floor - 1e-12:
+        meta["ok"] = False
+        meta["error"] = "atr_anomaly"
+        meta["median_check"] = "failed"
+        return meta
+    meta["ok"] = True
+    meta["median_check"] = "passed"
+    return meta
 
 
 def wilder_adx(
@@ -122,7 +190,6 @@ def wilder_adx(
 ) -> float:
     """Wilder ADX(period). Needs roughly 2*period+1 bars; returns 0 if short."""
     n = int(period or DEFAULT_PERIOD)
-    # Need: 1 seed + n for first ATR/DM averages + n for first ADX smooth ≈ 2n+1 closes
     if n < 1 or len(candles) < 2 * n + 1:
         return 0.0
 
@@ -146,7 +213,7 @@ def wilder_adx(
     sm_minus = sum(minus_dm[:n]) / n
 
     dx_list: list[float] = []
-    # First DX at index n-1 of the smoothed series (after initial averages)
+
     def _dx(atr_v: float, p: float, m: float) -> float:
         if atr_v <= 0:
             return 0.0
@@ -179,14 +246,16 @@ def compute_atr_adx_from_30m(
     period: int = DEFAULT_PERIOD,
     now_ms: float | None = None,
 ) -> dict[str, Any]:
-    """Legacy pipeline: 30m → closed 90m → ATR/ADX."""
+    """Legacy pipeline: 30m → closed 90m → ATR/ADX (+ ATR series for sanity)."""
     bars_90 = aggregate_30m_to_90m(candles_30m, now_ms=now_ms)
-    atr = wilder_atr(bars_90, period)
+    atr_series = wilder_atr_series(bars_90, period)
+    atr = float(atr_series[-1]) if atr_series else 0.0
     adx = wilder_adx(bars_90, period)
     last_bar = bars_90[-1] if bars_90 else None
     return {
         "atr": atr,
         "adx": adx,
+        "atr_series": atr_series,
         "bars_90": len(bars_90),
         "bar_count": len(bars_90),
         "bar_open_ms": float(last_bar["open_time"]) if last_bar else 0.0,
@@ -223,17 +292,19 @@ def compute_atr_adx_from_klines(
     bar_minutes: int = 240,
     synthesize_from_30m: bool = False,
 ) -> dict[str, Any]:
-    """ATR/ADX on strategy bars. Native 4h by default; optional 30m→90m synth."""
+    """ATR/ADX on strategy bars. Native TF or 30m→90m synth."""
     if synthesize_from_30m or int(bar_minutes) == 90:
         return compute_atr_adx_from_30m(candles, period=period, now_ms=now_ms)
     bar_ms = int(bar_minutes) * 60 * 1000
     bars = closed_native_bars(candles, bar_ms=bar_ms, now_ms=now_ms)
-    atr = wilder_atr(bars, period)
+    atr_series = wilder_atr_series(bars, period)
+    atr = float(atr_series[-1]) if atr_series else 0.0
     adx = wilder_adx(bars, period)
     last_bar = bars[-1] if bars else None
     return {
         "atr": atr,
         "adx": adx,
+        "atr_series": atr_series,
         "bars_90": len(bars),  # compat key
         "bar_count": len(bars),
         "bar_open_ms": float(last_bar["open_time"]) if last_bar else 0.0,

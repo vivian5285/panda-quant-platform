@@ -92,6 +92,9 @@ ALERT_TYPE_TAGS = {
     "BREATH_TRAIL": "止损移动",
     "CLOSE_BREATH_STOP": "止损触发",
     "ATR_MISMATCH": "异常告警",
+    "ATR_ANOMALY": "异常告警",
+    "ATR_INVALID": "异常告警",
+    "STALE_BAR_TIME": "异常告警",
     "ADJUST": "异常告警",
     "MANUAL_ADJUST": "异常告警",
     "FORCE_ALIGN": "异常告警",
@@ -192,6 +195,10 @@ ADMIN_DINGTALK_KEY_TYPES = frozenset({
     "POSITION_QTY_CHANGE",
     "FLIP_CLEAN",
     "TRAIL",
+    "ATR_ANOMALY",
+    "ATR_INVALID",
+    "ATR_MISMATCH",
+    "STALE_BAR_TIME",
 })
 
 DINGTALK_VERBOSE_EXCLUDED = frozenset({

@@ -1,4 +1,4 @@
-"""VPS market engine — native strategy-bar ATR(14)/ADX(14) cache (妈妈版默认 4h).
+"""VPS market engine — 30m→90m ATR(14)/ADX(14) cache (UTC epoch 90m buckets).
 
 Breathing stop reads ATR/ADX only from here (never from TV webhook).
 """
@@ -37,8 +37,8 @@ def _cache_key(exchange: str | None, symbol: str | None) -> str:
 
 def binance_public_klines(
     symbol: str,
-    interval: str = "4h",
-    limit: int = 100,
+    interval: str = "30m",
+    limit: int = 250,
 ) -> list[list]:
     """Public Binance USDT-M klines (no API key)."""
     can = normalize_canonical_symbol(symbol) or "ETHUSDT"
@@ -77,12 +77,12 @@ def fetch_strategy_klines(
 ) -> tuple[list, str]:
     """Return (klines, source). Prefer exchange client; fall back to Binance public."""
     settings = get_settings()
-    interval = str(getattr(settings, "KLINE_BASE_INTERVAL", "4h") or "4h")
+    interval = str(getattr(settings, "KLINE_BASE_INTERVAL", "30m") or "30m")
     lim = int(
         limit
         or getattr(settings, "KLINE_FETCH_LIMIT", 0)
-        or getattr(settings, "KLINE_FETCH_LIMIT_30M", 100)
-        or 100
+        or getattr(settings, "KLINE_FETCH_LIMIT_30M", 250)
+        or 250
     )
     ex = (exchange or getattr(client, "exchange_id", None) or "binance").strip().lower()
     if ex == "gateio":
@@ -160,9 +160,11 @@ def refresh_indicators(
         bar_minutes=bar_minutes,
         synthesize_from_30m=synth,
     )
+    atr_series = list(computed.get("atr_series") or [])
     snap = {
         "atr": float(computed.get("atr") or 0),
         "adx": float(computed.get("adx") or 0),
+        "atr_series": atr_series,
         "bar_open_ms": float(computed.get("bar_open_ms") or 0),
         "bars_90": int(computed.get("bar_count") or computed.get("bars_90") or 0),
         "bar_count": int(computed.get("bar_count") or computed.get("bars_90") or 0),
@@ -177,6 +179,8 @@ def refresh_indicators(
         snap["atr"] = float(prev["atr"])
         snap["adx"] = float(prev.get("adx") or snap["adx"])
         snap["bar_open_ms"] = float(prev.get("bar_open_ms") or snap["bar_open_ms"])
+        if prev.get("atr_series"):
+            snap["atr_series"] = list(prev.get("atr_series") or [])
         snap["stale"] = True
     else:
         snap["stale"] = False

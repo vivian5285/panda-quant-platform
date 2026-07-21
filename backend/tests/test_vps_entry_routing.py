@@ -126,15 +126,46 @@ def test_force_flat_before_open_still_sizes():
     assert meta.get("error") is None
 
 
-def test_atr_invalid_refuses_and_pauses():
+def test_atr_invalid_refuses_without_pause():
+    """ATR≤0：拒开仓 + 告警，不永久暂停（后续信号仍可试）。"""
     sup, _ = _make_supervisor()
     sup.current_atr = 0.0
-    sup._pull_vps_market_indicators = MagicMock(return_value={"atr": 0.0})
+    sup._pull_vps_market_indicators = MagicMock(return_value={"atr": 0.0, "atr_series": []})
     sup._pause_trading = MagicMock()
+    sup._alert = MagicMock()
     qty, meta = sup._resolve_entry_qty(3300.0)
     assert qty == 0
     assert meta.get("error") == "atr_invalid"
-    sup._pause_trading.assert_called_once()
+    assert not getattr(sup, "trading_paused", False)
+    sup._pause_trading.assert_not_called()
+    sup._alert.assert_called()
+
+
+def test_atr_anomaly_below_median_refuses():
+    """当前 ATR < 中位数×0.3 → 拒开仓，不暂停。"""
+    from app.core.market_indicators import evaluate_atr_sanity
+
+    series = [100.0] * 50
+    sanity = evaluate_atr_sanity(20.0, series, lookback=50, floor_ratio=0.3)
+    assert sanity["ok"] is False
+    assert sanity["error"] == "atr_anomaly"
+
+    sup, _ = _make_supervisor()
+    # ATR=20 vs median~100 → anomaly
+    series = [100.0] * 50
+    series[-1] = 20.0
+    atr = 20.0
+    sup.current_atr = atr
+    sup._pull_vps_market_indicators = MagicMock(
+        return_value={"atr": atr, "atr_series": series, "adx": 25.0}
+    )
+    # Bypass compute_initial_stop path by failing atr guard first
+    sup._pause_trading = MagicMock()
+    qty, meta = sup._resolve_entry_qty(3300.0)
+    assert qty == 0
+    assert meta.get("error") == "atr_anomaly"
+    assert not getattr(sup, "trading_paused", False)
+    sup._pause_trading.assert_not_called()
 
 
 def test_open_position_recovers_wiped_tv_sl():
@@ -144,6 +175,13 @@ def test_open_position_recovers_wiped_tv_sl():
     sup.tv_sl = 0.0
     sup._tv_hard_sl_price = 0.0
     sup._pending_open_tv_sl = tv_sl
+    # Provide atr_series so median check passes
+    atr = 100.0
+    series = [100.0] * 20
+    series.append(atr)
+    sup._pull_vps_market_indicators = MagicMock(
+        return_value={"atr": atr, "adx": 25.0, "atr_series": series}
+    )
     sup._cancel_binance_all_close_stops = MagicMock(return_value=0)
     result = PositionSupervisor._open_position(sup, "LONG", 3300.0)
     assert float(sup.tv_sl) == pytest.approx(tv_sl)

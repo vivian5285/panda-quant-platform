@@ -2622,38 +2622,28 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             except Exception:
                 snap = {}
         atr = float(snap.get("atr") or getattr(self, "current_atr", 0) or 0)
+        atr_series = list(snap.get("atr_series") or [])
         tv_sl_ref = float(
             getattr(self, "_pending_open_tv_sl", 0)
             or getattr(self, "_tv_hard_sl_price", 0)
             or getattr(self, "tv_sl", 0)
             or 0
         )
+        from app.core.open_atr_guard import check_open_atr_or_reject
+
+        atr_ok, atr_meta = check_open_atr_or_reject(
+            self,
+            atr=atr,
+            atr_series=atr_series,
+            side=side,
+            tv_sl_ref=tv_sl_ref if tv_sl_ref > 0 else None,
+        )
+        if not atr_ok:
+            return 0, atr_meta
+
         sizing_stop = 0.0
         if atr > 0 and price > 0 and side in ("LONG", "SHORT"):
             sizing_stop = float(compute_initial_stop(price, side, atr))
-
-        if atr <= 0:
-            meta = {
-                "sizing_mode": "risk20_cap5x_tv_qty_cap",
-                "error": "atr_invalid",
-                "final_qty": 0,
-                "sizing_atr": atr,
-                "sizing_side": side or None,
-                "tv_sl_reference": tv_sl_ref if tv_sl_ref > 0 else None,
-            }
-            self._log(
-                "ERROR",
-                f"⛔ 开仓算仓中止·ATR异常 atr={atr} symbol={self.canonical_symbol}（拒开仓并暂停）",
-            )
-            if hasattr(self, "_pause_trading"):
-                try:
-                    self._pause_trading(
-                        f"ATR invalid for sizing ({self.canonical_symbol})",
-                        {"reason": "atr_invalid", "atr": atr, "symbol": self.canonical_symbol},
-                    )
-                except Exception:
-                    pass
-            return 0, meta
 
         qty, meta = resolve_vps_entry_qty_deepcoin(
             live_balance=equity,

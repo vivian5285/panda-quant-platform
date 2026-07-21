@@ -121,3 +121,31 @@ def test_native_4h_pipeline():
     assert out["bar_count"] >= 40
     assert out["atr"] > 0
     assert out["adx"] > 0
+
+
+def test_utc_epoch_90m_bucket_not_process_start():
+    """Anchor is Unix-epoch floor — independent of process start / arbitrary offset."""
+    from datetime import datetime, timezone
+
+    from app.core.market_indicators import utc_90m_bucket_ms
+
+    day0 = int(datetime(2024, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
+    assert utc_90m_bucket_ms(day0) == day0
+    assert utc_90m_bucket_ms(day0 + BAR_MS_30M) == day0
+    assert utc_90m_bucket_ms(day0 + 2 * BAR_MS_30M) == day0
+    assert utc_90m_bucket_ms(day0 + BAR_MS_90M) == day0 + BAR_MS_90M
+
+    candles = _mk_30m(day0, 3, base_price=2000, step=1)
+    bars = aggregate_30m_to_90m(candles, now_ms=day0 + BAR_MS_90M)
+    assert len(bars) == 1
+    assert bars[0]["open_time"] == float(day0)
+
+
+def test_evaluate_atr_anomaly_and_invalid():
+    from app.core.market_indicators import evaluate_atr_sanity
+
+    assert evaluate_atr_sanity(0, [10] * 20)["error"] == "atr_invalid"
+    bad = evaluate_atr_sanity(10, [100.0] * 50, lookback=50, floor_ratio=0.3)
+    assert bad["ok"] is False and bad["error"] == "atr_anomaly"
+    good = evaluate_atr_sanity(40, [100.0] * 50, lookback=50, floor_ratio=0.3)
+    assert good["ok"] is True
