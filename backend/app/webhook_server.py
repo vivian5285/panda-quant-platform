@@ -202,6 +202,15 @@ def webhook():
 
     valid, err = validate_signal_payload(data)
     if not valid:
+        # Legacy CLOSE_TP/TRAIL/SL_* → soft-ignore (TV should stop sending; VPS monitors fills)
+        if str(err).startswith("legacy_ignored:"):
+            logger.info("[Webhook] ignore legacy TV reconcile: %s", err)
+            return jsonify({
+                "status": "ignored",
+                "reason": "legacy_tv_reconcile",
+                "message": "TP/SL fills are monitored by VPS; TV CLOSE_TP/TRAIL/SL_* ignored",
+                "action": str(data.get("action") or "").upper(),
+            }), 200
         _log_reject_async(
             payload=data,
             event_status="rejected",

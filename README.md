@@ -6,13 +6,12 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-07-21 · VPS 最终开发需求清单）：**  
-> 开仓：先平后开 → **市价** → TP1/TP2（qty1/qty2）+ `stop_loss`；**TP3 不挂**。  
-> 算仓：`min(权益×20%/|价−止损|, 权益×5/价, TV.qty)`；杠杆 5×。  
-> 雷达：路径 85% 激活（多/空对称）→ 阶梯 0.5/0.3ATR → TP1/TP2 底线 → TP3 peak±2ATR。  
-> **TV 方向为准**：实盘与 TV 开仓方向不一致 → **强制市价平仓 + 钉钉 FORCE_ALIGN**（币安/深币/OKX/Gate 同一逻辑）。  
-> 对账：`CLOSE_TP/TRAIL` 不下单；`CLOSE_SL_*` 由雷达自处理；仅 `QUICK/RSI_EXIT` 市价全平。  
-> 重启缺持久化 TP → 暂停开仓；钉钉首行管道格式；60s 去重；`token`≡后台 Secret。
+> **文档同步（2026-07-21 · TV/VPS 最终分工）：**  
+> **TV 只发 3 种消息**：`LONG`/`SHORT`、`CLOSE_QUICK_EXIT`、`CLOSE_RSI_EXIT`（K 线闭合）。  
+> **VPS 干全部实时活**：市价开仓 → 挂 TP1/TP2 + `stop_loss` → 订单监控 TP 成交 → 雷达阶梯/TP3 追踪。  
+> TP1 成交→保本；TP2 成交→entry±1.5ATR；遗留 `CLOSE_TP/TRAIL/SL_*` webhook **忽略**。  
+> 算仓 `min(权益×20%/止损距, 权益×5/价, TV.qty)`；杠杆 5×；60s 去重 `action+symbol`。  
+> **TV 方向为准**：实盘不一致 → 强制平仓 + 钉钉 FORCE_ALIGN（全交易所同一逻辑）。
 
 | 生产域名 | [https://twinstar.pro](https://twinstar.pro) |
 |----------|---------------------------------------------|

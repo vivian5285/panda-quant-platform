@@ -120,7 +120,7 @@ ALERT_TYPE_TAGS = {
     "FALSE_FLAT": "误报空仓",
     "CLOSE_ATTRIBUTION": "平仓归因",
     "POSITION_RECONCILE": "头寸对账",
-    "TP_FILLED": "止盈成交",
+    "TP_FILLED": "止盈成交(VPS)",
     "TP_SKIP_REHANG": "拒绝补挂已成交止盈",
     "POSITION_QTY_CHANGE": "仓位异动",
     "FLIP_CLEAN": "先平后开清场",

@@ -18,7 +18,7 @@ from app.core.symbol_precision import round_price
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-IDEMPOTENCY_TTL_SEC = 60  # checklist §十一: 60s action+symbol+price
+IDEMPOTENCY_TTL_SEC = 60  # checklist: 60s action+symbol
 SEQ_IDEMPOTENCY_TTL_SEC = 86400
 
 
@@ -67,19 +67,14 @@ def compute_fingerprint(payload: dict) -> str:
 
     from app.core.symbol_registry import extract_payload_symbol
 
-    # Checklist §十一: 60s dedupe key = action + symbol + price
+    # Final checklist: 60s dedupe key = action + symbol (price ignored)
     symbol = extract_payload_symbol(payload, require=False) or "UNKNOWN"
-    px = round_price(payload.get("price") or 0)
-    leg = str(payload.get("leg") or "").strip()
     core = {
         "action": action,
         "symbol": symbol,
-        "price": px,
     }
-    if leg:
-        core["leg"] = leg
-    raw = json.dumps(core, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    raw = json.dumps(core, sort_keys=True, separators=(",", ":"), default=str)
+    return "h:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
 def _ttl_seconds(fingerprint: str | None = None) -> int:

@@ -2451,7 +2451,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             breakeven_sl,
         )
 
-        entry = float(getattr(self, "entry_price", 0) or getattr(self, "avg_entry", 0) or 0)
+        entry = float(
+            getattr(self, "watched_entry", 0)
+            or getattr(self, "entry_price", 0)
+            or getattr(self, "avg_entry", 0)
+            or 0
+        )
         side = getattr(self, "current_side", None)
         atr = float(getattr(self, "current_atr", 0) or 0)
         old = float(getattr(self, "current_sl", 0) or getattr(self, "tv_sl", 0) or 0)
@@ -2459,10 +2464,18 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             atr_floor_sl(entry, atr, RADAR_TP2_FLOOR_ATR, side) if leg == "2" else 0.0
         )
         if target <= 0:
-            return {"skipped": True}
+            return {"skipped": True, "entry": entry}
         new_sl = apply_radar_sl_direction(old, target, side)
         self.current_sl = new_sl
-        return {"ok": True, "old": old, "new": new_sl, "leg": leg}
+        live_qty = float(getattr(self, "watched_qty", 0) or 0)
+        try:
+            if live_qty > 0 and hasattr(self, "_ensure_radar_sl"):
+                self._ensure_radar_sl(live_qty, new_sl)
+            if hasattr(self, "_save_state"):
+                self._save_state()
+        except Exception as exc:
+            return {"error": str(exc), "old": old, "new": new_sl, "leg": leg}
+        return {"ok": True, "old": old, "new": new_sl, "leg": leg, "entry": entry}
 
     def _handle_manual_flat_detected(self, reason, *, skip_eager_purge=False):
         """人工全平 / 止盈吃满：立即撤 TP123 并智能复位账本"""

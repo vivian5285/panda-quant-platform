@@ -629,9 +629,13 @@ class PositionSupervisor(
         from app.core.radar_trail import atr_floor_sl, breakeven_sl, apply_radar_sl_direction
         from app.core.radar_trail import RADAR_TP2_FLOOR_ATR
 
-        entry = float(getattr(self, "entry_price", 0) or getattr(self, "avg_entry", 0) or 0)
-        if entry <= 0:
-            entry = float(getattr(self, "tv_price", 0) or 0)
+        entry = float(
+            getattr(self, "watched_entry", 0)
+            or getattr(self, "entry_price", 0)
+            or getattr(self, "avg_entry", 0)
+            or getattr(self, "tv_price", 0)
+            or 0
+        )
         side = getattr(self, "current_side", None)
         atr = float(getattr(self, "current_atr", 0) or 0)
         old = float(getattr(self, "current_sl", 0) or getattr(self, "tv_sl", 0) or 0)
@@ -641,27 +645,32 @@ class PositionSupervisor(
         elif leg == "2":
             target = atr_floor_sl(entry, atr, RADAR_TP2_FLOOR_ATR, side)
         if target <= 0:
-            return {"skipped": True, "reason": "no_target"}
+            return {"skipped": True, "reason": "no_target", "entry": entry}
         new_sl = apply_radar_sl_direction(old, target, side)
         if new_sl <= 0 or (old > 0 and abs(new_sl - old) < 1e-9):
-            return {"skipped": True, "old": old, "target": target}
+            return {"skipped": True, "old": old, "target": target, "entry": entry}
         self.current_sl = new_sl
-        if hasattr(self, "_sync_tv_hard_stop"):
+        live_qty = float(getattr(self, "watched_qty", 0) or 0)
+        if live_qty <= 0 and hasattr(self, "position_manager"):
             try:
-                # Move stop slot favorably without wiping hard SL floor semantics
-                live_qty = float(getattr(self, "watched_qty", 0) or 0)
-                if live_qty <= 0:
-                    pos = self.position_manager.get_position(self.symbol)
-                    live_qty = abs(float((pos or {}).get("positionAmt") or 0))
-                if live_qty > 0 and hasattr(self, "_realign_radar_defenses"):
-                    self._realign_radar_defenses(
-                        live_qty, new_sl, reason=f"reconcile_CLOSE_TP_leg{leg}"
-                    )
-                elif live_qty > 0:
-                    self._sync_tv_hard_stop(live_qty, at_open=False, force_replace=True)
-            except Exception as exc:
-                return {"error": str(exc), "target": new_sl}
-        return {"ok": True, "old": old, "new": new_sl, "leg": leg}
+                pos = self.position_manager.get_position(self.symbol)
+                live_qty = abs(float((pos or {}).get("positionAmt") or 0))
+            except Exception:
+                live_qty = 0.0
+        try:
+            if live_qty > 0 and hasattr(self, "_ensure_radar_sl"):
+                self._ensure_radar_sl(new_sl, live_qty)
+            elif live_qty > 0 and hasattr(self, "_realign_radar_defenses"):
+                self._realign_radar_defenses(
+                    live_qty, new_sl, reason=f"vps_tp_fill_leg{leg}"
+                )
+            elif live_qty > 0 and hasattr(self, "_sync_tv_hard_stop"):
+                self._sync_tv_hard_stop(live_qty, at_open=False, force_replace=True)
+            if hasattr(self, "_save_state"):
+                self._save_state()
+        except Exception as exc:
+            return {"error": str(exc), "target": new_sl, "entry": entry}
+        return {"ok": True, "old": old, "new": new_sl, "leg": leg, "entry": entry}
 
     def _apply_tv_entry_context(self, payload: dict) -> None:
         fields = parse_tv_entry_fields(payload)
@@ -1863,41 +1872,70 @@ class PositionSupervisor(
         *,
         heuristic: bool = False,
     ) -> None:
+        """VPS order monitor: TP1/TP2 fill → bump SL + DingTalk (TV no longer sends CLOSE_TP)."""
         lvl = int(level)
         alerted = getattr(self, "_tp_fill_dingtalk_levels", None)
         if alerted is None:
             self._tp_fill_dingtalk_levels = set()
             alerted = self._tp_fill_dingtalk_levels
+
+        bump: dict = {}
+        if lvl in (1, 2) and float(new_qty or 0) > 0 and hasattr(self, "_bump_sl_after_tp_reconcile"):
+            try:
+                bump = self._bump_sl_after_tp_reconcile(str(lvl)) or {}
+            except Exception as exc:
+                logger.warning("[User %s] TP%d SL bump failed: %s", self.user_id, lvl, exc)
+                bump = {"error": str(exc)}
+            if hasattr(self, "_boost_radar_after_tp_fill"):
+                try:
+                    self._boost_radar_after_tp_fill(f"tp{lvl}_filled", float(curr_px or 0), float(new_qty or 0))
+                except Exception:
+                    pass
+
         detail = {
             "exchange": self.exchange_id,
             "level": lvl,
             "old_qty": float(old_qty),
             "new_qty": float(new_qty),
             "curr_px": float(curr_px or 0),
+            "price": float(curr_px or 0),
+            "qty": float(new_qty),
             "consumed_tp_levels": list(self.consumed_tp_levels or []),
             "tv_tps": list(self.tv_tps or []),
             "initial_qty": float(self.initial_qty or 0),
             "heuristic": heuristic,
             "side": self.current_side,
+            "source": "vps_order_monitor",
+            "sl_bump": bump,
+            "current_sl": float(getattr(self, "current_sl", 0) or 0),
         }
         note = "（头寸推断）" if heuristic else ""
         self._log(
             "TP_FILLED",
-            f"止盈TP{level}成交{note} {old_qty}→{new_qty} | 已消费{detail['consumed_tp_levels']}",
+            f"VPS监控·止盈TP{level}成交{note} {old_qty}→{new_qty} | SL@{detail['current_sl']}",
             detail,
         )
         if lvl in alerted:
             return
         alerted.add(lvl)
-        self._alert(
-            "info",
-            "TP_FILLED",
-            f"止盈TP{level}成交·不再补挂{note}",
-            f"{self.current_side} {old_qty}→{new_qty} @ {curr_px or '—'} | "
-            f"已成交档 {detail['consumed_tp_levels']} | 耐心等更高档TP | "
-            f"雷达/硬止损另槽不抢份额",
-            detail,
-        )
+        if lvl == 1:
+            title = "TP1止盈成交（VPS监控）·止损已保本"
+            msg = (
+                f"{self.current_side} 成交价{curr_px or '—'} | "
+                f"剩余 {new_qty} | 止损已上移保本 "
+                f"@{float(detail['current_sl'] or 0):.2f}"
+            )
+        elif lvl == 2:
+            title = "TP2止盈成交（VPS监控）·止损收紧1.5×ATR"
+            msg = (
+                f"{self.current_side} 成交价{curr_px or '—'} | "
+                f"剩余 {new_qty} | 止损已收紧 "
+                f"@{float(detail['current_sl'] or 0):.2f}"
+            )
+        else:
+            title = f"止盈TP{level}成交（VPS监控）{note}"
+            msg = f"{self.current_side} {old_qty}→{new_qty} @ {curr_px or '—'} | 已成交档 {detail['consumed_tp_levels']}"
+        self._alert("info", "TP_FILLED", title, msg, detail)
 
     def _reconcile_radar_context(self, recovery: dict | None) -> dict:
         """重启：开仓日志 + 最新 TV + DB 交易 三方核实雷达参数。"""

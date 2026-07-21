@@ -11,10 +11,6 @@ from app.core.symbol_precision import round_price
 logger = logging.getLogger(__name__)
 
 CLOSE_ACTIONS = frozenset({
-    "CLOSE_TP",
-    "CLOSE_TRAIL",
-    "CLOSE_SL_INITIAL",
-    "CLOSE_SL_BREAKEVEN",
     "CLOSE_QUICK_EXIT",
     "CLOSE_RSI_EXIT",
 })

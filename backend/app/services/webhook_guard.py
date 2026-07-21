@@ -10,26 +10,24 @@ from app.utils.rate_limit import rate_limiter
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# v6.5.6 canonical actions — old CLOSE_PROTECT / CLOSE_TP3 / UPDATE_* deleted
+# v6.5.6 final: TV only sends open + reverse-protect; VPS owns TP/SL fills
 VALID_ACTIONS = frozenset({
     "LONG",
     "SHORT",
-    "CLOSE_TP",
-    "CLOSE_TRAIL",
-    "CLOSE_SL_INITIAL",
-    "CLOSE_SL_BREAKEVEN",
     "CLOSE_QUICK_EXIT",
     "CLOSE_RSI_EXIT",
 })
 ENTRY_ACTIONS = frozenset({"LONG", "SHORT"})
 
-# TV reconcile-only — VPS already filled via limits/radar; no market flatten
-RECONCILE_ONLY_ACTIONS = frozenset({
+# Legacy TV reconcile actions — ignored (VPS order monitor owns TP/SL)
+LEGACY_TV_RECONCILE_ACTIONS = frozenset({
     "CLOSE_TP",
     "CLOSE_TRAIL",
     "CLOSE_SL_INITIAL",
     "CLOSE_SL_BREAKEVEN",
 })
+# Keep alias for old call sites; empty = no TV-driven reconcile
+RECONCILE_ONLY_ACTIONS = frozenset()
 
 # TV must force market flatten (radar cannot know multi-TF / RSI exit)
 FORCE_FLAT_ACTIONS = frozenset({
@@ -40,11 +38,16 @@ FORCE_FLAT_ACTIONS = frozenset({
 
 def is_close_signal(action: str) -> bool:
     act = str(action or "").upper().strip()
-    return act in RECONCILE_ONLY_ACTIONS or act in FORCE_FLAT_ACTIONS or act.startswith("CLOSE")
+    return act in FORCE_FLAT_ACTIONS or act.startswith("CLOSE")
 
 
 def is_reconcile_only_close(action: str) -> bool:
-    return str(action or "").upper().strip() in RECONCILE_ONLY_ACTIONS
+    """Deprecated: TV no longer sends reconcile closes; always False."""
+    return False
+
+
+def is_legacy_tv_reconcile(action: str) -> bool:
+    return str(action or "").upper().strip() in LEGACY_TV_RECONCILE_ACTIONS
 
 
 def is_force_flat_close(action: str) -> bool:
@@ -79,6 +82,10 @@ def validate_signal_payload(data: dict) -> tuple[bool, str]:
     action = str(data.get("action", "")).upper().strip()
     if not action:
         return False, "Missing action"
+
+    # Legacy CLOSE_TP/TRAIL/SL_* — TV must not send; VPS monitors fills itself
+    if action in LEGACY_TV_RECONCILE_ACTIONS:
+        return False, f"legacy_ignored:{action}"
 
     if action not in VALID_ACTIONS:
         return False, f"Unsupported action: {action}"
@@ -123,13 +130,5 @@ def validate_signal_payload(data: dict) -> tuple[bool, str]:
                     return False, "atr must be > 0 when provided"
             except (TypeError, ValueError):
                 return False, "Invalid atr"
-
-    if action in FORCE_FLAT_ACTIONS:
-        # reason optional but useful
-        pass
-
-    if action in RECONCILE_ONLY_ACTIONS:
-        # leg optional for CLOSE_TP / CLOSE_TRAIL
-        pass
 
     return True, ""
