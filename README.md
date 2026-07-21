@@ -8,10 +8,12 @@
 
 > **文档同步（2026-07-21 · TV/VPS 最终分工）：**  
 > **TV 只发 3 种消息**：`LONG`/`SHORT`、`CLOSE_QUICK_EXIT`、`CLOSE_RSI_EXIT`（K 线闭合）。  
-> **VPS 干全部实时活**：市价开仓 → 挂 TP1/TP2 + `stop_loss` → 订单监控 TP 成交 → 雷达阶梯/TP3 追踪。  
+> **VPS 干全部实时活**：市价开仓 → 挂 TP1/TP2 + `stop_loss` → 订单监控 TP 成交 → **连续阶梯雷达**/TP3 追踪。  
+> 雷达：路径 85%→TP1 激活保本；每涨 **0.5×ATR** 止损跟进 **0.3×ATR**；TP1/TP2 强制底限 0.5/1.5×ATR；TP3 后峰值∓2.0×ATR。  
 > TP1 成交→保本；TP2 成交→entry±1.5ATR；遗留 `CLOSE_TP/TRAIL/SL_*` webhook **忽略**。  
-> 算仓 `min(权益×20%/止损距, 权益×5/价, TV.qty)`；杠杆 5×；60s 去重 `action+symbol`。  
-> **TV 方向为准**：实盘不一致 → 强制平仓 + 钉钉 FORCE_ALIGN（全交易所同一逻辑）。
+> 止损钉钉：未激活/仍在 initialStop →「初始」；已激活且止损已上移 →「保本/移动」。  
+> **方向不一致（含重启）→ 强制全平对齐 TV + 钉钉**；缺持久化 TP → 告警+暂停。  
+> 算仓 20%/5×；60s 去重 `action+symbol`；`token`≡后台 Secret。
 
 | 生产域名 | [https://twinstar.pro](https://twinstar.pro) |
 |----------|---------------------------------------------|

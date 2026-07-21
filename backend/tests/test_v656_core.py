@@ -100,12 +100,51 @@ def test_dingtalk_pipe_format():
     assert parts[1] == "开仓" and parts[2] == "ETHUSDT" and parts[3] == "LONG"
 
 
-def test_force_align_docstring_tv_authority():
+def test_force_align_always_closes():
+    """方向不一致（含重启）→ 强制全平对齐 TV。"""
     import inspect
     from app.core.startup_reconcile import StartupReconcileMixin
     src = inspect.getsource(StartupReconcileMixin._try_force_align_opposite_to_tv)
+    assert 'on_conflict or "force_close"' in src
     assert "self._close_all" in src
-    assert "_pause_trading" not in src
+
+
+def test_classify_vps_sl_kind():
+    from app.core.close_attribution import classify_vps_sl_kind
+    assert classify_vps_sl_kind(activated=False, current_stop=3200, initial_stop=3200, side="LONG") == "CLOSE_SL_INITIAL"
+    assert classify_vps_sl_kind(activated=True, current_stop=3200, initial_stop=3200, side="LONG") == "CLOSE_SL_INITIAL"
+    assert classify_vps_sl_kind(activated=True, current_stop=3301, initial_stop=3200, side="LONG") == "CLOSE_SL_BREAKEVEN"
+
+
+def test_continuous_ladder_demo_1800_atr30():
+    """用户演示表：1800 开多 ATR=30，连续阶梯跟进。"""
+    # 路径≥85% 激活；同 tick 可连续推进阶梯（≥保本）
+    arm_px = 1800 + RADAR_ARM_PROGRESS * (1840.5 - 1800) + 0.01
+    raw, _, meta = compute_ladder_radar_sl(
+        entry=1800, curr_px=arm_px, best_price=arm_px, atr=30, side="LONG",
+        tp1=1840.5, tp2=1875, tp3=1908, activated=False, step_count=0,
+    )
+    assert meta["activated"] is True and meta["event"] == "radar_arm"
+    assert raw >= 1800.5
+    # TP1：强制底限 entry+0.5ATR=1815（阶梯可更高）
+    raw_tp1, stage, _ = compute_ladder_radar_sl(
+        entry=1800, curr_px=1840.5, best_price=1840.5, atr=30, side="LONG",
+        tp1=1840.5, tp2=1875, tp3=1908, activated=True, step_count=0,
+    )
+    assert stage == 3 and raw_tp1 >= 1815 - 1e-9
+    # TP2：强制底限 entry+1.5ATR=1845
+    raw_tp2, stage2, _ = compute_ladder_radar_sl(
+        entry=1800, curr_px=1875, best_price=1875, atr=30, side="LONG",
+        tp1=1840.5, tp2=1875, tp3=1908, activated=True, step_count=2,
+    )
+    assert stage2 == 4 and raw_tp2 >= 1845 - 1e-9
+    # TP3：动态追踪 peak-2ATR
+    raw_tp3, stage3, meta3 = compute_ladder_radar_sl(
+        entry=1800, curr_px=1908, best_price=1910, atr=30, side="LONG",
+        tp1=1840.5, tp2=1875, tp3=1908, activated=True, step_count=5,
+    )
+    assert stage3 == 5 and meta3["mode"] == "tp3_trail"
+    assert abs(raw_tp3 - (1910 - 60)) < 0.05
 
 
 def test_vps_radar_pass_state():

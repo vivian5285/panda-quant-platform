@@ -78,6 +78,9 @@ def resolve_close_alert_type(
         return "CLOSE_RSI_EXIT"
     if action in ("CLOSE_TP", "CLOSE_TRAIL", "CLOSE_SL_INITIAL", "CLOSE_SL_BREAKEVEN"):
         return action
+    hint = str((attribution or {}).get("close_action_hint") or (attribution or {}).get("sl_kind") or "")
+    if hint in ("CLOSE_SL_INITIAL", "CLOSE_SL_BREAKEVEN"):
+        return hint
     subtype = classify_tv_close_subtype(action, tv_reason)
     if subtype == "tp3" or "CLOSE_TP3" in action:
         return "CLOSE_TP3"
@@ -89,7 +92,11 @@ def resolve_close_alert_type(
     if origin == "exchange_limit_tp":
         return "CLOSE_ATTRIBUTION"
     if origin == "exchange_stop":
-        return "CLOSE_STOPLOSS"
+        return (
+            "CLOSE_SL_BREAKEVEN"
+            if (attribution or {}).get("sl_kind") == "CLOSE_SL_BREAKEVEN"
+            else "CLOSE_SL_INITIAL"
+        )
     return "CLOSE"
 
 
@@ -98,6 +105,12 @@ def resolve_close_alert_title(
     tv_reason: str | None,
     attribution: dict | None = None,
 ) -> str:
+    hint = str((attribution or {}).get("close_action_hint") or (attribution or {}).get("sl_kind") or "")
+    act = str(close_action or "").upper()
+    if hint == "CLOSE_SL_INITIAL" or act == "CLOSE_SL_INITIAL":
+        return "止损平仓（初始）"
+    if hint == "CLOSE_SL_BREAKEVEN" or act == "CLOSE_SL_BREAKEVEN":
+        return "止损平仓（保本/移动）"
     subtype = classify_tv_close_subtype(close_action, tv_reason)
     titles = {
         "tp3": "TP3完美收网 · 全平完成",
@@ -119,7 +132,9 @@ def resolve_close_alert_title(
             return f"限价止盈成交·TP{levels} · 全平"
         return "限价止盈成交 · 全平"
     if origin == "exchange_stop":
-        return "保本雷达/条件止损触发 · 全平"
+        if (attribution or {}).get("sl_kind") == "CLOSE_SL_INITIAL":
+            return "止损平仓（初始）"
+        return "止损平仓（保本/移动）"
     if origin == "manual_exchange":
         return "交易所人工平仓 · 全平"
     if origin == "tv_forced":

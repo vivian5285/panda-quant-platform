@@ -2934,8 +2934,17 @@ class PositionSupervisor(
             trigger=trigger,
             had_position_before_close=had_position,
             recent_tv_close=self._fetch_recent_tv_close(),
-            radar_active=self._is_radar_active(),
+            radar_active=bool(
+                getattr(self, "radar_activated", False)
+                or getattr(self, "radar_latched", False)
+                or (hasattr(self, "_is_radar_active") and self._is_radar_active())
+            ),
             current_sl=float(self.current_sl or 0),
+            initial_stop=float(
+                getattr(self, "tv_sl", 0)
+                or getattr(self, "_tv_hard_sl_price", 0)
+                or 0
+            ),
             platform_initiated_market=platform_market,
         )
 
@@ -4090,6 +4099,21 @@ class PositionSupervisor(
                 trigger="startup",
             )
             audit["tv_side_sync"] = side_sync
+            if side_sync.get("paused"):
+                audit["trading_paused"] = True
+                audit["has_position"] = True
+                audit["direction_aligned"] = False
+                audit["side"] = self.current_side
+                audit["qty"] = self.watched_qty
+                audit["entry"] = self.watched_entry
+                audit["monitoring"] = False
+                audit["startup_summary"] = (
+                    f"方向不一致已暂停 · 实盘{self.current_side} vs TV{side_sync.get('tv_side')}"
+                )
+                self.monitoring = False
+                self._save_state()
+                self._log("STARTUP", audit["startup_summary"], audit)
+                return audit
             if side_sync.get("force_aligned"):
                 audit["force_aligned"] = True
                 audit["has_position"] = False

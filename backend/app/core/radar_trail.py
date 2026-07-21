@@ -377,7 +377,7 @@ def radar_may_arm(
             now_ts=now_ts,
             radar_latched=False,
         )
-        return bool(decision.get("arm"))
+        return bool(decision.get("should_arm"))
     if tp1_consumed(consumed_tp_levels):
         return True
     if any(int(x) in (2, 3) for x in (consumed_tp_levels or [])):

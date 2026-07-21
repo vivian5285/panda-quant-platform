@@ -552,13 +552,17 @@ class StartupReconcileMixin:
         *,
         adopted_manual: bool = False,
         trigger: str = "startup",
-        on_conflict: str = "force_close",
+        on_conflict: str | None = None,
     ) -> dict[str, Any]:
-        """TV 方向为准：实盘与 TV OPEN 反向 → 强制市价平仓 + 钉钉（全交易所统一）."""
+        """TV 方向为准：方向不一致 → 强制市价全平 + 钉钉（重启与运行中同一逻辑）。
+
+        ``on_conflict="pause"`` 仅作显式逃生阀（缺持久化 TP 等另路径仍用 ``_pause_trading``）。
+        """
         sync = adopt_live_tv_side(self, reconcile, adopted_manual=adopted_manual)
         if not sync.get("force_close"):
             return sync
 
+        mode = on_conflict or "force_close"
         live = sync.get("live_side")
         tv = sync.get("tv_side")
         qty = float(getattr(self, "watched_qty", 0) or 0)
@@ -572,7 +576,20 @@ class StartupReconcileMixin:
             "watched_qty": qty,
             "side": live,
             "price": entry,
+            "on_conflict": mode,
         }
+
+        if mode == "pause":
+            msg = f"持仓方向与 TV 不一致：实盘{live} vs TV{tv} → 暂停交易"
+            if hasattr(self, "_pause_trading"):
+                self._pause_trading(msg, detail)
+            elif hasattr(self, "_alert"):
+                self._alert("critical", "TRADING_PAUSED", "交易已暂停", msg, detail)
+            sync["paused"] = True
+            sync["force_aligned"] = False
+            sync["closed"] = False
+            return sync
+
         msg = f"实盘{live} vs TV{tv} → 强制平仓对齐 TV"
         if hasattr(self, "_log"):
             self._log("SIGNAL", f"⚠️ FORCE_ALIGN: {msg}", detail)

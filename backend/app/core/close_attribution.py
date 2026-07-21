@@ -43,6 +43,30 @@ TV_CLOSE_WINDOW_SEC = 300
 ENTRY_NEAR_PCT = 0.003
 
 
+def classify_vps_sl_kind(
+    *,
+    activated: bool,
+    current_stop: float,
+    initial_stop: float,
+    side: str | None = None,
+) -> str:
+    """Checklist §七: CLOSE_SL_INITIAL vs CLOSE_SL_BREAKEVEN."""
+    init = float(initial_stop or 0)
+    cur = float(current_stop or 0)
+    if not activated:
+        return "CLOSE_SL_INITIAL"
+    if init <= 0 or cur <= 0:
+        return "CLOSE_SL_BREAKEVEN"
+    side_u = str(side or "").upper()
+    if side_u == "LONG" and cur > init + 1e-9:
+        return "CLOSE_SL_BREAKEVEN"
+    if side_u == "SHORT" and cur < init - 1e-9:
+        return "CLOSE_SL_BREAKEVEN"
+    if abs(cur - init) <= max(init * 1e-6, 1e-6):
+        return "CLOSE_SL_INITIAL"
+    return "CLOSE_SL_BREAKEVEN"
+
+
 def _near_price(a: float, b: float, pct: float = ENTRY_NEAR_PCT) -> bool:
     if a <= 0 or b <= 0:
         return False
@@ -168,6 +192,7 @@ def diagnose_flat_close(
     recent_tv_close: dict | None = None,
     radar_active: bool = False,
     current_sl: float = 0.0,
+    initial_stop: float = 0.0,
     platform_initiated_market: bool = False,
 ) -> dict[str, Any]:
     """
@@ -180,8 +205,16 @@ def diagnose_flat_close(
         "platform_initiated_market": platform_initiated_market,
         "radar_active": radar_active,
         "current_sl": float(current_sl or 0),
+        "initial_stop": float(initial_stop or 0),
         "consumed_tp_levels": list(consumed_tp_levels or []),
     }
+    sl_kind = classify_vps_sl_kind(
+        activated=bool(radar_active),
+        current_stop=float(current_sl or 0),
+        initial_stop=float(initial_stop or 0),
+        side=side,
+    )
+    evidence["sl_kind"] = sl_kind
 
     fills: list[dict] = []
     leg_fills: list[dict] = []
@@ -237,7 +270,10 @@ def diagnose_flat_close(
             origin = "exchange_stop"
             actor = "exchange_order"
             sl_note = f"@{current_sl:.2f}" if current_sl else ""
-            human_reason = f"盘口已平：保本雷达/条件止损触发{sl_note}（均价 {avg_px:.2f}）"
+            if sl_kind == "CLOSE_SL_INITIAL":
+                human_reason = f"止损平仓（初始）{sl_note}（均价 {avg_px:.2f}）"
+            else:
+                human_reason = f"止损平仓（保本/移动）{sl_note}（均价 {avg_px:.2f}）"
         elif tp_matched:
             origin = "exchange_limit_tp"
             actor = "exchange_order"
@@ -246,7 +282,10 @@ def diagnose_flat_close(
             origin = "exchange_stop"
             actor = "exchange_order"
             sl_note = f"@{current_sl:.2f}" if current_sl else ""
-            human_reason = f"盘口已平：保本雷达/条件止损触发{sl_note}（均价 {avg_px:.2f}）"
+            if sl_kind == "CLOSE_SL_INITIAL":
+                human_reason = f"止损平仓（初始）{sl_note}（均价 {avg_px:.2f}）"
+            else:
+                human_reason = f"止损平仓（保本/移动）{sl_note}（均价 {avg_px:.2f}）"
         elif near_entry and not radar_active:
             origin = "manual_exchange"
             actor = "human"
@@ -288,6 +327,8 @@ def diagnose_flat_close(
         "origin_label": CLOSE_ORIGINS.get(origin, origin),
         "trigger_label": CLOSE_TRIGGERS.get(trigger_key, trigger_key),
         "actor_label": CLOSE_ACTORS.get(actor, actor),
+        "sl_kind": sl_kind if origin == "exchange_stop" else None,
+        "close_action_hint": sl_kind if origin == "exchange_stop" else None,
         "evidence": evidence,
         "anomaly": origin in ("unknown", "exchange_already_flat") and not had_position_before_close,
     }

@@ -3932,6 +3932,20 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     ),
                     trigger="startup",
                 )
+                if side_sync.get("paused"):
+                    reconcile_notes.append(
+                        f"方向不一致已暂停 · 实盘{side_sync.get('live_side')} vs TV{side_sync.get('tv_side')}"
+                    )
+                    summary = " | ".join(reconcile_notes)
+                    self.monitoring = False
+                    self._save_state()
+                    self._dt.report_recover_takeover(
+                        side=side,
+                        qty=real_amt,
+                        entry=self.watched_entry,
+                        summary=f"PAUSED · {summary}",
+                    )
+                    return
                 if side_sync.get("force_aligned"):
                     reconcile_notes.append(
                         f"逆势强平对齐 TV {side_sync.get('tv_side')} "
