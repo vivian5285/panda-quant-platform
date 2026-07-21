@@ -26,7 +26,6 @@ from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.position_manager import PositionManager
 from app.core.radar_trail import clamp_stop_market_safe, tp_path_progress
 from app.core.vps_radar_stages import (
-    compute_vps_radar_sl,
     detect_radar_stage,
     tp1_filled_from_consumed,
 )
@@ -168,6 +167,11 @@ class PositionSupervisor(
 
         self.regime = 3
         self.current_atr = 30.0
+        self.initial_atr = 0.0
+        self.initial_stop = 0.0
+        self.breakeven_phase = False
+        self.current_adx = 25.0
+        self.remaining_qty_pct = 1.0
         self.best_price = 0.0
         self.radar_activated = False
         self.radar_step_count = 0
@@ -243,6 +247,11 @@ class PositionSupervisor(
                     "best_price": self.best_price,
                     "regime": self.regime,
                     "current_atr": self.current_atr,
+                    "initial_atr": float(getattr(self, "initial_atr", 0) or 0),
+                    "initial_stop": float(getattr(self, "initial_stop", 0) or 0),
+                    "breakeven_phase": bool(getattr(self, "breakeven_phase", False)),
+                    "current_adx": float(getattr(self, "current_adx", 25) or 25),
+                    "remaining_qty_pct": float(getattr(self, "remaining_qty_pct", 1.0) or 1.0),
                     "monitoring": self.monitoring,
                     "tv_tps": self.tv_tps,
                     "initial_qty": self.initial_qty,
@@ -289,6 +298,11 @@ class PositionSupervisor(
                     self.best_price = float(s.get("best_price", 0) or 0)
                     self.regime = clamp_regime(s.get("regime", 3))
                     self.current_atr = float(s.get("current_atr", 30) or 30)
+                    self.initial_atr = float(s.get("initial_atr", 0) or 0)
+                    self.initial_stop = float(s.get("initial_stop", 0) or 0)
+                    self.breakeven_phase = bool(s.get("breakeven_phase", False))
+                    self.current_adx = float(s.get("current_adx", 25) or 25)
+                    self.remaining_qty_pct = float(s.get("remaining_qty_pct", 1.0) or 1.0)
                     self.monitoring = bool(s.get("monitoring", False))
                     self.initial_qty = float(s.get("initial_qty", 0) or 0)
                     self.base_qty = float(s.get("base_qty", 0) or s.get("initial_qty", 0) or 0)
@@ -480,6 +494,18 @@ class PositionSupervisor(
             payload.get("tv_tp3", 0),
         ])
         self.risk_multiplier = float(payload.get("risk_multiplier", 1.0))
+        from app.core.breathing_stop import resolve_adx as _resolve_adx
+        position_open = bool(
+            getattr(self, "monitoring", False)
+            or float(getattr(self, "watched_qty", 0) or 0) > 0
+        )
+        if payload.get("adx") is not None and str(payload.get("adx")).strip() != "":
+            self.current_adx = _resolve_adx(payload.get("adx"))
+        elif not position_open:
+            self.current_adx = _resolve_adx(None)
+        # Freeze initial_atr after open — only set on fresh open via _init_breathing_on_open
+        if not position_open and float(getattr(self, "initial_atr", 0) or 0) <= 0:
+            self.initial_atr = float(self.current_atr or 0)
         self._apply_tv_entry_context(payload)
         self._apply_tv_sl_from_payload(payload)
         close_reason = payload.get("reason", "策略指标反转/波动率安全退出")
@@ -643,52 +669,34 @@ class PositionSupervisor(
         return {"status": "ok", "action": action, "detail": detail}
 
     def _bump_sl_after_tp_reconcile(self, leg: str) -> dict:
-        """§4: CLOSE_TP leg1 → BE; leg2 → entry±1.5ATR (take better)."""
-        from app.core.radar_trail import atr_floor_sl, breakeven_sl, apply_radar_sl_direction
-        from app.core.radar_trail import RADAR_TP2_FLOOR_ATR
-
-        entry = float(
-            getattr(self, "watched_entry", 0)
-            or getattr(self, "entry_price", 0)
-            or getattr(self, "avg_entry", 0)
-            or getattr(self, "tv_price", 0)
-            or 0
-        )
-        side = getattr(self, "current_side", None)
-        atr = float(getattr(self, "current_atr", 0) or 0)
-        old = float(getattr(self, "current_sl", 0) or getattr(self, "tv_sl", 0) or 0)
-        target = 0.0
-        if leg == "1":
-            target = breakeven_sl(entry, side)
-        elif leg == "2":
-            target = atr_floor_sl(entry, atr, RADAR_TP2_FLOOR_ATR, side)
-        if target <= 0:
-            return {"skipped": True, "reason": "no_target", "entry": entry}
-        new_sl = apply_radar_sl_direction(old, target, side)
-        if new_sl <= 0 or (old > 0 and abs(new_sl - old) < 1e-9):
-            return {"skipped": True, "old": old, "target": target, "entry": entry}
-        self.current_sl = new_sl
-        live_qty = float(getattr(self, "watched_qty", 0) or 0)
-        if live_qty <= 0 and hasattr(self, "position_manager"):
-            try:
-                pos = self.position_manager.get_position(self.symbol)
-                live_qty = abs(float((pos or {}).get("positionAmt") or 0))
-            except Exception:
-                live_qty = 0.0
+        """Soft-stub: update remaining_qty_pct from consumed TP levels — do NOT bump SL."""
+        consumed = list(getattr(self, "consumed_tp_levels", None) or [])
         try:
-            if live_qty > 0 and hasattr(self, "_ensure_radar_sl"):
-                self._ensure_radar_sl(new_sl, live_qty)
-            elif live_qty > 0 and hasattr(self, "_realign_radar_defenses"):
-                self._realign_radar_defenses(
-                    live_qty, new_sl, reason=f"vps_tp_fill_leg{leg}"
-                )
-            elif live_qty > 0 and hasattr(self, "_sync_tv_hard_stop"):
-                self._sync_tv_hard_stop(live_qty, at_open=False, force_replace=True)
-            if hasattr(self, "_save_state"):
-                self._save_state()
-        except Exception as exc:
-            return {"error": str(exc), "target": new_sl, "entry": entry}
-        return {"ok": True, "old": old, "new": new_sl, "leg": leg, "entry": entry}
+            lvl = int(leg)
+        except (TypeError, ValueError):
+            lvl = 0
+        if lvl in (1, 2, 3) and lvl not in consumed:
+            consumed.append(lvl)
+            self.consumed_tp_levels = sorted(set(consumed))
+        if hasattr(self, "_remaining_qty_pct_from_consumed"):
+            self.remaining_qty_pct = self._remaining_qty_pct_from_consumed(self.consumed_tp_levels)
+        elif {1, 2, 3}.issubset(set(self.consumed_tp_levels)):
+            self.remaining_qty_pct = 0.0
+        elif {1, 2}.issubset(set(self.consumed_tp_levels)):
+            self.remaining_qty_pct = 0.4
+        elif 1 in self.consumed_tp_levels:
+            self.remaining_qty_pct = 0.7
+        else:
+            self.remaining_qty_pct = 1.0
+        if hasattr(self, "_save_state"):
+            self._save_state()
+        return {
+            "ok": True,
+            "sl_bumped": False,
+            "remaining_qty_pct": float(self.remaining_qty_pct),
+            "leg": leg,
+            "note": "breathing stop: TP fill does not bump SL",
+        }
 
     def _apply_tv_entry_context(self, payload: dict) -> None:
         fields = parse_tv_entry_fields(payload)
@@ -2448,7 +2456,7 @@ class PositionSupervisor(
     ) -> dict:
         """
         智能撤销重挂：重复/缺失/比例错 → 只撤 TP 限价 → 按当前头寸重挂 TP。
-        绝不 cancel_all（禁止误撤 TV硬止损/雷达条件槽）。
+        绝不 cancel_all（禁止误撤呼吸止损条件槽）。
         """
         before_summary = self._summarize_defense_scan(scan, slices)
         self._log(
@@ -2722,13 +2730,15 @@ class PositionSupervisor(
 
     def _protect_and_monitor(self, qty: float, entry_price: float) -> dict:
         """
-        开仓后一次性挂好 TP123 + TV硬止损，雷达候命；实盘核实后由 _open_position 推钉钉。
+        开仓后一次性挂好 TP123 + 呼吸止损；实盘核实后由 _open_position 推钉钉。
         返回 {ok, aborted, defense, shield}；硬止损挂失败则撤仓并 aborted=True（禁止裸奔）。
         """
-        self._reset_adverse_radar()
-        self._recompute_vps_hard_sl(entry_px=entry_price)
-        # 雷达未激活时不要把 current_sl 写成入场价（避免合并单槽误用紧止损）
-        self.current_sl = 0.0
+        self._reset_adverse_radar(keep_tv_sl=False)
+        self._init_breathing_on_open(
+            entry_price,
+            atr=float(getattr(self, "current_atr", 0) or getattr(self, "initial_atr", 0) or 0),
+            adx=float(getattr(self, "current_adx", 0) or 0) or None,
+        )
         self.best_price = entry_price
         self.watched_qty = qty
         self.watched_entry = entry_price
@@ -2784,7 +2794,7 @@ class PositionSupervisor(
                     f"仅 {result.get('matched')}/{result.get('expected')} 档 | {summary}",
                     result,
                 )
-            # ② 硬止损只挂一次（价=TV tv_sl）
+            # ② 呼吸止损挂一次
             shield = self._sync_tv_hard_stop(pos["size"], at_open=True, force_replace=True)
             self._last_shield_result = shield
             sl_label = shield.get("label") or self._hard_stop_label()
@@ -2793,24 +2803,30 @@ class PositionSupervisor(
                 shield_note = f" | {sl_label}已核实 @{shield.get('stop_price', 0):.2f}"
             elif shield.get("armed"):
                 shield_note = f" | {sl_label} @{shield.get('stop_price', 0):.2f}"
+            breath_sl = float(
+                getattr(self, "current_sl", 0)
+                or getattr(self, "initial_stop", 0)
+                or getattr(self, "tv_sl", 0)
+                or 0
+            )
             if shield.get("placed", 0) > 0:
                 self._log(
-                    "ADVERSE_SL",
+                    "BREATH_STEP",
                     f"🛡️ 开仓 {sl_label}已挂 @{shield.get('stop_price', 0):.2f}{shield_note}",
                     shield,
                 )
             elif shield.get("aligned") or shield.get("skipped") == "live_already_aligned":
                 self._log(
-                    "ADVERSE_SL",
+                    "BREATH_STEP",
                     f"🛡️ 开仓 {sl_label}实盘已存在 @{shield.get('stop_price', 0):.2f}",
                     shield,
                 )
-            elif float(getattr(self, "tv_sl", 0) or 0) > 0:
+            elif breath_sl > 0:
                 self._alert(
                     "critical",
                     "ADVERSE_SL",
                     "开仓后硬止损未挂上·立即撤仓",
-                    f"{self.current_side} {pos['size']} | {sl_label} @{getattr(self, 'tv_sl', 0):.2f} | {shield}",
+                    f"{self.current_side} {pos['size']} | {sl_label} @{breath_sl:.2f} | {shield}",
                     shield,
                 )
                 # 硬止损挂单失败 → 立即平仓，禁止裸奔
@@ -2843,7 +2859,8 @@ class PositionSupervisor(
             "aborted": False,
             "defense": result,
             "shield": shield,
-            "radar_standby": True,
+            "radar_standby": False,
+            "breathing_active": True,
         }
         self._last_protect_result = out
         return out
@@ -3338,7 +3355,11 @@ class PositionSupervisor(
         threading.Thread(target=loop, daemon=True, name=f"idle-patrol-u{self.user_id}").start()
 
     def _refresh_radar_state_on_recover(self, curr_px: float, entry: float) -> None:
-        """重启：按现价恢复 best_price / 8 阶段雷达止损位"""
+        """Restart: restore breathing stop (compat name kept for call sites)."""
+        if hasattr(self, "_refresh_breathing_state_on_recover"):
+            self._refresh_breathing_state_on_recover(curr_px, entry)
+            return
+        # Fallback should not run if mixin present
         if curr_px <= 0 or not entry:
             return
         if self.best_price == 0.0:
@@ -3347,45 +3368,6 @@ class PositionSupervisor(
             self.best_price = max(self.best_price, curr_px)
         else:
             self.best_price = min(self.best_price, curr_px)
-
-        tps = list(self.tv_tps or [])
-        tp1 = float(tps[0] or 0) if tps else 0.0
-        tp2 = float(tps[1] or 0) if len(tps) > 1 else 0.0
-        tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
-        # tp1_filled ONLY from exchange consume — NOT path-arm (else TP1 floor jumps at 85%)
-        radar = compute_vps_radar_sl(
-            entry=entry,
-            curr_px=curr_px,
-            best_price=self.best_price,
-            atr=self.current_atr,
-            side=self.current_side,
-            tp1=tp1, tp2=tp2, tp3=tp3,
-            old_sl=float(self.current_sl or 0),
-            hard_sl=float(getattr(self, "tv_sl", 0) or 0),
-            clamp_fn=self._clamp_radar_sl_to_tv_floor,
-            radar_latched=bool(getattr(self, "radar_latched", False)),
-            tp1_filled=tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
-            regime=int(self.regime or 3),
-            live_qty=float(getattr(self, "watched_qty", 0) or 0),
-            consumed_tp_levels=list(getattr(self, "consumed_tp_levels", None) or []),
-            activated=bool(getattr(self, "radar_activated", False) or getattr(self, "radar_latched", False)),
-            step_count=int(getattr(self, "radar_step_count", 0) or 0),
-        )
-        if hasattr(self, "_apply_radar_eval_state"):
-            self._apply_radar_eval_state(radar)
-        if radar.get("armed") and radar.get("radar_sl", 0) > 0:
-            self.current_sl = float(radar["radar_sl"])
-            self._latch_radar()
-            logger.info(
-                f"[User {self.user_id}] 📡 重启雷达恢复: R{self.regime} {radar.get('stage_label')} | "
-                f"步进{radar.get('move_step')} 呼吸{radar.get('trail_offset')}ATR | "
-                f"best={self.best_price:.2f} | SL={self.current_sl:.2f}"
-            )
-        else:
-            # 雷达未达 TP1 路径比例：保持 0，只用 VPS 宽硬止损（禁止写成入场价）
-            if float(self.current_sl or 0) == float(entry or 0):
-                self.current_sl = 0.0
-
     def _radar_activation_progress(self, curr_px: float) -> float:
         if curr_px <= 0 or not self.watched_entry:
             return 0.0
@@ -3482,18 +3464,11 @@ class PositionSupervisor(
         return SENTINEL_POLL_NORMAL
 
     def _process_radar_trailing(self, real_amt: float, curr_px: float) -> bool:
-        # ATR refresh every 5 min (never rolls back step_count)
+        # TP limit 5-min timeout → cancel + consume + never rehang (ATR refresh removed)
         try:
             import time as _t
-            from app.core.vps_radar_stages import ATR_REFRESH_SEC, TP_LIMIT_TIMEOUT_SEC
+            from app.core.vps_radar_stages import TP_LIMIT_TIMEOUT_SEC
             now = _t.time()
-            last = float(getattr(self, "_atr_refreshed_at", 0) or 0)
-            if now - last >= ATR_REFRESH_SEC and hasattr(self.client, "estimate_atr"):
-                new_atr = float(self.client.estimate_atr(self.symbol) or 0)
-                if new_atr > 0:
-                    self.current_atr = new_atr
-                self._atr_refreshed_at = now
-            # TP limit 5-min timeout → cancel + consume + never rehang
             placed = dict(getattr(self, "_tp_placed_at", None) or {})
             if placed:
                 for lvl, ts in list(placed.items()):
@@ -3512,10 +3487,14 @@ class PositionSupervisor(
                         self.consumed_tp_levels = sorted(consumed)
                         placed.pop(lvl, None)
                         self._tp_placed_at = placed
+                        if hasattr(self, "_remaining_qty_pct_from_consumed"):
+                            self.remaining_qty_pct = self._remaining_qty_pct_from_consumed(
+                                self.consumed_tp_levels
+                            )
                         if hasattr(self, "_save_state"):
                             self._save_state()
                         self._alert(
-                            "warning", "TP_SKIP_REHANG", "TP挂单超时·移交雷达",
+                            "warning", "TP_SKIP_REHANG", "TP挂单超时·移交呼吸止损",
                             f"TP{lvl} 超过{int(TP_LIMIT_TIMEOUT_SEC)}s未成交"
                             f"（撤单{cancelled}）·禁止重挂",
                             {"level": int(lvl), "cancelled": cancelled},
@@ -3525,180 +3504,9 @@ class PositionSupervisor(
         except Exception:
             pass
 
-        if not self._radar_activation_reached(curr_px):
-            return False
-
-        tps = list(self.tv_tps or [])
-        tp1 = float(tps[0] or 0) if tps else 0.0
-        tp2 = float(tps[1] or 0) if len(tps) > 1 else 0.0
-        tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
-        # tp1_filled = 实盘 TP 成交记账 only；路径激活 ≠ TP1 成交（否则 85% 就跳到 +0.5ATR 底限）
-        radar = compute_vps_radar_sl(
-            entry=float(self.watched_entry or 0),
-            curr_px=curr_px,
-            best_price=float(self.best_price or self.watched_entry or 0),
-            atr=self.current_atr,
-            side=self.current_side,
-            tp1=tp1, tp2=tp2, tp3=tp3,
-            old_sl=float(self.current_sl or 0),
-            hard_sl=float(getattr(self, "tv_sl", 0) or 0),
-            clamp_fn=self._clamp_radar_sl_to_tv_floor,
-            radar_latched=bool(getattr(self, "radar_latched", False)),
-            tp1_filled=tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
-            regime=int(self.regime or 3),
-            live_qty=float(real_amt or 0),
-            consumed_tp_levels=list(getattr(self, "consumed_tp_levels", None) or []),
-            activated=bool(getattr(self, "radar_activated", False) or getattr(self, "radar_latched", False)),
-            step_count=int(getattr(self, "radar_step_count", 0) or 0),
-        )
-        if hasattr(self, "_apply_radar_eval_state"):
-            self._apply_radar_eval_state(radar)
-        new_sl = float(radar.get("radar_sl") or 0)
-        if new_sl <= 0:
-            if self._is_radar_engaged():
-                hold_sl = float(self.current_sl or 0)
-                if hold_sl > 0 and not self._has_stop_sl_near(hold_sl):
-                    return bool(self._ensure_radar_sl(hold_sl, real_amt))
-            return False
-        if curr_px > 0:
-            new_sl = clamp_stop_market_safe(new_sl, curr_px, self.current_side)
-
-        moved = False
-        min_move = RADAR_SL_MIN_MOVE
-        # first_arm = never latched yet (NOT "should_arm and not should_trail":
-        # when current_sl is 0/hard-SL, should_trail is usually True and RADAR_ARM never fired)
-        was_latched = bool(getattr(self, "radar_latched", False))
-        if self.current_side == "LONG":
-            on_book = self._has_stop_sl_near(new_sl)
-            should_trail = new_sl > float(self.current_sl or 0) + min_move
-            should_arm = (
-                not on_book
-                and (
-                    float(self.current_sl or 0) <= float(getattr(self, "tv_sl", 0) or 0)
-                    or abs(float(self.current_sl or 0) - new_sl) > min_move
-                )
-                and new_sl > float(getattr(self, "tv_sl", 0) or 0)
-            )
-            if on_book and not should_trail and was_latched:
-                return False
-            if should_trail or should_arm or (not was_latched and not on_book):
-                first_arm = not was_latched
-                self.current_sl = new_sl
-                self._latch_radar()
-                self._save_state()
-                sl_placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
-                if not sl_placed and not on_book:
-                    sl_placed = bool(self._ensure_radar_sl(new_sl, real_amt))
-                trail_detail = self._radar_trail_detail(
-                    curr_px, new_sl,
-                    sl_placed=sl_placed,
-                    stage=radar.get("stage"),
-                    stage_label=radar.get("stage_label"),
-                    first_arm=first_arm,
-                    arm_source="path_tp1",
-                    move_step=radar.get("move_step"),
-                    trail_offset=radar.get("trail_offset"),
-                    live_qty=float(real_amt or 0),
-                )
-                label = radar.get("stage_label") or "雷达锁润"
-                self._log(
-                    "RADAR_ARM" if first_arm else "TRAIL",
-                    f"{'雷达启动' if first_arm else label} → SL {new_sl}",
-                    trail_detail,
-                )
-                if sl_placed or first_arm or on_book:
-                    alert_type = "RADAR_ARM" if first_arm else "TRAIL"
-                    base = trail_detail.get("radar_activation") or regime_radar_activation(
-                        int(self.regime or 3)
-                    )
-                    rem = max(0.0, 1.0 - float(base))
-                    title = (
-                        f"雷达启动·R{self.regime}路径{base:.0%}(剩{rem:.0%})适度追随"
-                        if first_arm
-                        else f"雷达·{label}"
-                    )
-                    eff = trail_detail.get("radar_activation_effective") or base
-                    self._alert(
-                        "info", alert_type, title,
-                        f"{'路径首次启动' if first_arm else '路径追踪'} | 进度 {trail_detail.get('radar_progress', 0):.0%} "
-                        f"(档位{base:.0%}/有效{eff:.0%}) | 步进{radar.get('move_step')} "
-                        f"呼吸{radar.get('trail_offset')}ATR | 阶段{radar.get('stage')} "
-                        f"SL {new_sl} | 头寸{real_amt} | 盘口{'✓' if (sl_placed or on_book) else '?'}",
-                        trail_detail,
-                    )
-                if hasattr(self, "_cancel_obsolete_tp_after_radar_move"):
-                    orphan = self._cancel_obsolete_tp_after_radar_move(new_sl)
-                    if orphan.get("cancelled", 0) > 0:
-                        trail_detail["tp_orphan_purge"] = orphan
-                moved = True
-        else:
-            on_book = self._has_stop_sl_near(new_sl)
-            should_trail = (
-                float(self.current_sl or 0) <= 0
-                or float(self.current_sl or 0) >= float(self.watched_entry or 0)
-                or new_sl < float(self.current_sl or 0) - min_move
-            )
-            should_arm = (
-                not on_book
-                and (
-                    float(self.current_sl or 0) <= 0
-                    or float(self.current_sl or 0) >= float(self.watched_entry or 0)
-                    or abs(float(self.current_sl or 0) - new_sl) > min_move
-                )
-            )
-            if on_book and not should_trail and was_latched:
-                return False
-            if should_trail or should_arm or (not was_latched and not on_book):
-                first_arm = not was_latched
-                self.current_sl = new_sl
-                self._latch_radar()
-                self._save_state()
-                sl_placed = self._realign_radar_defenses(real_amt, self.watched_entry, new_sl)
-                if not sl_placed and not on_book:
-                    sl_placed = bool(self._ensure_radar_sl(new_sl, real_amt))
-                trail_detail = self._radar_trail_detail(
-                    curr_px, new_sl,
-                    sl_placed=sl_placed,
-                    stage=radar.get("stage"),
-                    stage_label=radar.get("stage_label"),
-                    first_arm=first_arm,
-                    arm_source="path_tp1",
-                    move_step=radar.get("move_step"),
-                    trail_offset=radar.get("trail_offset"),
-                    live_qty=float(real_amt or 0),
-                )
-                label = radar.get("stage_label") or "雷达锁润"
-                self._log(
-                    "RADAR_ARM" if first_arm else "TRAIL",
-                    f"{'雷达启动' if first_arm else label} → SL {new_sl}",
-                    trail_detail,
-                )
-                if sl_placed or first_arm or on_book:
-                    alert_type = "RADAR_ARM" if first_arm else "TRAIL"
-                    base = trail_detail.get("radar_activation") or regime_radar_activation(
-                        int(self.regime or 3)
-                    )
-                    rem = max(0.0, 1.0 - float(base))
-                    title = (
-                        f"雷达启动·R{self.regime}路径{base:.0%}(剩{rem:.0%})适度追随"
-                        if first_arm
-                        else f"雷达·{label}"
-                    )
-                    eff = trail_detail.get("radar_activation_effective") or base
-                    self._alert(
-                        "info", alert_type, title,
-                        f"{'路径首次启动' if first_arm else '路径追踪'} | 进度 {trail_detail.get('radar_progress', 0):.0%} "
-                        f"(档位{base:.0%}/有效{eff:.0%}) | 步进{radar.get('move_step')} "
-                        f"呼吸{radar.get('trail_offset')}ATR | 阶段{radar.get('stage')} "
-                        f"SL {new_sl} | 头寸{real_amt} | 盘口{'✓' if (sl_placed or on_book) else '?'}",
-                        trail_detail,
-                    )
-                if hasattr(self, "_cancel_obsolete_tp_after_radar_move"):
-                    orphan = self._cancel_obsolete_tp_after_radar_move(new_sl)
-                    if orphan.get("cancelled", 0) > 0:
-                        trail_detail["tp_orphan_purge"] = orphan
-                moved = True
-        return moved
+        if hasattr(self, "_process_breathing_stop_tick"):
+            return bool(self._process_breathing_stop_tick(real_amt, curr_px))
+        return False
 
     def _sentinel_loop(self):
         last_px = 0.0
@@ -3885,19 +3693,7 @@ class PositionSupervisor(
                                 )
 
                     if curr_px > 0:
-                        progress = self._radar_activation_progress(curr_px)
                         self._orchestrate_defense_monitoring(actual_qty, curr_px)
-                        if (
-                            not self.adverse_sl_armed
-                            and not self.adverse_consumed_tiers
-                            and progress >= 0.5
-                            and not self._is_radar_engaged()
-                            and self._scan_ticks % 5 == 0
-                        ):
-                            logger.info(
-                                f"[User {self.user_id}] 📡 TP1路径 {progress:.0%} | "
-                                f"现价 {curr_px:.2f} | 硬止损守护（雷达待档位路径比例/TP成交）"
-                            )
 
                     self._sentinel_error_notified = False
                 finally:
@@ -4228,15 +4024,28 @@ class PositionSupervisor(
             if side_sync.get("conflict"):
                 audit.setdefault("warnings", []).append("tv_opposite_force_flat")
 
-            # Checklist §七: position exists but no persisted TP/radar → alert + pause
+            # Checklist §七: position exists but no persisted TP / breathing stop → alert + pause
             has_persist_tp = any(float(x or 0) > 0 for x in (self.tv_tps or []))
-            if not has_persist_tp:
-                msg = "重启有持仓但无持久化 TP1/TP2/TP3 · 暂停交易"
+            has_breath = (
+                float(getattr(self, "initial_atr", 0) or 0) > 0
+                and (
+                    float(getattr(self, "initial_stop", 0) or 0) > 0
+                    or float(getattr(self, "current_sl", 0) or 0) > 0
+                )
+            )
+            if not has_persist_tp or not has_breath:
+                if not has_persist_tp:
+                    msg = "重启有持仓但无持久化 TP1/TP2/TP3 · 暂停交易"
+                else:
+                    msg = "重启有持仓但无呼吸止损状态(initial_atr/initial_stop) · 暂停交易"
                 if hasattr(self, "_pause_trading"):
                     self._pause_trading(msg, {
                         "side": self.current_side,
                         "qty": self.watched_qty,
                         "entry": self.watched_entry,
+                        "initial_atr": getattr(self, "initial_atr", 0),
+                        "initial_stop": getattr(self, "initial_stop", 0),
+                        "current_sl": getattr(self, "current_sl", 0),
                     })
                 audit["trading_paused"] = True
                 audit["has_position"] = True
@@ -4252,12 +4061,11 @@ class PositionSupervisor(
 
             if self.best_price <= 0:
                 self.best_price = self.watched_entry
-            # 未达雷达激活前 current_sl 必须为 0（与开仓路径一致），禁止写成入场价
-            if float(self.current_sl or 0) <= 0 or (
-                float(self.current_sl or 0) == float(self.watched_entry or 0)
-                and not getattr(self, "radar_latched", False)
-            ):
-                self.current_sl = 0.0
+            # Breathing stop: restore current_sl from initial_stop if needed
+            if float(self.current_sl or 0) <= 0:
+                self.current_sl = float(
+                    getattr(self, "initial_stop", 0) or getattr(self, "tv_sl", 0) or 0
+                )
 
             curr_px = self.client.get_current_price(self.symbol)
             self._sync_consumed_tp_levels(self.watched_qty, curr_px or self.watched_entry)

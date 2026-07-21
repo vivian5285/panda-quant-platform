@@ -83,7 +83,7 @@ def normalize_tv_payload(data: dict) -> dict:
             out[src] = out[dst]
 
     float_keys = (
-        "atr", "price", "tv_tp1", "tv_tp2", "tv_tp3", "tv_sl",
+        "atr", "adx", "price", "tv_tp1", "tv_tp2", "tv_tp3", "tv_sl",
         "tp1", "tp2", "tp3", "stop_loss",
         "qty", "qty1", "qty2", "qty3", "pnl_pct",
     )

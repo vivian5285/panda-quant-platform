@@ -112,7 +112,9 @@ def test_eth_and_deepcoin_use_same_vps_resolver_entry_points():
 def test_dingtalk_push_checklist_events():
     assert should_push_trading_dingtalk("OPEN", "info") is True
     assert should_push_trading_dingtalk("STARTUP", "info") is True
-    assert should_push_trading_dingtalk("RADAR_ARM", "info") is True
+    assert should_push_trading_dingtalk("BREATH_STEP", "info") is True
+    assert should_push_trading_dingtalk("BREATH_PHASE2", "info") is True
+    assert should_push_trading_dingtalk("ADVERSE_SL", "warning") is True
     assert should_push_trading_dingtalk("TP_FILLED", "info") is True
     assert should_push_trading_dingtalk("FORCE_ALIGN", "critical") is True
     assert should_push_trading_dingtalk("TRAIL", "info") is True

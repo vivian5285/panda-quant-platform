@@ -160,7 +160,7 @@ def format_takeover_banner(user: User, audit: dict) -> str:
             f"  TV方向: {audit.get('last_tv_side')} | 方向校验: {aligned}",
             f"  盈亏轨道: {pnl_txt} | 浮亏 {audit.get('adverse_pct', '—')}% | 雷达进度 {audit.get('radar_progress', '—')}",
             f"  止盈对齐: TP {audit.get('tp_matched', '—')}/{audit.get('tp_expected', '—')} | "
-            f"  TV硬止损 @{audit.get('shield_stop_price', '—')}",
+            f"  呼吸止损 @{audit.get('shield_stop_price', '—')}",
             f"  恢复止盈: TP1={audit.get('tv_tps', [0, 0, 0])[0]} "
             f"TP2={audit.get('tv_tps', [0, 0, 0])[1]} "
             f"TP3={audit.get('tv_tps', [0, 0, 0])[2]}",

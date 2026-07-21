@@ -1,10 +1,18 @@
-"""Adverse-move radar + TV hard stop orchestration (浮盈雷达 / TV tv_sl 防护)."""
+"""Breathing stop orchestration — merged hard SL + radar (all exchanges)."""
 from __future__ import annotations
 
 import logging
 import time
 from typing import Any
 
+from app.core.breathing_stop import (
+    apply_breathing_tick,
+    compute_initial_stop,
+    init_breathing_state,
+    resolve_adx,
+    resolve_atr,
+    stop_hit,
+)
 from app.core.position_qty_tolerance import qty_drift_tolerance
 from app.core.radar_trail import (
     clamp_stop_market_safe,
@@ -12,8 +20,8 @@ from app.core.radar_trail import (
     tp1_distance,
     tp_path_progress,
 )
-from app.core.vps_hard_sl import compute_hard_sl_limit_price, compute_vps_hard_sl
-from app.core.vps_radar_stages import compute_vps_radar_sl, tp1_filled_from_consumed
+from app.core.vps_hard_sl import compute_hard_sl_limit_price
+from app.core.vps_radar_stages import tp1_filled_from_consumed
 from app.core.symbol_precision import round_price, round_quantity
 
 logger = logging.getLogger(__name__)
@@ -229,9 +237,10 @@ def match_adverse_tier_fill(
 
 class AdverseRadarMixin:
     """
-    Dual-track VPS defense:
-    - 开仓: TV tv_sl 硬止损全平（挂一次，实盘核实）
-    - 朝 TP1: 达雷达激活比例 → 雷达保本移动止损（不低于 TV 底线）
+    Unified breathing-stop defense (all exchanges):
+    - Open: initial SL = entry ± 1.5×ATR (TV stop_loss ignored)
+    - Phase 1: ATR step ladder + TP floors
+    - Phase 2: ADX continuous trail after +3.0×ATR float
     """
 
     adverse_sl_armed: bool
@@ -281,6 +290,18 @@ class AdverseRadarMixin:
             self._tv_hard_sl_price = 0.0
         if not hasattr(self, "_vps_hard_sl_meta"):
             self._vps_hard_sl_meta = {}
+        if not hasattr(self, "initial_atr"):
+            self.initial_atr = 0.0
+        if not hasattr(self, "initial_stop"):
+            self.initial_stop = 0.0
+        if not hasattr(self, "breakeven_phase"):
+            self.breakeven_phase = False
+        if not hasattr(self, "current_adx"):
+            self.current_adx = resolve_adx(None)
+        if not hasattr(self, "remaining_qty_pct"):
+            self.remaining_qty_pct = 1.0
+        if not hasattr(self, "_last_breath_trail_alert_sl"):
+            self._last_breath_trail_alert_sl = 0.0
 
     def _pause_trading(self, reason: str, detail: dict | None = None) -> None:
         """Checklist §七: missing persist / direction mismatch → alert + pause opens."""
@@ -389,33 +410,26 @@ class AdverseRadarMixin:
         return ids.get(k)
 
     def _apply_radar_eval_state(self, radar: dict) -> None:
-        """Persist activated/step_count from ladder eval (monotonic)."""
+        """Compat shim: mark breathing engaged; no legacy RADAR_ARM DingTalk."""
         if not radar:
             return
         self._init_adverse_radar_fields()
-        if radar.get("activated") or radar.get("armed"):
+        if radar.get("activated") or radar.get("armed") or radar.get("current_sl"):
             self.radar_activated = True
             self.radar_latched = True
         sc = int(radar.get("step_count") or 0)
         if sc > int(getattr(self, "radar_step_count", 0) or 0):
             self.radar_step_count = sc
-        ev = radar.get("event")
-        if ev == "radar_arm" and not getattr(self, "_radar_arm_dingtalk_sent", False):
-            self._radar_arm_dingtalk_sent = True
-            try:
-                self._alert(
-                    "info", "RADAR_ARM", "雷达激活·保本",
-                    f"step={self.radar_step_count} SL@{float(radar.get('radar_sl') or 0):.2f}",
-                    {"radar_sl": radar.get("radar_sl"), "step_count": self.radar_step_count},
-                )
-            except Exception:
-                pass
 
     def _reset_adverse_radar(self, *, keep_tv_sl: bool = True) -> None:
         preserved = float(getattr(self, "tv_sl", 0) or 0) if keep_tv_sl else 0.0
         preserved_tv = float(getattr(self, "_tv_hard_sl_price", 0) or 0) if keep_tv_sl else 0.0
+        preserved_initial_stop = float(getattr(self, "initial_stop", 0) or 0) if keep_tv_sl else 0.0
+        preserved_initial_atr = float(getattr(self, "initial_atr", 0) or 0) if keep_tv_sl else 0.0
         if keep_tv_sl and preserved_tv <= 0 and preserved > 0:
             preserved_tv = preserved
+        if keep_tv_sl and preserved_initial_stop <= 0 and preserved > 0:
+            preserved_initial_stop = preserved
         self.adverse_sl_armed = False
         self.adverse_sl_prices = []
         self.adverse_consumed_tiers = []
@@ -431,10 +445,18 @@ class AdverseRadarMixin:
         self._radar_arm_dingtalk_sent = False
         self._radar_path_ok_streak = 0
         self._last_radar_arm_meta = {}
+        self.breakeven_phase = False
+        self.remaining_qty_pct = 1.0
+        self._last_breath_trail_alert_sl = 0.0
         self.tv_sl = preserved
         self._tv_hard_sl_price = preserved_tv
+        self.initial_stop = preserved_initial_stop
+        self.initial_atr = preserved_initial_atr
         if not keep_tv_sl:
             self._vps_hard_sl_meta = {}
+            self.initial_stop = 0.0
+            self.initial_atr = 0.0
+            self.current_sl = 0.0
 
     def _latch_radar(self) -> None:
         """Once radar arms, never revert to hard-only defense until flat."""
@@ -491,7 +513,7 @@ class AdverseRadarMixin:
         self.radar_latched = True
 
     def _hard_stop_label(self) -> str:
-        return "TV硬止损"
+        return "呼吸止损"
 
     def _recompute_vps_hard_sl(
         self,
@@ -500,7 +522,7 @@ class AdverseRadarMixin:
         payload: dict | None = None,
         side: str | None = None,
     ) -> dict:
-        """Authoritative hard SL = TradingView tv_sl (all exchanges). No VPS wide SL."""
+        """Authoritative hard SL = breathing initial stop (entry ± 1.5×ATR). TV tv_sl ignored."""
         self._init_adverse_radar_fields()
         entry = float(
             entry_px
@@ -510,12 +532,14 @@ class AdverseRadarMixin:
         )
         if payload:
             entry = float(payload.get("price") or entry or 0)
-        atr = float(getattr(self, "current_atr", 0) or 0)
+        atr = float(getattr(self, "initial_atr", 0) or 0)
+        if atr <= 0:
+            atr = float(getattr(self, "current_atr", 0) or 0)
         if payload and payload.get("atr"):
             atr = float(payload.get("atr") or atr)
-        regime = int(getattr(self, "regime", 3) or 3)
-        if payload and payload.get("regime") is not None:
-            regime = int(payload.get("regime") or regime)
+        atr = resolve_atr(atr)
+        if payload and payload.get("adx") is not None:
+            self.current_adx = resolve_adx(payload.get("adx"))
         side_u = side or getattr(self, "current_side", None)
         if not side_u and payload:
             act = str(payload.get("action") or "").upper()
@@ -526,47 +550,42 @@ class AdverseRadarMixin:
             elif payload.get("side"):
                 side_u = str(payload.get("side")).upper()
 
-        ref = parse_tv_sl(payload.get("tv_sl")) if payload else None
-        if not ref or ref <= 0:
-            ref = float(getattr(self, "_tv_hard_sl_price", 0) or 0)
-        if (not ref or ref <= 0) and payload is None:
-            # Keep last TV-sourced stop across protect/recover recalcs
-            prev_meta = getattr(self, "_vps_hard_sl_meta", None) or {}
-            if str(prev_meta.get("source") or "") in ("tv_sl", "tv_hard_sl"):
-                ref = float(getattr(self, "tv_sl", 0) or 0)
-
-        if ref and ref > 0:
-            self._tv_hard_sl_price = float(ref)
-
-        meta = compute_vps_hard_sl(
-            entry, side_u, atr, regime,
-            tv_sl_reference=ref if ref and ref > 0 else None,
-        )
-        if meta.get("stop_price", 0) > 0:
-            self.tv_sl = float(meta["stop_price"])
+        stop = compute_initial_stop(entry, str(side_u or ""), atr)
+        meta = {
+            "source": "breathing_initial",
+            "stop_price": float(stop or 0),
+            "entry": entry,
+            "side": side_u,
+            "atr": atr,
+            "adx": float(getattr(self, "current_adx", 0) or 0),
+            "initial_sl_atr": 1.5,
+        }
+        if stop > 0:
+            self.tv_sl = float(stop)
+            self.initial_stop = float(stop)
+            self.current_sl = float(stop)
+            self._tv_hard_sl_price = float(stop)
+            if float(getattr(self, "initial_atr", 0) or 0) <= 0:
+                self.initial_atr = atr
+            self.current_atr = atr if float(getattr(self, "current_atr", 0) or 0) <= 0 else float(self.current_atr)
             self._vps_hard_sl_meta = meta
             logger.info(
-                "TV硬止损: entry=%.2f side=%s → stop=%.2f (tv_sl) | %s",
-                entry,
-                side_u,
-                float(meta.get("stop_price") or 0),
-                meta,
+                "呼吸止损: entry=%.2f side=%s atr=%.4f → stop=%.2f | %s",
+                entry, side_u, atr, stop, meta,
             )
         else:
             self._vps_hard_sl_meta = meta
             logger.error(
-                "TV硬止损缺失: entry=%.2f side=%s — 禁止VPS宽止损兜底，请检查 TV 是否下发 tv_sl | %s",
-                entry,
-                side_u,
-                meta,
+                "呼吸止损缺失: entry=%.2f side=%s atr=%.4f — 无法计算初始止损 | %s",
+                entry, side_u, atr, meta,
             )
             if hasattr(self, "_alert"):
                 try:
                     self._alert(
                         "critical",
                         "HARD_SL_MISSING",
-                        "TV硬止损缺失·禁止漏挂",
-                        f"entry={entry:.2f} side={side_u} — 未收到有效 tv_sl，未挂宽止损旧逻辑",
+                        "呼吸止损缺失·禁止漏挂",
+                        f"entry={entry:.2f} side={side_u} atr={atr} — 无法计算呼吸初始止损",
                         {"entry": entry, "side": side_u, "meta": meta,
                          "exchange": getattr(self, "exchange_id", None)},
                     )
@@ -575,28 +594,43 @@ class AdverseRadarMixin:
         return meta
 
     def _apply_tv_sl_from_payload(self, payload: dict | None) -> float | None:
-        """Apply TradingView stop_loss / tv_sl as the only live hard-stop price."""
+        """Parse atr/adx from payload; ignore TV stop_loss; recompute breathing stop at open."""
         if not payload:
             return None
-        ref = parse_tv_sl(payload.get("stop_loss")) or parse_tv_sl(payload.get("tv_sl"))
-        if ref and ref > 0:
-            self._init_adverse_radar_fields()
-            self._tv_hard_sl_price = float(ref)
-            self._pending_open_tv_sl = float(ref)
+        self._init_adverse_radar_fields()
+        if payload.get("atr") not in (None, ""):
+            try:
+                atr = float(payload.get("atr") or 0)
+                if atr > 0:
+                    self.current_atr = atr
+            except (TypeError, ValueError):
+                pass
+        if payload.get("adx") is not None and str(payload.get("adx")).strip() != "":
+            self.current_adx = resolve_adx(payload.get("adx"))
+        # Live breathing position: never reset stop from TV / mid-trade atr
+        live_breath = (
+            float(getattr(self, "initial_stop", 0) or 0) > 0
+            and float(getattr(self, "initial_atr", 0) or 0) > 0
+            and (
+                bool(getattr(self, "monitoring", False))
+                or float(getattr(self, "watched_qty", 0) or 0) > 0
+            )
+        )
+        if live_breath:
+            px = float(
+                getattr(self, "current_sl", 0)
+                or getattr(self, "initial_stop", 0)
+                or getattr(self, "tv_sl", 0)
+                or 0
+            )
+            return px if px > 0 else None
+        # Intentionally ignore stop_loss / tv_sl for stop price
         meta = self._recompute_vps_hard_sl(payload=payload)
         px = float(meta.get("stop_price") or 0)
         return px if px > 0 else None
 
     def _clamp_radar_sl_to_tv_floor(self, sl: float) -> float:
-        """Radar must never sit worse than TV hard stop (LONG below / SHORT above)."""
-        tv_sl = float(getattr(self, "tv_sl", 0) or 0)
-        if tv_sl <= 0 or sl <= 0:
-            return sl
-        side = getattr(self, "current_side", None)
-        if side == "LONG":
-            return round_price(max(sl, tv_sl))
-        if side == "SHORT":
-            return round_price(min(sl, tv_sl))
+        """No-op: breathing stop has no separate TV floor."""
         return sl
 
     def _defense_mark_price(self) -> float:
@@ -632,30 +666,25 @@ class AdverseRadarMixin:
         return clamp_stop_market_safe(sl, px, side)
 
     def _uses_dual_stop_track(self) -> bool:
-        """Deepcoin: TV底线 + 雷达双轨；其余交易所 Binance 类合并单槽。"""
-        return getattr(self, "exchange_id", "") == "deepcoin"
+        """Breathing stop is single-track on all exchanges (including DeepCoin)."""
+        return False
 
     def _effective_radar_sl_for_merge(self) -> float:
-        if self._is_radar_engaged():
-            sl = float(getattr(self, "current_sl", 0) or 0)
-            if sl > 0:
-                return sl
-        return 0.0
+        sl = float(getattr(self, "current_sl", 0) or 0)
+        if sl > 0:
+            return sl
+        return float(getattr(self, "initial_stop", 0) or getattr(self, "tv_sl", 0) or 0)
 
     def _merged_stop_price(self, radar_sl: float | None = None) -> float:
-        """Binance 单槽：LONG max(tv_sl, radar)，SHORT min。"""
-        tv = float(getattr(self, "tv_sl", 0) or 0)
-        radar = float(
-            radar_sl if radar_sl is not None else self._effective_radar_sl_for_merge()
-        )
-        side = getattr(self, "current_side", None)
-        if side == "LONG":
-            parts = [p for p in (tv, radar) if p > 0]
-            return round_price(max(parts)) if parts else 0.0
-        if side == "SHORT":
-            parts = [p for p in (tv, radar) if p > 0]
-            return round_price(min(parts)) if parts else 0.0
-        return 0.0
+        """Single breathing stop — no max/min with a separate radar track."""
+        if radar_sl is not None and float(radar_sl or 0) > 0:
+            return round_price(float(radar_sl))
+        return round_price(float(
+            getattr(self, "current_sl", 0)
+            or getattr(self, "initial_stop", 0)
+            or getattr(self, "tv_sl", 0)
+            or 0
+        ))
 
     def _shield_tier_prices(self) -> set[float]:
         """All stop trigger prices used to identify TV/legacy hard stops on the book."""
@@ -911,90 +940,38 @@ class AdverseRadarMixin:
         at_open: bool = False,
         force_replace: bool = False,
     ) -> dict[str, Any]:
-        """Arm TV hard stop — Deepcoin 独立底线；其余交易所走合并单槽。"""
-        if not self._uses_dual_stop_track():
-            radar = self._effective_radar_sl_for_merge() or None
-            return self._sync_binance_merged_stop(
-                live_qty, radar_sl=radar, force_replace=force_replace, at_open=at_open,
-            )
-
-        live_qty = self._resolve_adverse_live_qty(live_qty)
-        if live_qty <= 0:
-            return {"armed": False, "reason": "no_live_position", "live_qty": 0}
-
-        label = self._hard_stop_label()
-        tv_sl = float(getattr(self, "tv_sl", 0) or 0)
-        if not force_replace:
-            audit = self._sync_adverse_shield_from_exchange(live_qty)
-            if audit.get("aligned"):
-                stop_px = (audit.get("plan") or [{}])[0].get("stop_price") or tv_sl
-                return {
-                    "armed": True,
-                    "placed": 0,
-                    "skipped": "live_already_aligned",
-                    "stop_price": stop_px,
-                    "label": label,
-                    **audit,
-                }
-
-        if force_replace or (tv_sl > 0 and not at_open):
-            self._cancel_adverse_stop_orders()
-            self.adverse_sl_armed = False
-            self.adverse_sl_prices = []
-
-        if tv_sl <= 0:
-            return {"armed": False, "reason": "no_tv_sl", "skipped": "await_tv_sl", "label": label}
-
-        return self._arm_adverse_staged_stops(
-            live_qty, 0.0, repair=force_replace or tv_sl > 0, at_open=at_open,
+        """Arm breathing stop — all exchanges use merged single-slot path."""
+        radar = float(getattr(self, "current_sl", 0) or 0) or None
+        return self._sync_binance_merged_stop(
+            live_qty, radar_sl=radar, force_replace=force_replace, at_open=at_open,
         )
 
     def _handle_update_sl(self, payload: dict) -> dict[str, Any]:
-        """UPDATE_SL → apply TV tv_sl and rehang hard stop (all exchanges)."""
+        """UPDATE_SL → ignore TV stop price; optional ADX refresh only (breathing owns SL)."""
         self._init_adverse_radar_fields()
-        new_sl = parse_tv_sl(payload.get("tv_sl"))
-        if not new_sl or new_sl <= 0:
-            detail = {
-                "action": "UPDATE_SL",
-                "ignored": True,
-                "reason": "missing_tv_sl",
-                "note": "UPDATE_SL 缺少有效 tv_sl，未改硬止损",
-            }
-            self._log("UPDATE_SL", "UPDATE_SL 无有效 tv_sl", detail)
-            return {"status": "skipped", "reason": "missing_tv_sl", "action": "UPDATE_SL", "detail": detail}
-
-        self._tv_hard_sl_price = float(new_sl)
-        meta = self._recompute_vps_hard_sl(payload=payload)
-        live_qty = float(getattr(self, "watched_qty", 0) or 0)
-        if live_qty <= 0 and hasattr(self, "_get_active_position"):
-            try:
-                pos = self._get_active_position()
-                if pos:
-                    live_qty = float(pos.get("size") or 0)
-            except Exception:
-                pass
-        shield: dict[str, Any] = {}
-        if live_qty > 0 and float(getattr(self, "tv_sl", 0) or 0) > 0:
-            shield = self._sync_tv_hard_stop(live_qty, force_replace=True) or {}
+        adx_before = float(getattr(self, "current_adx", 0) or 0)
+        if payload.get("adx") is not None and str(payload.get("adx")).strip() != "":
+            self.current_adx = resolve_adx(payload.get("adx"))
+        tv_sl_ignored = parse_tv_sl(payload.get("tv_sl") or payload.get("stop_loss"))
         detail = {
             "action": "UPDATE_SL",
-            "ignored": False,
-            "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
-            "meta": meta,
-            "shield": shield,
-            "live_qty": live_qty,
-            "note": "已按 TV tv_sl 更新硬止损并同步盘口",
+            "ignored": True,
+            "ignored_tv_sl": float(tv_sl_ignored or 0) or None,
+            "current_sl": float(getattr(self, "current_sl", 0) or 0),
+            "current_adx": float(getattr(self, "current_adx", 0) or 0),
+            "adx_before": adx_before,
+            "note": "呼吸止损不采纳TV止损价；仅可刷新ADX",
         }
-        self._log("UPDATE_SL", f"TV硬止损更新 → {self.tv_sl}", detail)
-        if hasattr(self, "_alert"):
+        self._log("UPDATE_SL", "忽略TV止损价·呼吸止损自管", detail)
+        if hasattr(self, "_alert") and float(getattr(self, "current_adx", 0) or 0) != adx_before:
             self._alert(
                 "info",
                 "UPDATE_SL",
-                f"{self._hard_stop_label()}已更新",
-                f"tv_sl={self.tv_sl} | 实盘qty={live_qty}",
+                "呼吸止损·ADX已刷新",
+                f"ADX {adx_before:.1f}→{float(self.current_adx):.1f} | SL@{float(getattr(self, 'current_sl', 0) or 0):.2f}",
                 detail,
             )
-        return {"status": "ok", "action": "UPDATE_SL", "detail": detail}
+        return {"status": "ignored", "reason": "breathing_owns_sl", "action": "UPDATE_SL", "detail": detail}
 
     def _live_side_from_pos(self, pos: dict | None) -> str | None:
         if not pos:
@@ -1236,59 +1213,270 @@ class AdverseRadarMixin:
         return float(REGIME_RADAR.get(regime, REGIME_RADAR[3])["activation"])
 
     def _radar_activation_reached(self, curr_px: float) -> bool:
-        """
-        True when path-to-TP1 ≥ effective regime activation (or TP filled / latched).
-
-        Global guards (all exchanges):
-        - open grace after entry
-        - tight TP1 span vs ATR raises required progress (often →95%)
-        - absolute favorable-move floor
-        - 2 consecutive sentinel confirms before latch
-        """
+        """Breathing stop is always active from open when monitoring with entry/ATR."""
         self._init_adverse_radar_fields()
-        from app.core.radar_trail import RADAR_OPEN_GRACE_SEC, evaluate_radar_arm_gate
-        from app.core.vps_radar_stages import tp1_filled_from_consumed
-
-        tps = list(getattr(self, "tv_tps", []) or [])
-        tp1 = float(tps[0] or 0) if tps else 0.0
+        if not getattr(self, "monitoring", False):
+            return False
         entry = float(getattr(self, "watched_entry", 0) or 0)
-        progress = 0.0
-        if hasattr(self, "_radar_activation_progress"):
-            progress = float(self._radar_activation_progress(curr_px) or 0.0)
-        consumed = getattr(self, "consumed_tp_levels", None)
-        regime = int(getattr(self, "regime", 3) or 3)
-        atr = float(getattr(self, "current_atr", 0) or 0)
-        side = getattr(self, "current_side", None)
-        opened_at = getattr(self, "trade_opened_at", None)
-
-        # Re-evaluate without latch to detect false early latch (spike then pullback)
-        fresh = evaluate_radar_arm_gate(
-            consumed_tp_levels=consumed,
-            progress=progress,
-            regime=regime,
-            entry=entry,
-            tp1=tp1,
-            atr=atr,
-            curr_px=float(curr_px or 0),
-            side=side,
-            trade_opened_at=opened_at,
-            path_ok_streak=int(getattr(self, "_radar_path_ok_streak", 0) or 0),
-            radar_latched=False,
+        atr = float(
+            getattr(self, "initial_atr", 0)
+            or getattr(self, "current_atr", 0)
+            or 0
         )
-        self._last_radar_arm_meta = dict(fresh)
-        self._radar_path_ok_streak = int(fresh.get("path_ok_streak") or 0)
+        return entry > 0 and atr > 0
 
-        if getattr(self, "radar_latched", False):
-            # 铁律：雷达已挂/已锁 → 只准前进，永不因回撤解除
+    def _remaining_qty_pct_from_consumed(self, consumed: list | None = None) -> float:
+        levels = {int(x) for x in (consumed if consumed is not None else getattr(self, "consumed_tp_levels", None) or [])}
+        if {1, 2, 3}.issubset(levels):
+            return 0.0
+        if {1, 2}.issubset(levels):
+            return 0.4
+        if 1 in levels:
+            return 0.7
+        return 1.0
+
+    def _init_breathing_on_open(
+        self,
+        entry: float,
+        atr: float | None = None,
+        adx: float | None = None,
+    ) -> dict:
+        """Initialize breathing-stop state at position open."""
+        self._init_adverse_radar_fields()
+        side = getattr(self, "current_side", None) or ""
+        atr_v = atr if atr is not None else getattr(self, "current_atr", None)
+        adx_v = adx if adx is not None else getattr(self, "current_adx", None)
+        st = init_breathing_state(float(entry or 0), str(side), atr=atr_v, adx=adx_v)
+        self.initial_atr = float(st["initial_atr"])
+        self.initial_stop = float(st["initial_stop"])
+        self.current_sl = float(st["current_sl"])
+        self.tv_sl = float(st["current_sl"])
+        self._tv_hard_sl_price = float(st["current_sl"])
+        self.best_price = float(st["best_price"])
+        self.breakeven_phase = bool(st["breakeven_phase"])
+        self.current_adx = float(st["current_adx"])
+        self.remaining_qty_pct = float(st["remaining_qty_pct"])
+        self.current_atr = float(st["initial_atr"])
+        self._vps_hard_sl_meta = {
+            "source": "breathing_initial",
+            "stop_price": float(st["initial_stop"]),
+            "entry": float(st["entry_price"]),
+            "side": side,
+            "atr": float(st["initial_atr"]),
+            "adx": float(st["current_adx"]),
+        }
+        self._last_breath_trail_alert_sl = 0.0
+        return st
+
+    def _process_breathing_stop_tick(self, live_qty: float, curr_px: float) -> bool:
+        """Evaluate breathing stop one tick; place/improve SL; close on hit."""
+        self._init_adverse_radar_fields()
+        entry = float(getattr(self, "watched_entry", 0) or 0)
+        side = getattr(self, "current_side", None)
+        atr = float(
+            getattr(self, "initial_atr", 0)
+            or getattr(self, "current_atr", 0)
+            or 0
+        )
+        initial_stop = float(getattr(self, "initial_stop", 0) or 0)
+        current_sl = float(getattr(self, "current_sl", 0) or 0)
+        best = float(getattr(self, "best_price", 0) or entry or 0)
+        phase = bool(getattr(self, "breakeven_phase", False))
+        adx = float(getattr(self, "current_adx", 0) or 0)
+        px = float(curr_px or 0)
+        if entry <= 0 or atr <= 0 or side not in ("LONG", "SHORT") or px <= 0:
+            return False
+
+        if initial_stop <= 0:
+            initial_stop = compute_initial_stop(entry, side, atr)
+            self.initial_stop = initial_stop
+        if current_sl <= 0:
+            current_sl = initial_stop
+            self.current_sl = current_sl
+            self.tv_sl = current_sl
+
+        tick = apply_breathing_tick(
+            side=side,
+            price=px,
+            entry_price=entry,
+            initial_atr=atr,
+            initial_stop=initial_stop,
+            current_stop=current_sl,
+            best_price=best,
+            breakeven_phase=phase,
+            adx_val=adx,
+        )
+        new_sl = float(tick.get("current_sl") or 0)
+        new_best = float(tick.get("best_price") or best)
+        new_phase = bool(tick.get("breakeven_phase"))
+        improved = bool(tick.get("improved"))
+        event = str(tick.get("event") or "none")
+
+        self.best_price = new_best
+        self.breakeven_phase = new_phase
+        if improved and new_sl > 0:
+            self.current_sl = new_sl
+            self.tv_sl = new_sl
+
+        if stop_hit(side, px, float(getattr(self, "current_sl", 0) or 0)):
+            if hasattr(self, "_close_all"):
+                try:
+                    self._close_all(
+                        "呼吸止损触发",
+                        close_action="CLOSE_BREATH_STOP",
+                        close_trigger="breathing_stop_hit",
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "[User %s] CLOSE_BREATH_STOP failed: %s",
+                        getattr(self, "user_id", "?"),
+                        exc,
+                    )
             return True
 
-        if fresh.get("arm"):
-            self._latch_radar()
-            return True
+        live_qty = self._resolve_adverse_live_qty(live_qty)
+        if live_qty <= 0 or float(getattr(self, "current_sl", 0) or 0) <= 0:
+            return False
 
-        # 未锁定时：若盘口已有保本样 SL，仍不「解除」——改由下次路径达标正式 latch
-        # （禁止 _clear_premature_radar_arm 撤雷达）
-        return False
+        sl_px = float(self.current_sl)
+        placed = False
+        if hasattr(self, "_sync_binance_merged_stop"):
+            merged = self._sync_binance_merged_stop(
+                live_qty, radar_sl=sl_px, force_replace=improved,
+            ) or {}
+            placed = bool(merged.get("placed") or merged.get("aligned") or merged.get("armed"))
+        elif hasattr(self, "_sync_tv_hard_stop"):
+            merged = self._sync_tv_hard_stop(live_qty, force_replace=improved) or {}
+            placed = bool(merged.get("placed") or merged.get("aligned") or merged.get("armed"))
+        elif hasattr(self, "_ensure_radar_sl"):
+            if getattr(self, "exchange_id", "") == "deepcoin":
+                placed = bool(self._ensure_radar_sl(live_qty, sl_px))
+            else:
+                placed = bool(self._ensure_radar_sl(sl_px, live_qty))
+
+        alert_map = {
+            "step": ("BREATH_STEP", "呼吸止损·步进上移"),
+            "floor_tp1": ("BREATH_FLOOR", "呼吸止损·TP1底限"),
+            "floor_tp2": ("BREATH_FLOOR", "呼吸止损·TP2底限"),
+            "phase2_enter": ("BREATH_PHASE2", "呼吸止损·进入保本追踪"),
+            "trail": ("BREATH_TRAIL", "呼吸止损·ADX追踪"),
+        }
+        should_alert = event in alert_map and (
+            event != "trail" or (improved and abs(sl_px - float(getattr(self, "_last_breath_trail_alert_sl", 0) or 0)) > 1e-9)
+        )
+        if should_alert and (improved or placed or event == "phase2_enter"):
+            atype, title = alert_map[event]
+            detail = {
+                "event": event,
+                "current_sl": sl_px,
+                "new_sl": sl_px,
+                "initial_stop": initial_stop,
+                "initial_atr": atr,
+                "adx": adx,
+                "breakeven_phase": new_phase,
+                "best_price": new_best,
+                "curr_px": px,
+                "entry": entry,
+                "improved": improved,
+                "placed": placed,
+                "meta": tick.get("meta") or {},
+            }
+            if hasattr(self, "_log"):
+                self._log(atype, f"{title} @{sl_px:.2f}", detail)
+            if hasattr(self, "_alert"):
+                self._alert(
+                    "info", atype, title,
+                    f"SL@{sl_px:.2f} | 现价{px:.2f} | ADX={adx:.1f} | phase={'2' if new_phase else '1'}",
+                    detail,
+                )
+            if event == "trail":
+                self._last_breath_trail_alert_sl = sl_px
+
+        if improved or placed:
+            self.radar_latched = True
+            self.radar_activated = True
+            if hasattr(self, "_save_state"):
+                self._save_state()
+        return bool(improved or placed)
+
+    def _refresh_breathing_state_on_recover(self, curr_px: float, entry: float) -> None:
+        """Restart: restore breathing SL from persisted state + one tick at mark.
+
+        Replaces legacy compute_vps_radar_sl ladder. Never retreats stop.
+        """
+        if curr_px <= 0 or not entry:
+            return
+        self._init_adverse_radar_fields()
+        side = getattr(self, "current_side", None)
+        atr = float(
+            getattr(self, "initial_atr", 0)
+            or getattr(self, "current_atr", 0)
+            or 0
+        )
+        if atr <= 0:
+            atr = resolve_atr(None)
+            self.initial_atr = atr
+        elif float(getattr(self, "initial_atr", 0) or 0) <= 0:
+            self.initial_atr = atr
+
+        initial_stop = float(getattr(self, "initial_stop", 0) or 0)
+        if initial_stop <= 0 and side in ("LONG", "SHORT"):
+            initial_stop = compute_initial_stop(float(entry), str(side), atr)
+            self.initial_stop = initial_stop
+
+        if float(getattr(self, "best_price", 0) or 0) <= 0:
+            self.best_price = float(entry)
+        if side == "LONG":
+            self.best_price = max(float(self.best_price), float(curr_px))
+        elif side == "SHORT":
+            bp = float(self.best_price)
+            self.best_price = min(bp, float(curr_px)) if bp > 0 else float(curr_px)
+
+        current_sl = float(getattr(self, "current_sl", 0) or 0)
+        if current_sl <= 0:
+            current_sl = float(initial_stop or 0)
+            self.current_sl = current_sl
+
+        if side not in ("LONG", "SHORT") or initial_stop <= 0:
+            return
+
+        tick = apply_breathing_tick(
+            side=side,
+            price=float(curr_px),
+            entry_price=float(entry),
+            initial_atr=atr,
+            initial_stop=initial_stop,
+            current_stop=current_sl,
+            best_price=float(self.best_price),
+            breakeven_phase=bool(getattr(self, "breakeven_phase", False)),
+            adx_val=float(getattr(self, "current_adx", 0) or 0),
+        )
+        new_sl = float(tick.get("current_sl") or current_sl)
+        self.best_price = float(tick.get("best_price") or self.best_price)
+        self.breakeven_phase = bool(tick.get("breakeven_phase"))
+        if new_sl > 0:
+            # Only improve (never retreat) relative to persisted current_sl
+            if side == "LONG":
+                self.current_sl = max(current_sl, new_sl) if current_sl > 0 else new_sl
+            else:
+                self.current_sl = min(current_sl, new_sl) if current_sl > 0 else new_sl
+            self.tv_sl = float(self.current_sl)
+            self._tv_hard_sl_price = float(self.current_sl)
+        self.radar_latched = True
+        self.radar_activated = True
+        self.remaining_qty_pct = self._remaining_qty_pct_from_consumed(
+            getattr(self, "consumed_tp_levels", None)
+        )
+        logger.info(
+            "[User %s] 呼吸止损重启恢复: phase=%s best=%.2f SL=%.2f atr=%.4f adx=%.1f",
+            getattr(self, "user_id", "?"),
+            "2" if self.breakeven_phase else "1",
+            float(self.best_price),
+            float(self.current_sl or 0),
+            atr,
+            float(getattr(self, "current_adx", 0) or 0),
+        )
+
     def _tp1_limit_still_live_on_book(self) -> bool:
         """Exchange-first: open TP1 limit still present (slice accounting only; not an arm gate)."""
         tps = list(getattr(self, "tv_tps", []) or [])
@@ -1333,14 +1521,17 @@ class AdverseRadarMixin:
         return {"cancelled": 0, "skipped": "route_a_coexist", "reason": reason}
 
     def _handoff_shield_to_radar(self, live_qty: float, curr_px: float) -> bool:
-        """Activate radar when path-to-TP1 activation reached (or already trailing)."""
+        """Ensure breathing stop is evaluated and placed (compat name for startup)."""
         if curr_px <= 0:
             return False
         if not self._radar_activation_reached(curr_px):
             return False
         live_qty = self._resolve_adverse_live_qty(live_qty)
-        if hasattr(self, "_refresh_radar_state_on_recover"):
-            self._refresh_radar_state_on_recover(curr_px, float(self.watched_entry or 0))
+        entry = float(getattr(self, "watched_entry", 0) or 0)
+        if hasattr(self, "_refresh_breathing_state_on_recover"):
+            self._refresh_breathing_state_on_recover(curr_px, entry)
+        elif hasattr(self, "_refresh_radar_state_on_recover"):
+            self._refresh_radar_state_on_recover(curr_px, entry)
 
         placed = False
         if hasattr(self, "_process_radar_trailing"):
@@ -1817,7 +2008,7 @@ class AdverseRadarMixin:
         self._alert(
             "critical",
             "ADVERSE_SL_MISALIGN",
-            "TV硬止损未对齐",
+            "呼吸止损未对齐",
             msg + " | 系统已退避冷却，下轮自动重试；请勿手动重复挂单",
             payload,
         )
@@ -2028,7 +2219,7 @@ class AdverseRadarMixin:
             self._alert(
                 "info",
                 "ADVERSE_SL_DISARM",
-                "防护盾撤销 · 雷达保本接管",
+                "旧盾撤销 · 呼吸止损接管",
                 msg,
                 {**result, "entry": entry, "side": self.current_side, "stop_price": stop_px},
             )
@@ -2179,7 +2370,7 @@ class AdverseRadarMixin:
                 f"全平 {detail['live_qty']}"
             )
             self._log("ADVERSE_SL", msg, detail)
-            self._alert("warning", "ADVERSE_SL", f"防护盾 · {label}", msg, detail)
+            self._alert("warning", "ADVERSE_SL", label, msg, detail)
             self.adverse_arm_dingtalk_sent = True
         elif repair and placed > 0:
             label = self._hard_stop_label()
@@ -2243,137 +2434,28 @@ class AdverseRadarMixin:
         return 0.0
 
     def _boost_radar_after_tp_fill(self, change_type: str, curr_px: float, live_qty: float) -> None:
-        """After TP1/TP2 eaten: lock breakeven immediately and trail toward TP3 (all exchanges)."""
+        """Soft-stub: after TP fill only update remaining_qty_pct — do NOT bump SL price."""
         if change_type not in ("tp1_filled", "tp2_filled", "tp3_filled"):
             return
-        entry = float(self.watched_entry or 0)
-        if entry <= 0:
-            return
-        # Force consume marker so path/qty gates cannot block post-fill arm
         consumed = list(getattr(self, "consumed_tp_levels", None) or [])
         level = {"tp1_filled": 1, "tp2_filled": 2, "tp3_filled": 3}.get(change_type)
         if level and level not in consumed:
             consumed.append(level)
             self.consumed_tp_levels = consumed
-        tps = list(getattr(self, "tv_tps", []) or [])
-        tp1 = float(tps[0] or 0) if tps else 0.0
-        tp2 = float(tps[1] or 0) if len(tps) > 1 else 0.0
-        tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
-        if curr_px > 0:
-            if self.current_side == "LONG":
-                self.best_price = max(float(getattr(self, "best_price", entry) or entry), curr_px)
-            else:
-                self.best_price = min(float(getattr(self, "best_price", entry) or entry), curr_px)
-        radar = compute_vps_radar_sl(
-            entry=entry,
-            curr_px=float(curr_px or entry),
-            best_price=float(self.best_price or entry),
-            atr=self.current_atr,
-            side=self.current_side,
-            tp1=tp1, tp2=tp2, tp3=tp3,
-            old_sl=float(getattr(self, "current_sl", 0) or 0),
-            hard_sl=float(getattr(self, "tv_sl", 0) or 0),
-            clamp_fn=getattr(self, "_clamp_radar_sl_to_tv_floor", lambda x: x),
-            radar_latched=True,
-            tp1_filled=True,
-            regime=int(getattr(self, "regime", 3) or 3),
-            live_qty=float(live_qty or 0),
-            consumed_tp_levels=list(getattr(self, "consumed_tp_levels", None) or []),
-            activated=True,
-            step_count=int(getattr(self, "radar_step_count", 0) or 0),
-        )
-        if hasattr(self, "_apply_radar_eval_state"):
-            self._apply_radar_eval_state(radar)
-        sl_px = float(radar.get("radar_sl") or 0)
-        if sl_px <= 0:
-            logger.warning(
-                "[User %s] TP吃单后雷达 SL 计算失败 | %s | px=%.2f",
-                getattr(self, "user_id", "?"), change_type, float(curr_px or 0),
-            )
-            return
-        self.current_sl = sl_px
-        self._latch_radar()
-
-        placed = False
-        on_book = False
-        # Route A: 合并单槽升级硬止损→雷达（不另挂第二份仓位份额）
-        if not self._uses_dual_stop_track() and hasattr(self, "_sync_binance_merged_stop"):
-            merged = self._sync_binance_merged_stop(
-                live_qty, radar_sl=sl_px, force_replace=True,
-            ) or {}
-            placed = bool(merged.get("placed") or merged.get("aligned") or merged.get("armed"))
-            on_book = bool(merged.get("aligned")) or (
-                hasattr(self, "_has_stop_sl_near") and self._has_stop_sl_near(sl_px)
-            )
-        elif hasattr(self, "_realign_radar_defenses"):
-            placed = bool(self._realign_radar_defenses(live_qty, entry, sl_px))
-            on_book = (
-                hasattr(self, "_has_stop_sl_near") and self._has_stop_sl_near(sl_px)
-            ) or (
-                hasattr(self, "_has_trigger_sl_near") and self._has_trigger_sl_near(sl_px)
-            )
-        elif hasattr(self, "_ensure_radar_sl"):
-            if getattr(self, "exchange_id", "") == "deepcoin":
-                placed = bool(self._ensure_radar_sl(live_qty, sl_px))
-                on_book = hasattr(self, "_has_trigger_sl_near") and self._has_trigger_sl_near(sl_px)
-            else:
-                placed = bool(self._ensure_radar_sl(sl_px, live_qty))
-                on_book = hasattr(self, "_has_stop_sl_near") and self._has_stop_sl_near(sl_px)
-
-        detail = {
-            "change_type": change_type,
-            "radar_sl": sl_px,
-            "stage": radar.get("stage"),
-            "stage_label": radar.get("stage_label"),
-            "placed": placed,
-            "verified_on_book": on_book,
-            "curr_px": float(curr_px or 0),
-            "entry": entry,
-            "tv_tps": list(tps),
-            "consumed_tp_levels": list(getattr(self, "consumed_tp_levels", []) or []),
-            "merged_slot": not self._uses_dual_stop_track(),
-            "exchange": getattr(self, "exchange_id", None),
-            "arm_source": "tp_fill",
-            "first_arm": not bool(getattr(self, "radar_latched", False)),
-        }
-        label = radar.get("stage_label") or "雷达保本"
-        if on_book or placed:
-            self._latch_radar()
-            if hasattr(self, "_log"):
-                self._log(
-                    "RADAR_ARM",
-                    f"✅ {change_type} → {label} SL@{sl_px:.2f} | 盘口{'已核实' if on_book else '已提交'}",
-                    detail,
-                )
-            if hasattr(self, "_alert"):
-                self._alert(
-                    "info",
-                    "RADAR_ARM",
-                    f"雷达启动·{change_type}后防回吐（止盈成交）",
-                    f"{label} SL@{sl_px:.2f} | 现价{float(curr_px or 0):.2f} | "
-                    f"盘口{'✓核实' if on_book else '提交中'} | 来源=TP成交（价到+限价消失）",
-                    detail,
-                )
-        else:
-            logger.warning(
-                "[User %s] TP吃单后雷达 STOP 未挂上 @%.2f | %s",
-                getattr(self, "user_id", "?"), sl_px, change_type,
-            )
-            if hasattr(self, "_alert"):
-                self._alert(
-                    "critical",
-                    "RADAR_ARM",
-                    "雷达激活失败·止盈后保本未挂上",
-                    f"{change_type} 期望 SL@{sl_px:.2f}，盘口无 STOP，请人工核查",
-                    detail,
-                )
+        self.remaining_qty_pct = self._remaining_qty_pct_from_consumed(consumed)
         if hasattr(self, "_save_state"):
             self._save_state()
+        logger.info(
+            "[User %s] TP吃单后仅更新 remaining_qty_pct=%.2f（呼吸止损不因TP抬止损）| %s",
+            getattr(self, "user_id", "?"),
+            float(self.remaining_qty_pct),
+            change_type,
+        )
 
     def _orchestrate_defense_monitoring(self, live_qty: float, curr_px: float) -> None:
         """
-        Route A 三层分工：TV底线 + 雷达追踪 + TP123。
-        雷达激活时不撤 TV 止损；Binance 合并单槽，Deepcoin 双轨并行。
+        Unified defense: breathing stop (hard+radar merged) + TP123.
+        All exchanges share one breathing tick; exchange place APIs differ only.
         """
         if curr_px <= 0:
             return
@@ -2381,7 +2463,6 @@ class AdverseRadarMixin:
         live_qty = self._resolve_adverse_live_qty(live_qty)
         if hasattr(self, "_sync_consumed_tp_levels"):
             self._sync_consumed_tp_levels(live_qty, curr_px)
-        progress = self._radar_activation_progress(curr_px) if hasattr(self, "_radar_activation_progress") else 0.0
 
         if self._radar_activation_reached(curr_px):
             moved = False
@@ -2390,6 +2471,7 @@ class AdverseRadarMixin:
             elif self._handoff_shield_to_radar(live_qty, curr_px):
                 moved = True
             if self._uses_dual_stop_track():
+                # DeepCoin historically dual-slot; mixin forces single-track=False for breathing
                 self._process_adverse_radar_guard(live_qty, curr_px)
             else:
                 radar = self._effective_radar_sl_for_merge() or None
@@ -2405,13 +2487,8 @@ class AdverseRadarMixin:
                     )
             return
 
+        # Missing entry/ATR — keep any mounted stop repaired until breathing can arm
         self._process_adverse_radar_guard(live_qty, curr_px)
-
-        if progress >= 0.5 and getattr(self, "_scan_ticks", 0) % 5 == 0:
-            logger.info(
-                "[User %s] 📡 TP1路径 %.0f%% | 现价 %.2f | 硬止损守护中（雷达待档位路径比例/TP成交）",
-                self.user_id, progress * 100, curr_px,
-            )
 
     def _orchestrate_qty_change(
         self,
@@ -2450,16 +2527,16 @@ class AdverseRadarMixin:
             self.adverse_sl_prices = []
             tp_result = self._smart_realign_defenses(
                 new_qty, entry, dynamic_sl=None,
-                reason=f"TV硬止损触发 · {cause}",
+                reason=f"呼吸止损触发 · {cause}",
             )
             result.update({
                 "defense": tp_result,
-                "action_msg": f"TV硬止损全平 · {cause}",
+                "action_msg": f"呼吸止损全平 · {cause}",
             })
             self._alert(
                 "critical",
                 "ADVERSE_SL_HIT",
-                "TV硬止损触发",
+                "呼吸止损触发",
                 f"{cause} 全平 {old_qty}→{new_qty}",
                 result,
             )

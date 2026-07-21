@@ -964,7 +964,7 @@ class BinanceSmartDefenseMixin:
         )
         if not res:
             self._def_log(
-                f"⚠️ 雷达保本 STOP 下单失败 @ {sl:.2f}（closePosition，不与 TP 抢份额）",
+                f"⚠️ 呼吸止损 STOP 下单失败 @ {sl:.2f}（closePosition，不与 TP 抢份额）",
                 logging.WARNING,
             )
             return False
@@ -1056,7 +1056,7 @@ class BinanceSmartDefenseMixin:
         return placed
 
     def _nuclear_realign_tp(self, live_qty: float, entry: float, dynamic_sl=None, rounds: int = 3) -> dict:
-        """核武重挂：只撤 TP 限价，绝不 cancel_all（避免误撤 TV硬止损/雷达条件槽）。"""
+        """核武重挂：只撤 TP 限价，绝不 cancel_all（避免误撤呼吸止损条件槽）。"""
         last_audit = self._audit_tp_levels(live_qty)
         for r in range(rounds):
             self._def_log(

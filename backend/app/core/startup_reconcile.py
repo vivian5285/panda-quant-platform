@@ -498,9 +498,9 @@ def format_startup_defense_summary(audit: dict) -> str:
     parts = []
     track = audit.get("pnl_track")
     if track == "profit_radar":
-        parts.append("浮盈/雷达轨")
+        parts.append("浮盈/呼吸轨")
     elif track == "loss_shield":
-        parts.append("浮亏/防护轨")
+        parts.append("浮亏/呼吸轨")
     adv = audit.get("adverse_pct")
     if adv is not None:
         parts.append(f"浮亏{adv:.1f}%")
@@ -518,24 +518,24 @@ def format_startup_defense_summary(audit: dict) -> str:
     shield = audit.get("shield")
     if isinstance(shield, dict):
         if shield.get("aligned") or shield.get("synced_armed"):
-            parts.append("TV硬止损✓")
+            parts.append("呼吸止损✓")
         elif shield.get("placed", 0):
-            parts.append("TV硬止损补挂")
+            parts.append("呼吸止损补挂")
         elif audit.get("pnl_track") == "profit_radar":
-            parts.append("硬止损已撤")
+            parts.append("呼吸止损已同步")
         elif audit.get("pnl_track") == "loss_shield":
-            parts.append("硬止损待补挂")
+            parts.append("呼吸止损待补挂")
     prog = audit.get("radar_progress")
     if prog is not None:
-        parts.append(f"雷达进度{prog:.0%}")
+        parts.append(f"浮盈进度{prog:.0%}")
     radar_sl = audit.get("radar_sl") or {}
     if track == "profit_radar" and radar_sl.get("expected_sl"):
         if radar_sl.get("live"):
-            parts.append(f"保本雷达ON@{radar_sl['expected_sl']:.2f}✓")
+            parts.append(f"呼吸止损ON@{radar_sl['expected_sl']:.2f}✓")
         else:
-            parts.append(f"保本雷达缺失@{radar_sl['expected_sl']:.2f}")
-    elif audit.get("breakeven_active"):
-        parts.append("保本雷达ON")
+            parts.append(f"呼吸止损缺失@{radar_sl['expected_sl']:.2f}")
+    elif audit.get("breakeven_active") or audit.get("breakeven_phase"):
+        parts.append("呼吸止损ON")
     if audit.get("defenses_skipped"):
         parts.append("未重复挂单")
     elif audit.get("defenses_rebuilt"):
@@ -1319,7 +1319,7 @@ class StartupReconcileMixin:
                 self._alert(
                     "warning",
                     "STARTUP_RADAR_SL",
-                    "重启接管 · 雷达保本止损未挂上",
+                    "重启接管 · 呼吸止损未挂上",
                     f"期望 SL @ {sl_px:.2f}，实盘无 STOP 单，请人工核查",
                     audit,
                 )
@@ -1379,7 +1379,7 @@ class StartupReconcileMixin:
         2. 浮盈/浮亏 + 雷达进度 → 选轨
         3. TP123 交易所优先对账（齐全跳过）
         4. 浮亏轨：TV 硬止损核实/缺失补挂
-        5. 浮盈轨：撤硬止损 + 雷达保本 SL（达比例时）
+        5. 呼吸轨：补挂/同步呼吸止损（开仓即激活）
         """
         self._startup_wait_live_book()
         if hasattr(self, "_resolve_live_qty"):
@@ -1456,7 +1456,7 @@ class StartupReconcileMixin:
         if cap_result and cap_result.get("trimmed", 0) > 0 and cap_result.get("defense"):
             tp_result = cap_result["defense"]
         elif hasattr(self, "_reconcile_tp_defenses_on_startup"):
-            # TP123 与雷达保本 STOP 分轨：止盈对账不携带 dynamic_sl，避免与 reduceOnly 份额冲突
+            # TP123 与呼吸止损 STOP 分轨：止盈对账不携带 dynamic_sl，避免与 reduceOnly 份额冲突
             tp_result = self._reconcile_tp_defenses_on_startup(
                 live_qty, entry, dynamic_sl=None,
             )
