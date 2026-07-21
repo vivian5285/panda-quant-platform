@@ -129,6 +129,7 @@ def test_timer_callback_flushes(coalesce, monkeypatch):
 
 
 def test_idempotency_60s_includes_price():
+    """拍板: 60s 去重 key = action+symbol+price（不含 price 会误杀变价信号）."""
     assert IDEMPOTENCY_TTL_SEC == 60
     a = compute_fingerprint({"action": "LONG", "symbol": "ETHUSDT", "price": 3300.5})
     b = compute_fingerprint({"action": "LONG", "symbol": "ETHUSDT", "price": 3399.0})

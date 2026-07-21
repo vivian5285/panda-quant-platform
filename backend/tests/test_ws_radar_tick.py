@@ -38,9 +38,18 @@ def test_ws_price_listener_fanout():
 
 def test_radar_ws_tick_min_sec_is_subsecond():
     assert RADAR_WS_TICK_MIN_SEC < 1.0
-    assert SENTINEL_POLL_ARMING <= 1.0
-    assert SENTINEL_POLL_RADAR <= 1.5
+    # All exchanges aligned: arming/radar sentinel = 0.5s (拍板)
+    assert SENTINEL_POLL_ARMING == 0.5
+    assert SENTINEL_POLL_RADAR == 0.5
     assert SENTINEL_POLL_NORMAL <= 5.0
+
+
+def test_deepcoin_sentinel_aligned_to_half_sec():
+    from app.core import position_supervisor_deepcoin as dc
+
+    assert dc.SENTINEL_POLL_ARMING == 0.5
+    assert dc.SENTINEL_POLL_RADAR == 0.5
+    assert dc.SENTINEL_POLL_NORMAL == 5.0
 
 
 def _stub_supervisor():

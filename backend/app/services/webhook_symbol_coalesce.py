@@ -4,7 +4,9 @@ Cache 1~2s per symbol (default 1.0s), then execute:
   1. At most one CLOSE_* (idempotent flat)
   2. Latest LONG/SHORT (open path still force-flats)
 
-Same-window rule: ALWAYS close-then-open (never ignore open when close present).
+Same-window rule (拍板 · 废止旧 14.5「有平仓则忽略开仓」):
+  ALWAYS close-then-open — CLOSE once, then latest OPEN.
+  OPEN still force-flats as final safety net.
 Works with or without bar_index/seq — all exchanges share this ingress.
 """
 from __future__ import annotations
