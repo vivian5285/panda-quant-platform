@@ -91,6 +91,26 @@ def _settlement_reminder_loop():
         _stop.wait(interval)
 
 
+def _log_retention_loop():
+    interval = max(3600, int(getattr(settings, "LOG_RETENTION_INTERVAL_SEC", 86400) or 86400))
+    logger.info("[Scheduler] log retention every %ss (keep %sd)", interval, getattr(settings, "LOG_RETENTION_DAYS", 30))
+    # First run shortly after boot so ops see effect without waiting a day
+    _stop.wait(120)
+    while not _stop.is_set():
+        db = SessionLocal()
+        try:
+            from app.services.log_retention import purge_old_logs
+
+            stats = purge_old_logs(db)
+            if any(isinstance(v, int) and v > 0 for v in stats.values()):
+                logger.info("[Scheduler] log retention: %s", stats)
+        except Exception as e:
+            logger.exception("[Scheduler] log retention failed: %s", e)
+        finally:
+            db.close()
+        _stop.wait(interval)
+
+
 def start_background_schedulers():
     if not settings.ENABLE_BACKGROUND_SCHEDULERS:
         logger.info("[Scheduler] background schedulers disabled")
@@ -100,6 +120,7 @@ def start_background_schedulers():
     threading.Thread(target=_settlement_reminder_loop, daemon=True, name="settlement-reminder").start()
     threading.Thread(target=_deposit_loop, daemon=True, name="deposit-monitor").start()
     threading.Thread(target=_sweep_loop, daemon=True, name="deposit-sweep").start()
+    threading.Thread(target=_log_retention_loop, daemon=True, name="log-retention").start()
 
 
 def stop_background_schedulers():

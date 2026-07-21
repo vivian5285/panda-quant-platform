@@ -235,6 +235,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.radar_step_count = 0
         self._atr_refreshed_at = 0.0
         self._tp_placed_at = {}
+        self._defense_order_ids = {}
         self.current_sl = 0.0
         self.tv_price = 0.0
         self.tv_tps = [0.0, 0.0, 0.0]
@@ -601,6 +602,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "radar_activated": bool(getattr(self, "radar_activated", False)),
                     "radar_step_count": int(getattr(self, "radar_step_count", 0) or 0),
                     "tp_placed_at": dict(getattr(self, "_tp_placed_at", None) or {}),
+                    "defense_order_ids": dict(getattr(self, "_defense_order_ids", None) or {}),
                     "trading_paused": bool(getattr(self, "trading_paused", False)),
                     "trading_pause_reason": str(getattr(self, "trading_pause_reason", "") or ""),
                     "current_trade_id": getattr(self, "current_trade_id", None),
@@ -1550,7 +1552,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             if len(at_px) == 1 and tp_qty_matches(q, at_px[0]["qty"], live_qty, is_contracts=True):
                 logger.info(f"  ✓ TP @ {px:.2f} 已存在 {at_px[0]['qty']}张，跳过")
                 if hasattr(self, "_mark_tp_placed"):
-                    self._mark_tp_placed(level)
+                    self._mark_tp_placed(level, order_id=at_px[0].get("orderId"))
                 continue
             if len(at_px) > 1:
                 self._purge_duplicate_tp_orders(live_qty)
@@ -1569,7 +1571,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             if placed_res.get("ok"):
                 placed += 1
                 if hasattr(self, "_mark_tp_placed"):
-                    self._mark_tp_placed(int(lv.get("level") or 0))
+                    self._mark_tp_placed(int(lv.get("level") or 0), order_id=placed_res.get("order_id"))
             elif hasattr(self, "_alert"):
                 self._alert(
                     "warning",
@@ -3786,7 +3788,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             if placed_res.get("ok"):
                 placed += 1
                 if hasattr(self, "_mark_tp_placed"):
-                    self._mark_tp_placed(level)
+                    self._mark_tp_placed(level, order_id=placed_res.get("order_id"))
             elif hasattr(self, "_alert"):
                 self._alert(
                     "warning",
@@ -3802,6 +3804,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             sl_res = self._place_trigger_with_retry(
                 close_side, pos_side, sl_qty, dynamic_sl, label="SL"
             )
+            if sl_res.get("ok") and hasattr(self, "_remember_defense_order_id"):
+                self._remember_defense_order_id("sl", sl_res.get("order_id") or sl_res.get("algo_id"))
             if not sl_res.get("ok") and hasattr(self, "_alert"):
                 self._alert(
                     "warning",
@@ -3958,6 +3962,22 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         {int(k): float(v) for k, v in dict(raw_tp_at).items()}
                         if isinstance(raw_tp_at, dict) else {}
                     )
+                    raw_oids = s.get("defense_order_ids") or {}
+                    if isinstance(raw_oids, dict):
+                        cleaned = {}
+                        for k, v in raw_oids.items():
+                            key = str(k).strip().lower()
+                            if key.startswith("tp"):
+                                key = key[2:]
+                            if key not in ("1", "2", "sl") or v in (None, ""):
+                                continue
+                            try:
+                                cleaned[key] = int(v)
+                            except (TypeError, ValueError):
+                                cleaned[key] = str(v)
+                        self._defense_order_ids = cleaned
+                    else:
+                        self._defense_order_ids = {}
                     self.trading_paused = bool(s.get("trading_paused", False))
                     self.trading_pause_reason = str(s.get("trading_pause_reason") or "")
                     tid = s.get("current_trade_id")

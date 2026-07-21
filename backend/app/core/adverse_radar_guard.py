@@ -263,6 +263,10 @@ class AdverseRadarMixin:
             self._atr_refreshed_at = 0.0
         if not hasattr(self, "_tp_placed_at"):
             self._tp_placed_at = {}
+        if not hasattr(self, "_defense_order_ids"):
+            # Checklist §四/§十一: TP1/TP2/SL tracked by order id (persisted)
+            # keys: "1" | "2" | "sl" → exchange orderId/algoId
+            self._defense_order_ids = {}
         if not hasattr(self, "_radar_arm_dingtalk_sent"):
             self._radar_arm_dingtalk_sent = False
         if not hasattr(self, "trading_paused"):
@@ -332,7 +336,7 @@ class AdverseRadarMixin:
             }
         return None
 
-    def _mark_tp_placed(self, level: int) -> None:
+    def _mark_tp_placed(self, level: int, order_id=None) -> None:
         """Stamp TP1/TP2 hang time for 5-min timeout → cancel + hand to radar."""
         lvl = int(level or 0)
         if lvl not in (1, 2):
@@ -341,6 +345,48 @@ class AdverseRadarMixin:
         if lvl not in placed:
             placed[lvl] = time.time()
             self._tp_placed_at = placed
+        if order_id is not None:
+            self._remember_defense_order_id(str(lvl), order_id)
+
+    def _remember_defense_order_id(self, key: str, order_id) -> None:
+        """Persist defense order id for TP1/TP2/SL (checklist 4.3 / 11.3)."""
+        self._init_adverse_radar_fields()
+        k = str(key or "").strip().lower()
+        if k.startswith("tp"):
+            k = k[2:]
+        if k not in ("1", "2", "sl"):
+            return
+        try:
+            oid = int(order_id) if order_id is not None and str(order_id).strip() != "" else None
+        except (TypeError, ValueError):
+            oid = str(order_id).strip() or None
+        if oid is None:
+            return
+        ids = dict(getattr(self, "_defense_order_ids", None) or {})
+        if ids.get(k) == oid:
+            return
+        ids[k] = oid
+        self._defense_order_ids = ids
+
+    def _clear_defense_order_ids(self, *keys) -> None:
+        self._init_adverse_radar_fields()
+        ids = dict(getattr(self, "_defense_order_ids", None) or {})
+        if not keys:
+            ids.clear()
+        else:
+            for raw in keys:
+                k = str(raw or "").strip().lower()
+                if k.startswith("tp"):
+                    k = k[2:]
+                ids.pop(k, None)
+        self._defense_order_ids = ids
+
+    def _defense_order_id(self, key: str):
+        ids = getattr(self, "_defense_order_ids", None) or {}
+        k = str(key or "").strip().lower()
+        if k.startswith("tp"):
+            k = k[2:]
+        return ids.get(k)
 
     def _apply_radar_eval_state(self, radar: dict) -> None:
         """Persist activated/step_count from ladder eval (monotonic)."""
@@ -381,6 +427,7 @@ class AdverseRadarMixin:
         self.radar_step_count = 0
         self._atr_refreshed_at = 0.0
         self._tp_placed_at = {}
+        self._defense_order_ids = {}
         self._radar_arm_dingtalk_sent = False
         self._radar_path_ok_streak = 0
         self._last_radar_arm_meta = {}

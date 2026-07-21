@@ -972,6 +972,9 @@ class StartupReconcileMixin:
         if hasattr(self, "_flat_purge_side"):
             delattr(self, "_flat_purge_side")
 
+        if hasattr(self, "_clear_defense_order_ids"):
+            self._clear_defense_order_ids()
+
         total_cancelled = (
             detail["cancelled_tp"]
             + detail["cancelled_stops"]

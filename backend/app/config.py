@@ -15,7 +15,10 @@ class Settings(BaseSettings):
     # 同 bar 缺前置 seq 时暂存等待秒数，超时报警后按已有顺序释放
     WEBHOOK_SEQ_WAIT_SEC: float = 3.0
     # TV 同 K 线多消息缓存窗口（1~2s）：到期后先平仓一次再开最新仓
-    WEBHOOK_COALESCE_SEC: float = 1.5
+    WEBHOOK_COALESCE_SEC: float = 1.0
+    # DB / webhook 日志保留天数（checklist §12.4）
+    LOG_RETENTION_DAYS: int = 30
+    LOG_RETENTION_INTERVAL_SEC: int = 86400
     PRODUCTION_STRICT: bool = False
     PLATFORM_DOMAIN: str = "twinstar.pro"
     ADMIN_EMAIL: str = "admin@twinstar.pro"

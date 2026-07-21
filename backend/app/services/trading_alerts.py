@@ -570,6 +570,12 @@ def format_radar_arm_detail_cn(detail: dict, exchange: str | None = None) -> str
     if detail.get("new_sl") or detail.get("radar_sl"):
         sl = detail.get("new_sl") or detail.get("radar_sl")
         lines.append(_line("雷达止损", f"@{float(sl):.2f}"))
+    if detail.get("floating_pnl") is not None:
+        try:
+            fp = float(detail["floating_pnl"])
+            lines.append(_line("当前浮盈", f"{fp:+.2f} USDT"))
+        except (TypeError, ValueError):
+            pass
     if detail.get("stage_label") or detail.get("radar_stage"):
         lines.append(
             _line(

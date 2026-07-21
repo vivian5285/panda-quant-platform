@@ -732,7 +732,7 @@ class BinanceSmartDefenseMixin:
             if len(at_px) == 1 and tp_qty_matches(q, at_px[0]["qty"], live_qty):
                 self._def_log(f"  ✓ TP @ {px:.2f} 已存在 {at_px[0]['qty']} ETH，跳过")
                 if hasattr(self, "_mark_tp_placed"):
-                    self._mark_tp_placed(level)
+                    self._mark_tp_placed(level, order_id=at_px[0].get("orderId"))
                 continue
             if len(at_px) > 1:
                 self._purge_duplicate_tp_orders(live_qty)
@@ -746,12 +746,13 @@ class BinanceSmartDefenseMixin:
                     self.client.cancel_order(self.symbol, int(oid))
                     time.sleep(0.25)
             self._def_log(f"  + 补挂 TP @ {px:.2f} qty={q} ETH")
-            if self.client.place_limit_order(
+            res = self.client.place_limit_order(
                 close_side, q, px, symbol=self.symbol, reduce_only=True
-            ):
+            )
+            if res:
                 placed += 1
                 if hasattr(self, "_mark_tp_placed"):
-                    self._mark_tp_placed(level)
+                    self._mark_tp_placed(level, order_id=res.get("orderId"))
             time.sleep(0.4)
         if skipped and hasattr(self, "_log"):
             self._log(
@@ -1049,7 +1050,7 @@ class BinanceSmartDefenseMixin:
             if res:
                 placed += 1
                 if hasattr(self, "_mark_tp_placed"):
-                    self._mark_tp_placed(level)
+                    self._mark_tp_placed(level, order_id=res.get("orderId"))
             time.sleep(0.35)
 
         return placed

@@ -16,7 +16,7 @@ from app.services.webhook_symbol_coalesce import (
 def coalesce(monkeypatch):
     monkeypatch.setattr(
         "app.services.webhook_symbol_coalesce.get_settings",
-        lambda: MagicMock(WEBHOOK_COALESCE_SEC=1.5),
+        lambda: MagicMock(WEBHOOK_COALESCE_SEC=1.0),
     )
     c = reset_coalesce_for_tests()
     yield c
@@ -33,6 +33,16 @@ def test_coalesce_window_default_clamped():
     c = WebhookSymbolCoalesce()
     # default settings may vary; clamp is 1~2
     assert 1.0 <= c.window_sec() <= 2.0
+
+
+def test_close_then_open_same_window_not_ignore_open(coalesce):
+    """Confirmed rule: has CLOSE → still execute latest OPEN after close once."""
+    released = []
+    coalesce.set_dispatch(lambda p, fp: released.append(p["action"]))
+    coalesce.submit(*_msg("CLOSE_QUICK_EXIT", price=3290))
+    coalesce.submit(*_msg("SHORT", price=3301))
+    coalesce.flush_now("ETHUSDT")
+    assert released == ["CLOSE_QUICK_EXIT", "SHORT"]
 
 
 def test_short_then_close_reorders_close_first(coalesce, monkeypatch):
@@ -106,7 +116,7 @@ def test_timer_callback_flushes(coalesce, monkeypatch):
     """超时兜底：timer 回调清空缓存并派发（不依赖真实 sleep）。"""
     monkeypatch.setattr(
         "app.services.webhook_symbol_coalesce.get_settings",
-        lambda: MagicMock(WEBHOOK_COALESCE_SEC=1.5),
+        lambda: MagicMock(WEBHOOK_COALESCE_SEC=1.0),
     )
     c = reset_coalesce_for_tests()
     released = []

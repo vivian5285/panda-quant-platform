@@ -79,10 +79,10 @@ HEAL_PLACE_ROUNDS = 2
 SIGNAL_QUEUE_TTL = 120.0
 SIGNAL_LOCK_SLICE = 5.0
 SENTINEL_POLL_NORMAL = 5.0
-# Near TP1 path / arming: match WS markPrice@1s cadence
-SENTINEL_POLL_ARMING = 1.0
+# Near TP1 / TP fill monitor: checklist §4.2 / §13.11 (~0.5s)
+SENTINEL_POLL_ARMING = 0.5
 # Radar engaged: trail tightly on WS
-SENTINEL_POLL_RADAR = 1.2
+SENTINEL_POLL_RADAR = 0.5
 # WS tick → radar evaluate throttle (avoid place/cancel thrash)
 RADAR_WS_TICK_MIN_SEC = 0.45
 DUST_QTY_ETH = 0.004
@@ -173,6 +173,7 @@ class PositionSupervisor(
         self.radar_step_count = 0
         self._atr_refreshed_at = 0.0
         self._tp_placed_at = {}  # level -> unix ts
+        self._defense_order_ids = {}  # "1"|"2"|"sl" -> orderId
         self.current_sl = 0.0
         self.tv_price = 0.0
         self.initial_qty = 0.0
@@ -266,6 +267,7 @@ class PositionSupervisor(
                     "radar_activated": bool(getattr(self, "radar_activated", False)),
                     "radar_step_count": int(getattr(self, "radar_step_count", 0) or 0),
                     "tp_placed_at": dict(getattr(self, "_tp_placed_at", None) or {}),
+                    "defense_order_ids": dict(getattr(self, "_defense_order_ids", None) or {}),
                     "trading_paused": bool(getattr(self, "trading_paused", False)),
                     "trading_pause_reason": str(getattr(self, "trading_pause_reason", "") or ""),
                     "current_trade_id": getattr(self, "current_trade_id", None),
@@ -325,6 +327,22 @@ class PositionSupervisor(
                         {int(k): float(v) for k, v in dict(raw_tp_at).items()}
                         if isinstance(raw_tp_at, dict) else {}
                     )
+                    raw_oids = s.get("defense_order_ids") or {}
+                    if isinstance(raw_oids, dict):
+                        cleaned = {}
+                        for k, v in raw_oids.items():
+                            key = str(k).strip().lower()
+                            if key.startswith("tp"):
+                                key = key[2:]
+                            if key not in ("1", "2", "sl") or v in (None, ""):
+                                continue
+                            try:
+                                cleaned[key] = int(v)
+                            except (TypeError, ValueError):
+                                cleaned[key] = str(v)
+                        self._defense_order_ids = cleaned
+                    else:
+                        self._defense_order_ids = {}
                     self.trading_paused = bool(s.get("trading_paused", False))
                     self.trading_pause_reason = str(s.get("trading_pause_reason") or "")
                     tid = s.get("current_trade_id")
@@ -1891,6 +1909,13 @@ class PositionSupervisor(
                     self._boost_radar_after_tp_fill(f"tp{lvl}_filled", float(curr_px or 0), float(new_qty or 0))
                 except Exception:
                     pass
+        if hasattr(self, "_clear_defense_order_ids"):
+            self._clear_defense_order_ids(str(lvl))
+            if hasattr(self, "_save_state"):
+                try:
+                    self._save_state()
+                except Exception:
+                    pass
 
         detail = {
             "exchange": self.exchange_id,
@@ -2147,21 +2172,35 @@ class PositionSupervisor(
         for level, qty, price in slices:
             if qty <= 0 or price <= 0:
                 continue
+            tracked_oid = None
+            if hasattr(self, "_defense_order_id"):
+                tracked_oid = self._defense_order_id(str(level))
+            by_id = []
+            if tracked_oid is not None:
+                by_id = [
+                    lo for lo in live_limits
+                    if lo.get("order_id") is not None
+                    and str(lo.get("order_id")) == str(tracked_oid)
+                ]
             at_price = [
                 lo for lo in live_limits
                 if self._price_matches(lo["price"], price)
             ]
-            if len(at_price) > 1:
+            # Prefer exact order-id match when persisted (checklist 4.3)
+            candidates = by_id if by_id else at_price
+            if len(candidates) > 1 and not by_id:
                 duplicate_tps.append({
                     "level": level,
                     "price": round_price(price),
                     "expected_qty": qty,
-                    "orders": at_price,
+                    "orders": candidates,
                 })
-            elif len(at_price) == 1:
-                live = at_price[0]
+            elif len(candidates) == 1:
+                live = candidates[0]
                 if self._qty_matches(live["qty"], qty, anchor=qty):
                     matched_tps.append({"level": level, **live})
+                    if hasattr(self, "_remember_defense_order_id") and live.get("order_id"):
+                        self._remember_defense_order_id(str(level), live["order_id"])
                 else:
                     qty_mismatch_tps.append({
                         "level": level,
@@ -2172,8 +2211,23 @@ class PositionSupervisor(
                     })
             else:
                 missing_tps.append({"level": level, "qty": qty, "price": round_price(price)})
+                if tracked_oid is not None and hasattr(self, "_clear_defense_order_ids"):
+                    # Tracked id gone from open book — clear stale id (fill or cancel)
+                    self._clear_defense_order_ids(str(level))
 
         sl_live = live_stops[0] if live_stops else None
+        tracked_sl = self._defense_order_id("sl") if hasattr(self, "_defense_order_id") else None
+        if tracked_sl is not None:
+            for s in live_stops:
+                if str(s.get("order_id")) == str(tracked_sl):
+                    sl_live = s
+                    break
+            else:
+                if hasattr(self, "_clear_defense_order_ids"):
+                    self._clear_defense_order_ids("sl")
+        elif sl_live and hasattr(self, "_remember_defense_order_id") and sl_live.get("order_id"):
+            self._remember_defense_order_id("sl", sl_live["order_id"])
+
         missing_sl = False
         if dynamic_sl and dynamic_sl > 0:
             missing_sl = not any(
@@ -2353,12 +2407,20 @@ class PositionSupervisor(
             result = self._place_limit_with_retry(close_side, qty, place_px, f"TP{level}")
             if result["ok"]:
                 placed.append(result)
+                if hasattr(self, "_mark_tp_placed"):
+                    self._mark_tp_placed(int(level), order_id=result.get("order_id"))
+                if hasattr(self, "_save_state"):
+                    self._save_state()
             else:
                 failed.append(result)
         if dynamic_sl and dynamic_sl > 0:
             sl_result = self._place_stop_with_retry(close_side, dynamic_sl)
             if sl_result["ok"]:
                 placed.append(sl_result)
+                if hasattr(self, "_remember_defense_order_id"):
+                    self._remember_defense_order_id("sl", sl_result.get("order_id"))
+                if hasattr(self, "_save_state"):
+                    self._save_state()
             else:
                 failed.append(sl_result)
         return placed, failed
@@ -2516,6 +2578,10 @@ class PositionSupervisor(
             )
             if result["ok"]:
                 repaired.append(result)
+                if hasattr(self, "_mark_tp_placed"):
+                    self._mark_tp_placed(int(level), order_id=result.get("order_id"))
+                if hasattr(self, "_save_state"):
+                    self._save_state()
                 self._log(
                     "TP_RETRY",
                     f"✅ 补挂 {label} 成功 @ {result['price']} qty={result['qty']}",
@@ -2534,6 +2600,10 @@ class PositionSupervisor(
             sl_result = self._place_stop_with_retry(close_side, dynamic_sl)
             if sl_result["ok"]:
                 repaired.append(sl_result)
+                if hasattr(self, "_remember_defense_order_id"):
+                    self._remember_defense_order_id("sl", sl_result.get("order_id"))
+                if hasattr(self, "_save_state"):
+                    self._save_state()
                 self._log(
                     "TP_RETRY",
                     f"✅ 补挂 SL 成功 @ {sl_result['stop_price']}",
@@ -3368,6 +3438,14 @@ class PositionSupervisor(
             "curr_px": curr_px,
             "exchange": self.exchange_id,
         }
+        # Checklist 10.3: include floating PnL on each SL move notify
+        entry = float(self.watched_entry or 0)
+        qty = float(self.watched_qty or 0)
+        if entry > 0 and qty > 0 and curr_px > 0:
+            if self.current_side == "LONG":
+                detail["floating_pnl"] = round((curr_px - entry) * qty, 4)
+            elif self.current_side == "SHORT":
+                detail["floating_pnl"] = round((entry - curr_px) * qty, 4)
         detail.update(extra)
         return detail
 

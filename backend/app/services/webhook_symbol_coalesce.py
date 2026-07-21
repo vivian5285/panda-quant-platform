@@ -1,9 +1,10 @@
 """Per-symbol TV webhook coalesce — checklist §消息顺序处理.
 
-Cache 1~2s per symbol, then execute:
+Cache 1~2s per symbol (default 1.0s), then execute:
   1. At most one CLOSE_* (idempotent flat)
   2. Latest LONG/SHORT (open path still force-flats)
 
+Same-window rule: ALWAYS close-then-open (never ignore open when close present).
 Works with or without bar_index/seq — all exchanges share this ingress.
 """
 from __future__ import annotations
@@ -56,7 +57,7 @@ class WebhookSymbolCoalesce:
             return sum(len(b.messages) for b in self._buckets.values())
 
     def window_sec(self) -> float:
-        raw = float(getattr(get_settings(), "WEBHOOK_COALESCE_SEC", 1.5) or 1.5)
+        raw = float(getattr(get_settings(), "WEBHOOK_COALESCE_SEC", 1.0) or 1.0)
         return max(1.0, min(2.0, raw))
 
     def submit(
