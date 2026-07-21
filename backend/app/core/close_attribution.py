@@ -23,6 +23,7 @@ CLOSE_TRIGGERS = {
 CLOSE_ORIGINS = {
     "exchange_limit_tp": "交易所限价止盈成交",
     "exchange_stop": "交易所止损/条件单触发",
+    "radar_tp3_trail": "雷达TP3追踪收网",
     "manual_exchange": "交易所端人工操作",
     "platform_market": "平台下发市价平仓单",
     "exchange_already_flat": "盘口已平(平台未发平仓单)",
@@ -194,11 +195,16 @@ def diagnose_flat_close(
     current_sl: float = 0.0,
     initial_stop: float = 0.0,
     platform_initiated_market: bool = False,
+    peak_price: float = 0.0,
+    exit_price: float = 0.0,
 ) -> dict[str, Any]:
     """
     Build structured close attribution for logs, DB detail_json, and DingTalk.
     """
     trigger_key = trigger if trigger in CLOSE_TRIGGERS else "sentinel_zero"
+    tps = list(tv_tps or [])
+    tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
+    peak = float(peak_price or 0)
     evidence: dict[str, Any] = {
         "trigger": trigger_key,
         "had_position_before_close": had_position_before_close,
@@ -207,6 +213,8 @@ def diagnose_flat_close(
         "current_sl": float(current_sl or 0),
         "initial_stop": float(initial_stop or 0),
         "consumed_tp_levels": list(consumed_tp_levels or []),
+        "peak_price": peak,
+        "tp3": tp3,
     }
     sl_kind = classify_vps_sl_kind(
         activated=bool(radar_active),
@@ -215,6 +223,18 @@ def diagnose_flat_close(
         side=side,
     )
     evidence["sl_kind"] = sl_kind
+
+    def _reached_tp3(px: float) -> bool:
+        if tp3 <= 0 or px <= 0:
+            return False
+        if side == "LONG":
+            return px + 1e-9 >= tp3
+        if side == "SHORT":
+            return px - 1e-9 <= tp3
+        return False
+
+    peak_hit_tp3 = _reached_tp3(peak) or _reached_tp3(float(exit_price or 0))
+    evidence["peak_hit_tp3"] = peak_hit_tp3
 
     fills: list[dict] = []
     leg_fills: list[dict] = []
@@ -237,10 +257,13 @@ def diagnose_flat_close(
         evidence["latest_tv_action"] = recent_tv_close.get("action")
         evidence["latest_tv_at"] = recent_tv_close.get("created_at")
 
-    tp_matched = _match_tp_prices(leg_fills, list(tv_tps or []), entry=float(entry or 0))
+    tp_matched = _match_tp_prices(leg_fills, tps, entry=float(entry or 0))
     evidence["tp_price_matches"] = tp_matched
 
-    avg_px = evidence.get("closing_avg_price") or 0.0
+    avg_px = float(evidence.get("closing_avg_price") or exit_price or 0.0)
+    if peak_hit_tp3 and not _reached_tp3(avg_px) and avg_px > 0:
+        # Exit may be on trail stop below TP3 after peak hit — still TP3 regime
+        pass
     near_entry = _near_price(avg_px, entry) if avg_px > 0 and entry > 0 else False
     near_stop = _near_stop_price(avg_px, float(current_sl or 0))
     loss_side = _is_loss_side_exit(side, entry, avg_px)
@@ -251,8 +274,19 @@ def diagnose_flat_close(
     origin = "unknown"
     actor = "unknown"
     human_reason = CLOSE_TRIGGERS.get(trigger_key, trigger_key)
+    close_action_hint = None
 
-    if platform_initiated_market:
+    # Checklist 9.6: TP3 radar trail exit → dedicated DingTalk title
+    if peak_hit_tp3 and radar_active:
+        origin = "radar_tp3_trail"
+        actor = "exchange_order" if not platform_initiated_market else "platform_code"
+        human_reason = (
+            f"TP3平仓（雷达追踪）·峰值@{peak:.2f}≥TP3@{tp3:.2f}"
+            if side == "LONG"
+            else f"TP3平仓（雷达追踪）·极值@{peak:.2f}≤TP3@{tp3:.2f}"
+        )
+        close_action_hint = "CLOSE_TP3"
+    elif platform_initiated_market:
         origin = "platform_market"
         actor = "platform_code"
         human_reason = f"平台代码主动市价全平（{CLOSE_TRIGGERS.get(trigger_key, trigger_key)}）"
@@ -274,6 +308,7 @@ def diagnose_flat_close(
                 human_reason = f"止损平仓（初始）{sl_note}（均价 {avg_px:.2f}）"
             else:
                 human_reason = f"止损平仓（保本/移动）{sl_note}（均价 {avg_px:.2f}）"
+            close_action_hint = sl_kind
         elif tp_matched:
             origin = "exchange_limit_tp"
             actor = "exchange_order"
@@ -286,6 +321,7 @@ def diagnose_flat_close(
                 human_reason = f"止损平仓（初始）{sl_note}（均价 {avg_px:.2f}）"
             else:
                 human_reason = f"止损平仓（保本/移动）{sl_note}（均价 {avg_px:.2f}）"
+            close_action_hint = sl_kind
         elif near_entry and not radar_active:
             origin = "manual_exchange"
             actor = "human"
@@ -312,12 +348,22 @@ def diagnose_flat_close(
         origin = "platform_market"
         actor = "platform_code"
         human_reason = f"平台下发市价单全平（{CLOSE_TRIGGERS.get(trigger_key, trigger_key)}）"
+        if peak_hit_tp3 and radar_active:
+            origin = "radar_tp3_trail"
+            close_action_hint = "CLOSE_TP3"
+            human_reason = "TP3平仓（雷达追踪）·平台市价收网"
 
     if origin == "unknown":
         if near_entry and not radar_active:
             origin = "manual_exchange"
             actor = "human"
             human_reason = "成交价接近开仓价，疑为人工平仓（雷达未启动）"
+
+    if close_action_hint is None and origin == "exchange_stop":
+        close_action_hint = sl_kind
+
+    CLOSE_ORIGINS_LOCAL = dict(CLOSE_ORIGINS)
+    CLOSE_ORIGINS_LOCAL["radar_tp3_trail"] = "雷达TP3追踪收网"
 
     return {
         "close_trigger": trigger_key,
@@ -328,8 +374,9 @@ def diagnose_flat_close(
         "trigger_label": CLOSE_TRIGGERS.get(trigger_key, trigger_key),
         "actor_label": CLOSE_ACTORS.get(actor, actor),
         "sl_kind": sl_kind if origin == "exchange_stop" else None,
-        "close_action_hint": sl_kind if origin == "exchange_stop" else None,
+        "close_action_hint": close_action_hint,
         "evidence": evidence,
+        "matched_tps": tp_matched if origin == "exchange_limit_tp" else [],
         "anomaly": origin in ("unknown", "exchange_already_flat") and not had_position_before_close,
     }
 

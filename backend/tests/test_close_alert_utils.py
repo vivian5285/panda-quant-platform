@@ -43,7 +43,8 @@ def test_resolve_alert_type_and_title():
     assert resolve_close_alert_type("CLOSE_STOPLOSS", "防回吐保本平仓") == "CLOSE_STOPLOSS"
     assert resolve_close_alert_title("CLOSE_STOPLOSS", "防回吐保本平仓") == "防回吐保本 · 全平完成"
     assert resolve_close_alert_title("CLOSE_STOPLOSS", "触碰硬止损平仓") == "硬止损 · 全平完成"
-    assert resolve_close_alert_title("CLOSE_TP3", "TP3完美收网") == "TP3完美收网 · 全平完成"
+    assert resolve_close_alert_title("CLOSE_TP3", "TP3完美收网") == "TP3平仓 · 雷达追踪收网"
+    assert resolve_close_alert_type("CLOSE_TP3", None) == "CLOSE_TP3"
     assert resolve_close_alert_title("CLOSE_PROTECT", "风控拦截：xxx") == "风控拦截 · 保护全平"
 
 
@@ -56,13 +57,21 @@ def test_resolve_title_from_exchange_attribution():
     }
     radar_attr = {
         "close_origin": "exchange_stop",
+        "sl_kind": "CLOSE_SL_BREAKEVEN",
         "human_reason": "盘口已平：保本雷达/条件止损触发",
+    }
+    tp3_attr = {
+        "close_origin": "radar_tp3_trail",
+        "close_action_hint": "CLOSE_TP3",
+        "human_reason": "TP3平仓（雷达追踪）",
     }
     assert resolve_close_alert_type(None, None, tp_attr) == "CLOSE_ATTRIBUTION"
     assert "限价止盈" in resolve_close_alert_title(None, None, tp_attr)
     assert "TP1,2" in resolve_close_alert_title(None, None, tp_attr)
-    assert resolve_close_alert_type(None, None, radar_attr) == "CLOSE_STOPLOSS"
-    assert "保本雷达" in resolve_close_alert_title(None, None, radar_attr)
+    assert resolve_close_alert_type(None, None, radar_attr) == "CLOSE_SL_BREAKEVEN"
+    assert "保本/移动" in resolve_close_alert_title(None, None, radar_attr)
+    assert resolve_close_alert_type(None, None, tp3_attr) == "CLOSE_TP3"
+    assert resolve_close_alert_title(None, None, tp3_attr) == "TP3平仓 · 雷达追踪收网"
 
 
 def test_build_verify_note_with_delta():

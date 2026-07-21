@@ -3016,6 +3016,8 @@ class PositionSupervisor(
                 or 0
             ),
             platform_initiated_market=platform_market,
+            peak_price=float(getattr(self, "best_price", 0) or 0),
+            exit_price=0.0,
         )
 
     def _record_trade_close(

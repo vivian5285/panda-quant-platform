@@ -21,6 +21,7 @@ from app.core.radar_trail import (
     atr_floor_sl,
     breakeven_sl,
     favorable_move,
+    radar_arm_reached,
     resolve_atr,
     tp1_consumed,
     tp_path_progress,
@@ -119,7 +120,7 @@ def detect_radar_stage(
         peak_px and _reached_level(float(peak_px), tp1, side)
     ):
         return 3
-    if armed or tp_path_progress(entry, px, tp1, side) >= RADAR_ARM_PROGRESS:
+    if armed or radar_arm_reached(px, entry, tp1, side):
         return 2 if int(step_count or 0) >= 1 else 1
     return 0
 
@@ -234,13 +235,16 @@ def compute_ladder_radar_sl(
 
     be = breakeven_sl(entry, side)
 
-    # First activation at 85% path (or TP1 reached)
+    # First activation: LONG ≥ tp1×0.85 path / SHORT ≤ tp1×1.15 path (checklist §五)
     if not act:
-        if progress >= RADAR_ARM_PROGRESS or _reached_level(curr, tp1, side):
+        if radar_arm_reached(curr, entry, tp1, side) or _reached_level(curr, tp1, side):
             act = True
             meta["activated"] = True
             meta["event"] = "radar_arm"
             meta["mode"] = "activate_be"
+            meta["arm_trigger"] = (
+                "tp1_x_0.85_path" if side == "LONG" else "tp1_x_1.15_path"
+            )
             raw = be
             # fall through to floors / step advances below
         else:

@@ -76,9 +76,11 @@ def resolve_close_alert_type(
         return "CLOSE_QUICK_EXIT"
     if "CLOSE_RSI_EXIT" in action:
         return "CLOSE_RSI_EXIT"
-    if action in ("CLOSE_TP", "CLOSE_TRAIL", "CLOSE_SL_INITIAL", "CLOSE_SL_BREAKEVEN"):
+    if action in ("CLOSE_TP", "CLOSE_TRAIL", "CLOSE_SL_INITIAL", "CLOSE_SL_BREAKEVEN", "CLOSE_TP3"):
         return action
     hint = str((attribution or {}).get("close_action_hint") or (attribution or {}).get("sl_kind") or "")
+    if hint == "CLOSE_TP3" or (attribution or {}).get("close_origin") == "radar_tp3_trail":
+        return "CLOSE_TP3"
     if hint in ("CLOSE_SL_INITIAL", "CLOSE_SL_BREAKEVEN"):
         return hint
     subtype = classify_tv_close_subtype(action, tv_reason)
@@ -107,13 +109,16 @@ def resolve_close_alert_title(
 ) -> str:
     hint = str((attribution or {}).get("close_action_hint") or (attribution or {}).get("sl_kind") or "")
     act = str(close_action or "").upper()
+    origin = str((attribution or {}).get("close_origin") or "")
+    if hint == "CLOSE_TP3" or origin == "radar_tp3_trail" or act == "CLOSE_TP3":
+        return "TP3平仓 · 雷达追踪收网"
     if hint == "CLOSE_SL_INITIAL" or act == "CLOSE_SL_INITIAL":
         return "止损平仓（初始）"
     if hint == "CLOSE_SL_BREAKEVEN" or act == "CLOSE_SL_BREAKEVEN":
         return "止损平仓（保本/移动）"
     subtype = classify_tv_close_subtype(close_action, tv_reason)
     titles = {
-        "tp3": "TP3完美收网 · 全平完成",
+        "tp3": "TP3平仓 · 雷达追踪收网",
         "breakeven": "防回吐保本 · 全平完成",
         "hard_stop": "硬止损 · 全平完成",
         "stoploss": "TV止损 · 全平完成",
@@ -124,7 +129,6 @@ def resolve_close_alert_title(
     if subtype != "generic" or close_action:
         return titles.get(subtype, "全平完成")
     # No TV close action — prefer exchange attribution (TP fill vs radar/stop)
-    origin = str((attribution or {}).get("close_origin") or "")
     matched = (attribution or {}).get("matched_tps") or []
     if origin == "exchange_limit_tp":
         if matched:

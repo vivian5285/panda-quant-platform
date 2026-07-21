@@ -17,6 +17,9 @@ from app.core.symbol_precision import round_price
 
 # --- v6.5.6 continuous ladder params (single source) ---
 RADAR_ARM_PROGRESS = 0.85
+# Checklist shorthand multipliers (docs only — arm uses path formula below)
+LONG_ARM_TP1_MULT = 0.85   # 「tp1 × 0.85」→ path 85% to TP1
+SHORT_ARM_TP1_MULT = 1.15  # 「tp1 × 1.15」→ path 85% to TP1 (NOT literal tp1*1.15)
 RADAR_STEP_ATR = 0.50
 RADAR_LOCK_ATR = 0.30
 RADAR_TP1_FLOOR_ATR = 0.50
@@ -137,12 +140,12 @@ def radar_arm_trigger_price(
     side: str | None,
     progress: float = RADAR_ARM_PROGRESS,
 ) -> float:
-    """Arm price at `progress` along entry→TP1 (checklist §四 / §九).
+    """Arm price at `progress` along entry→TP1 (checklist §五).
 
-    Doc shorthand:
-      LONG  ``tp1 × 0.85``  → path 85% to TP1 (NOT literal multiply)
-      SHORT ``tp1 × 1.15``  → 「tp1 上方 15%」= path 85% toward TP1
-        i.e. ``tp1 + (1-progress)×(entry-tp1)``
+    Checklist shorthand (path formula — NOT naive multiply which would arm wrong side):
+      LONG  ``price ≥ tp1 × 0.85``  → ``entry + 0.85×(tp1−entry)``
+      SHORT ``price ≤ tp1 × 1.15``  → ``entry − 0.85×(entry−tp1)``
+        ≡ ``tp1 + 0.15×(entry−tp1)``  (15% of span above TP1)
     """
     entry = float(entry or 0)
     tp1 = float(tp1 or 0)
@@ -158,9 +161,26 @@ def radar_arm_trigger_price(
         span = entry - tp1
         if span <= 0:
             return 0.0
-        # 85% toward TP1 == 15% of span above TP1
-        return tp1 + (1.0 - p) * span
+        # Checklist 「tp1×1.15」字面简写 → path 85% toward TP1
+        return entry - p * span
     return 0.0
+
+
+def radar_arm_reached(
+    curr_px: float,
+    entry: float,
+    tp1: float,
+    side: str | None,
+    progress: float = RADAR_ARM_PROGRESS,
+) -> bool:
+    """True when price hits checklist arm trigger (LONG ≥ / SHORT ≤)."""
+    arm = radar_arm_trigger_price(entry, tp1, side, progress=progress)
+    curr = float(curr_px or 0)
+    if arm <= 0 or curr <= 0 or side not in ("LONG", "SHORT"):
+        return False
+    if side == "LONG":
+        return curr + 1e-12 >= arm
+    return curr - 1e-12 <= arm
 
 
 def favorable_move(entry: float, curr_px: float, side: str | None) -> float:

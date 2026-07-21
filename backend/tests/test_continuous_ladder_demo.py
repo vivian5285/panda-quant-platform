@@ -96,17 +96,23 @@ def test_tp3_not_placeable_limit():
 
 
 def test_short_symmetric_arm_tp1_x_1_15_shorthand():
-    """空单激活 = path 85% → 文档简写 tp1×1.15（相对路径，非字面乘积）。"""
+    """空单激活 = checklist 「tp1×1.15」→ entry−0.85×(entry−tp1)（非字面乘积）。"""
+    from app.core.radar_trail import radar_arm_reached
+
     entry, tp1 = 3300.0, 3250.0
     arm = radar_arm_trigger_price(entry, tp1, "SHORT")
     # path 85% toward TP1 == 15% of span above TP1
-    expected = tp1 + 0.15 * (entry - tp1)  # 3257.5
+    expected = entry - 0.85 * (entry - tp1)  # 3257.5
     assert abs(arm - expected) < 1e-9
+    assert abs(arm - (tp1 + 0.15 * (entry - tp1))) < 1e-9
+    assert radar_arm_reached(arm - 0.01, entry, tp1, "SHORT")
+    assert not radar_arm_reached(arm + 1.0, entry, tp1, "SHORT")
     raw, _, meta = compute_ladder_radar_sl(
         entry=entry, curr_px=arm - 0.01, best_price=arm - 0.01, atr=30,
         side="SHORT", tp1=tp1, tp2=3200, tp3=3150, activated=False, step_count=0,
     )
     assert meta["activated"] is True
+    assert meta.get("arm_trigger") == "tp1_x_1.15_path"
     assert raw <= breakeven_sl(entry, "SHORT") + 1e-9
 
     # TP1 / TP2 floors symmetric
@@ -120,6 +126,33 @@ def test_short_symmetric_arm_tp1_x_1_15_shorthand():
         side="SHORT", tp1=tp1, tp2=3200, tp3=3150, activated=True, step_count=2,
     )
     assert st2 == 4 and raw2 <= entry - RADAR_TP2_FLOOR_ATR * 30 + 1e-9
+
+
+def test_diagnose_tp3_radar_trail_title():
+    from app.core.close_attribution import diagnose_flat_close
+    from app.services.close_alert_utils import resolve_close_alert_title, resolve_close_alert_type
+
+    attr = diagnose_flat_close(
+        client=None,
+        symbol="ETHUSDT",
+        side="LONG",
+        qty=1.0,
+        entry=3300,
+        trade_opened_at=None,
+        consumed_tp_levels=[1, 2],
+        tv_tps=[3350, 3480, 3560],
+        trigger="sentinel_zero",
+        had_position_before_close=False,
+        radar_active=True,
+        current_sl=3500,
+        initial_stop=3200,
+        peak_price=3570,
+        exit_price=3505,
+    )
+    assert attr["close_action_hint"] == "CLOSE_TP3"
+    assert attr["close_origin"] == "radar_tp3_trail"
+    assert resolve_close_alert_type(None, None, attr) == "CLOSE_TP3"
+    assert resolve_close_alert_title(None, None, attr) == "TP3平仓 · 雷达追踪收网"
 
 
 def test_atr_refresh_does_not_rollback_steps():
