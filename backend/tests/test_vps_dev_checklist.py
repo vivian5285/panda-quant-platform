@@ -27,18 +27,20 @@ from unittest.mock import MagicMock, patch
 
 
 def test_checklist_risk20_sizing():
-    """RISK20: min(risk/stop, notional/price, tv_qty)."""
+    """RISK20: min(risk/vps_dist, notional/price, tv_qty×adj)."""
     assert RISK_PCT == 0.20 and MAX_LEVERAGE == 5
     qty, meta = compute_tv_entry_qty(
-        live_balance=1000, initial_principal=1000, price=3300, tv_sl=3200, tv_qty=1.0,
+        live_balance=1000, initial_principal=1000, price=3300, tv_sl=3200,
+        tv_stop_loss=3200, tv_qty=1.0,
     )
     assert qty == pytest.approx(1.0, abs=1e-9)
     assert meta["sizing_mode"] == "risk20_cap5x_tv_qty_cap"
     qty2, m2 = compute_tv_entry_qty(
-        live_balance=1000, initial_principal=1000, price=3300, tv_sl=3200, tv_qty=0.5,
+        live_balance=1000, initial_principal=1000, price=3300, tv_sl=3200,
+        tv_stop_loss=3200, tv_qty=0.5,
     )
     assert qty2 == pytest.approx(0.5, abs=1e-9)
-    assert m2["binding"] == "tv_qty_cap"
+    assert m2["binding"] == "tv_qty_cap_adjusted"
 
 
 def test_checklist_tv_fields_parsed():
@@ -164,6 +166,7 @@ def test_resolve_entry_qty_deepcoin_open_contracts():
         base_qty=0,
         price=price,
         tv_sl=1900.0,
+        tv_stop_loss=1900.0,
         regime=3,
         exchange_leverage=25,
         face_value=0.1,

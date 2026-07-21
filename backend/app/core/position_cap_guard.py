@@ -112,7 +112,14 @@ class PositionCapGuardMixin:
         sizing_base, sizing_source = resolve_cap_sizing_base(equity, principal)
         px = float(price or 0)
         leverage = self._resolve_cap_leverage()
-        tv_sl = float(getattr(self, "tv_sl", 0) or 0)
+        tv_stop_loss = float(getattr(self, "tv_sl", 0) or 0)
+        vps_stop = float(
+            getattr(self, "_sizing_initial_stop", 0)
+            or getattr(self, "initial_stop", 0)
+            or 0
+        )
+        if vps_stop <= 0:
+            vps_stop = tv_stop_loss  # fallback: adj≈1 when breathing seed missing
         regime = int(getattr(self, "regime", 3) or 3)
 
         meta: dict[str, Any] = {
@@ -123,7 +130,7 @@ class PositionCapGuardMixin:
             "leverage": leverage,
             "price": round(px, 2),
             "regime": regime,
-            "tv_sl": round(tv_sl, 4) if tv_sl else 0,
+            "tv_sl": round(vps_stop, 4) if vps_stop else 0,
             "margin_pct": FIXED_MARGIN_PCT * 100.0,
             "cap_source": "risk20_cap5x",
         }
@@ -141,6 +148,14 @@ class PositionCapGuardMixin:
                 return tracked, meta
             return 1e18, meta
 
+        # Cap detect uses risk∩notional; TV qty set huge so it rarely binds.
+        # Still pass TV stop_loss when present so adj formula stays consistent.
+        _cap_tv_qty = float(
+            ((getattr(self, "_tv_entry_fields", None) or {}).get("tv_qty") or 0)
+            or 1e18
+        )
+        _cap_tv_sl = tv_stop_loss if tv_stop_loss > 0 else (vps_stop if vps_stop > 0 else None)
+
         if self._is_deepcoin_cap():
             face_value = float(getattr(self, "face_value", 0.1) or 0.1)
             qty, sizing_meta = resolve_vps_entry_qty_deepcoin(
@@ -149,15 +164,13 @@ class PositionCapGuardMixin:
                 entry_type="OPEN",
                 base_qty=0.0,
                 price=px,
-                tv_sl=tv_sl,
+                tv_sl=vps_stop,
+                tv_stop_loss=_cap_tv_sl,
                 regime=regime,
                 exchange_leverage=leverage or FIXED_LEVERAGE,
                 face_value=face_value,
                 symbol=getattr(self, "canonical_symbol", None),
-                tv_qty=float(
-                    ((getattr(self, "_tv_entry_fields", None) or {}).get("tv_qty") or 0)
-                    or 1e18
-                ),
+                tv_qty=_cap_tv_qty,
             )
             meta.update({
                 k: sizing_meta[k]
@@ -176,7 +189,8 @@ class PositionCapGuardMixin:
             entry_type="OPEN",
             base_qty=0.0,
             price=px,
-            tv_sl=tv_sl,
+            tv_sl=vps_stop,
+            tv_stop_loss=_cap_tv_sl,
             regime=regime,
             exchange_leverage=leverage or FIXED_LEVERAGE,
             round_fn=(
@@ -184,11 +198,7 @@ class PositionCapGuardMixin:
             ),
             symbol=getattr(self, "canonical_symbol", None),
             min_qty=float(getattr(self, "min_order_qty", 0) or 0) or None,
-            # Cap detect uses risk∩notional; do not require TV qty for detect-only
-            tv_qty=float(
-                ((getattr(self, "_tv_entry_fields", None) or {}).get("tv_qty") or 0)
-                or 1e18
-            ),
+            tv_qty=_cap_tv_qty,
         )
         meta.update({
             k: sizing_meta[k]

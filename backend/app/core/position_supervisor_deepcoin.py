@@ -2603,23 +2603,89 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return lev
 
     def _resolve_entry_qty(self, curr_px: float) -> tuple[int, dict]:
-        """Checklist: min(风险资金/止损距, 权益×5/价, TV.qty) → contracts."""
+        """RISK20 sizing once at open → DeepCoin contracts (TV.qty distance-adjusted)."""
+        from app.core.breathing_stop import compute_initial_stop
+
         equity = read_contract_equity(self.client)
         leverage = self._resolve_entry_leverage()
         tv_fields = getattr(self, "_tv_entry_fields", None) or {}
         tv_qty = tv_fields.get("tv_qty")
+        price = float(curr_px or self.tv_price or 0)
+        side = str(getattr(self, "_pending_open_side", None) or getattr(self, "current_side", None) or "").upper()
+        if side not in ("LONG", "SHORT"):
+            side = str(getattr(self, "last_tv_side", None) or "").upper()
+
+        snap = {}
+        if hasattr(self, "_pull_vps_market_indicators"):
+            try:
+                snap = self._pull_vps_market_indicators(force=True) or {}
+            except Exception:
+                snap = {}
+        atr = float(snap.get("atr") or getattr(self, "current_atr", 0) or 0)
+        tv_sl_ref = float(
+            getattr(self, "_pending_open_tv_sl", 0)
+            or getattr(self, "_tv_hard_sl_price", 0)
+            or getattr(self, "tv_sl", 0)
+            or 0
+        )
+        sizing_stop = 0.0
+        if atr > 0 and price > 0 and side in ("LONG", "SHORT"):
+            sizing_stop = float(compute_initial_stop(price, side, atr))
+
+        if atr <= 0:
+            meta = {
+                "sizing_mode": "risk20_cap5x_tv_qty_cap",
+                "error": "atr_invalid",
+                "final_qty": 0,
+                "sizing_atr": atr,
+                "sizing_side": side or None,
+                "tv_sl_reference": tv_sl_ref if tv_sl_ref > 0 else None,
+            }
+            self._log(
+                "ERROR",
+                f"⛔ 开仓算仓中止·ATR异常 atr={atr} symbol={self.canonical_symbol}（拒开仓并暂停）",
+            )
+            if hasattr(self, "_pause_trading"):
+                try:
+                    self._pause_trading(
+                        f"ATR invalid for sizing ({self.canonical_symbol})",
+                        {"reason": "atr_invalid", "atr": atr, "symbol": self.canonical_symbol},
+                    )
+                except Exception:
+                    pass
+            return 0, meta
+
         qty, meta = resolve_vps_entry_qty_deepcoin(
             live_balance=equity,
             initial_principal=self.initial_principal,
             entry_type="OPEN",
             base_qty=float(getattr(self, "base_qty", 0) or 0),
-            price=float(curr_px or self.tv_price or 0),
-            tv_sl=float(getattr(self, "tv_sl", 0) or 0),
+            price=price,
+            tv_sl=sizing_stop,
+            tv_stop_loss=tv_sl_ref if tv_sl_ref > 0 else None,
             regime=int(self.regime or 3),
             exchange_leverage=leverage,
             face_value=self.face_value,
             symbol=self.canonical_symbol,
             tv_qty=float(tv_qty) if tv_qty else None,
+        )
+        meta["tv_sl_reference"] = tv_sl_ref if tv_sl_ref > 0 else None
+        meta["sizing_stop"] = round(sizing_stop, 4) if sizing_stop else None
+        meta["sizing_atr"] = round(atr, 4) if atr else None
+        meta["sizing_side"] = side or None
+        if sizing_stop > 0:
+            self._sizing_initial_stop = sizing_stop
+            self.initial_atr = atr if atr > 0 else float(getattr(self, "initial_atr", 0) or 0)
+        self._log(
+            "SIGNAL",
+            "📐 开仓算仓 "
+            f"adj={meta.get('adjust_coef')} "
+            f"risk={meta.get('candidate_qty_by_risk')} "
+            f"notional={meta.get('candidate_qty_by_notional')} "
+            f"tv_adj={meta.get('candidate_qty_by_tv_adj')} "
+            f"bind={meta.get('binding')} "
+            f"final={meta.get('final_qty')}"
+            + (f" err={meta.get('error')}" if meta.get("error") else ""),
         )
         if qty > 0:
             from app.core.combined_notional import check_combined_notional_cap

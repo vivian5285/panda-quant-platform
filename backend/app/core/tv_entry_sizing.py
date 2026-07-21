@@ -1,13 +1,17 @@
-"""Entry sizing — RISK20 + notional5 + TV qty cap (all exchanges).
+"""Entry sizing — RISK20 + notional5 + TV qty adjusted to VPS stop distance.
 
-Authoritative formula (stateless pure function):
-  risk_capital   = equity × 0.20
-  notional_cap   = equity × 5
-  theoretical    = min(risk_capital / |price − stop|, notional_cap / price)
-  qty            = floor(min(theoretical, tv_qty))
+Authoritative formula (stateless pure function, computed once at open):
+  risk_capital        = equity × 0.20
+  notional_cap        = equity × 5
+  vps_stop_dist       = |price − VPS initialStop|     # initialStop = entry±1.5×ATR
+  tv_implied_dist     = |price − TV.stop_loss|
+  adjust_coef         = tv_implied_dist / vps_stop_dist
+  adjusted_tv_qty_cap = TV.qty × adjust_coef
+  theoretical         = min(risk_capital/vps_stop_dist, notional_cap/price, adjusted_tv_qty_cap)
+  qty                 = floor(theoretical to exchange step)
 
-Inputs only: equity, price, stop, tv_qty (+ precision). Never reads add_count / prior position.
-Exchange leverage always set to 5×.
+TV.stop_loss is ONLY an input to adjust_coef — never the exchange stop price.
+Breathing engine still places stops at VPS initialStop / currentStop.
 """
 
 from __future__ import annotations
@@ -84,6 +88,7 @@ def compute_tv_entry_qty(
     initial_principal: float,
     price: float,
     tv_sl: float = 0.0,
+    tv_stop_loss: float | None = None,
     risk_pct: float = 0.0,
     leverage: float | int = MAX_LEVERAGE,
     qty_ratio: float = 1.0,
@@ -96,7 +101,11 @@ def compute_tv_entry_qty(
     margin_pct: float | None = None,
     tv_qty: float | None = None,
 ) -> tuple[float, dict[str, Any]]:
-    """Independent per-open sizing — no history / add_count."""
+    """Independent per-open sizing — no history / add_count.
+
+    ``tv_sl`` = VPS ``initialStop`` (risk-distance denominator).
+    ``tv_stop_loss`` = TradingView ``stop_loss`` (adjustment coefficient only).
+    """
     from app.core.symbol_registry import normalize_canonical_symbol
 
     sizing_base, sizing_source = resolve_principal_sizing_base(live_balance, initial_principal)
@@ -105,7 +114,8 @@ def compute_tv_entry_qty(
         sizing_source = "total_equity"
 
     price_f = float(price or 0)
-    tv_sl_f = float(tv_sl or 0)
+    vps_stop_f = float(tv_sl or 0)
+    tv_sl_f = float(tv_stop_loss) if tv_stop_loss is not None and float(tv_stop_loss or 0) > 0 else 0.0
     lev = float(MAX_LEVERAGE)
     risk_frac = float(margin_pct if margin_pct is not None else RISK_PCT)
     can = normalize_canonical_symbol(symbol)
@@ -127,15 +137,18 @@ def compute_tv_entry_qty(
         "margin_pct": round(risk_frac * 100.0, 2),
         "margin_pct_frac": risk_frac,
         "price": round(price_f, 4),
-        "tv_sl": round(tv_sl_f, 4) if tv_sl_f else None,
+        "tv_sl": round(vps_stop_f, 4) if vps_stop_f else None,
+        "vps_initial_stop": round(vps_stop_f, 4) if vps_stop_f else None,
+        "tv_stop_loss": round(tv_sl_f, 4) if tv_sl_f else None,
         "tv_qty_ref": tv_qty_f if tv_qty_f > 0 else None,
-        "tv_qty_cap": tv_qty_f if tv_qty_f > 0 else None,
+        "tv_qty_cap": None,
         "hard_notional_usd": None,
         "hard_cap_removed": True,
         "symbol": can,
         "qty_step": step,
         "qty_ratio": 1.0,
-        "binding": "risk20_notional5_tv_qty",
+        "binding": "risk20_notional5_tv_qty_adj",
+        "adjust_coef": None,
     }
 
     if price_f <= 0:
@@ -144,41 +157,59 @@ def compute_tv_entry_qty(
     if sizing_base <= 0:
         meta["error"] = "zero_equity"
         return 0.0, meta
-    if tv_sl_f <= 0:
+    if vps_stop_f <= 0:
         meta["error"] = "missing_stop"
         return 0.0, meta
-    stop_dist = abs(price_f - tv_sl_f)
-    if stop_dist <= 0:
+    vps_dist = abs(price_f - vps_stop_f)
+    if vps_dist <= 0:
         meta["error"] = "zero_stop_distance"
         return 0.0, meta
     if tv_qty_f <= 0:
         meta["error"] = "missing_tv_qty"
         return 0.0, meta
+    if tv_sl_f <= 0:
+        meta["error"] = "missing_tv_stop_loss"
+        return 0.0, meta
+    tv_dist = abs(price_f - tv_sl_f)
+    if tv_dist <= 0:
+        meta["error"] = "zero_tv_stop_distance"
+        return 0.0, meta
+
+    adjust_coef = tv_dist / vps_dist
+    adjusted_tv_qty = tv_qty_f * adjust_coef
 
     risk_capital = sizing_base * risk_frac
     notional_cap = sizing_base * lev
-    qty_by_risk = risk_capital / stop_dist
+    qty_by_risk = risk_capital / vps_dist
     qty_by_notional = notional_cap / price_f
-    theoretical = min(qty_by_risk, qty_by_notional)
-    capped = min(theoretical, tv_qty_f)
+    theoretical = min(qty_by_risk, qty_by_notional, adjusted_tv_qty)
 
     meta["risk_capital"] = round(risk_capital, 4)
     meta["notional_cap"] = round(notional_cap, 4)
     meta["nominal_value"] = round(notional_cap, 4)
-    meta["sl_distance"] = round(stop_dist, 6)
+    meta["sl_distance"] = round(vps_dist, 6)
     meta["stop_distance"] = meta["sl_distance"]
+    meta["vps_stop_distance"] = round(vps_dist, 6)
+    meta["tv_implied_stop_distance"] = round(tv_dist, 6)
+    meta["adjust_coef"] = round(adjust_coef, 8)
+    meta["tv_qty_cap"] = round(adjusted_tv_qty, 6)
+    meta["adjusted_tv_qty_cap"] = round(adjusted_tv_qty, 6)
     meta["qty_by_risk"] = round(qty_by_risk, 6)
     meta["qty_by_notional"] = round(qty_by_notional, 6)
     meta["theoretical_qty"] = round(theoretical, 6)
-    meta["raw_qty"] = round(capped, 6)
-    if qty_by_risk <= qty_by_notional and theoretical <= tv_qty_f:
+    meta["raw_qty"] = round(theoretical, 6)
+    meta["candidate_qty_by_risk"] = meta["qty_by_risk"]
+    meta["candidate_qty_by_notional"] = meta["qty_by_notional"]
+    meta["candidate_qty_by_tv_adj"] = meta["adjusted_tv_qty_cap"]
+
+    if qty_by_risk <= qty_by_notional + 1e-12 and qty_by_risk <= adjusted_tv_qty + 1e-12:
         meta["binding"] = "stop_risk"
-    elif qty_by_notional < qty_by_risk and theoretical <= tv_qty_f:
+    elif qty_by_notional <= adjusted_tv_qty + 1e-12:
         meta["binding"] = "notional_cap"
     else:
-        meta["binding"] = "tv_qty_cap"
+        meta["binding"] = "tv_qty_cap_adjusted"
 
-    floored = floor_qty(capped, step)
+    floored = floor_qty(theoretical, step)
     if round_fn is not None:
         qty = float(round_fn(floored))
     else:
@@ -210,6 +241,7 @@ def compute_vps_open_qty(
     initial_principal: float,
     price: float,
     tv_sl: float = 0.0,
+    tv_stop_loss: float | None = None,
     regime: int = 3,
     leverage: int = MAX_LEVERAGE,
     round_fn=None,
@@ -225,6 +257,7 @@ def compute_vps_open_qty(
         initial_principal=initial_principal,
         price=price,
         tv_sl=tv_sl,
+        tv_stop_loss=tv_stop_loss,
         round_fn=round_fn,
         min_qty=min_qty,
         max_qty=max_qty,
@@ -243,6 +276,7 @@ def compute_vps_open_contracts(
     initial_principal: float,
     price: float,
     tv_sl: float = 0.0,
+    tv_stop_loss: float | None = None,
     regime: int = 3,
     leverage: int = MAX_LEVERAGE,
     face_value: float = 0.1,
@@ -259,6 +293,7 @@ def compute_vps_open_contracts(
         initial_principal=initial_principal,
         price=price,
         tv_sl=tv_sl,
+        tv_stop_loss=tv_stop_loss,
         round_fn=lambda x: x,
         min_qty=None,
         max_qty=max_qty,
@@ -291,6 +326,7 @@ def resolve_vps_entry_qty_eth(
     base_qty: float = 0.0,
     price: float,
     tv_sl: float = 0.0,
+    tv_stop_loss: float | None = None,
     regime: int = 3,
     exchange_leverage: int = MAX_LEVERAGE,
     round_fn,
@@ -309,6 +345,7 @@ def resolve_vps_entry_qty_eth(
         initial_principal=initial_principal,
         price=price,
         tv_sl=tv_sl,
+        tv_stop_loss=tv_stop_loss,
         round_fn=round_fn,
         symbol=symbol,
         min_qty=min_qty,
@@ -324,6 +361,7 @@ def resolve_vps_entry_qty_deepcoin(
     base_qty: float = 0.0,
     price: float,
     tv_sl: float = 0.0,
+    tv_stop_loss: float | None = None,
     regime: int = 3,
     exchange_leverage: int = MAX_LEVERAGE,
     face_value: float = 0.1,
@@ -341,6 +379,7 @@ def resolve_vps_entry_qty_deepcoin(
         initial_principal=initial_principal,
         price=price,
         tv_sl=tv_sl,
+        tv_stop_loss=tv_stop_loss,
         face_value=face_value,
         symbol=symbol,
         tv_qty=tv_qty,

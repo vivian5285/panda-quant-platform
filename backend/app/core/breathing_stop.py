@@ -1,10 +1,11 @@
 """Breathing stop — merged hard SL + radar (all exchanges).
 
-Two-phase state machine:
+Two-phase state machine (TV stop_loss NEVER used as exchange stop price):
   Phase 1: ATR step ladder from initial_stop (entry ± 1.5×ATR)
   Phase 2: ADX-driven continuous trail after +3.0×ATR float
 
-TV stop_loss is ignored. ATR is fixed at open (initial_atr).
+initial_atr / initial_stop are fixed at open. TV price/stop_loss are sizing-only
+(see tv_entry_sizing adjust_coef) and must not feed tick-level stop math.
 """
 
 from __future__ import annotations

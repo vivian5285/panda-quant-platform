@@ -67,12 +67,13 @@ def test_exchange_native_symbols():
 
 
 def test_tv_risk_formula_open_qty():
-    # RISK20: 1000U · ETH@3300 · stop 3200 · tv_qty 1.0 → 1.0
+    # RISK20: 1000U · ETH@3300 · stop 3200 · tv_qty 1.0 → 1.0 (adj=1)
     qty, meta = compute_tv_entry_qty(
         live_balance=1000,
         initial_principal=1000,
         price=3300,
         tv_sl=3200,
+        tv_stop_loss=3200,
         tv_qty=1.0,
         symbol=CANONICAL_ETH,
     )
@@ -84,6 +85,7 @@ def test_tv_risk_formula_open_qty():
         initial_principal=1000,
         price=2500,
         tv_sl=2480,
+        tv_stop_loss=2480,
         tv_qty=5.0,
         symbol=CANONICAL_XAU,
     )
