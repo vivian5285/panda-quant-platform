@@ -9,6 +9,7 @@ TV stop_loss is ignored. ATR is fixed at open (initial_atr).
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 INITIAL_SL_ATR = 1.5
@@ -115,7 +116,7 @@ def calculate_stop_long(
 
     if not new_phase:
         step_count = max(
-            0, int((price - entry_price) / (STEP_TRIGGER_ATR * initial_atr))
+            0, int(math.floor((price - entry_price) / (STEP_TRIGGER_ATR * initial_atr)))
         ) if initial_atr > 0 and price > 0 else 0
         step_stop = initial_stop + step_count * STEP_ADVANCE_ATR * initial_atr
         candidate = max(current_stop, step_stop)
@@ -187,7 +188,7 @@ def calculate_stop_short(
 
     if not new_phase:
         step_count = max(
-            0, int((entry_price - price) / (STEP_TRIGGER_ATR * initial_atr))
+            0, int(math.floor((entry_price - price) / (STEP_TRIGGER_ATR * initial_atr)))
         ) if initial_atr > 0 and price > 0 else 0
         step_stop = initial_stop - step_count * STEP_ADVANCE_ATR * initial_atr
         candidate = min(current_stop, step_stop) if current_stop > 0 else step_stop

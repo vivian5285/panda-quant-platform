@@ -301,6 +301,12 @@ class PositionSupervisor(
                     self.breakeven_phase = bool(s.get("breakeven_phase", False))
                     self.current_adx = float(s.get("current_adx", 25) or 25)
                     self.remaining_qty_pct = float(s.get("remaining_qty_pct", 1.0) or 1.0)
+                    # Old radar schema detection (activated/stepCount without breathing fields)
+                    has_old = (
+                        ("radar_activated" in s or "radar_step_count" in s or "step_count" in s)
+                        and float(s.get("initial_atr", 0) or 0) <= 0
+                    )
+                    self._state_schema_legacy = bool(has_old) or int(s.get("schema_version") or 0) < 2
                     self.monitoring = bool(s.get("monitoring", False))
                     self.initial_qty = float(s.get("initial_qty", 0) or 0)
                     self.base_qty = float(s.get("base_qty", 0) or s.get("initial_qty", 0) or 0)
@@ -736,18 +742,50 @@ class PositionSupervisor(
         return lev
 
     def _resolve_entry_qty(self, curr_px: float) -> tuple[float, dict]:
-        """Checklist: min(风险资金/止损距, 权益×5/价, TV.qty)."""
+        """Independent sizing: min(risk/|price-initialStop|, equity×5/price, TV.qty).
+
+        initialStop = VPS ATR-based (entry ± 1.5×ATR). TV stop_loss is log-only.
+        """
+        from app.core.breathing_stop import compute_initial_stop
+
         equity = read_contract_equity(self.client)
         leverage = self._resolve_entry_leverage()
         tv_fields = getattr(self, "_tv_entry_fields", None) or {}
         tv_qty = tv_fields.get("tv_qty")
+        price = float(curr_px or self.tv_price or 0)
+        side = str(getattr(self, "_pending_open_side", None) or getattr(self, "current_side", None) or "").upper()
+        if side not in ("LONG", "SHORT"):
+            # Infer from last signal context if mid-open
+            side = str(getattr(self, "last_tv_side", None) or "").upper()
+
+        # VPS ATR → provisional initialStop for sizing (not TV stop_loss)
+        snap = {}
+        if hasattr(self, "_pull_vps_market_indicators"):
+            try:
+                snap = self._pull_vps_market_indicators(force=True) or {}
+            except Exception:
+                snap = {}
+        atr = float(snap.get("atr") or getattr(self, "current_atr", 0) or 0)
+        tv_sl_ref = float(
+            getattr(self, "_pending_open_tv_sl", 0)
+            or getattr(self, "_tv_hard_sl_price", 0)
+            or getattr(self, "tv_sl", 0)
+            or 0
+        )
+        sizing_stop = 0.0
+        if atr > 0 and price > 0 and side in ("LONG", "SHORT"):
+            sizing_stop = float(compute_initial_stop(price, side, atr))
+        elif atr > 0 and price > 0:
+            # Side unknown yet — use LONG convention only if action pending; else fail
+            sizing_stop = 0.0
+
         qty, meta = resolve_vps_entry_qty_eth(
             live_balance=equity,
             initial_principal=self.initial_principal,
             entry_type="OPEN",
-            base_qty=float(getattr(self, "base_qty", 0) or 0),
-            price=float(curr_px or self.tv_price or 0),
-            tv_sl=float(getattr(self, "tv_sl", 0) or 0),
+            base_qty=0.0,
+            price=price,
+            tv_sl=sizing_stop,
             regime=int(self.regime or 3),
             exchange_leverage=leverage,
             round_fn=self._round_qty,
@@ -755,12 +793,20 @@ class PositionSupervisor(
             min_qty=float(getattr(self, "min_order_qty", 0) or 0) or None,
             tv_qty=float(tv_qty) if tv_qty else None,
         )
+        meta["tv_sl_reference"] = tv_sl_ref if tv_sl_ref > 0 else None
+        meta["sizing_stop"] = round(sizing_stop, 4) if sizing_stop else None
+        meta["sizing_atr"] = round(atr, 4) if atr else None
+        meta["sizing_side"] = side or None
+        if sizing_stop > 0:
+            # Seed breathing stop so protect path shares the same initialStop
+            self._sizing_initial_stop = sizing_stop
+            self.initial_atr = atr if atr > 0 else float(getattr(self, "initial_atr", 0) or 0)
         if qty > 0:
             from app.core.combined_notional import check_combined_notional_cap
 
             notional = float(meta.get("notional_usd") or meta.get("position_value") or 0)
-            if notional <= 0 and curr_px:
-                notional = qty * float(curr_px)
+            if notional <= 0 and price:
+                notional = qty * float(price)
             ok, cap_meta = check_combined_notional_cap(
                 user_id=self.user_id,
                 canonical=self.canonical_symbol,
@@ -786,10 +832,11 @@ class PositionSupervisor(
         has_pos: bool,
         current_side: str | None,
     ) -> dict:
-        """妈妈版：LONG/SHORT 一律先平后开，永不加仓。"""
+        """权威规格：LONG/SHORT 一律先平后开，永不加仓。"""
+        self._pending_open_side = str(action or "").upper()
         self._log(
             "SIGNAL",
-            f"⚡ TV OPEN [{action}] 铁律·先平后开（妈妈版单仓·无加仓）",
+            f"⚡ TV OPEN [{action}] 铁律·先平后开（单仓·无加仓）",
         )
         if not self._force_flat_before_open(f"TV OPEN [{action}] 铁律·先平后开"):
             return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
@@ -1252,6 +1299,7 @@ class PositionSupervisor(
     def _open_position(self, action: str, curr_px: float) -> dict:
         if hasattr(self, "_clear_trading_pause"):
             self._clear_trading_pause("new_open")
+        self._pending_open_side = str(action or "").upper()
         leverage = self._bind_tv_leverage()
         self.client.cancel_all_open_orders(self.symbol)
         if hasattr(self, "_cancel_binance_all_close_stops"):
@@ -1484,24 +1532,50 @@ class PositionSupervisor(
     def _compute_tp_slices(
         self, qty: float, exclude_levels: set[int] | None = None
     ) -> list[tuple[int, float, float]]:
-        """Fixed 30/30/40 slices; only TP1+TP2 placeable (ignore TV qty*)."""
-        from app.core.tp_regime_targets import pine_tp_ratios_frac
+        """TP1/TP2 only. Prefer TV qty1/qty2 when present; else 30/30 of live qty."""
+        from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
 
-        ratios = pine_tp_ratios_frac()
+        exclude = set(exclude_levels or set())
+        qty_f = float(qty or 0)
+        tps = list(self.tv_tps or [])
+        fields = getattr(self, "_tv_entry_fields", None) or {}
+        tv_q1 = fields.get("tv_qty1")
+        tv_q2 = fields.get("tv_qty2")
+
+        # Absolute TV qty1/qty2 when both valid and sum ≤ live qty (+eps)
+        if (
+            tv_q1 is not None and tv_q2 is not None
+            and float(tv_q1) > 0 and float(tv_q2) > 0
+            and qty_f > 0
+        ):
+            q1 = self._round_qty(min(float(tv_q1), qty_f))
+            rem = max(qty_f - q1, 0.0)
+            q2 = self._round_qty(min(float(tv_q2), rem))
+            out: list[tuple[int, float, float]] = []
+            for level, part, px_i in ((1, q1, 0), (2, q2, 1)):
+                if level in exclude or level not in PLACEABLE_TP_LEVELS:
+                    continue
+                px = float(tps[px_i]) if px_i < len(tps) else 0.0
+                if part > 0 and px > 0:
+                    out.append((level, part, px))
+            if out:
+                return out
+
         settings = dict(self.regime_settings)
         r = int(self.regime or 3)
         row = dict(settings.get(r) or settings.get(3) or {})
-        row["ratios"] = ratios
+        row["ratios"] = [0.3, 0.3, 0.4]
         settings[r] = row
-        return compute_tp_slices(
-            qty,
+        slices = compute_tp_slices(
+            qty_f,
             r,
             self.tv_tps,
             settings,
-            exclude_levels=exclude_levels or set(),
+            exclude_levels=exclude | {3},
             round_qty_fn=self._round_qty,
             min_qty=float(getattr(self, "min_order_qty", 0) or 0),
         )
+        return [(lv, q, px) for lv, q, px in slices if lv in PLACEABLE_TP_LEVELS]
 
     def _open_tp_prices_on_book(self) -> list[float]:
         prices: list[float] = []
@@ -1987,10 +2061,33 @@ class PositionSupervisor(
         }
 
     def _place_stop_with_retry(self, close_side: str, stop_price: float) -> dict:
+        """Deprecated direct place — route through breathing engine only."""
         stop_price = round_price(stop_price)
+        live_qty = float(getattr(self, "watched_qty", 0) or 0)
+        if live_qty <= 0 and hasattr(self, "_resolve_adverse_live_qty"):
+            try:
+                live_qty = float(self._resolve_adverse_live_qty(0) or 0)
+            except Exception:
+                live_qty = 0.0
+        self.current_sl = float(stop_price)
+        if hasattr(self, "_sync_tv_hard_stop") and live_qty > 0:
+            shield = self._sync_tv_hard_stop(live_qty, force_replace=True) or {}
+            ok = bool(shield.get("aligned") or shield.get("armed") or shield.get("ok"))
+            return {
+                "ok": ok,
+                "label": "SL",
+                "order_id": shield.get("order_id"),
+                "stop_price": stop_price,
+                "via": "breathing_engine",
+                "shield": shield,
+            }
+        # Fallback only if breath path unavailable
         last_err = None
         for attempt in range(1, TP_RETRY_MAX + 1):
-            order = self.client.place_stop_market_order(close_side, stop_price, self.symbol)
+            order = self.client.place_stop_market_order(
+                close_side, stop_price, self.symbol,
+                quantity=live_qty if live_qty > 0 else None,
+            )
             if order:
                 return {
                     "ok": True,
@@ -1998,6 +2095,7 @@ class PositionSupervisor(
                     "order_id": order.get("orderId"),
                     "stop_price": stop_price,
                     "attempt": attempt,
+                    "via": "legacy_fallback",
                 }
             last_err = f"SL attempt {attempt}/{TP_RETRY_MAX} failed"
             logger.warning(f"[User {self.user_id}] {last_err} stop={stop_price}")
@@ -2582,15 +2680,20 @@ class PositionSupervisor(
 
     def _protect_and_monitor(self, qty: float, entry_price: float) -> dict:
         """
-        开仓后一次性挂好 TP123 + 呼吸止损；实盘核实后由 _open_position 推钉钉。
+        开仓后一次性挂好 TP1+TP2 + 呼吸止损；实盘核实后由 _open_position 推钉钉。
         返回 {ok, aborted, defense, shield}；硬止损挂失败则撤仓并 aborted=True（禁止裸奔）。
         """
         self._reset_adverse_radar(keep_tv_sl=False)
+        seed_stop = float(getattr(self, "_sizing_initial_stop", 0) or 0)
         self._init_breathing_on_open(
             entry_price,
-            atr=float(getattr(self, "current_atr", 0) or getattr(self, "initial_atr", 0) or 0),
+            atr=float(getattr(self, "initial_atr", 0) or getattr(self, "current_atr", 0) or 0),
             adx=float(getattr(self, "current_adx", 0) or 0) or None,
         )
+        # Prefer sizing-time initialStop if ATR refresh drifted slightly
+        if seed_stop > 0 and float(getattr(self, "initial_stop", 0) or 0) > 0:
+            # Keep engine stop from init; sizing already used same ATR formula
+            pass
         self.best_price = entry_price
         self.watched_qty = qty
         self.watched_entry = entry_price
@@ -3873,8 +3976,27 @@ class PositionSupervisor(
             if side_sync.get("conflict"):
                 audit.setdefault("warnings", []).append("tv_opposite_force_flat")
 
+            # Checklist §六: old radar schema → alert + pause (no auto-migrate)
+            if bool(getattr(self, "_state_schema_legacy", False)) and (
+                float(getattr(self, "initial_atr", 0) or 0) <= 0
+                or float(getattr(self, "initial_stop", 0) or 0) <= 0
+            ):
+                msg = "重启检测到旧雷达schema(activated/stepCount)且无initialAtr · 暂停交易"
+                if hasattr(self, "_pause_trading"):
+                    self._pause_trading(msg, {
+                        "schema_legacy": True,
+                        "side": self.current_side,
+                        "qty": self.watched_qty,
+                    })
+                audit["trading_paused"] = True
+                audit["startup_summary"] = msg
+                self.monitoring = False
+                self._save_state()
+                self._log("STARTUP", msg, audit)
+                return audit
+
             # Checklist §七: position exists but no persisted TP / breathing stop → alert + pause
-            has_persist_tp = any(float(x or 0) > 0 for x in (self.tv_tps or []))
+            has_persist_tp = any(float(x or 0) > 0 for x in (self.tv_tps or [])[:2])
             has_breath = (
                 float(getattr(self, "initial_atr", 0) or 0) > 0
                 and (

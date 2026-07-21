@@ -1,48 +1,39 @@
-# VPS 实盘清单（架构对齐 · RISK20 · 90m · TP12）
+# VPS 实盘最终行为规格（完整版 · 唯一权威）
 
-> **同步日期**：2026-07-22  
-> TV 只发 3 种消息：LONG/SHORT、CLOSE_QUICK_EXIT、CLOSE_RSI_EXIT。  
-> VPS：单仓 · 先平后开 · RISK20 sizing · 呼吸止损 · 90m ATR/ADX · 仅挂 TP1+TP2。
+> 同步：2026-07-22 · 实现以本文档为准；与「妈妈版」冲突处以本文为准。
 
----
+## 硬性原则
 
-## 核心行为
+1. 开仓永远先平后开（不问方向）
+2. 单仓不加仓
+3. 仓位每次独立计算：`min(风险/|价−initialStop|, 名义/价, TV.qty)`，`initialStop`=VPS ATR（非 TV stop_loss）
+4. 止损单唯一写入方 = 呼吸止损引擎
 
-```
-LONG/SHORT → 查实盘 → 非空则全平撤单等确认 → qty=min(风险/|价-stop|, 名义/价, TV.qty)
-         → 市价开仓 → 挂 TP1/TP2 (30/30) → 呼吸初始止损(带qty) → 启动引擎
+## Webhook
 
-TP1/TP2成交 → 暂停tick → 撤旧止损 → 按剩余70%/40%重挂(同currentStop) → 恢复tick
+仅 `LONG` / `SHORT` / `CLOSE_QUICK_EXIT` / `CLOSE_RSI_EXIT`。
 
-CLOSE_QUICK_EXIT / CLOSE_RSI_EXIT → 市价全平 → 撤单 → 重置状态
-```
+## 呼吸止损
 
-| 项 | 值 |
-|----|-----|
-| 仓位 | `min(equity×0.20/\|p−sl\|, equity×5/p, TV.qty)` |
-| K 线 | 30m→**90m** 合成 · ATR(14)/ADX(14) |
-| 初始止损 | entry ± 1.5×ATR（开仓后 VPS 算） |
-| 阶段一 | 步进 0.75 / 跟进 0.4 ATR |
-| 阶段二 | 浮盈 3.0×ATR → ADX 追踪 1.2–2.5×ATR |
-| TP | 限价 **仅 TP1+TP2**（30/30；余 40% 交阶段二） |
-| 加仓 | **禁用** |
-| CAP_ALIGN | **仅检测告警，不下单减仓** |
+- 阶段一：步进 0.75 / 跟进 0.4，基准 `initialStop`；TP1 底线 entry+0.5ATR；TP2 底线 entry+1.5ATR；+3.0ATR 进阶段二
+- 阶段二：ADX 1.2–2.5 插值追踪
+- TP1/TP2 成交：通知引擎撤旧止损→按 70%/40% 重挂（暂停 tick）
+- **不挂 TP3**
 
----
+## 行情
 
-## 钉钉
+30m → 90m 合成；ATR(14)/ADX(14)；webhook 不读 atr/adx。
 
-- 先平后开：`先平后开：检测到已有持仓，已市价全平并撤单，准备执行新开仓`
-- 阶段切换：`阶段切换：止损已进入阶段二（趋势追踪），当前ADX=…，追踪距离=…×ATR`
-- 已移除：雷达激活、保护性全平、风控拦截、加仓、TP3止盈成交
+## 保留 / 删除
 
----
+- 保留：`HARD_SL_FAIL_ABORT`、`FORCE_ALIGN`
+- 删除：`CAP_ALIGN` 减仓、加仓、旧雷达 activated/2.0ATR、保护性全平
 
 ## 验收
 
 ```bash
-py -m pytest tests/test_breathing_stop.py tests/test_market_indicators.py \
-  tests/test_market_engine_wire.py tests/test_pine_tp_regime_ratios.py \
-  tests/test_vps_dev_checklist.py tests/test_tv_v6985_sizing.py \
-  tests/test_trading_alerts_tp_ratio.py tests/test_close_alert_utils.py -q
+cd backend
+py -m pytest tests/test_breathing_stop.py tests/test_tv_v6985_sizing.py \
+  tests/test_vps_entry_routing.py tests/test_pine_tp_regime_ratios.py \
+  tests/test_market_indicators.py tests/test_close_alert_utils.py -q
 ```
