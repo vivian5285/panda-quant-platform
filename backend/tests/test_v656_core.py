@@ -63,11 +63,11 @@ def test_stepcount_ladder_monotonic():
     assert meta3["step_count"] >= meta2["step_count"]
 
 
-def test_idempotency_60s_action_symbol():
+def test_idempotency_60s_action_symbol_price():
     assert IDEMPOTENCY_TTL_SEC == 60
     a = compute_fingerprint({"action": "LONG", "symbol": "ETHUSDT", "price": 3300.5})
     b = compute_fingerprint({"action": "LONG", "symbol": "ETHUSDT", "price": 3399.0})
-    assert a == b  # price ignored
+    assert a != b  # checklist: action+symbol+price
     c = compute_fingerprint({"action": "SHORT", "symbol": "ETHUSDT", "price": 3300.5})
     assert a != c
 

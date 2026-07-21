@@ -1,7 +1,7 @@
 """Webhook signal deduplication (TV retries / duplicate alerts).
 
 Prefer TradingView bar_index+seq keys (24h TTL) when present; otherwise
-content hash with short TTL.
+action+symbol+price hash with 60s TTL (checklist §去重).
 """
 from __future__ import annotations
 
@@ -67,11 +67,12 @@ def compute_fingerprint(payload: dict) -> str:
 
     from app.core.symbol_registry import extract_payload_symbol
 
-    # Final checklist: 60s dedupe key = action + symbol (price ignored)
+    # Checklist §去重: 60s key = action + symbol + price
     symbol = extract_payload_symbol(payload, require=False) or "UNKNOWN"
     core = {
         "action": action,
         "symbol": symbol,
+        "price": round_price(payload.get("price") or 0),
     }
     raw = json.dumps(core, sort_keys=True, separators=(",", ":"), default=str)
     return "h:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]

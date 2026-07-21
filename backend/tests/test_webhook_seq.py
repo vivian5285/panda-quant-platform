@@ -85,8 +85,16 @@ def test_fingerprint_legacy_without_seq():
         "price": 3500,
         "regime": 3,
     })
-    assert not fp.startswith("seq:")
-    assert len(fp) == 64
+    assert fp.startswith("h:")
+    assert len(fp) == 34  # "h:" + sha256[:32]
+    # price is part of key
+    fp2 = compute_fingerprint({
+        "action": "LONG",
+        "symbol": "ETHUSDT",
+        "price": 3501,
+        "regime": 3,
+    })
+    assert fp != fp2
 
 
 def test_seq_gate_orders_same_bar_close_then_open():

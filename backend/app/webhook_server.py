@@ -238,7 +238,7 @@ def webhook():
 
     from app.database import SessionLocal
     from app.services.webhook_idempotency import compute_fingerprint, try_acquire
-    from app.services.webhook_seq_gate import get_seq_gate
+    from app.services.webhook_symbol_coalesce import get_coalesce
 
     fingerprint = compute_fingerprint(data)
     db = SessionLocal()
@@ -292,12 +292,13 @@ def webhook():
             reason, data.get("regime"), data.get("side"), bar_index, seq,
         )
 
-    gate = get_seq_gate()
-    gate.set_dispatch(_spawn_dispatch)
-    disposition = gate.submit(data, fingerprint, dispatch=_spawn_dispatch)
-    depth = gate.pending_depth()
+    # 1~2s per-symbol coalesce: CLOSE once → latest LONG/SHORT（四所统一入口）
+    coalesce = get_coalesce()
+    coalesce.set_dispatch(_spawn_dispatch)
+    disposition = coalesce.submit(data, fingerprint, dispatch=_spawn_dispatch)
+    depth = coalesce.pending_depth()
     logger.info(
-        "[Webhook] seq_gate disposition=%s depth=%s action=%s bar_index=%s seq=%s",
+        "[Webhook] coalesce disposition=%s depth=%s action=%s bar_index=%s seq=%s",
         disposition, depth, action, bar_index, seq,
     )
 
@@ -307,7 +308,7 @@ def webhook():
         "action": action,
         "bar_index": bar_index,
         "seq": seq,
-        "seq_gate": disposition,
+        "coalesce": disposition,
     })
     resp.headers["X-Webhook-Latency-Ms"] = str(max(1, int((time.perf_counter() - t0) * 1000)))
     return resp, 200
@@ -315,9 +316,9 @@ def webhook():
 
 @webhook_app.route("/health", methods=["GET"])
 def health():
-    from app.services.webhook_seq_gate import get_seq_gate
+    from app.services.webhook_symbol_coalesce import get_coalesce
 
     return jsonify({
         "status": "ok",
-        "seq_pending": get_seq_gate().pending_depth(),
+        "coalesce_pending": get_coalesce().pending_depth(),
     }), 200

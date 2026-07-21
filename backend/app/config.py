@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     WEBHOOK_SEQ_IDEMPOTENCY_TTL_SEC: int = 86400
     # 同 bar 缺前置 seq 时暂存等待秒数，超时报警后按已有顺序释放
     WEBHOOK_SEQ_WAIT_SEC: float = 3.0
+    # TV 同 K 线多消息缓存窗口（1~2s）：到期后先平仓一次再开最新仓
+    WEBHOOK_COALESCE_SEC: float = 1.5
     PRODUCTION_STRICT: bool = False
     PLATFORM_DOMAIN: str = "twinstar.pro"
     ADMIN_EMAIL: str = "admin@twinstar.pro"
