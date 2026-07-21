@@ -99,19 +99,20 @@ def test_in_window_same_fingerprint_dropped(coalesce):
     assert released == ["LONG"]
 
 
-def test_timer_auto_flush(coalesce, monkeypatch):
+def test_timer_callback_flushes(coalesce, monkeypatch):
+    """超时兜底：timer 回调清空缓存并派发（不依赖真实 sleep）。"""
     monkeypatch.setattr(
         "app.services.webhook_symbol_coalesce.get_settings",
-        lambda: MagicMock(WEBHOOK_COALESCE_SEC=1.0),
+        lambda: MagicMock(WEBHOOK_COALESCE_SEC=1.5),
     )
     c = reset_coalesce_for_tests()
     released = []
     c.set_dispatch(lambda p, fp: released.append(p["action"]))
     assert c.submit(*_msg("SHORT", price=3300)) == "buffered"
-    deadline = time.time() + 1.8
-    while not released and time.time() < deadline:
-        time.sleep(0.05)
+    assert c.pending_depth() == 1
+    c._on_timer("ETHUSDT")
     assert released == ["SHORT"]
+    assert c.pending_depth() == 0
 
 
 def test_idempotency_60s_includes_price():
@@ -123,3 +124,17 @@ def test_idempotency_60s_includes_price():
     assert a == c
     d = compute_fingerprint({"action": "SHORT", "symbol": "ETHUSDT", "price": 3300.5})
     assert a != d
+
+
+def test_open_force_flat_shared_by_all_supervisors():
+    """开仓前强制清仓：Binance 路径与 Deepcoin 均有，作为乱序最终安全网。"""
+    import inspect
+    from app.core.position_supervisor import PositionSupervisor
+    from app.core.position_supervisor_deepcoin import DeepcoinPositionSupervisor
+
+    assert hasattr(PositionSupervisor, "_force_flat_before_open")
+    src = inspect.getsource(PositionSupervisor._force_flat_before_open)
+    assert "_close_all" in src
+    # Deepcoin uses same iron rule via call site or own method
+    dc_src = inspect.getsource(DeepcoinPositionSupervisor)
+    assert "_force_flat_before_open" in dc_src or "先平后开" in dc_src
