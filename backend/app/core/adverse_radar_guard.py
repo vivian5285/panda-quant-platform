@@ -255,6 +255,20 @@ class AdverseRadarMixin:
             self._pending_adverse_algo_ids = []
         if not hasattr(self, "radar_latched"):
             self.radar_latched = False
+        if not hasattr(self, "radar_activated"):
+            self.radar_activated = False
+        if not hasattr(self, "radar_step_count"):
+            self.radar_step_count = 0
+        if not hasattr(self, "_atr_refreshed_at"):
+            self._atr_refreshed_at = 0.0
+        if not hasattr(self, "_tp_placed_at"):
+            self._tp_placed_at = {}
+        if not hasattr(self, "_radar_arm_dingtalk_sent"):
+            self._radar_arm_dingtalk_sent = False
+        if not hasattr(self, "trading_paused"):
+            self.trading_paused = False
+        if not hasattr(self, "trading_pause_reason"):
+            self.trading_pause_reason = ""
         if not hasattr(self, "_radar_path_ok_streak"):
             self._radar_path_ok_streak = 0
         if not hasattr(self, "_last_radar_arm_meta"):
@@ -263,6 +277,93 @@ class AdverseRadarMixin:
             self._tv_hard_sl_price = 0.0
         if not hasattr(self, "_vps_hard_sl_meta"):
             self._vps_hard_sl_meta = {}
+
+    def _pause_trading(self, reason: str, detail: dict | None = None) -> None:
+        """Checklist §七: missing persist / direction mismatch → alert + pause opens."""
+        self._init_adverse_radar_fields()
+        self.trading_paused = True
+        self.trading_pause_reason = str(reason or "paused")
+        if hasattr(self, "_save_state"):
+            try:
+                self._save_state()
+            except Exception:
+                pass
+        if hasattr(self, "_alert"):
+            try:
+                self._alert(
+                    "critical",
+                    "TRADING_PAUSED",
+                    "交易已暂停",
+                    self.trading_pause_reason,
+                    dict(detail or {}),
+                )
+            except Exception:
+                pass
+
+    def _clear_trading_pause(self, reason: str = "") -> None:
+        self._init_adverse_radar_fields()
+        was = bool(self.trading_paused)
+        self.trading_paused = False
+        self.trading_pause_reason = ""
+        if was and hasattr(self, "_log"):
+            try:
+                self._log("RESUME", f"交易暂停已解除 {reason}", {"reason": reason})
+            except Exception:
+                pass
+
+    def _block_if_trading_paused(self, action: str) -> dict | None:
+        """Block OPEN when paused; allow force-flat exits and reconcile closes."""
+        self._init_adverse_radar_fields()
+        if not self.trading_paused:
+            return None
+        act = str(action or "").upper()
+        from app.services.webhook_guard import is_force_flat_close, is_reconcile_only_close
+        if is_force_flat_close(act) or is_reconcile_only_close(act):
+            return None
+        if act in ("LONG", "SHORT", "UPDATE_TP"):
+            reason = self.trading_pause_reason or "trading_paused"
+            if hasattr(self, "_log"):
+                self._log("SIGNAL", f"⏸️ 交易已暂停，忽略 {act}: {reason}", {"action": act})
+            return {
+                "status": "skipped",
+                "reason": "trading_paused",
+                "message": reason,
+                "action": act,
+            }
+        return None
+
+    def _mark_tp_placed(self, level: int) -> None:
+        """Stamp TP1/TP2 hang time for 5-min timeout → cancel + hand to radar."""
+        lvl = int(level or 0)
+        if lvl not in (1, 2):
+            return
+        placed = dict(getattr(self, "_tp_placed_at", None) or {})
+        if lvl not in placed:
+            placed[lvl] = time.time()
+            self._tp_placed_at = placed
+
+    def _apply_radar_eval_state(self, radar: dict) -> None:
+        """Persist activated/step_count from ladder eval (monotonic)."""
+        if not radar:
+            return
+        self._init_adverse_radar_fields()
+        if radar.get("activated") or radar.get("armed"):
+            self.radar_activated = True
+            self.radar_latched = True
+        sc = int(radar.get("step_count") or 0)
+        if sc > int(getattr(self, "radar_step_count", 0) or 0):
+            self.radar_step_count = sc
+        ev = radar.get("event")
+        if ev == "radar_arm" and not getattr(self, "_radar_arm_dingtalk_sent", False):
+            self._radar_arm_dingtalk_sent = True
+            try:
+                self._alert(
+                    "info", "RADAR_ARM", "雷达激活·保本",
+                    f"step={self.radar_step_count} SL@{float(radar.get('radar_sl') or 0):.2f}",
+                    {"radar_sl": radar.get("radar_sl"), "step_count": self.radar_step_count},
+                )
+            except Exception:
+                pass
 
     def _reset_adverse_radar(self, *, keep_tv_sl: bool = True) -> None:
         preserved = float(getattr(self, "tv_sl", 0) or 0) if keep_tv_sl else 0.0
@@ -276,6 +377,11 @@ class AdverseRadarMixin:
         self.adverse_arm_dingtalk_sent = False
         self._pending_adverse_algo_ids = []
         self.radar_latched = False
+        self.radar_activated = False
+        self.radar_step_count = 0
+        self._atr_refreshed_at = 0.0
+        self._tp_placed_at = {}
+        self._radar_arm_dingtalk_sent = False
         self._radar_path_ok_streak = 0
         self._last_radar_arm_meta = {}
         self.tv_sl = preserved
@@ -422,10 +528,10 @@ class AdverseRadarMixin:
         return meta
 
     def _apply_tv_sl_from_payload(self, payload: dict | None) -> float | None:
-        """Apply TradingView tv_sl as the only live hard-stop price."""
+        """Apply TradingView stop_loss / tv_sl as the only live hard-stop price."""
         if not payload:
             return None
-        ref = parse_tv_sl(payload.get("tv_sl"))
+        ref = parse_tv_sl(payload.get("stop_loss")) or parse_tv_sl(payload.get("tv_sl"))
         if ref and ref > 0:
             self._init_adverse_radar_fields()
             self._tv_hard_sl_price = float(ref)
@@ -2126,7 +2232,11 @@ class AdverseRadarMixin:
             regime=int(getattr(self, "regime", 3) or 3),
             live_qty=float(live_qty or 0),
             consumed_tp_levels=list(getattr(self, "consumed_tp_levels", None) or []),
+            activated=True,
+            step_count=int(getattr(self, "radar_step_count", 0) or 0),
         )
+        if hasattr(self, "_apply_radar_eval_state"):
+            self._apply_radar_eval_state(radar)
         sl_px = float(radar.get("radar_sl") or 0)
         if sl_px <= 0:
             logger.warning(

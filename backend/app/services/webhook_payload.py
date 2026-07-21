@@ -1,4 +1,9 @@
-"""Parse TradingView webhook JSON bodies (with optional repair for common Pine quoting bugs)."""
+"""Parse TradingView webhook JSON — v6.5.6 Trillion_God final.
+
+Canonical fields: bot_id, token, action, symbol, price, qty, qty1-3,
+stop_loss, tp1, tp2, tp3 (+ optional atr).
+Legacy aliases (secret/tv_sl/tv_tp*) normalized for internal supervisors.
+"""
 
 from __future__ import annotations
 
@@ -10,13 +15,9 @@ from app.services.tv_signal_enrich import enrich_tv_signal
 
 logger = logging.getLogger(__name__)
 
-# Pine v6.9.30 bug: missing closing quote after side/reason
-# Broken:  "side":"LONG,"reason":"xxx,"pnl_pct":
-# Fixed:    "side":"LONG","reason":"xxx","pnl_pct":
 _PINE_CLOSE_PROTECT_SIDE_REASON = re.compile(
     r'"side":"(LONG|SHORT|NONE),("reason":")([^"]*?)(,"pnl_pct":)'
 )
-# v6.9.x: missing quote before reason key on CLOSE_STOPLOSS
 _PINE_CLOSE_SIDE_REASON_GENERIC = re.compile(
     r'"side":"(LONG|SHORT|NONE),("reason":")([^"]*?)(,"(?:pnl_pct|price)":)'
 )
@@ -24,8 +25,17 @@ _TRAILING_COMMA = re.compile(r",(\s*[}\]])")
 
 
 def repair_pine_close_protect_json(raw: str) -> str | None:
-    """Repair known malformed CLOSE_* JSON from 万亿战神 v6.9.30–v6.9.75."""
-    if not any(x in raw for x in ("CLOSE_PROTECT", "CLOSE_TP3", "CLOSE_STOPLOSS", "CLOSE")):
+    if not any(
+        x in raw
+        for x in (
+            "CLOSE_PROTECT",
+            "CLOSE_TP3",
+            "CLOSE_STOPLOSS",
+            "CLOSE_QUICK_EXIT",
+            "CLOSE_RSI_EXIT",
+            "CLOSE",
+        )
+    ):
         return None
     fixed = raw
     n_total = 0
@@ -37,44 +47,70 @@ def repair_pine_close_protect_json(raw: str) -> str | None:
     return fixed if n_total else None
 
 
+def _coerce_float(out: dict, key: str) -> None:
+    if key not in out or out[key] is None or out[key] == "":
+        return
+    try:
+        val = out[key]
+        if isinstance(val, str):
+            val = val.strip().replace(",", "")
+        out[key] = float(val)
+    except (TypeError, ValueError):
+        pass
+
+
 def normalize_tv_payload(data: dict) -> dict:
-    """Coerce TradingView alert fields — TV may send numbers as strings."""
+    """Coerce v6.5.6 fields + legacy aliases into supervisor-ready shape."""
     out = dict(data)
     out["action"] = str(out.get("action", "")).upper().strip()
-    if out.get("regime") is not None:
-        try:
-            out["regime"] = int(out["regime"])
-        except (TypeError, ValueError):
-            pass
-    for key in ("atr", "price", "tv_tp1", "tv_tp2", "tv_tp3", "tv_sl", "pnl_pct", "risk_pct", "qty_ratio", "leverage"):
-        if key in out and out[key] is not None and out[key] != "":
-            try:
-                val = out[key]
-                if isinstance(val, str):
-                    val = val.strip().replace(",", "")
-                out[key] = float(val)
-            except (TypeError, ValueError):
-                pass
+
+    # Auth: token (v6.5.6) ≡ secret (platform)
+    if out.get("token") and not out.get("secret"):
+        out["secret"] = str(out["token"]).strip()
+    elif out.get("secret") and not out.get("token"):
+        out["token"] = str(out["secret"]).strip()
+
+    # Price aliases → internal tv_*
+    if out.get("stop_loss") is not None and not out.get("tv_sl"):
+        out["tv_sl"] = out["stop_loss"]
+    if out.get("tv_sl") is not None and not out.get("stop_loss"):
+        out["stop_loss"] = out["tv_sl"]
+
+    for src, dst in (("tp1", "tv_tp1"), ("tp2", "tv_tp2"), ("tp3", "tv_tp3")):
+        if out.get(src) is not None and not out.get(dst):
+            out[dst] = out[src]
+        if out.get(dst) is not None and not out.get(src):
+            out[src] = out[dst]
+
+    float_keys = (
+        "atr", "price", "tv_tp1", "tv_tp2", "tv_tp3", "tv_sl",
+        "tp1", "tp2", "tp3", "stop_loss",
+        "qty", "qty1", "qty2", "qty3", "pnl_pct",
+    )
+    for key in float_keys:
+        _coerce_float(out, key)
+
     if out.get("side") is not None:
         out["side"] = str(out["side"]).upper().strip()
     if out.get("reason") is not None:
         out["reason"] = str(out["reason"])[:500]
-    if out.get("entry_type") is not None:
-        out["entry_type"] = str(out["entry_type"]).upper().strip()
+    if out.get("bot_id") is not None:
+        out["bot_id"] = str(out["bot_id"]).strip()
+    if out.get("leg") is not None:
+        out["leg"] = str(out["leg"]).strip()
+
     for key in ("bar_index", "seq"):
         if key in out and out[key] is not None and out[key] != "":
             try:
                 out[key] = int(float(str(out[key]).strip()))
             except (TypeError, ValueError):
                 pass
+
+    out.setdefault("strategy_version", "v6.5.6")
     return out
 
 
 def parse_webhook_payload(raw_text: str) -> tuple[dict | None, str | None]:
-    """
-    Parse webhook body. Returns (data, error_message).
-    On success error_message is None.
-    """
     text = (raw_text or "").strip()
     if text.startswith("\ufeff"):
         text = text.lstrip("\ufeff")

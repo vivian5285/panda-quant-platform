@@ -1,11 +1,11 @@
-"""Radar breakeven trailing — regime path arm + ATR breathing (single source).
+"""Radar continuous ladder trailing — v6.5.6 (all exchanges).
 
-VPS 自查清单 · 按档位激活（接近 TP1 路径比例）:
-  R1 极弱 50%启动 / 步进35% / 1.0 ATR 呼吸
-  R2 弱势 60% / 30% / 0.8 ATR
-  R3 中势 70% / 25% / 0.65 ATR
-  R4 强势 80% / 20% / 0.5 ATR
-雷达只做移动止损，不干预 TP123 / TV硬止损挂单。
+Activate at 85% path to TP1 → breakeven.
+Then every +0.5×ATR favorable move → raise SL by +0.3×ATR.
+Milestone floors: TP1 → entry+0.5ATR; TP2 → entry+1.5ATR;
+TP3 → pure trail peak−2.0ATR (only favorable).
+
+Old REGIME_RADAR 50/60/70/80 path tables REMOVED.
 """
 
 from __future__ import annotations
@@ -15,34 +15,38 @@ from typing import Any
 
 from app.core.symbol_precision import round_price
 
-# Min trail width as fraction of entry→TP1 (floor when ATR tiny)
-RADAR_MIN_TRAIL_TP1_FRAC = 0.18
-FEE_BUFFER_PCT = 0.0015
-# Breakeven floor slack (ATR) — wider before TP1 fill, tighter after
-RADAR_BREAKEVEN_ATR_BEFORE_TP1 = 0.55
-RADAR_BREAKEVEN_ATR_AFTER_TP1 = 0.25
+# --- v6.5.6 continuous ladder params (single source) ---
+RADAR_ARM_PROGRESS = 0.85
+RADAR_STEP_ATR = 0.50
+RADAR_LOCK_ATR = 0.30
+RADAR_TP1_FLOOR_ATR = 0.50
+RADAR_TP2_FLOOR_ATR = 1.50
+RADAR_TP3_TRAIL_ATR = 2.00
+RADAR_BREAKEVEN_TICK_PCT = 0.0003  # ~1 tick slack past entry
+DEFAULT_ATR_ETH = 12.0  # when TV omits atr (ETH 10~15 pts)
 
-# Canonical regime table — ONLY source for activation / move_step / breath ATR
-# 与《VPS 实盘增强执行自查清单》§五 一致
+# Compat aliases — all regimes share the same ladder (regime key inert)
 REGIME_RADAR: dict[int, dict[str, float]] = {
-    1: {"activation": 0.50, "move_step": 0.35, "trail_offset": 1.00},
-    2: {"activation": 0.60, "move_step": 0.30, "trail_offset": 0.80},
-    3: {"activation": 0.70, "move_step": 0.25, "trail_offset": 0.65},
-    4: {"activation": 0.80, "move_step": 0.20, "trail_offset": 0.50},
+    r: {
+        "activation": RADAR_ARM_PROGRESS,
+        "move_step": RADAR_STEP_ATR,
+        "trail_offset": RADAR_LOCK_ATR,
+    }
+    for r in (1, 2, 3, 4)
 }
 
-# Compat aliases — prefer regime_radar_activation(regime)
-RADAR_PRE_TP1_ARM_PROGRESS = REGIME_RADAR[1]["activation"]
-RADAR_STARTUP_PROFIT_PROGRESS = REGIME_RADAR[1]["activation"]
-
-# Global arm guards (all exchanges)
-RADAR_OPEN_GRACE_SEC = 25.0
+RADAR_PRE_TP1_ARM_PROGRESS = RADAR_ARM_PROGRESS
+RADAR_STARTUP_PROFIT_PROGRESS = RADAR_ARM_PROGRESS
+RADAR_OPEN_GRACE_SEC = 15.0
 RADAR_ARM_CONFIRM_POLLS = 2
+RADAR_MIN_TRAIL_TP1_FRAC = 0.18
+FEE_BUFFER_PCT = 0.0015
+RADAR_BREAKEVEN_ATR_BEFORE_TP1 = 0.55
+RADAR_BREAKEVEN_ATR_AFTER_TP1 = 0.25
 RADAR_TIGHT_SPAN_ATR_MULT = 1.0
-# 紧 TP1：有效激活抬高，避免噪声秒挂
 RADAR_TIGHT_SPAN_MIN_PROGRESS = 0.85
-RADAR_MIN_ABS_ATR_MULT = 0.55
-RADAR_MIN_ABS_ENTRY_PCT = 0.0015
+RADAR_MIN_ABS_ATR_MULT = 0.30
+RADAR_MIN_ABS_ENTRY_PCT = 0.0010
 RADAR_EFFECTIVE_CAP = 0.98
 
 
@@ -55,12 +59,11 @@ def clamp_regime_id(regime: int) -> int:
     return r
 
 
-def regime_radar_row(regime: int) -> dict[str, float]:
+def regime_radar_row(regime: int = 3) -> dict[str, float]:
     return dict(REGIME_RADAR[clamp_regime_id(regime)])
 
 
 def merge_regime_radar(base: dict[int, dict]) -> dict[int, dict]:
-    """Overlay radar params onto margin/ratios regime_settings."""
     merged: dict[int, dict] = {}
     for r, cfg in base.items():
         row = dict(cfg)
@@ -69,18 +72,23 @@ def merge_regime_radar(base: dict[int, dict]) -> dict[int, dict]:
     return merged
 
 
-def regime_radar_activation(regime: int) -> float:
-    return float(regime_radar_row(regime)["activation"])
+def regime_radar_activation(regime: int = 3) -> float:
+    return float(RADAR_ARM_PROGRESS)
 
 
-def regime_radar_move_step(regime: int) -> float:
-    """Interval progress fraction before advancing trail stage (TP1→TP2 / TP2→TP3)."""
-    return float(regime_radar_row(regime)["move_step"])
+def regime_radar_move_step(regime: int = 3) -> float:
+    return float(RADAR_STEP_ATR)
 
 
-def regime_radar_trail_offset(regime: int) -> float:
-    """Breathing room in ATR multiples (宁松勿紧)."""
-    return float(regime_radar_row(regime)["trail_offset"])
+def regime_radar_trail_offset(regime: int = 3) -> float:
+    return float(RADAR_LOCK_ATR)
+
+
+def resolve_atr(atr: float, entry: float = 0.0, symbol: str | None = None) -> float:
+    a = float(atr or 0)
+    if a > 0:
+        return a
+    return float(DEFAULT_ATR_ETH)
 
 
 def tp1_distance(entry: float, tv_tps: list, atr: float) -> float:
@@ -105,7 +113,6 @@ def tp_path_progress(
     tp1: float,
     side: str | None,
 ) -> float:
-    """0→1 progress from entry toward TP1 (radar arming)."""
     entry = float(entry or 0)
     tp1 = float(tp1 or 0)
     curr_px = float(curr_px or 0)
@@ -121,6 +128,38 @@ def tp_path_progress(
         if span <= 0:
             return 0.0
         return max(0.0, min(1.0, (entry - curr_px) / span))
+    return 0.0
+
+
+def radar_arm_trigger_price(
+    entry: float,
+    tp1: float,
+    side: str | None,
+    progress: float = RADAR_ARM_PROGRESS,
+) -> float:
+    """Arm price at `progress` along entry→TP1 (checklist §四 / §九).
+
+    Doc shorthand:
+      LONG  ``tp1 × 0.85``  → path 85% to TP1 (NOT literal multiply)
+      SHORT ``tp1 × 1.15``  → 「tp1 上方 15%」= path 85% toward TP1
+        i.e. ``tp1 + (1-progress)×(entry-tp1)``
+    """
+    entry = float(entry or 0)
+    tp1 = float(tp1 or 0)
+    p = max(0.0, min(1.0, float(progress if progress is not None else RADAR_ARM_PROGRESS)))
+    if entry <= 0 or tp1 <= 0:
+        return 0.0
+    if side == "LONG":
+        span = tp1 - entry
+        if span <= 0:
+            return 0.0
+        return entry + p * span
+    if side == "SHORT":
+        span = entry - tp1
+        if span <= 0:
+            return 0.0
+        # 85% toward TP1 == 15% of span above TP1
+        return tp1 + (1.0 - p) * span
     return 0.0
 
 
@@ -148,28 +187,18 @@ def radar_effective_activation(
     tp1: float,
     atr: float,
 ) -> float:
-    """
-    Regime path ratio; raised when TV TP1 span is tight vs ATR.
-    Never blocks a healthy absolute move once progress meets the raised floor.
-    """
-    base = regime_radar_activation(regime)
-    entry = float(entry or 0)
-    tp1 = float(tp1 or 0)
-    atr_v = max(float(atr or 0), 0.0)
-    if entry <= 0 or tp1 <= 0:
-        return 1.0
-    span = abs(tp1 - entry)
-    if span <= 0:
-        return 1.0
-    eff = base
-    if atr_v > 0 and span < atr_v * RADAR_TIGHT_SPAN_ATR_MULT:
-        eff = max(eff, RADAR_TIGHT_SPAN_MIN_PROGRESS)
-    min_abs = radar_min_absolute_move(entry, atr_v)
-    if min_abs > 0:
-        needed = min_abs / span
-        if needed > eff:
-            eff = min(RADAR_EFFECTIVE_CAP, needed)
-    return float(eff)
+    """Fixed 85% arm (regime ignored)."""
+    return float(RADAR_ARM_PROGRESS)
+
+
+def _reached(curr_px: float, level: float, side: str | None) -> bool:
+    if level <= 0 or curr_px <= 0:
+        return False
+    if side == "LONG":
+        return curr_px >= level
+    if side == "SHORT":
+        return curr_px <= level
+    return False
 
 
 def evaluate_radar_arm_gate(
@@ -188,87 +217,131 @@ def evaluate_radar_arm_gate(
     radar_latched: bool = False,
 ) -> dict[str, Any]:
     """
-    Full arm decision for all exchanges.
-    - TP fill → arm immediately
-    - Path arm → open grace + effective activation + confirm polls
+    Arm when path ≥ 85% to TP1, or TP1 filled / latched.
+    Open grace + confirm polls kept as noise guards.
     """
     now = float(now_ts if now_ts is not None else time.time())
-    base_act = regime_radar_activation(regime)
-    eff_act = radar_effective_activation(regime, entry, tp1, atr)
+    base_act = RADAR_ARM_PROGRESS
+    eff_act = RADAR_ARM_PROGRESS
     move = favorable_move(entry, curr_px, side)
     min_abs = radar_min_absolute_move(entry, atr)
     span = abs(float(tp1 or 0) - float(entry or 0)) if entry and tp1 else 0.0
-    age = None
-    if trade_opened_at and float(trade_opened_at) > 0:
-        age = max(0.0, now - float(trade_opened_at))
-    row = regime_radar_row(regime)
-
-    meta: dict[str, Any] = {
-        "progress": round(float(progress or 0), 4),
-        "activation_base": base_act,
-        "activation_effective": round(eff_act, 4),
-        "move_step": row["move_step"],
-        "trail_offset": row["trail_offset"],
-        "favorable_move": round(move, 4),
-        "min_abs_move": round(min_abs, 4),
-        "tp1_span": round(span, 4),
-        "open_age_sec": round(age, 1) if age is not None else None,
-        "path_ok_streak": int(path_ok_streak or 0),
-        "arm_reason": None,
-        "ok": False,
-        "arm": False,
-        "building_confirm": False,
-        "blocked_grace": False,
-        "blocked_abs": False,
-    }
 
     if radar_latched:
-        meta["ok"] = True
-        meta["arm"] = True
-        meta["arm_reason"] = "latched"
-        return meta
+        return {
+            "should_arm": True,
+            "reason": "already_latched",
+            "base_activation": base_act,
+            "effective_activation": eff_act,
+            "progress": float(progress or 0),
+            "path_ok_streak": int(path_ok_streak or 0),
+            "confirm_needed": RADAR_ARM_CONFIRM_POLLS,
+            "open_grace_sec": RADAR_OPEN_GRACE_SEC,
+        }
 
-    if tp1_consumed(consumed_tp_levels):
-        meta["ok"] = True
-        meta["arm"] = True
-        meta["arm_reason"] = "tp1_filled"
-        return meta
-    if any(int(x) in (2, 3) for x in (consumed_tp_levels or [])):
-        meta["ok"] = True
-        meta["arm"] = True
-        meta["arm_reason"] = "tp23_filled"
-        return meta
+    if tp1_consumed(consumed_tp_levels) or any(
+        int(x) in (1, 2, 3) for x in (consumed_tp_levels or [])
+    ):
+        return {
+            "should_arm": True,
+            "reason": "tp_filled",
+            "base_activation": base_act,
+            "effective_activation": eff_act,
+            "progress": float(progress or 0),
+            "path_ok_streak": int(path_ok_streak or 0),
+            "confirm_needed": RADAR_ARM_CONFIRM_POLLS,
+            "open_grace_sec": RADAR_OPEN_GRACE_SEC,
+        }
 
-    if age is not None and age < RADAR_OPEN_GRACE_SEC:
-        meta["blocked_grace"] = True
-        meta["arm_reason"] = "open_grace"
-        meta["path_ok_streak"] = 0
-        return meta
+    if trade_opened_at and (now - float(trade_opened_at)) < RADAR_OPEN_GRACE_SEC:
+        return {
+            "should_arm": False,
+            "reason": "open_grace",
+            "base_activation": base_act,
+            "effective_activation": eff_act,
+            "progress": float(progress or 0),
+            "path_ok_streak": 0,
+            "confirm_needed": RADAR_ARM_CONFIRM_POLLS,
+            "open_grace_sec": RADAR_OPEN_GRACE_SEC,
+        }
 
-    prog = float(progress or 0)
-    if prog + 1e-9 < eff_act:
-        meta["arm_reason"] = "path_below_effective"
-        meta["path_ok_streak"] = 0
-        return meta
+    path_ok = float(progress or 0) >= eff_act and (
+        min_abs <= 0 or move + 1e-12 >= min_abs or span <= 0
+    )
+    if _reached(curr_px, tp1, side):
+        path_ok = True
 
-    if move + 1e-9 < min_abs:
-        meta["blocked_abs"] = True
-        meta["arm_reason"] = "abs_move_below_floor"
-        meta["path_ok_streak"] = 0
-        return meta
+    streak = int(path_ok_streak or 0) + 1 if path_ok else 0
+    should = path_ok and streak >= RADAR_ARM_CONFIRM_POLLS
+    return {
+        "should_arm": should,
+        "reason": "path_arm" if should else ("path_wait" if path_ok else "path_low"),
+        "base_activation": base_act,
+        "effective_activation": eff_act,
+        "progress": float(progress or 0),
+        "path_ok_streak": streak,
+        "confirm_needed": RADAR_ARM_CONFIRM_POLLS,
+        "open_grace_sec": RADAR_OPEN_GRACE_SEC,
+        "favorable_move": round(move, 4),
+        "min_abs_move": round(min_abs, 4),
+    }
 
-    streak = int(path_ok_streak or 0) + 1
-    meta["path_ok_streak"] = streak
-    meta["ok"] = True
-    if streak < RADAR_ARM_CONFIRM_POLLS:
-        meta["building_confirm"] = True
-        meta["arm_reason"] = "confirming"
-        meta["arm"] = False
-        return meta
 
-    meta["arm"] = True
-    meta["arm_reason"] = "path_effective"
-    return meta
+def breakeven_sl(entry: float, side: str | None) -> float:
+    entry = float(entry or 0)
+    if entry <= 0:
+        return 0.0
+    tick = entry * RADAR_BREAKEVEN_TICK_PCT
+    if side == "LONG":
+        return round_price(entry + max(tick, 0.01))
+    if side == "SHORT":
+        return round_price(entry - max(tick, 0.01))
+    return round_price(entry)
+
+
+def atr_floor_sl(entry: float, atr: float, mult: float, side: str | None) -> float:
+    entry = float(entry or 0)
+    a = max(float(atr or 0), 0.0)
+    if entry <= 0 or a <= 0:
+        return 0.0
+    delta = a * float(mult)
+    if side == "LONG":
+        return round_price(entry + delta)
+    if side == "SHORT":
+        return round_price(entry - delta)
+    return 0.0
+
+
+def steps_from_move(move: float, atr: float) -> int:
+    step = max(float(atr or 0) * RADAR_STEP_ATR, 1e-9)
+    if move <= 0:
+        return 0
+    return int(move // step)
+
+
+def ladder_raise_from(base_sl: float, steps: int, atr: float, side: str | None) -> float:
+    if steps <= 0 or base_sl <= 0:
+        return float(base_sl or 0)
+    delta = float(steps) * max(float(atr or 0), 0.0) * RADAR_LOCK_ATR
+    if side == "LONG":
+        return round_price(base_sl + delta)
+    if side == "SHORT":
+        return round_price(base_sl - delta)
+    return float(base_sl)
+
+
+def apply_radar_sl_direction(old_sl: float, new_sl: float, side: str | None) -> float:
+    if new_sl <= 0:
+        return old_sl
+    if side == "LONG":
+        if old_sl <= 0:
+            return new_sl
+        return max(float(old_sl), float(new_sl))
+    if side == "SHORT":
+        if old_sl <= 0:
+            return new_sl
+        return min(float(old_sl), float(new_sl))
+    return new_sl
 
 
 def radar_may_arm(

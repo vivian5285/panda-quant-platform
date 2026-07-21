@@ -228,6 +228,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.risk_multiplier = 1.0
         self.current_atr = 30.0
         self.best_price = 0.0
+        self.radar_activated = False
+        self.radar_step_count = 0
+        self._atr_refreshed_at = 0.0
+        self._tp_placed_at = {}
         self.current_sl = 0.0
         self.tv_price = 0.0
         self.tv_tps = [0.0, 0.0, 0.0]
@@ -591,6 +595,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "tv_entry_fields": dict(getattr(self, "_tv_entry_fields", None) or {}),
                     "adopted_manual": bool(getattr(self, "adopted_manual", False)),
                     "radar_latched": bool(getattr(self, "radar_latched", False)),
+                    "radar_activated": bool(getattr(self, "radar_activated", False)),
+                    "radar_step_count": int(getattr(self, "radar_step_count", 0) or 0),
+                    "tp_placed_at": dict(getattr(self, "_tp_placed_at", None) or {}),
+                    "trading_paused": bool(getattr(self, "trading_paused", False)),
+                    "trading_pause_reason": str(getattr(self, "trading_pause_reason", "") or ""),
                     "current_trade_id": getattr(self, "current_trade_id", None),
                     "canonical_symbol": getattr(self, "canonical_symbol", None),
                 }, f)
@@ -1194,31 +1203,63 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if live_qty <= 0:
             tp_pxs = tp_pxs if tp_pxs is not None else self.tv_tps
             return sum(1 for t in tp_pxs if t > 0)
-        exclude = set(self.consumed_tp_levels or [])
+        px = self._current_tp_price()
+        exclude = self._active_tp_exclude_levels(live_qty, px)
         return len(self._compute_tp_slices(live_qty, exclude_levels=exclude))
 
-    def _expected_tp_levels(self, live_qty, curr_px=None):
-        from app.core.tp_slice_guard import should_skip_rehang_tp_level
+    def _infer_filled_tp_levels(self, qty: float, curr_px: float) -> set[int]:
+        """推断已成交 TP 档位（state 记录 + 开仓量对比 + 价格越过且无挂单）。"""
+        from app.core.tp_slice_guard import levels_past_by_mark
 
-        live_qty = float(self._resolve_live_qty(live_qty))
-        px = float(curr_px or 0)
-        if px <= 0:
-            px = self._current_tp_price()
-        self._sync_consumed_tp_levels(live_qty, px)
-        exclude = set(int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3))
+        anchor = float(self.initial_qty or qty)
+        tol = tp_slice_qty_tolerance(anchor, is_contracts=True)
+        open_prices = [float(o.get("price", 0)) for o in self._collect_tp_limit_orders()]
+        filled = infer_filled_tp_levels(
+            qty,
+            curr_px,
+            self.current_side,
+            initial_qty=anchor,
+            consumed_tp_levels=self.consumed_tp_levels,
+            regime=self.regime,
+            tv_tps=self.tv_tps,
+            regime_settings=self.regime_settings,
+            open_tp_prices=open_prices,
+            qty_tol=tol,
+            is_contracts=True,
+            peak_px=float(getattr(self, "best_price", 0) or 0),
+        )
+        past = levels_past_by_mark(
+            float(curr_px or 0),
+            self.current_side,
+            list(self.tv_tps or []),
+            peak_px=float(getattr(self, "best_price", 0) or 0),
+        )
+        return set(filled) | set(past)
+
+    def _active_tp_exclude_levels(self, qty: float, curr_px: float) -> set[int]:
+        """Exclude filled + mark-past + TP3 (v6.5.6: TP3 is reference only, never LIMIT)."""
+        from app.core.tp_slice_guard import should_skip_rehang_tp_level, SKIP_REHANG_HARD
+        from app.core.tp_regime_ratios import PLACEABLE_TP_LEVELS
+
+        exclude = self._infer_filled_tp_levels(qty, curr_px)
+        # Never place TP3 limit — leg3 exits via continuous-ladder radar
+        exclude.add(3)
+        for lvl in (1, 2, 3):
+            if lvl not in PLACEABLE_TP_LEVELS:
+                exclude.add(lvl)
         open_prices = [float(o.get("price", 0) or 0) for o in self._collect_tp_limit_orders()]
         for i, tp_px in enumerate(list(self.tv_tps or [])[:3]):
             level = i + 1
             if level in exclude:
                 continue
-            skip, skip_reason = should_skip_rehang_tp_level(
+            skip, reason = should_skip_rehang_tp_level(
                 level,
                 float(tp_px or 0),
                 side=self.current_side,
-                curr_px=px,
+                curr_px=float(curr_px or 0),
                 consumed=exclude,
-                live_qty=live_qty,
-                initial_qty=float(self.initial_qty or live_qty),
+                live_qty=float(qty or 0),
+                initial_qty=float(self.initial_qty or qty or 0),
                 regime=int(self.regime or 3),
                 tv_tps=list(self.tv_tps or []),
                 regime_settings=self.regime_settings,
@@ -1226,10 +1267,20 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 is_contracts=True,
                 peak_px=float(getattr(self, "best_price", 0) or 0),
             )
-            if skip:
+            if skip and reason in SKIP_REHANG_HARD:
                 exclude.add(level)
-        if exclude != set(int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3)):
-            self.consumed_tp_levels = sorted(exclude)
+        return exclude
+
+    def _expected_tp_levels(self, live_qty, curr_px=None):
+        live_qty = float(self._resolve_live_qty(live_qty))
+        px = float(curr_px or 0)
+        if px <= 0:
+            px = self._current_tp_price()
+        self._sync_consumed_tp_levels(live_qty, px)
+        exclude = self._active_tp_exclude_levels(live_qty, px)
+        normalized = {int(x) for x in exclude if int(x) in (1, 2, 3)}
+        if normalized != {int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3)}:
+            self.consumed_tp_levels = sorted(normalized)
             if hasattr(self, "_save_state"):
                 self._save_state()
         slices = self._compute_tp_slices(live_qty, exclude_levels=exclude)
@@ -1495,6 +1546,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             at_px = [o for o in orders if tp_price_matches(o["price"], px, price_tol)]
             if len(at_px) == 1 and tp_qty_matches(q, at_px[0]["qty"], live_qty, is_contracts=True):
                 logger.info(f"  ✓ TP @ {px:.2f} 已存在 {at_px[0]['qty']}张，跳过")
+                if hasattr(self, "_mark_tp_placed"):
+                    self._mark_tp_placed(level)
                 continue
             if len(at_px) > 1:
                 self._purge_duplicate_tp_orders(live_qty)
@@ -1512,6 +1565,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             )
             if res and self.client._is_success(res):
                 placed += 1
+                if hasattr(self, "_mark_tp_placed"):
+                    self._mark_tp_placed(int(lv.get("level") or 0))
             time.sleep(0.4)
         return placed
 
@@ -1827,7 +1882,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             regime=int(self.regime or 3),
             live_qty=float(getattr(self, "watched_qty", 0) or 0),
             consumed_tp_levels=list(getattr(self, "consumed_tp_levels", None) or []),
+            activated=bool(getattr(self, "radar_activated", False) or getattr(self, "radar_latched", False)),
+            step_count=int(getattr(self, "radar_step_count", 0) or 0),
         )
+        if hasattr(self, "_apply_radar_eval_state"):
+            self._apply_radar_eval_state(radar)
         if radar.get("armed") and radar.get("radar_sl", 0) > 0:
             self.current_sl = float(radar["radar_sl"])
             self._latch_radar()
@@ -2221,6 +2280,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             atr=self.current_atr,
         )
         raw_action = str(payload.get("action", "")).strip().upper()
+        blocked = self._block_if_trading_paused(raw_action) if hasattr(self, "_block_if_trading_paused") else None
+        if blocked:
+            return blocked
 
         # UPDATE_TP before mutating regime/atr/tv_sl — only replaces TP limits.
         if raw_action == "UPDATE_TP":
@@ -2268,8 +2330,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if not raw_action:
             logger.warning("TV 信号缺少 action，已忽略")
             return
-        if raw_action in ("LONG", "SHORT", "CLOSE", "CLOSE_PROTECT", "CLOSE_TP3", "UPDATE_SL", "UPDATE_TP") or \
-                raw_action.startswith("CLOSE"):
+        if raw_action in ("LONG", "SHORT", "UPDATE_TP") or raw_action.startswith("CLOSE"):
             self._record_tv_signal(payload, raw_action)
 
         if not self._lock.acquire(timeout=120.0):
@@ -2297,46 +2358,21 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     return
 
             self.monitoring = False
-            if raw_action == "CLOSE_PROTECT" or raw_action.startswith("CLOSE_PROTECT"):
-                pos = self._get_active_position()
-                if not pos or self._safe_qty(pos.get("size", 0)) <= 0:
-                    logger.info(f"🛡️ 保护性全平到达但盘口已空仓 → 撤单复位 | {tv_reason}")
-                    empty_detail: dict = {
-                        "close_action": raw_action,
-                        "tv_side": tv_side,
-                        "reason": tv_reason,
-                        "tv_reason": tv_reason,
-                        "action": "cancel_orders_reset",
-                        "exchange": self.exchange_id,
-                    }
-                    empty_detail.update({k: v for k, v in tv_close.items() if v is not None})
-                    if tv_pnl_pct is not None:
-                        empty_detail["tv_pnl_pct"] = round(float(tv_pnl_pct), 2)
-                    self.client.cancel_all_open_orders(self.symbol)
-                    self.monitoring = False
-                    self._save_state()
-                    self._log("CLOSE_PROTECT_EMPTY", f"🛡️ 空仓保护性全平：撤单复位 | {tv_reason}", empty_detail)
-                    self._alert(
-                        "info",
-                        "CLOSE_PROTECT_EMPTY",
-                        "空仓保护 · 撤单复位",
-                        f"Deepcoin 实盘无持仓，已撤单并复位 | {tv_reason}",
-                        empty_detail,
-                    )
-                else:
-                    self._close_all(f"🛡️ 保护性全平：{tv_reason}", **_tv_close_kwargs())
-            elif raw_action == "CLOSE_TP3":
+            # v6.5.6: reconcile-only closes — no market order (limits/radar already filled)
+            from app.services.webhook_guard import (
+                is_force_flat_close,
+                is_reconcile_only_close,
+            )
+            if is_reconcile_only_close(raw_action):
+                self._handle_tv_reconcile_close(raw_action, payload, tv_reason=tv_reason)
+                return
+            if is_force_flat_close(raw_action):
                 self._close_all(
-                    f"🎯 TP3完美收网：{tv_reason or '大趋势吃满'}",
+                    f"⚡ 策略反转全平：{tv_reason or raw_action}",
                     **_tv_close_kwargs(),
                 )
-            elif raw_action == "CLOSE_STOPLOSS":
-                self._close_all(f"🛑 {tv_reason or '触碰硬止损或追踪保本线'}", **_tv_close_kwargs())
-            elif raw_action == "CLOSE":
-                self._close_all(f"🧹 换防清场：{tv_reason}", **_tv_close_kwargs())
-            elif raw_action == "UPDATE_SL":
-                self._handle_update_sl(payload)
-            elif raw_action in ["LONG", "SHORT"]:
+                return
+            if raw_action in ["LONG", "SHORT"]:
                 self.last_tv_side = raw_action
                 self._save_state()
                 self._handle_smart_entry(
@@ -2349,6 +2385,84 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 logger.warning(f"未识别的 TV action: {raw_action}")
         finally:
             self._lock.release()
+
+    def _handle_tv_reconcile_close(
+        self, action: str, payload: dict | None = None, *, tv_reason: str | None = None,
+    ) -> dict:
+        """Checklist §2B: reconcile-only; NEVER market flatten."""
+        payload = payload or {}
+        leg = str(payload.get("leg") or "").strip()
+        qty = float(payload.get("qty") or 0)
+        price = float(payload.get("price") or 0)
+        pos = self._get_active_position() if hasattr(self, "_get_active_position") else None
+        live_qty = float(self._safe_qty((pos or {}).get("size", 0)) if hasattr(self, "_safe_qty") else (pos or {}).get("size") or 0)
+        detail = {
+            "type": "reconcile_only",
+            "action": action,
+            "leg": leg,
+            "tv_qty": qty,
+            "tv_price": price,
+            "live_qty": live_qty,
+            "tv_reason": tv_reason,
+            "note": "TV对账信号·不下单（挂单/雷达已自行执行）",
+        }
+        if action == "CLOSE_TP" and leg in ("1", "2", "3"):
+            try:
+                lvl = int(leg)
+                consumed = set(getattr(self, "consumed_tp_levels", None) or [])
+                consumed.add(lvl)
+                self.consumed_tp_levels = sorted(consumed)
+            except (TypeError, ValueError):
+                pass
+            if live_qty > 0 and hasattr(self, "_bump_sl_after_tp_reconcile"):
+                try:
+                    detail["sl_bump"] = self._bump_sl_after_tp_reconcile(leg)
+                except Exception as exc:
+                    detail["sl_bump_error"] = str(exc)
+            if hasattr(self, "_save_state"):
+                self._save_state()
+        if live_qty <= 0:
+            if hasattr(self, "_purge_defense_orders_on_flat"):
+                try:
+                    self._purge_defense_orders_on_flat(reason=f"reconcile_{action}")
+                except Exception:
+                    pass
+            if hasattr(self, "_reset_adverse_radar"):
+                try:
+                    self._reset_adverse_radar(keep_tv_sl=False)
+                except Exception:
+                    pass
+            detail["flat_confirmed"] = True
+        self._log(action, f"TV对账 {action} leg={leg or '-'} live={live_qty}", detail)
+        self._alert(
+            "info",
+            action,
+            f"TV对账·{action}",
+            f"leg={leg or '-'} qty={qty} price={price} 实盘={live_qty}（不下单）",
+            detail,
+        )
+        return {"status": "ok", "action": action, "detail": detail}
+
+    def _bump_sl_after_tp_reconcile(self, leg: str) -> dict:
+        from app.core.radar_trail import (
+            RADAR_TP2_FLOOR_ATR,
+            apply_radar_sl_direction,
+            atr_floor_sl,
+            breakeven_sl,
+        )
+
+        entry = float(getattr(self, "entry_price", 0) or getattr(self, "avg_entry", 0) or 0)
+        side = getattr(self, "current_side", None)
+        atr = float(getattr(self, "current_atr", 0) or 0)
+        old = float(getattr(self, "current_sl", 0) or getattr(self, "tv_sl", 0) or 0)
+        target = breakeven_sl(entry, side) if leg == "1" else (
+            atr_floor_sl(entry, atr, RADAR_TP2_FLOOR_ATR, side) if leg == "2" else 0.0
+        )
+        if target <= 0:
+            return {"skipped": True}
+        new_sl = apply_radar_sl_direction(old, target, side)
+        self.current_sl = new_sl
+        return {"ok": True, "old": old, "new": new_sl, "leg": leg}
 
     def _handle_manual_flat_detected(self, reason, *, skip_eager_purge=False):
         """人工全平 / 止盈吃满：立即撤 TP123 并智能复位账本"""
@@ -2380,15 +2494,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return True
 
     def _resolve_entry_leverage(self) -> int:
-        """Prefer TV leverage; fall back to exchange config only if TV omitted."""
-        tv_fields = getattr(self, "_tv_entry_fields", None) or {}
-        tv_lev = tv_fields.get("leverage") or tv_fields.get("tv_leverage")
-        if tv_lev is not None and float(tv_lev) > 0:
-            return max(int(round(float(tv_lev))), 1)
-        return max(int(self.leverage or 1), 1)
+        """v6.5.6: always 5x (TV leverage field deleted)."""
+        from app.core.tv_entry_sizing import FIXED_LEVERAGE
+        return int(FIXED_LEVERAGE)
 
     def _bind_tv_leverage(self) -> int:
-        """Apply TV leverage to supervisor + exchange client before sizing/order."""
+        """Apply fixed 5x leverage before sizing/order."""
         lev = self._resolve_entry_leverage()
         self.leverage = lev
         client = getattr(self, "client", None)
@@ -2402,36 +2513,25 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return lev
 
     def _resolve_entry_qty(self, curr_px: float) -> tuple[int, dict]:
-        from app.core.tv_entry_sizing import ENTRY_TYPES_ADD
-
+        """Checklist: min(风险资金/止损距, 权益×5/价, TV.qty) → contracts."""
         equity = read_contract_equity(self.client)
         leverage = self._resolve_entry_leverage()
         tv_fields = getattr(self, "_tv_entry_fields", None) or {}
-        entry_type = getattr(self, "_entry_type", "OPEN")
-        regime = int(tv_fields.get("regime") or self.regime)
-        risk_pct = tv_fields.get("risk_pct")
-        if risk_pct is None:
-            return 0, {
-                "error": "missing_risk_pct",
-                "entry_type": entry_type,
-                "note": "TV must send risk_pct; VPS no longer uses REGIME_MARGIN",
-            }
+        tv_qty = tv_fields.get("tv_qty")
         qty, meta = resolve_vps_entry_qty_deepcoin(
             live_balance=equity,
             initial_principal=self.initial_principal,
-            entry_type=entry_type,
+            entry_type="OPEN",
             base_qty=float(getattr(self, "base_qty", 0) or 0),
             price=float(curr_px or self.tv_price or 0),
             tv_sl=float(getattr(self, "tv_sl", 0) or 0),
-            regime=regime,
+            regime=int(self.regime or 3),
             exchange_leverage=leverage,
             face_value=self.face_value,
-            tv_qty_ratio=tv_fields.get("qty_ratio"),
-            qty_ratio_source=str(tv_fields.get("qty_ratio_source") or "tv_qty_ratio"),
             symbol=self.canonical_symbol,
-            risk_pct=float(risk_pct),
+            tv_qty=float(tv_qty) if tv_qty else None,
         )
-        if entry_type not in ENTRY_TYPES_ADD and qty > 0:
+        if qty > 0:
             from app.core.combined_notional import check_combined_notional_cap
 
             notional = float(meta.get("notional_usd") or meta.get("position_value") or 0)
@@ -2759,53 +2859,20 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self._save_state()
 
     def _place_tv_entry_order(self, action: str, qty: float, limit_px: float) -> dict:
-        """
-        Checklist: LIMIT @ TV price first; unfilled → market remainder.
-        Deepcoin has no IOC — brief GTC then cancel leftover.
-        """
-        px = float(limit_px or getattr(self, "tv_price", 0) or 0)
+        """Checklist §2A: 市价开仓."""
         open_side = "buy" if action == "LONG" else "sell"
         pos_side = "long" if action == "LONG" else "short"
-        meta: dict = {"entry_order_style": "market", "limit_price": px, "qty": float(qty)}
-        if px > 0:
-            try:
-                res = self.client.place_limit_order(
-                    self.symbol, open_side, pos_side, px, qty, reduce_only=False,
-                )
-                meta["limit_order"] = res
-                time.sleep(0.8)
-                pos = self._get_active_position()
-                filled = self._safe_qty((pos or {}).get("size", 0))
-                target = float(self._safe_qty(qty) or qty)
-                if filled + 1e-9 >= target * 0.85:
-                    meta["entry_order_style"] = "limit"
-                    meta["filled_qty"] = filled
-                    return meta
-                try:
-                    self.client.cancel_all_open_orders(self.symbol)
-                except Exception:
-                    pass
-                remain = max(target - filled, 0)
-                if remain >= 1:
-                    logger.info(
-                        f"LIMIT 未足额 filled={filled}/{target} → 市价补 {remain}"
-                    )
-                    self.client.place_market_order(
-                        self.symbol, open_side, pos_side, remain,
-                    )
-                    meta["entry_order_style"] = "limit_then_market"
-                    meta["market_remainder"] = remain
-                else:
-                    meta["entry_order_style"] = "limit"
-                    meta["filled_qty"] = filled
-                return meta
-            except Exception as exc:
-                logger.error(f"LIMIT 开仓失败→市价: {exc}")
+        meta: dict = {
+            "entry_order_style": "market",
+            "limit_price": float(limit_px or 0),
+            "qty": float(qty),
+        }
         self.client.place_market_order(self.symbol, open_side, pos_side, qty)
-        meta["entry_order_style"] = "market"
         return meta
 
     def _open_position(self, action, curr_px):
+        if hasattr(self, "_clear_trading_pause"):
+            self._clear_trading_pause("new_open")
         leverage = self._bind_tv_leverage()
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.4)
@@ -3141,6 +3208,45 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return SENTINEL_POLL_NORMAL
 
     def _process_radar_trailing(self, real_amt, curr_px):
+        # ATR refresh every 5 min + TP limit 5-min timeout (parity with Binance)
+        try:
+            from app.core.vps_radar_stages import ATR_REFRESH_SEC, TP_LIMIT_TIMEOUT_SEC
+            now = time.time()
+            last = float(getattr(self, "_atr_refreshed_at", 0) or 0)
+            if now - last >= ATR_REFRESH_SEC and hasattr(self.client, "estimate_atr"):
+                new_atr = float(self.client.estimate_atr(self.symbol) or 0)
+                if new_atr > 0:
+                    self.current_atr = new_atr
+                self._atr_refreshed_at = now
+            placed = dict(getattr(self, "_tp_placed_at", None) or {})
+            for lvl, ts in list(placed.items()):
+                if now - float(ts) < TP_LIMIT_TIMEOUT_SEC:
+                    continue
+                if int(lvl) in (getattr(self, "consumed_tp_levels", None) or []):
+                    placed.pop(lvl, None)
+                    self._tp_placed_at = placed
+                    continue
+                try:
+                    cancelled = 0
+                    if hasattr(self, "_cancel_tp_orders_at_levels"):
+                        cancelled = int(self._cancel_tp_orders_at_levels([int(lvl)]) or 0)
+                    consumed = set(getattr(self, "consumed_tp_levels", None) or [])
+                    consumed.add(int(lvl))
+                    self.consumed_tp_levels = sorted(consumed)
+                    placed.pop(lvl, None)
+                    self._tp_placed_at = placed
+                    self._save_state()
+                    self._alert(
+                        "warning", "TP_SKIP_REHANG", "TP挂单超时·移交雷达",
+                        f"TP{lvl} 超过{int(TP_LIMIT_TIMEOUT_SEC)}s未成交"
+                        f"（撤单{cancelled}）·禁止重挂",
+                        {"level": int(lvl), "cancelled": cancelled, "exchange": "deepcoin"},
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         if not self._radar_activation_reached(curr_px):
             return False
         tps = list(self.tv_tps or [])
@@ -3161,7 +3267,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             regime=int(self.regime or 3),
             live_qty=float(real_amt or 0),
             consumed_tp_levels=list(getattr(self, "consumed_tp_levels", None) or []),
+            activated=bool(getattr(self, "radar_activated", False) or getattr(self, "radar_latched", False)),
+            step_count=int(getattr(self, "radar_step_count", 0) or 0),
         )
+        if hasattr(self, "_apply_radar_eval_state"):
+            self._apply_radar_eval_state(radar)
         new_sl = float(radar.get("radar_sl") or 0)
         if new_sl <= 0:
             if self._is_radar_engaged():
@@ -3573,6 +3683,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             )
             if res and self.client._is_success(res):
                 placed += 1
+                if hasattr(self, "_mark_tp_placed"):
+                    self._mark_tp_placed(level)
             time.sleep(0.35)
 
         if dynamic_sl:
@@ -3722,6 +3834,15 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         self._tv_entry_fields = dict(saved_fields)
                     self.adopted_manual = bool(s.get("adopted_manual", False))
                     self.radar_latched = bool(s.get("radar_latched", False))
+                    self.radar_activated = bool(s.get("radar_activated", False) or s.get("radar_latched", False))
+                    self.radar_step_count = max(int(s.get("radar_step_count", 0) or 0), 0)
+                    raw_tp_at = s.get("tp_placed_at") or {}
+                    self._tp_placed_at = (
+                        {int(k): float(v) for k, v in dict(raw_tp_at).items()}
+                        if isinstance(raw_tp_at, dict) else {}
+                    )
+                    self.trading_paused = bool(s.get("trading_paused", False))
+                    self.trading_pause_reason = str(s.get("trading_pause_reason") or "")
                     tid = s.get("current_trade_id")
                     if tid is not None:
                         try:
@@ -3812,12 +3933,27 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     )
                     if hasattr(self, "_alert"):
                         self._alert(
-                            "info",
-                            "STARTUP",
-                            "VPS 重启 · 逆势持仓已强平对齐 TV",
+                            "critical",
+                            "FORCE_ALIGN",
+                            "VPS 重启 · 方向不一致强制平仓对齐 TV",
                             summary,
                             {"force_aligned": True, **side_sync},
                         )
+                    return
+
+                has_persist_tp = any(float(x or 0) > 0 for x in (self.tv_tps or []))
+                if not has_persist_tp:
+                    msg = "重启有持仓但无持久化 TP1/TP2/TP3 · 暂停交易"
+                    if hasattr(self, "_pause_trading"):
+                        self._pause_trading(msg, {
+                            "side": side, "qty": real_amt, "entry": self.watched_entry,
+                        })
+                    self.monitoring = False
+                    self._save_state()
+                    self._dt.report_recover_takeover(
+                        side=side, qty=real_amt, entry=self.watched_entry,
+                        summary=f"PAUSED · {msg}",
+                    )
                     return
 
                 curr_px = self.client.get_current_price(self.symbol)

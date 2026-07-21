@@ -240,10 +240,17 @@ def prepare_manual_adopt(supervisor) -> None:
     supervisor.current_sl = 0.0
 
 
-TV_CLOSE_ACTIONS = frozenset({"CLOSE", "CLOSE_PROTECT", "CLOSE_TP3", "CLOSE_STOPLOSS"})
+TV_CLOSE_ACTIONS = frozenset({
+    "CLOSE_TP",
+    "CLOSE_TRAIL",
+    "CLOSE_SL_INITIAL",
+    "CLOSE_SL_BREAKEVEN",
+    "CLOSE_QUICK_EXIT",
+    "CLOSE_RSI_EXIT",
+})
 
-# Hard exits — never deferred for manual/adopted positions (all exchanges)
-TV_HARD_CLOSE_ACTIONS = frozenset({"CLOSE_PROTECT", "CLOSE_TP3", "CLOSE_STOPLOSS"})
+# Only these force market flatten (radar cannot know multi-TF / RSI)
+TV_HARD_CLOSE_ACTIONS = frozenset({"CLOSE_QUICK_EXIT", "CLOSE_RSI_EXIT"})
 
 
 def _safe_float(val, default: float = 0.0) -> float:
@@ -259,15 +266,11 @@ def is_tv_close_action(action: str | None) -> bool:
 
 
 def is_hard_tv_close_action(action: str | None) -> bool:
-    """CLOSE_PROTECT / CLOSE_STOPLOSS / CLOSE_TP3 — must always flatten live qty."""
+    """CLOSE_QUICK_EXIT / CLOSE_RSI_EXIT — must always flatten live qty."""
     a = (action or "").upper().strip()
     if not a:
         return False
-    if a in TV_HARD_CLOSE_ACTIONS:
-        return True
-    if a.startswith("CLOSE_PROTECT"):
-        return True
-    return False
+    return a in TV_HARD_CLOSE_ACTIONS
 
 
 # Bare TV CLOSE right after OPEN often is a regime/chart chase alert, not SL/TP.
@@ -549,8 +552,9 @@ class StartupReconcileMixin:
         *,
         adopted_manual: bool = False,
         trigger: str = "startup",
+        on_conflict: str = "force_close",
     ) -> dict[str, Any]:
-        """实盘与 TV 反向 OPEN → 强平并保留 TV 方向（重启 / 哨兵共用）."""
+        """TV 方向为准：实盘与 TV OPEN 反向 → 强制市价平仓 + 钉钉（全交易所统一）."""
         sync = adopt_live_tv_side(self, reconcile, adopted_manual=adopted_manual)
         if not sync.get("force_close"):
             return sync
@@ -566,8 +570,10 @@ class StartupReconcileMixin:
             "entry": entry,
             "exchange": getattr(self, "exchange_id", None),
             "watched_qty": qty,
+            "side": live,
+            "price": entry,
         }
-        msg = f"逆势人工持仓 · 实盘{live} vs TV{tv} → 强平对齐 TV"
+        msg = f"实盘{live} vs TV{tv} → 强制平仓对齐 TV"
         if hasattr(self, "_log"):
             self._log("SIGNAL", f"⚠️ FORCE_ALIGN: {msg}", detail)
         else:
@@ -577,8 +583,8 @@ class StartupReconcileMixin:
             self._alert(
                 "critical",
                 "FORCE_ALIGN",
-                "逆势人工持仓 · 强制对齐 TV",
-                f"{msg} | {qty} @ {entry:.2f}",
+                "方向不一致 · 强制平仓对齐 TV",
+                f"{msg} | {qty} @ {entry:.2f}（{trigger}）",
                 detail,
             )
 
@@ -588,6 +594,7 @@ class StartupReconcileMixin:
         )
         sync["closed"] = True
         sync["force_aligned"] = True
+        sync["paused"] = False
         return sync
 
     def _sentinel_force_align_if_opposite(self, actual_side: str) -> bool:

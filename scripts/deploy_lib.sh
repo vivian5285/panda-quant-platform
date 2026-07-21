@@ -1,5 +1,6 @@
 #!/bin/bash
 # 双子星AI量化 · GEMINI AI · 部署公共函数（端口清理 / Git 同步）
+# v6.5.6: sync_github_code 保留 .env / data / state / logs；全交易所同一交易逻辑
 # shellcheck disable=SC2034
 
 deploy_fail() { echo "[FAIL] $1"; exit 1; }

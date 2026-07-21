@@ -72,6 +72,12 @@ def resolve_close_alert_type(
     attribution: dict | None = None,
 ) -> str:
     action = str(close_action or "").upper()
+    if "CLOSE_QUICK_EXIT" in action:
+        return "CLOSE_QUICK_EXIT"
+    if "CLOSE_RSI_EXIT" in action:
+        return "CLOSE_RSI_EXIT"
+    if action in ("CLOSE_TP", "CLOSE_TRAIL", "CLOSE_SL_INITIAL", "CLOSE_SL_BREAKEVEN"):
+        return action
     subtype = classify_tv_close_subtype(action, tv_reason)
     if subtype == "tp3" or "CLOSE_TP3" in action:
         return "CLOSE_TP3"
@@ -79,7 +85,6 @@ def resolve_close_alert_type(
         return "CLOSE_STOPLOSS"
     if "CLOSE_PROTECT" in action or action.startswith("CLOSE_PROTECT"):
         return "CLOSE_PROTECT"
-    # Exchange-detected flat: keep CLOSE but DingTalk title distinguishes TP vs radar
     origin = str((attribution or {}).get("close_origin") or "")
     if origin == "exchange_limit_tp":
         return "CLOSE_ATTRIBUTION"

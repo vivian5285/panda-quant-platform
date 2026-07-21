@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from app.config import exchange_leverage, get_settings
 from app.services.dingtalk_notify import push_dingtalk
 
@@ -67,9 +69,12 @@ DEFAULT_THEME = EXCHANGE_THEMES["binance"]
 ALERT_TYPE_TAGS = {
     "OPEN": "开仓",
     "CLOSE": "全平",
-    "CLOSE_TP3": "TP3全平",
-    "CLOSE_PROTECT": "保护全平",
-    "CLOSE_STOPLOSS": "TV止损",
+    "CLOSE_TP": "TV对账·止盈",
+    "CLOSE_TRAIL": "TV对账·追踪",
+    "CLOSE_SL_INITIAL": "TV对账·硬止损",
+    "CLOSE_SL_BREAKEVEN": "TV对账·保本止损",
+    "CLOSE_QUICK_EXIT": "反转快平",
+    "CLOSE_RSI_EXIT": "RSI反转全平",
     "CLOSE_FAIL": "清仓失败",
     "CLOSE_DEFER": "开仓保护忽略CLOSE",
     "STARTUP": "重启接管",
@@ -83,6 +88,7 @@ ALERT_TYPE_TAGS = {
     "ADJUST": "人工异动",
     "MANUAL_ADJUST": "人工异动",
     "FORCE_ALIGN": "方向背离",
+    "TRADING_PAUSED": "交易暂停",
     "POSITION_SIDE_FLIP": "逆势蚂蚁仓",
     "TP_OVER_COMMIT": "止盈超挂",
     "IDLE_WATCH": "空仓巡检",
@@ -124,15 +130,19 @@ ALERT_TYPE_TAGS = {
 ADMIN_DINGTALK_KEY_TYPES = frozenset({
     "OPEN",
     "CLOSE",
-    "CLOSE_TP3",
-    "CLOSE_PROTECT",
-    "CLOSE_STOPLOSS",
+    "CLOSE_TP",
+    "CLOSE_TRAIL",
+    "CLOSE_SL_INITIAL",
+    "CLOSE_SL_BREAKEVEN",
+    "CLOSE_QUICK_EXIT",
+    "CLOSE_RSI_EXIT",
     "CLOSE_FAIL",
     "CLOSE_DEFER",
     "STARTUP",
     "STARTUP_FAIL",
     "DEFENSE_HEAL_FAIL",
     "FORCE_ALIGN",
+    "TRADING_PAUSED",
     "POSITION_SIDE_FLIP",
     "TP_OVER_COMMIT",
     "IDLE_WATCH",
@@ -143,11 +153,8 @@ ADMIN_DINGTALK_KEY_TYPES = frozenset({
     "INSUFFICIENT_BALANCE",
     "NOTIONAL_CAP",
     "LOCK_TIMEOUT",
-    "CLOSE_PROTECT_EMPTY",
     "SAME_DIR_TP_REFRESH",
     "SAME_DIR_REOPEN",
-    "PYRAMID",
-    "PROFIT_ADD",
     "SENTINEL_ERROR",
     "TP_RETRY_FAIL",
     "SL_RETRY_FAIL",
@@ -189,14 +196,19 @@ DINGTALK_VERBOSE_EXCLUDED = frozenset({
 
 
 def format_regime_radar_activation_legend() -> str:
-    """钉钉统一文案：R1=50% · R2=60% · R3=70% · R4=80%（禁止写死旧 85%/70%）。"""
-    from app.core.radar_trail import REGIME_RADAR
-
-    parts = [
-        f"R{r}={int(REGIME_RADAR[r]['activation'] * 100)}%"
-        for r in (1, 2, 3, 4)
-    ]
-    return " · ".join(parts)
+    """钉钉：连续阶梯雷达 v6.5.6（85%激活 · 0.5ATR步进 · 0.3ATR锁定）。"""
+    from app.core.radar_trail import (
+        RADAR_ARM_PROGRESS,
+        RADAR_LOCK_ATR,
+        RADAR_STEP_ATR,
+        RADAR_TP3_TRAIL_ATR,
+    )
+    return (
+        f"激活{int(RADAR_ARM_PROGRESS * 100)}%"
+        f" · 步进{RADAR_STEP_ATR}ATR"
+        f" · 锁定{RADAR_LOCK_ATR}ATR"
+        f" · TP3追踪{RADAR_TP3_TRAIL_ATR}ATR"
+    )
 
 
 def resolve_exchange_theme(
@@ -240,416 +252,175 @@ def qty_unit_for_exchange(exchange: str | None = None, symbol: str | None = None
     return resolve_exchange_theme(exchange, symbol).get("qty_unit", "ETH")
 
 
-def format_signal_received_message(payload: dict | None) -> str:
-    from app.core.symbol_registry import extract_payload_symbol
-
-    data = dict(payload or {})
-    action = str(data.get("action") or "").upper()
-    entry_type = str(data.get("entry_type") or "").upper()
-    symbol = extract_payload_symbol(data)
-    parts = [f"symbol={symbol}", f"action={action}"]
-    if entry_type:
-        parts.append(f"entry_type={entry_type}")
-    if data.get("side"):
-        parts.append(f"side={data.get('side')}")
-    if data.get("price"):
-        parts.append(f"price={data.get('price')}")
-    if data.get("risk_pct") is not None:
-        parts.append(f"risk_pct={data.get('risk_pct')}%")
-    if data.get("qty_ratio") is not None:
-        parts.append(f"qty_ratio={data.get('qty_ratio')}")
-    if data.get("tv_sl"):
-        parts.append(f"tv_sl={data.get('tv_sl')}")
-    return " | ".join(parts)
-
-
 def _pct_text(val: float | None) -> str:
     if val is None:
         return "—"
     try:
         return f"{float(val) * 100:.0f}%"
     except (TypeError, ValueError):
-        return str(val)
+        return "—"
 
 
 def _line(label: str, value: str) -> str:
     return f"- **{label}**：{value}"
 
 
-def format_cap_align_detail_cn(detail: dict, exchange: str | None = None) -> str:
-    """叠仓纠偏 — 管理员一眼能看懂的中文明细."""
-    sym = detail.get("symbol") or detail.get("canonical_symbol")
-    theme = resolve_exchange_theme(exchange or detail.get("exchange"), sym)
-    unit = detail.get("qty_unit") or theme["qty_unit"]
-    regime = detail.get("regime")
-    regime_txt = f"R{regime}" if regime else "—"
-    side = detail.get("side") or "—"
-    side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(side).upper(), str(side))
+def format_checklist_pipe_line(
+    *,
+    event: str,
+    symbol: str = "",
+    side: str = "",
+    price: float | str | None = None,
+    qty: float | str | None = None,
+    equity: float | str | None = None,
+    remark: str = "",
+    ts: datetime | None = None,
+) -> str:
+    """Checklist §八: 时间戳 | 事件类型 | 合约 | 方向 | 价格 | 数量 | 账户权益 | 备注"""
+    when = (ts or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
 
-    lines = [
-        _line("交易所", theme["label"]),
-        _line("合约", theme["symbol"]),
-        _line("方向", side_txt),
-        _line("档位", f"{regime_txt}" + (
-            f"（保证金比例 {_pct_text(detail.get('margin_pct'))}）"
-            if detail.get("margin_pct") is not None else (
-                f"（TV风险 {float(detail['risk_pct']):.2f}%）"
-                if detail.get("risk_pct") is not None else ""
-            )
-        )),
-    ]
+    def _fmt(v) -> str:
+        if v is None or v == "":
+            return "-"
+        try:
+            f = float(v)
+            if abs(f - int(f)) < 1e-9:
+                return str(int(f))
+            return f"{f:.4f}".rstrip("0").rstrip(".")
+        except (TypeError, ValueError):
+            return str(v)
 
-    # 开仓/纠偏不再单独刷「本金快照」条（与 OPEN 明细重复刷屏）
-    if detail.get("margin_usd") and str(detail.get("entry_type") or "").upper() != "OPEN":
-        lev = detail.get("leverage") or theme["leverage"]
-        lines.append(_line("档位保证金", f"{float(detail['margin_usd']):.2f} USDT × {lev}倍杠杆"))
-
-    live = detail.get("live_qty")
-    target = detail.get("target_qty") or detail.get("max_qty")
-    new_qty = detail.get("new_qty")
-    trimmed = detail.get("trimmed") or detail.get("trim_qty")
-
-    if live is not None and target is not None:
-        lines.append(_line("仓位对比", f"实盘 **{float(live):.4f}** {unit} → 档位上限 **{float(target):.4f}** {unit}"))
-    if trimmed:
-        lines.append(_line("减仓数量", f"**{float(trimmed):.4f}** {unit}"))
-    if new_qty is not None:
-        lines.append(_line("纠偏后仓位", f"**{float(new_qty):.4f}** {unit}"))
-
-    defense = detail.get("defense") or {}
-    if defense.get("expected"):
-        lines.append(_line("止盈重挂", f"{defense.get('matched', 0)}/{defense.get('expected')} 档"))
-    if detail.get("radar_sl_preserved"):
-        lines.append(_line("雷达止损", f"已保留 @{float(detail['radar_sl_preserved']):.2f}"))
-    if detail.get("trigger"):
-        lines.append(_line("触发场景", str(detail["trigger"])))
-    if detail.get("error"):
-        lines.append(_line("异常原因", str(detail["error"])))
-
-    return "\n".join(lines)
+    return " | ".join([
+        when,
+        str(event or "-"),
+        str(symbol or "-"),
+        str(side or "-"),
+        _fmt(price),
+        _fmt(qty),
+        _fmt(equity),
+        str(remark or "-"),
+    ])
 
 
-def format_adverse_sl_detail_cn(detail: dict, exchange: str | None = None) -> str:
-    sym = detail.get("symbol") or detail.get("canonical_symbol")
-    theme = resolve_exchange_theme(exchange or detail.get("exchange"), sym)
-    unit = detail.get("qty_unit") or theme["qty_unit"]
-    side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(detail.get("side", "")).upper(), "—")
-    hard_pct = detail.get("hard_stop_pct", 10)
-    lines = [
-        _line("交易所", theme["label"]),
-        _line("方向", side_txt),
-        _line("硬止损", f"开仓价 {hard_pct:.0f}% 全平"),
-        _line("止损价", f"{detail.get('stop_price', '—')}"),
-        _line("持仓数量", f"{detail.get('live_qty', 0)} {unit}"),
-    ]
-    if detail.get("entry"):
-        lines.insert(3, _line("开仓价", f"{float(detail['entry']):.2f}"))
-    return "\n".join(lines)
+def format_signal_received_message(payload: dict | None) -> str:
+    from app.core.symbol_registry import extract_payload_symbol
 
-
-def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
-    sym = detail.get("symbol") or detail.get("canonical_symbol")
-    theme = resolve_exchange_theme(exchange or detail.get("exchange"), sym)
-    unit = detail.get("qty_unit") or theme["qty_unit"]
-    lines = [_line("交易所", theme["label"])]
-    if sym:
-        lines.append(_line("合约", theme.get("symbol") or sym))
-    if detail.get("side"):
-        side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(detail["side"]).upper(), detail["side"])
-        lines.append(_line("方向", side_txt))
-    if detail.get("qty"):
-        lines.append(_line("平仓数量", f"{detail['qty']} {unit}"))
-    if detail.get("close_reason") or detail.get("reason") or detail.get("tv_reason"):
-        lines.append(_line(
-            "平仓原因",
-            str(detail.get("tv_reason") or detail.get("close_reason") or detail.get("reason")),
-        ))
-    if detail.get("close_subtype"):
-        subtype_labels = {
-            "tp3": "TP3止盈",
-            "breakeven": "防回吐保本",
-            "hard_stop": "硬止损",
-            "risk_intercept": "风控拦截",
-            "protect": "保护性全平",
-            "stoploss": "TV止损",
-            "generic": "换防清场",
-        }
-        lines.append(_line("平仓类型", subtype_labels.get(detail["close_subtype"], detail["close_subtype"])))
-    origin = detail.get("close_origin")
-    if origin:
-        origin_labels = {
-            "exchange_limit_tp": "交易所限价止盈成交（非雷达）",
-            "exchange_stop": "保本雷达/条件止损触发（非TP限价）",
-            "manual_exchange": "交易所人工操作",
-            "platform_market": "平台市价全平",
-            "tv_forced": "TV强制平仓信号",
-            "exchange_already_flat": "盘口已平",
-            "unknown": "未能判定",
-        }
-        lines.append(_line("平仓来源", origin_labels.get(str(origin), str(origin))))
-    if detail.get("human_reason"):
-        lines.append(_line("归因说明", str(detail["human_reason"])))
-    if detail.get("regime") is not None:
-        lines.append(_line("档位", f"R{detail['regime']}"))
-    if detail.get("atr") is not None:
-        lines.append(_line("ATR", str(detail["atr"])))
-    if detail.get("tv_price"):
-        lines.append(_line("TV价格", f"{float(detail['tv_price']):.2f}"))
-    if detail.get("entry"):
-        lines.append(_line("开仓价", f"{float(detail['entry']):.2f}"))
-    if detail.get("exit_price"):
-        lines.append(_line("平仓价", f"{float(detail['exit_price']):.2f}"))
-    if detail.get("live_pnl_pct") is not None:
-        lines.append(_line("实盘盈亏", f"{float(detail['live_pnl_pct']):+.2f}%"))
-    if detail.get("tv_pnl_pct") is not None:
-        lines.append(_line("TV盈亏", f"{float(detail['tv_pnl_pct']):+.2f}%"))
-    if detail.get("pnl_pct_delta") is not None:
-        lines.append(_line("盈亏偏差", f"{float(detail['pnl_pct_delta']):+.2f}%"))
-    if detail.get("verify_note"):
-        lines.append(_line("实盘核实", str(detail["verify_note"])))
-    if detail.get("attribution"):
-        lines.append(_line("归因", str(detail["attribution"])))
-    # Radar path context on premature close / 换防清场
-    if detail.get("radar_progress") is not None:
-        base = detail.get("radar_activation")
-        eff = detail.get("radar_activation_effective") or base
-        prog = float(detail["radar_progress"])
-        if base is not None and eff is not None:
-            lines.append(
-                _line(
-                    "雷达路径",
-                    f"进度 {prog:.0%} · 档位需 {float(base):.0%} · 有效需 {float(eff):.0%}",
-                )
-            )
-        else:
-            lines.append(_line("雷达路径", f"进度 {prog:.0%}"))
-    if detail.get("radar_arm_reason"):
-        lines.append(_line("雷达判定", str(detail["radar_arm_reason"])))
-    return "\n".join(lines)
+    data = dict(payload or {})
+    action = str(data.get("action") or "").upper()
+    symbol = extract_payload_symbol(data)
+    parts = [f"symbol={symbol}", f"action={action}"]
+    if data.get("bot_id"):
+        parts.append(f"bot={data.get('bot_id')}")
+    if data.get("side"):
+        parts.append(f"side={data.get('side')}")
+    if data.get("price"):
+        parts.append(f"price={data.get('price')}")
+    if data.get("stop_loss") or data.get("tv_sl"):
+        parts.append(f"stop_loss={data.get('stop_loss') or data.get('tv_sl')}")
+    if data.get("tp1") or data.get("tv_tp1"):
+        parts.append(f"tp1={data.get('tp1') or data.get('tv_tp1')}")
+    if data.get("leg"):
+        parts.append(f"leg={data.get('leg')}")
+    return "信号已收 · " + " · ".join(parts)
 
 
 def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str:
-    """VPS 开仓/加仓 — TV risk_pct / leverage / qty_ratio 口径."""
+    """VPS 开仓钉钉 — v6.5.6：权益×20%×5x · TP1/TP2限价 · TP3参考 · 连续阶梯雷达."""
+    from app.core.tv_entry_sizing import FIXED_LEVERAGE, FIXED_MARGIN_PCT
+    from app.core.tp_regime_ratios import format_tp_ratio_pct
+    from app.core.radar_trail import RADAR_ARM_PROGRESS
+
     sym = detail.get("symbol") or detail.get("canonical_symbol")
+    lev = detail.get("leverage") or detail.get("tv_leverage") or FIXED_LEVERAGE
     theme = resolve_exchange_theme(
         exchange or detail.get("exchange"),
         sym,
-        leverage=detail.get("leverage"),
+        leverage=lev,
     )
     unit = detail.get("qty_unit") or theme["qty_unit"]
-    entry_type = str(detail.get("entry_type") or "OPEN").upper()
-    regime = detail.get("regime")
-    regime_txt = f"R{regime}" if regime else "—"
-    if detail.get("margin_coeff") is not None:
-        regime_txt = f"{regime_txt}（保证金 {_pct_text(detail.get('margin_coeff'))}）"
     side = detail.get("side") or "—"
     side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(side).upper(), str(side))
 
     lines = [
         _line("交易所", theme["label"]),
         _line("合约", f"{theme.get('symbol_label') or theme['symbol']} `{theme['symbol']}`"),
-        _line("类型", {"OPEN": "首次开仓", "PYRAMID": "加仓", "PROFIT_ADD": "浮盈加仓"}.get(entry_type, entry_type)),
+        _line("类型", "开仓 OPEN"),
         _line("方向", side_txt),
-        _line("档位", regime_txt),
+        _line("策略", str(detail.get("bot_id") or detail.get("strategy_version") or "v6.5.6")),
     ]
-    if detail.get("tp_ratios_pct"):
-        lines.append(_line("止盈比例", f"TP1/2/3 = {detail['tp_ratios_pct']}%（对齐 Pine qty_percent）"))
-
-    # OPEN 不再附带本金快照行（头寸价值/保证金已足够）
-    if entry_type != "OPEN":
-        principal = detail.get("initial_principal") or detail.get("sizing_base")
-        if principal:
-            lines.append(_line("合约本金", f"{float(principal):.2f} USDT"))
-
-    if entry_type == "OPEN":
-        if detail.get("risk_pct") is not None:
-            lines.append(_line("TV风险", f"{float(detail['risk_pct']):.2f}%（策略 risk_pct）"))
-        elif detail.get("vps_risk_pct") is not None:
-            lines.append(_line("TV风险", f"{float(detail['vps_risk_pct']):.2f}%"))
-        if detail.get("qty_ratio") is not None:
-            lines.append(_line("TV仓位系数", f"{float(detail['qty_ratio']):.4f}"))
-        if detail.get("sl_distance") is not None or detail.get("stop_distance") is not None:
-            dist = detail.get("sl_distance") or detail.get("stop_distance")
-            lines.append(_line("止损距离", f"{float(dist):.4f}"))
-        if detail.get("sizing_mode"):
-            lines.append(_line("算仓模式", str(detail["sizing_mode"])))
-        tv_lev = detail.get("tv_leverage") or detail.get("leverage") or theme["leverage"]
-        lines.append(_line("TV杠杆", f"{int(tv_lev)}×（交易所已设）"))
-        if detail.get("effective_leverage") is not None:
-            lines.append(_line("等效杠杆", f"{float(detail['effective_leverage']):.2f}×（名义/权益）"))
-        if detail.get("order_amount") is not None:
-            lines.append(_line("头寸价值", f"{float(detail['order_amount']):.2f} USDT"))
-        if detail.get("margin_usd") is not None:
-            lines.append(_line("保证金", f"{float(detail['margin_usd']):.2f} USDT"))
-        notional = detail.get("notional_usd") or detail.get("order_amount") or detail.get("position_value")
-        if notional is not None and detail.get("order_amount") is None:
-            lines.append(_line("名义头寸", f"{float(notional):.2f} USDT"))
-        if detail.get("combined_notional") is not None or detail.get("proposed_notional") is not None:
-            total_n = detail.get("proposed_notional") or detail.get("combined_notional")
-            mult = detail.get("max_combined_mult") or detail.get("cap_mult") or detail.get("max_mult")
-            if mult is None:
-                from app.config import get_settings
-                mult = float(getattr(get_settings(), "MAX_COMBINED_NOTIONAL_MULT", 13.0) or 13.0)
-            cap = detail.get("notional_cap")
-            if cap is not None:
-                lines.append(
-                    _line(
-                        "当前总敞口",
-                        f"{float(total_n):.2f} / 上限 {float(cap):.2f} USDT（{float(mult):.0f}×本金）",
-                    )
-                )
-            else:
-                lines.append(_line("当前总敞口", f"{float(total_n):.2f} USDT（{float(mult):.0f}倍本金上限）"))
-        if detail.get("tv_sl") or detail.get("tv_sl_reference") or detail.get("tv_sl_ref"):
-            hang = float(detail.get("tv_sl") or detail.get("tv_sl_reference") or detail.get("tv_sl_ref") or 0)
-            style = detail.get("hard_sl_order_style") or (detail.get("shield") or {}).get("order_style")
-            style_cn = {
-                "reduce_only_limit": "只减仓限价（已废弃·会秒平）",
-                "stop_limit": "Stop-Limit（降级·可能与TP抢份额）",
-                "stop_market_qty": "STOP_MARKET 数量单（降级）",
-                "stop_market_close_all": "条件全平槽 closePosition（与TP123共存）",
-                "deepcoin_trigger_limit": "条件限价",
-                "deepcoin_trigger_market": "条件市价",
-            }.get(str(style or ""), "")
-            if hang > 0:
-                line = f"@{hang:.2f}（已挂单·严格按TV tv_sl）"
-                if style_cn:
-                    line += f" · {style_cn}"
-                lines.append(_line("TV硬止损", line))
-            lines.append(
-                _line(
-                    "盘口结构",
-                    "基础单×3：TP1/2/3 限价 + 条件委托×1：TV硬止损/雷达合并槽"
-                    f"（互不抢份额；激活 {format_regime_radar_activation_legend()}；"
-                    "雷达挂上后只前进不撤）",
-                )
-            )
-        # Regime path arm R1=50%…R4=80% + ATR breath（与 REGIME_RADAR 同源）
-        if detail.get("radar_armed") or detail.get("radar_active"):
-            radar_sl = detail.get("radar_sl") or detail.get("current_sl")
-            if radar_sl:
-                lines.append(_line("雷达状态", f"已激活 @{float(radar_sl):.2f}（只前进不撤）"))
-            else:
-                lines.append(_line("雷达状态", "已激活（只前进不撤）"))
-        else:
-            act = detail.get("radar_activation_effective") or detail.get("radar_activation")
-            base = detail.get("radar_activation")
-            regime = int(detail.get("regime") or 3)
-            if act is None:
-                from app.core.radar_trail import REGIME_RADAR, radar_effective_activation
-                base = REGIME_RADAR.get(regime, REGIME_RADAR[3])["activation"]
-                entry = float(detail.get("entry") or detail.get("entry_price") or 0)
-                tp1 = 0.0
-                tps = detail.get("tv_tps") or []
-                if tps:
-                    try:
-                        tp1 = float(tps[0] or 0)
-                    except (TypeError, ValueError, IndexError):
-                        tp1 = 0.0
-                atr = float(detail.get("atr") or 0)
-                act = (
-                    radar_effective_activation(regime, entry, tp1, atr)
-                    if entry > 0 and tp1 > 0
-                    else base
-                )
-            base = base if base is not None else act
-            if abs(float(act) - float(base)) > 0.01:
-                arm_txt = (
-                    f"待命 · R{regime}路径 {float(base) * 100:.0f}% "
-                    f"（有效 {float(act) * 100:.0f}%：TP1 间距收紧）后启动 "
-                    f"[{format_regime_radar_activation_legend()}]"
-                )
-            else:
-                remain = max(0.0, 1.0 - float(act)) * 100.0
-                arm_txt = (
-                    f"待命 · R{regime}路径 {float(act) * 100:.0f}% "
-                    f"（距 TP1 剩 {remain:.0f}%）后启动适度追随 "
-                    f"[{format_regime_radar_activation_legend()}]"
-                )
-            # Show absolute trigger price for short/long when entry+tp1 known
-            entry_r = float(detail.get("entry") or detail.get("entry_price") or 0)
+    equity = detail.get("equity") or detail.get("sizing_base") or detail.get("equity_balance")
+    if equity is not None:
+        lines.append(_line("合约权益", f"{float(equity):.2f} USDT"))
+    margin_pct = detail.get("margin_pct")
+    if margin_pct is None:
+        margin_pct = FIXED_MARGIN_PCT * 100.0
+    lines.append(_line("保证金比例", f"{float(margin_pct):.0f}% 权益（风险资金）"))
+    lines.append(_line("杠杆上限", f"{int(FIXED_LEVERAGE)}×（名义≤权益×{int(FIXED_LEVERAGE)}）"))
+    if detail.get("effective_leverage") is not None:
+        lines.append(_line("等效杠杆", f"{float(detail['effective_leverage']):.2f}×（名义/权益）"))
+    if detail.get("margin_usd") is not None:
+        lines.append(_line("保证金", f"{float(detail['margin_usd']):.2f} USDT"))
+    notional = detail.get("notional_usd") or detail.get("order_amount") or detail.get("position_value")
+    if notional is not None:
+        lines.append(_line("名义头寸", f"{float(notional):.2f} USDT"))
+    lines.append(_line("止盈比例", f"TP1/TP2/leg3 = {format_tp_ratio_pct()}%（仅挂TP1+TP2限价）"))
+    hang = float(detail.get("tv_sl") or detail.get("stop_loss") or detail.get("tv_sl_reference") or 0)
+    if hang > 0:
+        lines.append(_line("硬止损", f"@{hang:.2f}（stop_loss · 条件单）"))
+    lines.append(
+        _line(
+            "盘口结构",
+            "基础单×2：TP1+TP2 限价 · TP3不挂（雷达退出）+ 条件委托×1：硬止损；"
+            f"雷达 {format_regime_radar_activation_legend()}",
+        )
+    )
+    act = float(detail.get("radar_activation") or RADAR_ARM_PROGRESS)
+    entry_r = float(detail.get("entry") or detail.get("entry_price") or 0)
+    tp1_r = 0.0
+    tps_r = detail.get("tv_tps") or []
+    if tps_r:
+        try:
+            tp1_r = float(tps_r[0] or 0)
+        except (TypeError, ValueError, IndexError):
             tp1_r = 0.0
-            tps_r = detail.get("tv_tps") or []
-            if tps_r:
-                try:
-                    tp1_r = float(tps_r[0] or 0)
-                except (TypeError, ValueError, IndexError):
-                    tp1_r = 0.0
-            side_r = str(detail.get("side") or "").upper()
-            if entry_r > 0 and tp1_r > 0 and side_r in ("LONG", "SHORT"):
-                span = abs(tp1_r - entry_r)
-                need = span * float(act)
-                if side_r == "LONG":
-                    trig = entry_r + need
-                else:
-                    trig = entry_r - need
-                lines.append(
-                    _line(
-                        "雷达触发价",
-                        f"现价需达 ≈{trig:.2f}（有效路径 {float(act)*100:.0f}% · "
-                        f"TP1间距 {span:.2f}）",
-                    )
+    if not tp1_r:
+        tp1_r = float(detail.get("tp1") or detail.get("tv_tp1") or 0)
+    side_r = str(detail.get("side") or "").upper()
+    if entry_r > 0 and tp1_r > 0 and side_r in ("LONG", "SHORT"):
+        span = abs(tp1_r - entry_r)
+        need = span * act
+        trig = entry_r + need if side_r == "LONG" else entry_r - need
+        lines.append(
+            _line(
+                "雷达触发价",
+                f"现价需达 ≈{trig:.2f}（路径 {act*100:.0f}% · TP1间距 {span:.2f}）",
+            )
+        )
+    lines.append(_line("雷达状态", f"候命 · 路径达 {act*100:.0f}% 激活保本后连续阶梯追踪"))
+    mc = detail.get("mount_confirm") or {}
+    if mc or detail.get("hard_sl_mounted") is not None:
+        hs = mc.get("hard_sl") or ("✅" if detail.get("hard_sl_mounted") else "❌")
+        tp = mc.get("tp123") or ("✅" if detail.get("tp123_mounted") else "❌")
+        rd = mc.get("radar") or ("✅" if detail.get("radar_standby") is not False else "❌")
+        lines.append(_line("硬止损已挂载", hs))
+        lines.append(_line("TP1/TP2已挂载", tp))
+        lines.append(_line("雷达候命", rd))
+    slices = detail.get("tp_slices") or []
+    if slices:
+        parts = []
+        for lv in slices[:3]:
+            if isinstance(lv, dict):
+                parts.append(
+                    f"TP{lv.get('level')} {float(lv.get('qty', 0)):.4f}@{float(lv.get('price', 0)):.2f}"
                 )
-            lines.append(_line("雷达状态", arm_txt))
-        # Checklist §6 — mount confirm block (OPEN only)
-        mc = detail.get("mount_confirm") or {}
-        if mc or detail.get("hard_sl_mounted") is not None:
-            hs = mc.get("hard_sl") or ("✅" if detail.get("hard_sl_mounted") else "❌")
-            tp = mc.get("tp123") or ("✅" if detail.get("tp123_mounted") else "❌")
-            rd = mc.get("radar") or ("✅" if detail.get("radar_standby") is not False else "❌")
-            lines.append(_line("硬止损已挂载", hs))
-            lines.append(_line("TP1/TP2/TP3已挂载", tp))
-            lines.append(_line("雷达候命", rd))
-        slices = detail.get("tp_slices") or []
-        if slices:
-            parts = []
-            for lv in slices[:3]:
-                if isinstance(lv, dict):
-                    parts.append(f"TP{lv.get('level')} {float(lv.get('qty', 0)):.4f}@{float(lv.get('price', 0)):.2f}")
-            if parts:
-                lines.append(_line("TP 分批", " · ".join(parts)))
-        if detail.get("base_qty") is not None:
-            lines.append(_line("基准数量", f"**{float(detail['base_qty']):.4f}** {unit}"))
-    else:
-        if detail.get("base_qty") is not None:
-            lines.append(_line("首次基准", f"{float(detail['base_qty']):.4f} {unit}"))
-        ratio = detail.get("add_qty_ratio") or detail.get("qty_ratio")
-        if ratio is not None:
-            source = detail.get("qty_ratio_source") or "tv_qty_ratio"
-            source_label = "TV 动态" if source == "tv_qty_ratio" else "档位默认"
-            lines.append(_line("加仓比例", f"{source_label} {float(ratio):.2f} × 首仓"))
-        if detail.get("add_qty") is not None:
-            lines.append(_line("本次加仓", f"**{float(detail['add_qty']):.4f}** {unit}"))
-        if detail.get("add_count") is not None:
-            cap = detail.get("max_add_times")
-            if cap:
-                lines.append(_line("加仓次数", f"{int(detail['add_count'])}/{int(cap)}"))
-            else:
-                lines.append(_line("加仓次数", str(detail["add_count"])))
-        slices = detail.get("tp_slices") or []
-        if slices:
-            parts = []
-            for lv in slices[:3]:
-                if isinstance(lv, dict):
-                    parts.append(f"TP{lv.get('level')} {float(lv.get('qty', 0)):.4f}@{float(lv.get('price', 0)):.2f}")
-            if parts:
-                lines.append(_line("新 TP 分批", " · ".join(parts)))
-        prev_tps = detail.get("prev_tv_tps")
-        new_tps = detail.get("tv_tps")
-        if prev_tps and new_tps and prev_tps != new_tps:
-            lines.append(_line("TP 价格", f"{prev_tps} → {new_tps}"))
-        if detail.get("radar_active"):
-            radar_sl = detail.get("radar_sl")
-            if radar_sl:
-                lines.append(_line("雷达止损", f"{float(radar_sl):.2f}（已按新总头寸同步）"))
-
+        if parts:
+            lines.append(_line("TP 分批", " · ".join(parts)))
     if detail.get("qty") is not None:
         lines.append(_line("实盘数量", f"**{float(detail['qty']):.4f}** {unit}"))
     if detail.get("entry") is not None:
         lines.append(_line("开仓价", f"{float(detail['entry']):.2f}"))
-    if detail.get("tv_sl"):
-        lines.append(_line("TV 止损", f"{float(detail['tv_sl']):.2f}"))
-
+    if hang > 0:
+        lines.append(_line("止损价", f"{hang:.2f}"))
     return "\n".join(lines)
 
 
@@ -902,10 +673,22 @@ def format_trading_alert_body(
 ) -> str:
     sev = {"critical": "🚨", "warning": "⚠️", "info": "ℹ️"}.get(severity, "📢")
     type_label = ALERT_TYPE_TAGS.get(alert_type, alert_type)
-    ex = exchange or (detail or {}).get("exchange") or (detail or {}).get("exchange_id")
+    d = dict(detail or {})
+    ex = exchange or d.get("exchange") or d.get("exchange_id")
     detail_block = format_admin_detail_lines(alert_type, detail, exchange=ex)
 
+    pipe = format_checklist_pipe_line(
+        event=type_label or alert_type,
+        symbol=str(theme.get("symbol") or d.get("symbol") or d.get("canonical_symbol") or ""),
+        side=str(d.get("side") or d.get("current_side") or ""),
+        price=d.get("price") or d.get("mark_price") or d.get("entry") or d.get("curr_px"),
+        qty=d.get("qty") or d.get("watched_qty") or d.get("live_qty"),
+        equity=d.get("equity") or d.get("sizing_base") or d.get("equity_balance"),
+        remark=str(message or title or "")[:120],
+    )
+
     body = (
+        f"`{pipe}`\n\n"
         f"{theme['header']}\n"
         f"{sev} **{theme['tag']} [{type_label}]** "
         f"{theme['accent']} {theme['label']} · **{theme.get('symbol_label') or theme['symbol']}** · **{theme['leverage']}×**\n\n"

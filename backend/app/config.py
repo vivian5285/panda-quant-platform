@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     WEBHOOK_SECRET: str = "528586"
     WEBHOOK_ALLOWED_IPS: str = ""
     WEBHOOK_RATE_LIMIT_PER_MIN: int = 120
-    WEBHOOK_IDEMPOTENCY_TTL_SEC: int = 120
+    WEBHOOK_IDEMPOTENCY_TTL_SEC: int = 60
     # bar_index+seq 幂等键 TTL（防 TV 重发）；默认 24h
     WEBHOOK_SEQ_IDEMPOTENCY_TTL_SEC: int = 86400
     # 同 bar 缺前置 seq 时暂存等待秒数，超时报警后按已有顺序释放

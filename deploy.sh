@@ -1,6 +1,8 @@
 #!/bin/bash
 # 双子星AI量化 · GEMINI AI · VPS 一键部署
 # 流程: 清理旧端口进程 → 拉取 GitHub 最新代码 → 构建启动 → 强制自检 → 账户接管
+# v6.5.6: 全交易所统一逻辑 — TV方向为准；方向不一致强制平仓+钉钉；
+#         市价开仓/阶梯雷达/TP1+TP2限价/TP3不挂；Webhook :6010
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -17,6 +19,8 @@ SKIP_GIT_PULL="${SKIP_GIT_PULL:-0}"
 
 echo "========================================"
 echo "  双子星AI量化 · GEMINI AI · VPS 部署"
+echo "  交易规则 v6.5.6（币安/深币/OKX/Gate 同一逻辑）"
+echo "  TV方向为准 · 不一致强制平仓+钉钉"
 echo "  $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================"
 
@@ -121,6 +125,12 @@ else
   deploy_info "暂无 VPS STARTUP 日志（可能尚无绑定 API 的用户）"
 fi
 
+# 方向不一致强制平仓 / 暂停交易 关键字（便于运维核对）
+if docker compose logs backend 2>/dev/null | grep -qE "FORCE_ALIGN|TRADING_PAUSED|方向不一致"; then
+  deploy_info "检测到 FORCE_ALIGN / TRADING_PAUSED 相关日志（已按 TV 方向处理）"
+  docker compose logs backend 2>/dev/null | grep -E "FORCE_ALIGN|TRADING_PAUSED|方向不一致" | tail -8
+fi
+
 if ! wait_compose_service frontend 60; then
   deploy_fail "frontend 未在 60s 内启动"
 fi
@@ -138,6 +148,7 @@ echo "========================================"
 echo "  部署成功 · 端口已清理 · 代码已对齐"
 echo "  账户接管完成 · 雷达哨兵已就绪"
 echo "  系统重启通知已推送管理员钉钉"
+echo "  规则: TV方向为准 · 不一致强制平仓"
 echo "========================================"
 echo "  网页内测:  http://${PUBLIC_IP}:${FRONT_PORT}"
 echo "  REST API:  http://${PUBLIC_IP}:${API_PORT}/docs"
@@ -156,4 +167,5 @@ echo "  钱包中心: 管理后台 → 钱包中心（链上余额 / HD / 冷钱
 echo "  跳过拉码: SKIP_GIT_PULL=1 bash deploy.sh"
 echo "  内测自检: bash production_check.sh"
 echo "  上线复检: PRODUCTION_STRICT=1 bash production_check.sh"
+echo "  Webhook Secret 须与 TV token 一致（管理后台配置，勿硬编码）"
 echo "========================================"

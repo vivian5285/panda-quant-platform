@@ -1,3 +1,5 @@
+"""Webhook access + v6.5.6 signal validation (all exchanges)."""
+
 import logging
 import os
 from flask import request
@@ -8,17 +10,45 @@ from app.utils.rate_limit import rate_limiter
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+# v6.5.6 canonical actions — old CLOSE_PROTECT / CLOSE_TP3 / UPDATE_* deleted
 VALID_ACTIONS = frozenset({
-    "LONG", "SHORT", "CLOSE", "CLOSE_PROTECT", "CLOSE_TP3", "CLOSE_STOPLOSS",
-    "UPDATE_SL", "UPDATE_TP",
+    "LONG",
+    "SHORT",
+    "CLOSE_TP",
+    "CLOSE_TRAIL",
+    "CLOSE_SL_INITIAL",
+    "CLOSE_SL_BREAKEVEN",
+    "CLOSE_QUICK_EXIT",
+    "CLOSE_RSI_EXIT",
 })
 ENTRY_ACTIONS = frozenset({"LONG", "SHORT"})
 
+# TV reconcile-only — VPS already filled via limits/radar; no market flatten
+RECONCILE_ONLY_ACTIONS = frozenset({
+    "CLOSE_TP",
+    "CLOSE_TRAIL",
+    "CLOSE_SL_INITIAL",
+    "CLOSE_SL_BREAKEVEN",
+})
+
+# TV must force market flatten (radar cannot know multi-TF / RSI exit)
+FORCE_FLAT_ACTIONS = frozenset({
+    "CLOSE_QUICK_EXIT",
+    "CLOSE_RSI_EXIT",
+})
+
 
 def is_close_signal(action: str) -> bool:
-    """True for TV exit actions (CLOSE / CLOSE_TP3 / CLOSE_PROTECT*)."""
     act = str(action or "").upper().strip()
-    return act in ("CLOSE", "CLOSE_TP3") or act.startswith("CLOSE")
+    return act in RECONCILE_ONLY_ACTIONS or act in FORCE_FLAT_ACTIONS or act.startswith("CLOSE")
+
+
+def is_reconcile_only_close(action: str) -> bool:
+    return str(action or "").upper().strip() in RECONCILE_ONLY_ACTIONS
+
+
+def is_force_flat_close(action: str) -> bool:
+    return str(action or "").upper().strip() in FORCE_FLAT_ACTIONS
 
 
 def _client_ip() -> str:
@@ -29,7 +59,6 @@ def _client_ip() -> str:
 
 
 def check_webhook_access() -> tuple[bool, str, int]:
-    """Returns (ok, message, http_status)."""
     ip = _client_ip()
     allowed = (os.getenv("WEBHOOK_ALLOWED_IPS") or settings.WEBHOOK_ALLOWED_IPS or "").strip()
     if allowed:
@@ -51,7 +80,7 @@ def validate_signal_payload(data: dict) -> tuple[bool, str]:
     if not action:
         return False, "Missing action"
 
-    if action not in VALID_ACTIONS and not action.startswith("CLOSE"):
+    if action not in VALID_ACTIONS:
         return False, f"Unsupported action: {action}"
 
     from app.core.symbol_registry import extract_payload_symbol
@@ -66,81 +95,41 @@ def validate_signal_payload(data: dict) -> tuple[bool, str]:
     if action in ENTRY_ACTIONS:
         if data.get("price") is None or float(data.get("price") or 0) <= 0:
             return False, f"Missing required field for {action}: price"
-        # v6.9.75 minimal webhook: regime/atr/tv_tp* enriched by tv_signal_enrich
-        if data.get("regime") is not None:
-            try:
-                regime = int(data.get("regime"))
-                if regime not in (1, 2, 3, 4):
-                    return False, "regime must be 1-4"
-            except (TypeError, ValueError):
-                return False, "Invalid regime"
+        # Hard SL
+        try:
+            sl = float(data.get("stop_loss") or data.get("tv_sl") or 0)
+            if sl <= 0:
+                return False, f"Missing required field for {action}: stop_loss"
+        except (TypeError, ValueError):
+            return False, "Invalid stop_loss"
+        # TP1/TP2 required (limit legs); TP3 reference recommended
+        for field, aliases in (
+            ("tp1", ("tp1", "tv_tp1")),
+            ("tp2", ("tp2", "tv_tp2")),
+        ):
+            ok = False
+            for a in aliases:
+                try:
+                    if float(data.get(a) or 0) > 0:
+                        ok = True
+                        break
+                except (TypeError, ValueError):
+                    return False, f"Invalid {field}"
+            if not ok:
+                return False, f"Missing required field for {action}: {field}"
         if data.get("atr") is not None:
             try:
                 if float(data.get("atr", 0)) <= 0:
-                    return False, "atr must be > 0"
+                    return False, "atr must be > 0 when provided"
             except (TypeError, ValueError):
                 return False, "Invalid atr"
-        for field in ("tv_tp1", "tv_tp2", "tv_tp3"):
-            if data.get(field) is not None:
-                try:
-                    if float(data.get(field, 0)) < 0:
-                        return False, f"Invalid {field}"
-                except (TypeError, ValueError):
-                    return False, f"Invalid {field}"
-        entry_type = str(data.get("entry_type") or "OPEN").upper().strip()
-        if data.get("entry_type") is not None and entry_type not in (
-            "OPEN", "PYRAMID", "PROFIT_ADD",
-        ):
-            return False, f"Invalid entry_type: {entry_type}"
-        if data.get("risk_pct") is not None:
-            try:
-                if float(data.get("risk_pct") or 0) <= 0:
-                    return False, "risk_pct must be > 0 when provided"
-            except (TypeError, ValueError):
-                return False, "Invalid risk_pct"
-        else:
-            return False, f"Missing required field for {action}: risk_pct"
-        if data.get("qty_ratio") is not None:
-            try:
-                qr = float(data.get("qty_ratio") or 0)
-                if qr < 0:
-                    return False, "qty_ratio must be >= 0 when provided"
-            except (TypeError, ValueError):
-                return False, "Invalid qty_ratio"
-        if data.get("leverage") is not None:
-            try:
-                if float(data.get("leverage") or 0) <= 0:
-                    return False, "leverage must be > 0 when provided"
-            except (TypeError, ValueError):
-                return False, "Invalid leverage"
-        else:
-            return False, f"Missing required field for {action}: leverage"
-        # Sizing + hard SL both require tv_sl
-        try:
-            if float(data.get("tv_sl") or 0) <= 0:
-                return False, f"Missing required field for {action}: tv_sl"
-        except (TypeError, ValueError):
-            return False, "Invalid tv_sl"
 
-    if action == "UPDATE_SL":
-        side = str(data.get("side") or "").upper().strip()
-        if side not in ("LONG", "SHORT"):
-            return False, "UPDATE_SL requires side LONG or SHORT"
-        try:
-            if float(data.get("tv_sl") or 0) <= 0:
-                return False, "UPDATE_SL requires tv_sl > 0"
-        except (TypeError, ValueError):
-            return False, "Invalid tv_sl for UPDATE_SL"
+    if action in FORCE_FLAT_ACTIONS:
+        # reason optional but useful
+        pass
 
-    if action == "UPDATE_TP":
-        side = str(data.get("side") or "").upper().strip()
-        if side not in ("LONG", "SHORT"):
-            return False, "UPDATE_TP requires side LONG or SHORT"
-        for field in ("tv_tp1", "tv_tp2", "tv_tp3"):
-            try:
-                if float(data.get(field) or 0) <= 0:
-                    return False, f"UPDATE_TP requires {field} > 0"
-            except (TypeError, ValueError):
-                return False, f"Invalid {field} for UPDATE_TP"
+    if action in RECONCILE_ONLY_ACTIONS:
+        # leg optional for CLOSE_TP / CLOSE_TRAIL
+        pass
 
     return True, ""

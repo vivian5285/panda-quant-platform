@@ -1,7 +1,9 @@
-"""VPS radar trailing — regime arm + move_step stages + ATR breath (all exchanges).
+"""VPS continuous-ladder radar — final checklist §四 (all exchanges).
 
-Single engine used by PositionSupervisor / Deepcoin / AdverseRadarMixin.
-Do NOT invent a parallel trail ratio table elsewhere.
+State machine: activated + stepCount (monotonic; ATR refresh never rolls back steps).
+Activate at 85% path to TP1 → BE.
+Then: price ≥ entry+(stepCount+1)×0.5ATR → SL=entry+(stepCount+1)×0.3ATR; stepCount++.
+TP1 floor ±0.5ATR · TP2 floor ±1.5ATR · TP3 trail peak±2.0ATR.
 """
 
 from __future__ import annotations
@@ -9,33 +11,34 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.radar_trail import (
-    regime_radar_move_step,
-    regime_radar_row,
-    regime_radar_trail_offset,
+    RADAR_ARM_PROGRESS,
+    RADAR_LOCK_ATR,
+    RADAR_STEP_ATR,
+    RADAR_TP1_FLOOR_ATR,
+    RADAR_TP2_FLOOR_ATR,
+    RADAR_TP3_TRAIL_ATR,
+    apply_radar_sl_direction,
+    atr_floor_sl,
+    breakeven_sl,
+    favorable_move,
+    resolve_atr,
     tp1_consumed,
     tp_path_progress,
 )
 from app.core.symbol_precision import round_price
 
-# Stage 0 = VPS hard SL only (before path arm / TP fill)
 RADAR_STAGE_LABELS: dict[int, str] = {
-    0: "硬止损防守",
-    1: "路径达激活·保本",
-    2: "TP1→TP2 步进·追踪",
-    3: "到达TP2·锁利",
-    4: "TP2→TP3 步进·加深",
-    5: "到达TP3·极限保护",
+    0: "硬止损防守·雷达候命",
+    1: "85%激活·保本",
+    2: "阶梯跟进",
+    3: "TP1底限",
+    4: "TP2底限",
+    5: "TP3动态追踪",
 }
 
-BREAKEVEN_BUFFER_PCT = 0.001
-
-# After breakeven: gentle tighten of breath ATR as stages advance (宁松勿紧)
-_STAGE_BREATH_FACTOR: dict[int, float] = {
-    2: 1.00,
-    3: 0.85,
-    4: 0.75,
-    5: 0.60,
-}
+BREAKEVEN_BUFFER_PCT = 0.0003
+ATR_REFRESH_SEC = 300.0
+TP_LIMIT_TIMEOUT_SEC = 300.0
 
 
 def tp1_filled_from_consumed(consumed_tp_levels: list | None) -> bool:
@@ -60,7 +63,6 @@ def interval_path_progress(
     end_px: float,
     side: str | None,
 ) -> float:
-    """0 at start_px, 1 at end_px along favorable direction."""
     curr_px = float(curr_px or 0)
     start_px = float(start_px or 0)
     end_px = float(end_px or 0)
@@ -79,52 +81,12 @@ def interval_path_progress(
     return 0.0
 
 
-def stage_atr_mult(stage: int, trail_offset: float) -> float | None:
-    """Breathing ATR for trail stages; stage 1 = breakeven (no ATR trail)."""
-    if stage <= 1:
+def stage_atr_mult(stage: int, trail_offset: float = RADAR_LOCK_ATR) -> float | None:
+    if stage <= 0:
         return None
-    factor = _STAGE_BREATH_FACTOR.get(int(stage), 1.0)
-    return max(0.15, float(trail_offset) * factor)
-
-
-def _detect_radar_stage_at_px(
-    entry: float,
-    px: float,
-    side: str | None,
-    tp1: float,
-    tp2: float,
-    tp3: float,
-    *,
-    armed: bool,
-    move_step: float,
-) -> int:
-    """Stage once armed. Interval advance uses regime move_step (not fixed 50%)."""
-    if not armed or entry <= 0:
-        return 0
-    if px <= 0:
-        return 1
-
-    step = max(0.10, min(0.50, float(move_step or 0.25)))
-
-    if tp1 > 0 and not _reached_level(px, tp1, side):
-        return 1
-
-    stage = 1
-    if tp2 <= 0:
-        return stage
-    if not _reached_level(px, tp2, side):
-        if interval_path_progress(px, tp1, tp2, side) >= step:
-            return 2
-        return 1
-
-    stage = 3
-    if tp3 <= 0:
-        return stage
-    if not _reached_level(px, tp3, side):
-        if interval_path_progress(px, tp2, tp3, side) >= step:
-            return 4
-        return 3
-    return 5
+    if stage == 5:
+        return float(RADAR_TP3_TRAIL_ATR)
+    return float(trail_offset)
 
 
 def detect_radar_stage(
@@ -139,19 +101,27 @@ def detect_radar_stage(
     tp1_filled: bool = False,
     regime: int = 3,
     move_step: float | None = None,
+    armed: bool = False,
+    step_count: int = 0,
 ) -> int:
-    """Highest stage (0–5). Peak preserves stage on pullback."""
-    armed = bool(tp1_filled)
-    step = float(move_step) if move_step is not None else regime_radar_move_step(regime)
-    stage = _detect_radar_stage_at_px(
-        entry, curr_px, side, tp1, tp2, tp3, armed=armed, move_step=step,
-    )
-    if peak_px is not None and float(peak_px or 0) > 0 and armed:
-        peak_stage = _detect_radar_stage_at_px(
-            entry, float(peak_px), side, tp1, tp2, tp3, armed=True, move_step=step,
-        )
-        stage = max(stage, peak_stage)
-    return stage
+    if not armed and not tp1_filled:
+        return 0
+    px = float(curr_px or 0)
+    if _reached_level(px, tp3, side) or (
+        peak_px and _reached_level(float(peak_px), tp3, side)
+    ):
+        return 5
+    if _reached_level(px, tp2, side) or (
+        peak_px and _reached_level(float(peak_px), tp2, side)
+    ):
+        return 4
+    if _reached_level(px, tp1, side) or tp1_filled or (
+        peak_px and _reached_level(float(peak_px), tp1, side)
+    ):
+        return 3
+    if armed or tp_path_progress(entry, px, tp1, side) >= RADAR_ARM_PROGRESS:
+        return 2 if int(step_count or 0) >= 1 else 1
+    return 0
 
 
 def is_favorable_radar_sl(old_sl: float, entry: float, side: str | None) -> bool:
@@ -173,45 +143,157 @@ def compute_stage_radar_sl(
     best_price: float,
     atr: float,
     side: str | None,
-    trail_offset: float = 0.65,
+    trail_offset: float = RADAR_LOCK_ATR,
 ) -> float:
-    """Raw radar SL for stage (before hard-stop floor / direction clamp)."""
     if stage <= 0:
         return 0.0
-    entry = float(entry or 0)
-    best = float(best_price or entry)
-    a = max(float(atr or 0), 0.0)
-
     if stage == 1:
+        return breakeven_sl(entry, side)
+    if stage == 5:
+        a = max(float(atr or 0), 0.0)
+        best = float(best_price or entry)
         if side == "LONG":
-            return round_price(entry * (1.0 + BREAKEVEN_BUFFER_PCT))
+            return round_price(best - a * RADAR_TP3_TRAIL_ATR)
         if side == "SHORT":
-            return round_price(entry * (1.0 - BREAKEVEN_BUFFER_PCT))
-        return round_price(entry)
-
-    mult = stage_atr_mult(stage, trail_offset)
-    if mult is None or a <= 0:
+            return round_price(best + a * RADAR_TP3_TRAIL_ATR)
         return 0.0
+    if stage in (3, 4):
+        mult = RADAR_TP1_FLOOR_ATR if stage == 3 else RADAR_TP2_FLOOR_ATR
+        return atr_floor_sl(entry, atr, mult, side)
+    return breakeven_sl(entry, side)
+
+
+def _sl_at_step(entry: float, step_n: int, atr: float, side: str | None) -> float:
+    """entry ± step_n × 0.3×ATR (step_n >= 1)."""
+    if step_n <= 0 or entry <= 0:
+        return 0.0
+    delta = float(step_n) * max(float(atr or 0), 0.0) * RADAR_LOCK_ATR
     if side == "LONG":
-        return round_price(best - a * mult)
+        return round_price(entry + delta)
     if side == "SHORT":
-        return round_price(best + a * mult)
+        return round_price(entry - delta)
     return 0.0
 
 
-def apply_radar_sl_direction(old_sl: float, new_sl: float, side: str | None) -> float:
-    """SL only moves favorably: up for LONG, down for SHORT."""
-    if new_sl <= 0:
-        return old_sl
+def _next_step_trigger(entry: float, step_count: int, atr: float, side: str | None) -> float:
+    """Price level for next step: entry ± (stepCount+1)×0.5×ATR."""
+    n = int(step_count or 0) + 1
+    delta = float(n) * max(float(atr or 0), 0.0) * RADAR_STEP_ATR
     if side == "LONG":
-        if old_sl <= 0:
-            return new_sl
-        return max(float(old_sl), float(new_sl))
+        return entry + delta
     if side == "SHORT":
-        if old_sl <= 0:
-            return new_sl
-        return min(float(old_sl), float(new_sl))
-    return new_sl
+        return entry - delta
+    return 0.0
+
+
+def compute_ladder_radar_sl(
+    *,
+    entry: float,
+    curr_px: float,
+    best_price: float,
+    atr: float,
+    side: str | None,
+    tp1: float,
+    tp2: float,
+    tp3: float,
+    activated: bool = False,
+    step_count: int = 0,
+) -> tuple[float, int, dict[str, Any]]:
+    """
+    Returns (raw_sl, stage, meta) where meta includes activated/step_count (monotonic).
+    """
+    entry = float(entry or 0)
+    curr = float(curr_px or 0)
+    best = float(best_price or curr or entry)
+    a = resolve_atr(atr, entry)
+    sc = max(int(step_count or 0), 0)
+    act = bool(activated)
+    meta: dict[str, Any] = {
+        "slip_step": round(a * RADAR_STEP_ATR, 6),
+        "follow_step": round(a * RADAR_LOCK_ATR, 6),
+        "arm_progress": RADAR_ARM_PROGRESS,
+        "atr": round(a, 4),
+        "activated": act,
+        "step_count": sc,
+        "event": None,
+    }
+    if entry <= 0 or curr <= 0 or side not in ("LONG", "SHORT") or a <= 0:
+        return 0.0, 0, meta
+
+    progress = tp_path_progress(entry, curr, tp1, side)
+    meta["tp1_progress"] = round(progress, 4)
+
+    # TP3 dynamic trail
+    if _reached_level(curr, tp3, side) or _reached_level(best, tp3, side):
+        if side == "LONG":
+            raw = round_price(best - a * RADAR_TP3_TRAIL_ATR)
+        else:
+            raw = round_price(best + a * RADAR_TP3_TRAIL_ATR)
+        meta.update({"mode": "tp3_trail", "activated": True})
+        return raw, 5, meta
+
+    be = breakeven_sl(entry, side)
+
+    # First activation at 85% path (or TP1 reached)
+    if not act:
+        if progress >= RADAR_ARM_PROGRESS or _reached_level(curr, tp1, side):
+            act = True
+            meta["activated"] = True
+            meta["event"] = "radar_arm"
+            meta["mode"] = "activate_be"
+            raw = be
+            # fall through to floors / step advances below
+        else:
+            return 0.0, 0, meta
+
+    # Step advances: while price past next trigger, bump stepCount (monotonic)
+    advanced = False
+    for _ in range(32):  # safety bound
+        trigger = _next_step_trigger(entry, sc, a, side)
+        if trigger <= 0:
+            break
+        hit = (curr >= trigger) if side == "LONG" else (curr <= trigger)
+        hit_peak = (best >= trigger) if side == "LONG" else (best <= trigger)
+        if not (hit or hit_peak):
+            break
+        sc += 1
+        advanced = True
+    if advanced:
+        meta["event"] = meta["event"] or "step_advance"
+    meta["step_count"] = sc
+    meta["activated"] = True
+
+    raw = be
+    if sc >= 1:
+        ladder = _sl_at_step(entry, sc, a, side)
+        if side == "LONG":
+            raw = max(be, ladder)
+        else:
+            raw = min(be, ladder) if ladder > 0 else be
+
+    # TP2 floor
+    if _reached_level(curr, tp2, side) or _reached_level(best, tp2, side):
+        floor = atr_floor_sl(entry, a, RADAR_TP2_FLOOR_ATR, side)
+        if side == "LONG":
+            raw = max(raw, floor)
+        else:
+            raw = min(raw, floor) if raw > 0 else floor
+        meta.update({"mode": "tp2_floor", "floor": floor, "step_count": sc, "activated": True})
+        return raw, 4, meta
+
+    # TP1 floor
+    if _reached_level(curr, tp1, side) or _reached_level(best, tp1, side):
+        floor = atr_floor_sl(entry, a, RADAR_TP1_FLOOR_ATR, side)
+        if side == "LONG":
+            raw = max(raw, floor)
+        else:
+            raw = min(raw, floor) if raw > 0 else floor
+        meta.update({"mode": "tp1_floor", "floor": floor, "step_count": sc, "activated": True})
+        return raw, 3, meta
+
+    stage = 2 if sc >= 1 else 1
+    meta.update({"mode": "armed_ladder", "breakeven": be, "step_count": sc, "activated": True})
+    return raw, stage, meta
 
 
 def compute_vps_radar_sl(
@@ -234,49 +316,32 @@ def compute_vps_radar_sl(
     trail_offset: float | None = None,
     live_qty: float = 0.0,
     consumed_tp_levels: list | None = None,
+    activated: bool = False,
+    step_count: int = 0,
 ) -> dict[str, Any]:
-    """
-    Full radar evaluation (single authority).
-    Arms when path activation / TP fill / latched.
-    Stage never retreats on pullback. Hard SL is floor only.
-    TP123 limits share no STOP slot — radar only updates the stop slot.
-    """
-    row = regime_radar_row(regime)
-    step = float(move_step) if move_step is not None else float(row["move_step"])
-    breath = float(trail_offset) if trail_offset is not None else float(row["trail_offset"])
-
-    armed_gate = bool(tp1_filled or radar_latched)
-    if radar_latched and is_favorable_radar_sl(old_sl, entry, side):
-        armed_gate = True
-    # TP fill evidence from consumed (caller should sync with price+book first)
-    if tp1_filled_from_consumed(consumed_tp_levels):
-        armed_gate = True
-
-    peak_px = best_price if armed_gate else None
-    stage = detect_radar_stage(
-        entry, curr_px, side, tp1, tp2, tp3,
-        peak_px=peak_px,
-        tp1_filled=armed_gate,
-        regime=regime,
-        move_step=step,
-    )
-    if armed_gate and stage <= 0:
-        stage = 1
-
-    raw = compute_stage_radar_sl(
-        stage,
-        entry=entry,
-        best_price=best_price,
-        atr=atr,
-        side=side,
-        trail_offset=breath,
-    )
+    a = resolve_atr(atr, entry)
     progress = (
         round(tp_path_progress(entry, curr_px, tp1, side), 4) if tp1 > 0 else 0.0
     )
-    atr_mult = stage_atr_mult(stage, breath)
+    filled = bool(tp1_filled or tp1_filled_from_consumed(consumed_tp_levels))
+    act_in = bool(activated or radar_latched or filled)
 
-    if stage <= 0 or raw <= 0:
+    raw, stage, ladder_meta = compute_ladder_radar_sl(
+        entry=entry,
+        curr_px=curr_px,
+        best_price=best_price,
+        atr=a,
+        side=side,
+        tp1=tp1,
+        tp2=tp2,
+        tp3=tp3,
+        activated=act_in,
+        step_count=max(int(step_count or 0), 0),
+    )
+    act_out = bool(ladder_meta.get("activated"))
+    sc_out = max(int(ladder_meta.get("step_count") or 0), int(step_count or 0))
+
+    if not act_out and not filled:
         if radar_latched and is_favorable_radar_sl(old_sl, entry, side):
             return {
                 "stage": 1,
@@ -284,12 +349,16 @@ def compute_vps_radar_sl(
                 "radar_sl": float(old_sl),
                 "tp1_progress": progress,
                 "armed": True,
+                "activated": True,
+                "step_count": sc_out,
                 "latched_hold": True,
                 "regime": int(regime),
-                "move_step": step,
-                "trail_offset": breath,
+                "move_step": RADAR_STEP_ATR,
+                "trail_offset": RADAR_LOCK_ATR,
+                "activation": RADAR_ARM_PROGRESS,
                 "live_qty": float(live_qty or 0),
                 "consumed_tp_levels": list(consumed_tp_levels or []),
+                "event": None,
             }
         return {
             "stage": 0,
@@ -297,16 +366,29 @@ def compute_vps_radar_sl(
             "radar_sl": 0.0,
             "tp1_progress": progress,
             "armed": False,
+            "activated": False,
+            "step_count": sc_out,
             "regime": int(regime),
-            "move_step": step,
-            "trail_offset": breath,
+            "move_step": RADAR_STEP_ATR,
+            "trail_offset": RADAR_LOCK_ATR,
+            "activation": RADAR_ARM_PROGRESS,
             "live_qty": float(live_qty or 0),
             "consumed_tp_levels": list(consumed_tp_levels or []),
+            "event": None,
         }
 
-    sl = clamp_fn(raw)
+    if filled and stage < 3:
+        floor = atr_floor_sl(entry, a, RADAR_TP1_FLOOR_ATR, side)
+        if floor > 0:
+            raw = apply_radar_sl_direction(raw, floor, side) if raw > 0 else floor
+            stage = max(stage, 3)
+
+    if stage <= 0 or raw <= 0:
+        raw = breakeven_sl(entry, side)
+        stage = 1
+
+    sl = clamp_fn(raw) if callable(clamp_fn) else raw
     sl = apply_radar_sl_direction(float(old_sl or 0), sl, side)
-    # Hard SL is floor only — never lets radar retreat wider than VPS hard stop
     if hard_sl > 0 and side == "LONG":
         sl = max(sl, hard_sl)
     elif hard_sl > 0 and side == "SHORT":
@@ -319,23 +401,26 @@ def compute_vps_radar_sl(
         "raw_sl": raw,
         "tp1_progress": progress,
         "armed": True,
-        "latched": radar_latched,
-        "tp1_filled": tp1_filled or tp1_filled_from_consumed(consumed_tp_levels),
-        "atr_mult": atr_mult,
+        "activated": True,
+        "step_count": sc_out,
+        "latched": radar_latched or act_out,
+        "tp1_filled": filled,
+        "atr_mult": stage_atr_mult(stage),
         "regime": int(regime),
-        "move_step": step,
-        "trail_offset": breath,
-        "activation": float(row["activation"]),
+        "move_step": RADAR_STEP_ATR,
+        "trail_offset": RADAR_LOCK_ATR,
+        "activation": RADAR_ARM_PROGRESS,
         "live_qty": float(live_qty or 0),
         "consumed_tp_levels": list(consumed_tp_levels or []),
+        "ladder": ladder_meta,
+        "event": ladder_meta.get("event"),
     }
 
 
-# Deprecated alias — old code imported RADAR_STAGE_ATR_MULT; keep empty to surface misuse
 RADAR_STAGE_ATR_MULT: dict[int, float | None] = {
     1: None,
-    2: None,
-    3: None,
-    4: None,
-    5: None,
+    2: RADAR_LOCK_ATR,
+    3: RADAR_TP1_FLOOR_ATR,
+    4: RADAR_TP2_FLOOR_ATR,
+    5: RADAR_TP3_TRAIL_ATR,
 }

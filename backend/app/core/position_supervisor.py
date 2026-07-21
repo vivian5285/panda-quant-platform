@@ -169,6 +169,10 @@ class PositionSupervisor(
         self.regime = 3
         self.current_atr = 30.0
         self.best_price = 0.0
+        self.radar_activated = False
+        self.radar_step_count = 0
+        self._atr_refreshed_at = 0.0
+        self._tp_placed_at = {}  # level -> unix ts
         self.current_sl = 0.0
         self.tv_price = 0.0
         self.initial_qty = 0.0
@@ -259,6 +263,11 @@ class PositionSupervisor(
                     "tv_entry_fields": dict(getattr(self, "_tv_entry_fields", None) or {}),
                     "adopted_manual": bool(getattr(self, "adopted_manual", False)),
                     "radar_latched": bool(getattr(self, "radar_latched", False)),
+                    "radar_activated": bool(getattr(self, "radar_activated", False)),
+                    "radar_step_count": int(getattr(self, "radar_step_count", 0) or 0),
+                    "tp_placed_at": dict(getattr(self, "_tp_placed_at", None) or {}),
+                    "trading_paused": bool(getattr(self, "trading_paused", False)),
+                    "trading_pause_reason": str(getattr(self, "trading_pause_reason", "") or ""),
                     "current_trade_id": getattr(self, "current_trade_id", None),
                     "canonical_symbol": getattr(self, "canonical_symbol", None),
                 }, f)
@@ -309,6 +318,15 @@ class PositionSupervisor(
                         self._tv_entry_fields = dict(saved_fields)
                     self.adopted_manual = bool(s.get("adopted_manual", False))
                     self.radar_latched = bool(s.get("radar_latched", False))
+                    self.radar_activated = bool(s.get("radar_activated", False) or s.get("radar_latched", False))
+                    self.radar_step_count = max(int(s.get("radar_step_count", 0) or 0), 0)
+                    raw_tp_at = s.get("tp_placed_at") or {}
+                    self._tp_placed_at = (
+                        {int(k): float(v) for k, v in dict(raw_tp_at).items()}
+                        if isinstance(raw_tp_at, dict) else {}
+                    )
+                    self.trading_paused = bool(s.get("trading_paused", False))
+                    self.trading_pause_reason = str(s.get("trading_pause_reason") or "")
                     tid = s.get("current_trade_id")
                     if tid is not None:
                         try:
@@ -395,6 +413,10 @@ class PositionSupervisor(
             regime=self.regime,
             atr=self.current_atr,
         )
+        raw_action = str(payload.get("action", "")).upper()
+        blocked = self._block_if_trading_paused(raw_action) if hasattr(self, "_block_if_trading_paused") else None
+        if blocked:
+            return blocked
         enrich_note = format_enrich_note(payload)
         self._last_enrich_note = enrich_note
         signal_detail = {
@@ -485,50 +507,20 @@ class PositionSupervisor(
                 "tv_reason": tv_reason,
             }
 
-        if raw_action == "CLOSE_PROTECT" or raw_action.startswith("CLOSE_PROTECT"):
+        # v6.5.6: reconcile-only closes — no market order (limits/radar already filled)
+        from app.services.webhook_guard import (
+            is_force_flat_close,
+            is_reconcile_only_close,
+        )
+        if is_reconcile_only_close(raw_action):
+            return self._handle_tv_reconcile_close(raw_action, payload, tv_reason=tv_reason)
+        if is_force_flat_close(raw_action):
             self._close_all(
-                f"🛡️ 保护性全平：{tv_reason}",
+                f"⚡ 策略反转全平：{tv_reason or raw_action}",
                 close_action=raw_action,
                 **_tv_close_kwargs(),
             )
-            return {"status": "ok", "action": raw_action, "detail": {"type": "close_protect"}}
-        if raw_action == "CLOSE_TP3":
-            self._close_all(
-                f"🎯 TP3完美收网：{tv_reason or '大趋势吃满'}",
-                close_action=raw_action,
-                **_tv_close_kwargs(),
-            )
-            return {"status": "ok", "action": raw_action, "detail": {"type": "close_tp3"}}
-        if raw_action == "CLOSE_STOPLOSS":
-            sl_reason = tv_reason or "触碰硬止损或追踪保本线"
-            tv_sl_ref = parse_tv_sl(payload.get("tv_sl"))
-            hung_sl = float(getattr(self, "tv_sl", 0) or 0)
-            sl_compare = {
-                "tv_sl_reference": tv_sl_ref,
-                "tv_hard_sl": hung_sl,
-                "tv_hard_sl_meta": getattr(self, "_vps_hard_sl_meta", None),
-                "note": "TV CLOSE_STOPLOSS 立即全平；盘口硬止损亦按 TV tv_sl 挂单",
-            }
-            self._log(
-                "CLOSE_STOPLOSS",
-                f"TV止损 → 立即全平 | TV ref {tv_sl_ref} | 盘口硬止损 {hung_sl}",
-                sl_compare,
-            )
-            self._close_all(
-                f"🛑 {sl_reason}",
-                close_action=raw_action,
-                **_tv_close_kwargs(),
-            )
-            return {"status": "ok", "action": raw_action, "detail": {"type": "close_stoploss", **sl_compare}}
-        if raw_action == "CLOSE":
-            self._close_all(
-                f"🧹 换防清场：{tv_reason}",
-                close_action=raw_action,
-                **_tv_close_kwargs(),
-            )
-            return {"status": "ok", "action": raw_action, "detail": {"type": "close"}}
-        if raw_action == "UPDATE_SL":
-            return self._handle_update_sl(payload)
+            return {"status": "ok", "action": raw_action, "detail": {"type": "force_flat"}}
         if raw_action in ["LONG", "SHORT"]:
             self.last_tv_side = raw_action
             self._save_state()
@@ -539,6 +531,137 @@ class PositionSupervisor(
                 prev_tv_tps=prev_tv_tps,
             )
         return {"status": "skipped", "reason": "unknown_action", "detail": {"action": raw_action}}
+
+    def _handle_tv_reconcile_close(
+        self, action: str, payload: dict | None = None, *, tv_reason: str | None = None,
+    ) -> dict:
+        """Checklist §2B: reconcile-only + optional SL bump; NEVER market flatten."""
+        payload = payload or {}
+        leg = str(payload.get("leg") or "").strip()
+        qty = float(payload.get("qty") or 0)
+        price = float(payload.get("price") or 0)
+        pos = self._get_position() if hasattr(self, "_get_position") else None
+        live_qty = float((pos or {}).get("size") or (pos or {}).get("qty") or 0)
+        # Prefer live exchange qty via position_manager when available
+        try:
+            live_pos = self.position_manager.get_position(self.symbol)
+            if live_pos is not None:
+                live_qty = abs(float(live_pos.get("positionAmt") or live_pos.get("size") or 0))
+        except Exception:
+            pass
+        detail = {
+            "type": "reconcile_only",
+            "action": action,
+            "leg": leg,
+            "tv_qty": qty,
+            "tv_price": price,
+            "live_qty": live_qty,
+            "tv_reason": tv_reason,
+            "note": "TV对账信号·不下单（挂单/雷达已自行执行）",
+        }
+        if action == "CLOSE_TP" and leg in ("1", "2", "3"):
+            try:
+                lvl = int(leg)
+                consumed = set(getattr(self, "consumed_tp_levels", None) or [])
+                consumed.add(lvl)
+                self.consumed_tp_levels = sorted(consumed)
+            except (TypeError, ValueError):
+                pass
+            # §4: raise remaining SL after TP fills
+            if live_qty > 0 and hasattr(self, "_bump_sl_after_tp_reconcile"):
+                try:
+                    bump = self._bump_sl_after_tp_reconcile(leg)
+                    detail["sl_bump"] = bump
+                except Exception as exc:
+                    detail["sl_bump_error"] = str(exc)
+            if hasattr(self, "_save_state"):
+                self._save_state()
+        # CLOSE_TRAIL leg=2 same as CLOSE_TP leg=2 (§三 B)
+        if action == "CLOSE_TRAIL" and leg == "2":
+            try:
+                consumed = set(getattr(self, "consumed_tp_levels", None) or [])
+                consumed.add(2)
+                self.consumed_tp_levels = sorted(consumed)
+            except Exception:
+                pass
+            if live_qty > 0 and hasattr(self, "_bump_sl_after_tp_reconcile"):
+                try:
+                    detail["sl_bump"] = self._bump_sl_after_tp_reconcile("2")
+                except Exception as exc:
+                    detail["sl_bump_error"] = str(exc)
+            if hasattr(self, "_save_state"):
+                self._save_state()
+        if action in ("CLOSE_TRAIL", "CLOSE_SL_INITIAL", "CLOSE_SL_BREAKEVEN") or (
+            action == "CLOSE_TP" and leg == "3"
+        ):
+            if live_qty <= 0:
+                if hasattr(self, "_purge_defense_orders_on_flat"):
+                    try:
+                        self._purge_defense_orders_on_flat(reason=f"reconcile_{action}")
+                    except Exception:
+                        pass
+                if hasattr(self, "_reset_adverse_radar"):
+                    try:
+                        self._reset_adverse_radar(keep_tv_sl=False)
+                    except Exception:
+                        pass
+                detail["flat_confirmed"] = True
+                detail["radar_reset"] = True
+        elif live_qty <= 0:
+            if hasattr(self, "_purge_defense_orders_on_flat"):
+                try:
+                    self._purge_defense_orders_on_flat(reason=f"reconcile_{action}")
+                except Exception:
+                    pass
+            detail["flat_confirmed"] = True
+        self._log(action, f"TV对账 {action} leg={leg or '-'} live={live_qty}", detail)
+        self._alert(
+            "info",
+            action,
+            f"TV对账·{action}",
+            f"leg={leg or '-'} qty={qty} price={price} 实盘={live_qty}（不下单）",
+            detail,
+        )
+        return {"status": "ok", "action": action, "detail": detail}
+
+    def _bump_sl_after_tp_reconcile(self, leg: str) -> dict:
+        """§4: CLOSE_TP leg1 → BE; leg2 → entry±1.5ATR (take better)."""
+        from app.core.radar_trail import atr_floor_sl, breakeven_sl, apply_radar_sl_direction
+        from app.core.radar_trail import RADAR_TP2_FLOOR_ATR
+
+        entry = float(getattr(self, "entry_price", 0) or getattr(self, "avg_entry", 0) or 0)
+        if entry <= 0:
+            entry = float(getattr(self, "tv_price", 0) or 0)
+        side = getattr(self, "current_side", None)
+        atr = float(getattr(self, "current_atr", 0) or 0)
+        old = float(getattr(self, "current_sl", 0) or getattr(self, "tv_sl", 0) or 0)
+        target = 0.0
+        if leg == "1":
+            target = breakeven_sl(entry, side)
+        elif leg == "2":
+            target = atr_floor_sl(entry, atr, RADAR_TP2_FLOOR_ATR, side)
+        if target <= 0:
+            return {"skipped": True, "reason": "no_target"}
+        new_sl = apply_radar_sl_direction(old, target, side)
+        if new_sl <= 0 or (old > 0 and abs(new_sl - old) < 1e-9):
+            return {"skipped": True, "old": old, "target": target}
+        self.current_sl = new_sl
+        if hasattr(self, "_sync_tv_hard_stop"):
+            try:
+                # Move stop slot favorably without wiping hard SL floor semantics
+                live_qty = float(getattr(self, "watched_qty", 0) or 0)
+                if live_qty <= 0:
+                    pos = self.position_manager.get_position(self.symbol)
+                    live_qty = abs(float((pos or {}).get("positionAmt") or 0))
+                if live_qty > 0 and hasattr(self, "_realign_radar_defenses"):
+                    self._realign_radar_defenses(
+                        live_qty, new_sl, reason=f"reconcile_CLOSE_TP_leg{leg}"
+                    )
+                elif live_qty > 0:
+                    self._sync_tv_hard_stop(live_qty, at_open=False, force_replace=True)
+            except Exception as exc:
+                return {"error": str(exc), "target": new_sl}
+        return {"ok": True, "old": old, "new": new_sl, "leg": leg}
 
     def _apply_tv_entry_context(self, payload: dict) -> None:
         fields = parse_tv_entry_fields(payload)
@@ -557,15 +680,12 @@ class PositionSupervisor(
         return True
 
     def _resolve_entry_leverage(self) -> int:
-        """Prefer TV leverage; fall back to exchange config only if TV omitted."""
-        tv_fields = getattr(self, "_tv_entry_fields", None) or {}
-        tv_lev = tv_fields.get("leverage") or tv_fields.get("tv_leverage")
-        if tv_lev is not None and float(tv_lev) > 0:
-            return max(int(round(float(tv_lev))), 1)
-        return max(int(self.leverage or 1), 1)
+        """v6.5.6: always 5x (TV leverage field deleted)."""
+        from app.core.tv_entry_sizing import FIXED_LEVERAGE
+        return int(FIXED_LEVERAGE)
 
     def _bind_tv_leverage(self) -> int:
-        """Apply TV leverage to supervisor + exchange client before sizing/order."""
+        """Apply fixed 5x leverage before sizing/order."""
         lev = self._resolve_entry_leverage()
         self.leverage = lev
         client = getattr(self, "client", None)
@@ -579,35 +699,26 @@ class PositionSupervisor(
         return lev
 
     def _resolve_entry_qty(self, curr_px: float) -> tuple[float, dict]:
+        """Checklist: min(风险资金/止损距, 权益×5/价, TV.qty)."""
         equity = read_contract_equity(self.client)
         leverage = self._resolve_entry_leverage()
         tv_fields = getattr(self, "_tv_entry_fields", None) or {}
-        entry_type = getattr(self, "_entry_type", "OPEN")
-        regime = int(tv_fields.get("regime") or self.regime)
-        risk_pct = tv_fields.get("risk_pct")
-        if risk_pct is None:
-            return 0.0, {
-                "error": "missing_risk_pct",
-                "entry_type": entry_type,
-                "note": "TV must send risk_pct; VPS no longer uses REGIME_MARGIN",
-            }
+        tv_qty = tv_fields.get("tv_qty")
         qty, meta = resolve_vps_entry_qty_eth(
             live_balance=equity,
             initial_principal=self.initial_principal,
-            entry_type=entry_type,
+            entry_type="OPEN",
             base_qty=float(getattr(self, "base_qty", 0) or 0),
             price=float(curr_px or self.tv_price or 0),
             tv_sl=float(getattr(self, "tv_sl", 0) or 0),
-            regime=regime,
+            regime=int(self.regime or 3),
             exchange_leverage=leverage,
             round_fn=self._round_qty,
-            tv_qty_ratio=tv_fields.get("qty_ratio"),
-            qty_ratio_source=str(tv_fields.get("qty_ratio_source") or "tv_qty_ratio"),
             symbol=self.canonical_symbol,
             min_qty=float(getattr(self, "min_order_qty", 0) or 0) or None,
-            risk_pct=float(risk_pct),
+            tv_qty=float(tv_qty) if tv_qty else None,
         )
-        if entry_type not in ENTRY_TYPES_ADD and qty > 0:
+        if qty > 0:
             from app.core.combined_notional import check_combined_notional_cap
 
             notional = float(meta.get("notional_usd") or meta.get("position_value") or 0)
@@ -623,7 +734,6 @@ class PositionSupervisor(
             if not ok:
                 return 0.0, meta
         return qty, meta
-
     def _max_add_times(self) -> int:
         tv_fields = getattr(self, "_tv_entry_fields", None) or {}
         regime = int(tv_fields.get("regime") or self.regime or 3)
@@ -1242,53 +1352,18 @@ class PositionSupervisor(
         }
 
     def _place_tv_entry_order(self, action: str, qty: float, limit_px: float) -> dict:
-        """
-        Checklist: LIMIT @ TV price first (IOC, reduceOnly=False);
-        if not filled, market remainder so we never miss the TV entry.
-        """
-        px = float(limit_px or getattr(self, "tv_price", 0) or 0)
-        meta: dict = {"entry_order_style": "market", "limit_price": px, "qty": float(qty)}
-        if px > 0 and hasattr(self.client, "place_limit_order"):
-            try:
-                order = self.client.place_limit_order(
-                    action,
-                    qty,
-                    px,
-                    self.symbol,
-                    reduce_only=False,
-                    time_in_force="IOC",
-                )
-                meta["limit_order"] = order
-                time.sleep(0.6)
-                pos = self.position_manager.get_position(self.symbol)
-                filled = abs(float((pos or {}).get("positionAmt", 0) or 0))
-                if filled + 1e-9 >= float(qty) * 0.85:
-                    meta["entry_order_style"] = "limit_ioc"
-                    meta["filled_qty"] = filled
-                    return meta
-                remain = max(float(qty) - filled, 0.0)
-                if remain > float(getattr(self, "min_order_qty", 0) or 0.001):
-                    self._log(
-                        "SIGNAL",
-                        f"LIMIT@IOC 未足额 filled={filled:.4f}/{qty} → 市价补 {remain:.4f}",
-                    )
-                    self.client.place_market_order(action, remain, self.symbol)
-                    meta["entry_order_style"] = "limit_ioc_then_market"
-                    meta["market_remainder"] = remain
-                else:
-                    meta["entry_order_style"] = "limit_ioc"
-                    meta["filled_qty"] = filled
-                return meta
-            except TypeError:
-                # Client without time_in_force kw — fall through to market
-                pass
-            except Exception as exc:
-                self._log("ERROR", f"LIMIT 开仓失败→市价: {exc}")
+        """Checklist §2A: 市价开仓（数量已由 VPS 算仓确定）."""
+        meta: dict = {
+            "entry_order_style": "market",
+            "limit_price": float(limit_px or 0),
+            "qty": float(qty),
+        }
         self.client.place_market_order(action, qty, self.symbol)
-        meta["entry_order_style"] = "market"
         return meta
 
     def _open_position(self, action: str, curr_px: float) -> dict:
+        if hasattr(self, "_clear_trading_pause"):
+            self._clear_trading_pause("new_open")
         leverage = self._bind_tv_leverage()
         self.client.cancel_all_open_orders(self.symbol)
         if hasattr(self, "_cancel_binance_all_close_stops"):
@@ -1517,15 +1592,30 @@ class PositionSupervisor(
         """Binance order side to flatten current position."""
         return "SELL" if self.current_side == "LONG" else "BUY"
 
+
     def _compute_tp_slices(
         self, qty: float, exclude_levels: set[int] | None = None
     ) -> list[tuple[int, float, float]]:
-        """按 regime 比例为当前头寸切 TP 份；已成交档位跳过并重归一化剩余比例。"""
+        """TP slices from TV qty1/qty2/qty3 ratios (fallback 30/30/40); TP3 excluded elsewhere."""
+        from app.core.tp_regime_ratios import resolve_tp_ratios_from_payload
+
+        fields = getattr(self, "_tv_entry_fields", None) or {}
+        payload = {
+            "qty1": fields.get("tv_qty1"),
+            "qty2": fields.get("tv_qty2"),
+            "qty3": fields.get("tv_qty3"),
+        }
+        ratios = resolve_tp_ratios_from_payload(payload)
+        settings = dict(self.regime_settings)
+        r = int(self.regime or 3)
+        row = dict(settings.get(r) or settings.get(3) or {})
+        row["ratios"] = ratios
+        settings[r] = row
         return compute_tp_slices(
             qty,
-            self.regime,
+            r,
             self.tv_tps,
-            self.regime_settings,
+            settings,
             exclude_levels=exclude_levels or set(),
             round_qty_fn=self._round_qty,
             min_qty=float(getattr(self, "min_order_qty", 0) or 0),
@@ -1649,10 +1739,16 @@ class PositionSupervisor(
         return set(filled) | set(past)
 
     def _active_tp_exclude_levels(self, qty: float, curr_px: float) -> set[int]:
-        """Exclude filled + mark-past tiers (restart must not replan TP1 when through)."""
+        """Exclude filled + mark-past + TP3 (v6.5.6: TP3 is reference only, never LIMIT)."""
         from app.core.tp_slice_guard import should_skip_rehang_tp_level, SKIP_REHANG_HARD
+        from app.core.tp_regime_ratios import PLACEABLE_TP_LEVELS
 
         exclude = self._infer_filled_tp_levels(qty, curr_px)
+        # Never place TP3 limit — leg3 exits via continuous-ladder radar
+        exclude.add(3)
+        for lvl in (1, 2, 3):
+            if lvl not in PLACEABLE_TP_LEVELS:
+                exclude.add(lvl)
         open_prices = (
             self._open_tp_prices_on_book()
             if hasattr(self, "_open_tp_prices_on_book")
@@ -1680,7 +1776,6 @@ class PositionSupervisor(
             if skip and reason in SKIP_REHANG_HARD:
                 exclude.add(level)
         return exclude
-
     def _classify_qty_change(self, old_qty: float, new_qty: float, curr_px: float | None = None) -> str:
         from app.core.tp_slice_guard import compute_tp_slices, tp_limit_still_on_book
 
@@ -3145,7 +3240,11 @@ class PositionSupervisor(
             regime=int(self.regime or 3),
             live_qty=float(getattr(self, "watched_qty", 0) or 0),
             consumed_tp_levels=list(getattr(self, "consumed_tp_levels", None) or []),
+            activated=bool(getattr(self, "radar_activated", False) or getattr(self, "radar_latched", False)),
+            step_count=int(getattr(self, "radar_step_count", 0) or 0),
         )
+        if hasattr(self, "_apply_radar_eval_state"):
+            self._apply_radar_eval_state(radar)
         if radar.get("armed") and radar.get("radar_sl", 0) > 0:
             self.current_sl = float(radar["radar_sl"])
             self._latch_radar()
@@ -3247,6 +3346,49 @@ class PositionSupervisor(
         return SENTINEL_POLL_NORMAL
 
     def _process_radar_trailing(self, real_amt: float, curr_px: float) -> bool:
+        # ATR refresh every 5 min (never rolls back step_count)
+        try:
+            import time as _t
+            from app.core.vps_radar_stages import ATR_REFRESH_SEC, TP_LIMIT_TIMEOUT_SEC
+            now = _t.time()
+            last = float(getattr(self, "_atr_refreshed_at", 0) or 0)
+            if now - last >= ATR_REFRESH_SEC and hasattr(self.client, "estimate_atr"):
+                new_atr = float(self.client.estimate_atr(self.symbol) or 0)
+                if new_atr > 0:
+                    self.current_atr = new_atr
+                self._atr_refreshed_at = now
+            # TP limit 5-min timeout → cancel + consume + never rehang
+            placed = dict(getattr(self, "_tp_placed_at", None) or {})
+            if placed:
+                for lvl, ts in list(placed.items()):
+                    if now - float(ts) < TP_LIMIT_TIMEOUT_SEC:
+                        continue
+                    if int(lvl) in (getattr(self, "consumed_tp_levels", None) or []):
+                        placed.pop(lvl, None)
+                        self._tp_placed_at = placed
+                        continue
+                    try:
+                        cancelled = 0
+                        if hasattr(self, "_cancel_tp_orders_at_levels"):
+                            cancelled = int(self._cancel_tp_orders_at_levels([int(lvl)]) or 0)
+                        consumed = set(getattr(self, "consumed_tp_levels", None) or [])
+                        consumed.add(int(lvl))
+                        self.consumed_tp_levels = sorted(consumed)
+                        placed.pop(lvl, None)
+                        self._tp_placed_at = placed
+                        if hasattr(self, "_save_state"):
+                            self._save_state()
+                        self._alert(
+                            "warning", "TP_SKIP_REHANG", "TP挂单超时·移交雷达",
+                            f"TP{lvl} 超过{int(TP_LIMIT_TIMEOUT_SEC)}s未成交"
+                            f"（撤单{cancelled}）·禁止重挂",
+                            {"level": int(lvl), "cancelled": cancelled},
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         if not self._radar_activation_reached(curr_px):
             return False
 
@@ -3270,7 +3412,11 @@ class PositionSupervisor(
             regime=int(self.regime or 3),
             live_qty=float(real_amt or 0),
             consumed_tp_levels=list(getattr(self, "consumed_tp_levels", None) or []),
+            activated=bool(getattr(self, "radar_activated", False) or getattr(self, "radar_latched", False)),
+            step_count=int(getattr(self, "radar_step_count", 0) or 0),
         )
+        if hasattr(self, "_apply_radar_eval_state"):
+            self._apply_radar_eval_state(radar)
         new_sl = float(radar.get("radar_sl") or 0)
         if new_sl <= 0:
             if self._is_radar_engaged():
@@ -3920,9 +4066,9 @@ class PositionSupervisor(
                     audit,
                 )
                 self._alert(
-                    "info",
-                    "STARTUP",
-                    "VPS 重启 · 逆势持仓已强平对齐 TV",
+                    "critical",
+                    "FORCE_ALIGN",
+                    "VPS 重启 · 方向不一致强制平仓对齐 TV",
                     audit["startup_summary"],
                     audit,
                 )
@@ -3930,6 +4076,28 @@ class PositionSupervisor(
                 return audit
             if side_sync.get("conflict"):
                 audit.setdefault("warnings", []).append("tv_opposite_force_flat")
+
+            # Checklist §七: position exists but no persisted TP/radar → alert + pause
+            has_persist_tp = any(float(x or 0) > 0 for x in (self.tv_tps or []))
+            if not has_persist_tp:
+                msg = "重启有持仓但无持久化 TP1/TP2/TP3 · 暂停交易"
+                if hasattr(self, "_pause_trading"):
+                    self._pause_trading(msg, {
+                        "side": self.current_side,
+                        "qty": self.watched_qty,
+                        "entry": self.watched_entry,
+                    })
+                audit["trading_paused"] = True
+                audit["has_position"] = True
+                audit["side"] = self.current_side
+                audit["qty"] = self.watched_qty
+                audit["entry"] = self.watched_entry
+                audit["monitoring"] = False
+                audit["startup_summary"] = msg
+                self.monitoring = False
+                self._save_state()
+                self._log("STARTUP", msg, audit)
+                return audit
 
             if self.best_price <= 0:
                 self.best_price = self.watched_entry

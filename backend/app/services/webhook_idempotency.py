@@ -18,7 +18,7 @@ from app.core.symbol_precision import round_price
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-IDEMPOTENCY_TTL_SEC = 120
+IDEMPOTENCY_TTL_SEC = 60  # checklist §十一: 60s action+symbol+price
 SEQ_IDEMPOTENCY_TTL_SEC = 86400
 
 
@@ -67,19 +67,17 @@ def compute_fingerprint(payload: dict) -> str:
 
     from app.core.symbol_registry import extract_payload_symbol
 
+    # Checklist §十一: 60s dedupe key = action + symbol + price
+    symbol = extract_payload_symbol(payload, require=False) or "UNKNOWN"
+    px = round_price(payload.get("price") or 0)
+    leg = str(payload.get("leg") or "").strip()
     core = {
         "action": action,
-        "symbol": extract_payload_symbol(payload, require=False) or "UNKNOWN",
-        "regime": payload.get("regime"),
-        "price": round_price(payload.get("price") or 0),
-        "atr": round(float(payload.get("atr") or 0), 4),
-        "tv_tp1": round_price(payload.get("tv_tp1") or 0),
-        "tv_tp2": round_price(payload.get("tv_tp2") or 0),
-        "tv_tp3": round_price(payload.get("tv_tp3") or 0),
-        "reason": str(payload.get("reason") or "")[:200],
+        "symbol": symbol,
+        "price": px,
     }
-    if payload.get("side"):
-        core["side"] = str(payload.get("side")).upper().strip()
+    if leg:
+        core["leg"] = leg
     raw = json.dumps(core, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 

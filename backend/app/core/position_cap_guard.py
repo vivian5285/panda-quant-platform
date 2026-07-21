@@ -97,11 +97,12 @@ class PositionCapGuardMixin:
 
     def _compute_regime_cap_target(self, price: float) -> tuple[float, dict[str, Any]]:
         """
-        Cap = TV risk-formula OPEN size (risk_pct/tv_sl/leverage/qty_ratio),
-        floored by intentional tracked qty (base/initial after TV adds).
-        Never uses REGIME_MARGIN × config 25×.
+        Cap = fixed OPEN size (equity × 20% × 5x / price),
+        floored by intentional tracked qty.
         """
         from app.core.tv_entry_sizing import (
+            FIXED_LEVERAGE,
+            FIXED_MARGIN_PCT,
             resolve_vps_entry_qty_deepcoin,
             resolve_vps_entry_qty_eth,
         )
@@ -111,13 +112,8 @@ class PositionCapGuardMixin:
         sizing_base, sizing_source = resolve_cap_sizing_base(equity, principal)
         px = float(price or 0)
         leverage = self._resolve_cap_leverage()
-        tv_fields = getattr(self, "_tv_entry_fields", None) or {}
-        risk_pct = tv_fields.get("risk_pct")
         tv_sl = float(getattr(self, "tv_sl", 0) or 0)
-        regime = int(tv_fields.get("regime") or getattr(self, "regime", 3) or 3)
-        qty_ratio = float(tv_fields.get("qty_ratio") or 1.0)
-        if qty_ratio <= 0:
-            qty_ratio = 1.0
+        regime = int(getattr(self, "regime", 3) or 3)
 
         meta: dict[str, Any] = {
             "sizing_base": round(sizing_base, 2),
@@ -127,10 +123,9 @@ class PositionCapGuardMixin:
             "leverage": leverage,
             "price": round(px, 2),
             "regime": regime,
-            "risk_pct": risk_pct,
             "tv_sl": round(tv_sl, 4) if tv_sl else 0,
-            "margin_pct": None,
-            "cap_source": "tv_risk_formula",
+            "margin_pct": FIXED_MARGIN_PCT * 100.0,
+            "cap_source": "fixed_margin_20_x5",
         }
 
         tracked = max(
@@ -139,8 +134,8 @@ class PositionCapGuardMixin:
             float(getattr(self, "watched_qty", 0) or 0),
         )
 
-        if risk_pct is None or tv_sl <= 0 or px <= 0:
-            meta["cap_source"] = "skipped_no_tv_params"
+        if px <= 0 or sizing_base <= 0:
+            meta["cap_source"] = "skipped_no_price_or_equity"
             meta["notional_usd"] = 0.0
             if tracked > 0:
                 return tracked, meta
@@ -156,23 +151,19 @@ class PositionCapGuardMixin:
                 price=px,
                 tv_sl=tv_sl,
                 regime=regime,
-                exchange_leverage=leverage,
+                exchange_leverage=leverage or FIXED_LEVERAGE,
                 face_value=face_value,
-                tv_qty_ratio=qty_ratio,
-                qty_ratio_source=str(tv_fields.get("qty_ratio_source") or "tv_qty_ratio"),
                 symbol=getattr(self, "canonical_symbol", None),
-                risk_pct=float(risk_pct),
             )
             meta.update({
                 k: sizing_meta[k]
                 for k in (
-                    "margin_usd", "notional_usd", "order_amount", "sl_distance",
-                    "sizing_mode", "binding", "risk_amount",
+                    "margin_usd", "notional_usd", "order_amount",
+                    "sizing_mode", "binding", "effective_leverage",
                 )
                 if k in sizing_meta
             })
             meta["face_value"] = face_value
-            meta["margin_pct"] = None
             return max(float(qty or 0), tracked), meta
 
         qty, sizing_meta = resolve_vps_entry_qty_eth(
@@ -183,25 +174,21 @@ class PositionCapGuardMixin:
             price=px,
             tv_sl=tv_sl,
             regime=regime,
-            exchange_leverage=leverage,
+            exchange_leverage=leverage or FIXED_LEVERAGE,
             round_fn=(
                 self._round_qty if hasattr(self, "_round_qty") else (lambda q: float(q))
             ),
-            tv_qty_ratio=qty_ratio,
-            qty_ratio_source=str(tv_fields.get("qty_ratio_source") or "tv_qty_ratio"),
             symbol=getattr(self, "canonical_symbol", None),
             min_qty=float(getattr(self, "min_order_qty", 0) or 0) or None,
-            risk_pct=float(risk_pct),
         )
         meta.update({
             k: sizing_meta[k]
             for k in (
-                "margin_usd", "notional_usd", "order_amount", "sl_distance",
-                "sizing_mode", "binding", "risk_amount",
+                "margin_usd", "notional_usd", "order_amount",
+                "sizing_mode", "binding", "effective_leverage",
             )
             if k in sizing_meta
         })
-        meta["margin_pct"] = None
         return max(float(qty or 0), tracked), meta
 
     def _cap_oversize_detail(self, live_qty: float, price: float) -> dict[str, Any]:

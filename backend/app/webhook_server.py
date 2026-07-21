@@ -188,7 +188,8 @@ def webhook():
         )
         return jsonify({"status": "error", "message": "Empty payload"}), 400
 
-    secret = str(data.get("secret", "")).strip()
+    # v6.5.6 uses token; legacy secret still accepted
+    secret = str(data.get("token") or data.get("secret") or "").strip()
     if secret != get_webhook_secret():
         _log_reject_async(
             payload=data,
