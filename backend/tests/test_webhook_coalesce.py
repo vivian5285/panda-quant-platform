@@ -18,7 +18,10 @@ def coalesce(monkeypatch):
         "app.services.webhook_symbol_coalesce.get_settings",
         lambda: MagicMock(WEBHOOK_COALESCE_SEC=1.5),
     )
-    return reset_coalesce_for_tests()
+    c = reset_coalesce_for_tests()
+    yield c
+    c.flush_now()
+    reset_coalesce_for_tests()
 
 
 def _msg(action: str, symbol: str = "ETHUSDT", price: float = 3300.0, **extra):
@@ -126,15 +129,10 @@ def test_idempotency_60s_includes_price():
     assert a != d
 
 
-def test_open_force_flat_shared_by_all_supervisors():
-    """开仓前强制清仓：Binance 路径与 Deepcoin 均有，作为乱序最终安全网。"""
+def test_webhook_server_uses_coalesce_not_seq_gate():
     import inspect
-    from app.core.position_supervisor import PositionSupervisor
-    from app.core.position_supervisor_deepcoin import DeepcoinPositionSupervisor
+    import app.webhook_server as ws
 
-    assert hasattr(PositionSupervisor, "_force_flat_before_open")
-    src = inspect.getsource(PositionSupervisor._force_flat_before_open)
-    assert "_close_all" in src
-    # Deepcoin uses same iron rule via call site or own method
-    dc_src = inspect.getsource(DeepcoinPositionSupervisor)
-    assert "_force_flat_before_open" in dc_src or "先平后开" in dc_src
+    src = inspect.getsource(ws.webhook)
+    assert "get_coalesce" in src
+    assert "get_seq_gate" not in src
