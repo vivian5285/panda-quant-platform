@@ -183,16 +183,21 @@ class BinanceClient:
         def on_close(ws, code, msg):
             logger.warning("[User %s] public WS closed: %s %s", self.user_id, code, msg)
 
+        from app.core.ws_reconnect import sleep_ws_reconnect
+
+        attempt = 0
         while self._pub_ws_running:
             try:
                 ws_app = websocket.WebSocketApp(
                     url, on_message=on_message, on_error=on_error, on_close=on_close,
                 )
                 ws_app.run_forever(ping_interval=180, ping_timeout=30)
+                attempt = 0  # clean close / normal exit → reset backoff
             except Exception as exc:
                 logger.error("[User %s] public WS loop: %s", self.user_id, exc)
             if self._pub_ws_running:
-                time.sleep(3)
+                sleep_ws_reconnect(attempt)
+                attempt += 1
 
     def get_current_price(self, symbol=None, prefer_ws=True):
         """Prefer WS cache; rate-limit REST when WS is active."""

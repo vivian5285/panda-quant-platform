@@ -268,14 +268,19 @@ class GateClient:
             except Exception:
                 pass
 
+        from app.core.ws_reconnect import sleep_ws_reconnect
+
+        attempt = 0
         while self._pub_ws_running:
             try:
                 ws_app = websocket.WebSocketApp(url, on_open=on_open, on_message=on_message)
                 ws_app.run_forever(ping_interval=20, ping_timeout=10)
+                attempt = 0
             except Exception as exc:
                 logger.warning("[User %s] Gate WS: %s", self.user_id, exc)
             if self._pub_ws_running:
-                time.sleep(3)
+                sleep_ws_reconnect(attempt)
+                attempt += 1
 
     def get_position(self, symbol: str | None = None) -> dict | None:
         contract = symbol or self.trading_symbol

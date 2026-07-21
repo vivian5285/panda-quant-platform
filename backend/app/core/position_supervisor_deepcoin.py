@@ -174,6 +174,9 @@ class _DingtalkBridge:
             )
 
 class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, StartupReconcileMixin):
+    TP_RETRY_MAX = 3
+    TP_RETRY_DELAY = 0.8
+
     def __init__(
         self,
         user_id: int,
@@ -1560,13 +1563,21 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.client.cancel_order(self.symbol, ord_id=o["orderId"])
                     time.sleep(0.25)
             logger.info(f"  + 补挂 TP{lv['level']} @ {px:.2f} qty={q}张")
-            res = self.client.place_limit_order(
-                self.symbol, close_side, pos_side, px, q, reduce_only=True,
+            placed_res = self._place_limit_with_retry(
+                close_side, pos_side, q, px, label=f"TP{lv['level']}"
             )
-            if res and self.client._is_success(res):
+            if placed_res.get("ok"):
                 placed += 1
                 if hasattr(self, "_mark_tp_placed"):
                     self._mark_tp_placed(int(lv.get("level") or 0))
+            elif hasattr(self, "_alert"):
+                self._alert(
+                    "warning",
+                    "TP_RETRY_FAIL",
+                    f"TP{lv['level']}挂单重试失败",
+                    f"TP @ {px} qty={q} 重试 {self.TP_RETRY_MAX} 次仍失败",
+                    placed_res,
+                )
             time.sleep(0.4)
         return placed
 
@@ -2151,14 +2162,94 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 logger.warning(f"⚠️ 加仓后仍检测到止盈超挂: {exp.get('summary')}")
         return enrich_tp_alert_detail(result, regime=self.regime)
 
+    def _place_limit_with_retry(
+        self, close_side: str, pos_side: str, qty: float, price: float, label: str = "TP"
+    ) -> dict:
+        """Checklist §十: place failure → retry 3× then alert."""
+        last_res = None
+        last_err = None
+        for attempt in range(1, self.TP_RETRY_MAX + 1):
+            res = self.client.place_limit_order(
+                self.symbol, close_side, pos_side, price, qty, reduce_only=True,
+            )
+            last_res = res
+            if res and self.client._is_success(res):
+                return {
+                    "ok": True,
+                    "label": label,
+                    "res": res,
+                    "attempt": attempt,
+                    "qty": qty,
+                    "price": price,
+                }
+            last_err = f"{label} attempt {attempt}/{self.TP_RETRY_MAX} failed"
+            logger.warning(
+                f"[User {self.user_id}] {last_err} qty={qty} price={price} res={res}"
+            )
+            if attempt < self.TP_RETRY_MAX:
+                time.sleep(self.TP_RETRY_DELAY * attempt)
+        return {
+            "ok": False,
+            "label": label,
+            "res": last_res,
+            "attempts": self.TP_RETRY_MAX,
+            "error": last_err,
+            "qty": qty,
+            "price": price,
+        }
+
+    def _place_trigger_with_retry(
+        self, close_side: str, pos_side: str, qty: float, trigger_price: float, label: str = "SL"
+    ) -> dict:
+        """Checklist §十: SL/trigger place failure → retry 3×."""
+        last_res = None
+        last_err = None
+        for attempt in range(1, self.TP_RETRY_MAX + 1):
+            res = self.client.place_trigger_order(
+                self.symbol, close_side, pos_side, qty, trigger_price,
+                order_type="market", td_mode="cross", mrg_position="merge",
+            )
+            last_res = res
+            if res and self.client._is_success(res):
+                return {
+                    "ok": True,
+                    "label": label,
+                    "res": res,
+                    "attempt": attempt,
+                    "stop_price": trigger_price,
+                }
+            last_err = f"{label} attempt {attempt}/{self.TP_RETRY_MAX} failed"
+            logger.warning(
+                f"[User {self.user_id}] {last_err} stop={trigger_price} res={res}"
+            )
+            if attempt < self.TP_RETRY_MAX:
+                time.sleep(self.TP_RETRY_DELAY * attempt)
+        return {
+            "ok": False,
+            "label": label,
+            "res": last_res,
+            "attempts": self.TP_RETRY_MAX,
+            "error": last_err,
+            "stop_price": trigger_price,
+        }
+
     def _place_radar_sl(self, live_qty, sl_price):
         close_side = "sell" if self.current_side == "LONG" else "buy"
         pos_side = "long" if self.current_side == "LONG" else "short"
         sl_qty = self._resolve_live_qty(live_qty)
-        self.client.place_trigger_order(
-            self.symbol, close_side, pos_side, sl_qty, sl_price,
-            order_type="market", td_mode="cross", mrg_position="merge",
+        result = self._place_trigger_with_retry(
+            close_side, pos_side, sl_qty, sl_price, label="RADAR_SL"
         )
+        if not result.get("ok"):
+            self._alert(
+                "warning",
+                "TP_RETRY_FAIL",
+                "雷达止损挂单重试失败",
+                f"SL @ {sl_price} 重试 {self.TP_RETRY_MAX} 次仍失败",
+                result,
+            )
+        return result
+
 
     def _realign_radar_defenses(self, live_qty, entry, new_sl):
         curr_px = self._current_tp_price()
@@ -3691,21 +3782,36 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     if hasattr(self, "_save_state"):
                         self._save_state()
                 continue
-            res = self.client.place_limit_order(
-                self.symbol, close_side, pos_side, px, q, reduce_only=True,
+            placed_res = self._place_limit_with_retry(
+                close_side, pos_side, q, px, label=f"TP{level}"
             )
-            if res and self.client._is_success(res):
+            if placed_res.get("ok"):
                 placed += 1
                 if hasattr(self, "_mark_tp_placed"):
                     self._mark_tp_placed(level)
+            elif hasattr(self, "_alert"):
+                self._alert(
+                    "warning",
+                    "TP_RETRY_FAIL",
+                    f"TP{level}挂单重试失败",
+                    f"TP @ {px} qty={q} 重试 {self.TP_RETRY_MAX} 次仍失败",
+                    placed_res,
+                )
             time.sleep(0.35)
 
         if dynamic_sl:
             sl_qty = self._resolve_live_qty(live_qty)
-            self.client.place_trigger_order(
-                self.symbol, close_side, pos_side, sl_qty, dynamic_sl,
-                order_type="market", td_mode="cross", mrg_position="merge",
+            sl_res = self._place_trigger_with_retry(
+                close_side, pos_side, sl_qty, dynamic_sl, label="SL"
             )
+            if not sl_res.get("ok") and hasattr(self, "_alert"):
+                self._alert(
+                    "warning",
+                    "TP_RETRY_FAIL",
+                    "止损挂单重试失败",
+                    f"SL @ {dynamic_sl} 重试 {self.TP_RETRY_MAX} 次仍失败",
+                    sl_res,
+                )
         return placed
 
     def _close_all(

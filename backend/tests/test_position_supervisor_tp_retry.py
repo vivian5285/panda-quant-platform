@@ -69,21 +69,24 @@ def test_place_limit_with_retry_fails_after_max(supervisor, monkeypatch):
 
 
 def test_scan_open_defenses_detects_missing_tp(supervisor):
+    """Only TP1 on book → TP2 missing (TP3 never placed)."""
     supervisor.client.get_open_orders.return_value = [
         {
             "orderId": 1,
             "type": "LIMIT",
             "side": "SELL",
             "price": "3600.00",
-            "origQty": "0.180",
+            "origQty": "0.300",
+            "reduceOnly": True,
         },
     ]
-    slices = supervisor._compute_tp_slices(1.0)
+    # Placeable grid only: exclude TP3
+    slices = [s for s in supervisor._compute_tp_slices(1.0) if s[0] in (1, 2)]
 
     scan = supervisor._scan_open_defenses(slices)
 
     assert len(scan["matched_tps"]) == 1
-    assert len(scan["missing_tps"]) == 2
+    assert len(scan["missing_tps"]) == 1
     assert scan["aligned"] is False
 
 
@@ -99,15 +102,16 @@ def test_verify_and_repair_defenses_repairs_missing(supervisor, monkeypatch):
 
 
 def test_ensure_defenses_skips_when_already_aligned(supervisor, monkeypatch):
-    """VPS 重启：TP1/2/3 已在实盘且比例正确 → 不重复挂单。"""
-    slices = supervisor._compute_tp_slices(1.0)
+    """VPS 重启：TP1/TP2 已在实盘且比例正确 → 不重复挂单（TP3 不挂限价）。"""
+    monkeypatch.setattr("app.core.position_supervisor.time.sleep", lambda *_: None)
+    exclude = supervisor._active_tp_exclude_levels(1.0, 3500.0)
+    slices = supervisor._compute_tp_slices(1.0, exclude_levels=exclude)
     orders = []
     for level, qty, price in slices:
         if qty <= 0 or price <= 0:
             continue
         orders.append(_tp_limit(level, price, qty, reduce_only=True))
     supervisor.client.get_open_orders.return_value = orders
-    monkeypatch.setattr("app.core.position_supervisor.time.sleep", lambda *_: None)
 
     result = supervisor._ensure_defenses(1.0, 3500.0, force_rebuild=False)
 
@@ -209,7 +213,7 @@ def test_rebuild_defenses_force_cancels_then_places(supervisor, monkeypatch):
     supervisor._cancel_all_tp_limit_orders.assert_called()
     # 禁止全撤（会误伤硬止损/雷达）
     # cancel_all 可能仍被其他路径调用；核心断言：TP 重挂发生
-    assert supervisor.client.place_limit_order.call_count >= 3
+    assert supervisor.client.place_limit_order.call_count >= 2
 
 
 def test_scan_detects_duplicate_tp(supervisor):
@@ -225,13 +229,16 @@ def test_scan_detects_duplicate_tp(supervisor):
 
 
 def test_rebuild_defenses_logs_alignment(supervisor, monkeypatch):
+    """TP1/TP2 aligned after exclude-TP3 redistribute → skip."""
+    monkeypatch.setattr("app.core.position_supervisor.time.sleep", lambda *_: None)
+    exclude = supervisor._active_tp_exclude_levels(1.0, 3500.0)
+    slices = supervisor._compute_tp_slices(1.0, exclude_levels=exclude)
     aligned_orders = [
-        {"orderId": 1, "type": "LIMIT", "side": "SELL", "price": "3600.00", "origQty": "0.180"},
-        {"orderId": 2, "type": "LIMIT", "side": "SELL", "price": "3700.00", "origQty": "0.320"},
-        {"orderId": 3, "type": "LIMIT", "side": "SELL", "price": "3800.00", "origQty": "0.500"},
+        _tp_limit(level, price, qty, reduce_only=True)
+        for level, qty, price in slices
+        if qty > 0 and price > 0
     ]
     supervisor.client.get_open_orders.return_value = aligned_orders
-    monkeypatch.setattr("app.core.position_supervisor.time.sleep", lambda *_: None)
     logs = []
     supervisor.on_log = lambda uid, et, msg, detail, tid: logs.append((et, msg))
 

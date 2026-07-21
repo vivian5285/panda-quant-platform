@@ -293,6 +293,9 @@ class DeepcoinClient:
 
             threading.Thread(target=ping_loop, daemon=True).start()
 
+        from app.core.ws_reconnect import sleep_ws_reconnect
+
+        attempt = 0
         while self._pub_price_ws_running:
             try:
                 ws = websocket.WebSocketApp(
@@ -300,10 +303,12 @@ class DeepcoinClient:
                     on_error=on_error, on_close=on_close,
                 )
                 ws.run_forever(ping_interval=0)
+                attempt = 0
             except Exception as e:
                 logger.error(f"深币公开 WS 异常: {e}")
             if self._pub_price_ws_running:
-                time.sleep(3)
+                sleep_ws_reconnect(attempt)
+                attempt += 1
 
     def get_current_price(self, symbol="ETH-USDT-SWAP", prefer_ws=True):
         """优先 WS 缓存；REST tickers 仅兜底且限频"""
@@ -725,6 +730,9 @@ class DeepcoinClient:
             ws.send(json.dumps(sub))
             logger.info("私有 WebSocket 订阅消息已发送")
 
+        from app.core.ws_reconnect import sleep_ws_reconnect
+
+        attempt = 0
         while self._ws_running:
             try:
                 if time.time() - last_extend > 1800:
@@ -736,10 +744,12 @@ class DeepcoinClient:
                     on_error=on_error, on_close=on_close,
                 )
                 ws.run_forever(ping_interval=15, ping_payload="ping")
+                attempt = 0
             except Exception as e:
                 logger.error(f"私有 WebSocket 重连异常: {e}")
             if self._ws_running:
-                time.sleep(3)
+                sleep_ws_reconnect(attempt)
+                attempt += 1
 
     def test_connection(self) -> bool:
         """Return True if API credentials can read swap balance."""
