@@ -337,6 +337,53 @@ class DeepcoinClient:
         stale = self._get_ws_price(symbol, max_age=120)
         return stale or 0.0
 
+    def fetch_klines(
+        self,
+        symbol: str | None = None,
+        interval: str = "30m",
+        limit: int = 300,
+    ) -> list:
+        """Try DeepCoin public candles (OKX-like); empty → MarketEngine Binance fallback."""
+        inst = symbol or self.trading_symbol
+        bar = "1H" if str(interval).lower() == "1h" else interval
+        try:
+            res = self._public_request(
+                "/market/candles",
+                {"instId": inst, "bar": bar, "limit": str(int(limit))},
+            )
+            rows = res.get("data") if isinstance(res, dict) else None
+            if not isinstance(rows, list) or not rows:
+                return []
+            out = []
+            for row in reversed(rows):
+                try:
+                    if isinstance(row, (list, tuple)) and len(row) >= 5:
+                        out.append([
+                            int(float(row[0])),
+                            float(row[1]),
+                            float(row[2]),
+                            float(row[3]),
+                            float(row[4]),
+                            float(row[5] if len(row) > 5 else 0),
+                        ])
+                    elif isinstance(row, dict):
+                        ts = int(float(row.get("ts") or row.get("t") or 0))
+                        out.append([
+                            ts,
+                            float(row.get("o") or row.get("open") or 0),
+                            float(row.get("h") or row.get("high") or 0),
+                            float(row.get("l") or row.get("low") or 0),
+                            float(row.get("c") or row.get("close") or 0),
+                            float(row.get("vol") or row.get("v") or 0),
+                        ])
+                except (TypeError, ValueError, IndexError):
+                    continue
+            out.sort(key=lambda r: r[0])
+            return out
+        except Exception as exc:
+            logger.warning("[User %s] DeepCoin fetch_klines failed: %s", self.user_id, exc)
+            return []
+
     def get_instrument_info(self, symbol="ETH-USDT-SWAP"):
         if symbol in self._instrument_cache:
             return self._instrument_cache[symbol]

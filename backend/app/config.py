@@ -84,20 +84,29 @@ class Settings(BaseSettings):
     VPS_SL_RELAX_PCT: float = 0.0
 
     # 加仓：TV qty_ratio 权威；缺省时按档位回退
-    ADD_QTY_RATIO: float = 0.5  # TV 未传 qty_ratio 时的全局回退
+    # Deprecated — 妈妈版 pyramiding 已禁用；保留字段避免旧 .env 报错
+    ADD_QTY_RATIO: float = 0.5  # unused (add disabled)
     ADD_RATIO_REG1: float = 0.0
     ADD_RATIO_REG2: float = 0.3
     ADD_RATIO_REG3: float = 0.5
     ADD_RATIO_REG4: float = 0.7
-    MAX_ADD_TIMES: int = 2  # 全局回退
-    MAX_ADD_TIMES_REG1: int = 1
-    MAX_ADD_TIMES_REG2: int = 2
-    MAX_ADD_TIMES_REG3: int = 2
-    MAX_ADD_TIMES_REG4: int = 3
+    MAX_ADD_TIMES: int = 0  # 妈妈版：加仓禁用
+    MAX_ADD_TIMES_REG1: int = 0
+    MAX_ADD_TIMES_REG2: int = 0
+    MAX_ADD_TIMES_REG3: int = 0
+    MAX_ADD_TIMES_REG4: int = 0
 
     # 空仓待命时仍巡检交易所（秒）— 发现同向持仓则接管补挂 TP123/雷达
     IDLE_PATROL_INTERVAL_SEC: float = 10.0
     IDLE_ADOPT_RETRY_COOLDOWN_SEC: float = 45.0
+
+    # VPS 行情引擎：4H 原生 K 线 → ATR/ADX(14)；与妈妈版主图对齐
+    STRATEGY_BAR_MINUTES: int = 90
+    KLINE_BASE_INTERVAL: str = "30m"
+    ATR_ADX_PERIOD: int = 14
+    KLINE_FETCH_LIMIT_30M: int = 100  # compat alias name; used as fetch limit
+    KLINE_FETCH_LIMIT: int = 100
+    ATR_COMPARE_WARN_PCT: float = 0.20
 
     SETTLEMENT_PRIMARY_DAYS: int = 30
     SETTLEMENT_EXTENDED_DAYS: int = 35

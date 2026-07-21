@@ -1,5 +1,7 @@
 """Final VPS checklist core tests — TV 3-msg / VPS owns TP fills."""
 
+import pytest
+
 from app.core.tv_entry_sizing import MAX_LEVERAGE, RISK_PCT, compute_tv_entry_qty
 from app.core.vps_radar_stages import compute_ladder_radar_sl, compute_vps_radar_sl
 from app.core.radar_trail import RADAR_ARM_PROGRESS, radar_arm_trigger_price, tp_path_progress
@@ -18,21 +20,21 @@ from app.services.trading_alerts import format_checklist_pipe_line
 
 def test_sizing_checklist():
     qty, meta = compute_tv_entry_qty(
-        live_balance=1000, initial_principal=1000, price=2000, tv_sl=1900,
+        live_balance=1000, initial_principal=1000, price=3300, tv_sl=3200, tv_qty=1.0,
     )
     assert RISK_PCT == 0.20 and MAX_LEVERAGE == 5
-    assert abs(qty - 2.0) < 1e-9
+    assert qty == pytest.approx(1.0, abs=1e-9)
     qty2, m2 = compute_tv_entry_qty(
-        live_balance=1000, initial_principal=1000, price=2000, tv_sl=1900, tv_qty=0.5,
+        live_balance=1000, initial_principal=1000, price=3300, tv_sl=3200, tv_qty=0.5,
     )
-    assert abs(qty2 - 0.5) < 1e-9 and m2["binding"] == "tv_qty_cap"
+    assert qty2 == pytest.approx(0.5, abs=1e-9)
+    assert m2["sizing_mode"] == "risk20_cap5x_tv_qty_cap"
 
 
 def test_qty_ratios_from_payload():
-    # TV qty* ignored — always hardcoded 30/30/40
     r = resolve_tp_ratios_from_payload({"qty1": 3, "qty2": 3, "qty3": 6})
     assert r == [0.3, 0.3, 0.4]
-    assert PLACEABLE_TP_LEVELS == frozenset({1, 2, 3})
+    assert PLACEABLE_TP_LEVELS == frozenset({1, 2})
 
 
 def test_arm_price_long_short_symmetric():

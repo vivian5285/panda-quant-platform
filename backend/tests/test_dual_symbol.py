@@ -31,19 +31,19 @@ def test_extract_payload_symbol():
     assert extract_payload_symbol({"symbol": "BTCUSDT"}) is None
 
 
-def test_close_protect_payload_routes_eth_not_xau():
-    """TV dual-alert ETHUSDT.P CLOSE_PROTECT must route only to ETH supervisor."""
+def test_close_quick_exit_payload_routes_eth_not_xau():
+    """TV dual-alert ETHUSDT.P CLOSE_QUICK_EXIT must route only to ETH supervisor."""
     from app.services.webhook_guard import validate_signal_payload
 
     payload = {
         "symbol": "ETHUSDT.P",
-        "action": "CLOSE_PROTECT",
+        "action": "CLOSE_QUICK_EXIT",
         "secret": "528586",
         "regime": 4,
         "price": 1882.85,
         "atr": 13.1372332303,
         "side": "SHORT",
-        "reason": "常规防守：大级别转多或动能衰竭",
+        "reason": "评分反转",
         "pnl_pct": 0.26,
     }
     ok, err = validate_signal_payload(payload)
@@ -67,29 +67,24 @@ def test_exchange_native_symbols():
 
 
 def test_tv_risk_formula_open_qty():
-    # Spec table: 1000U · risk 2.03% · stop 14.02 · ETH@1892.43 → ~1.45
+    # RISK20: 1000U · ETH@3300 · stop 3200 · tv_qty 1.0 → 1.0
     qty, meta = compute_tv_entry_qty(
         live_balance=1000,
         initial_principal=1000,
-        price=1892.43,
-        tv_sl=1892.43 - 14.02,
-        risk_pct=2.03,
-        leverage=25,
-        qty_ratio=1.0,
+        price=3300,
+        tv_sl=3200,
+        tv_qty=1.0,
         symbol=CANONICAL_ETH,
     )
-    assert qty == pytest.approx(1.45, abs=0.01)
-    assert meta["sizing_mode"] == "tv_risk_formula"
+    assert qty == pytest.approx(1.0, abs=1e-9)
+    assert meta["sizing_mode"] == "risk20_cap5x_tv_qty_cap"
 
-    # XAU uses 0.01 step
     qty_x, meta_x = compute_tv_entry_qty(
         live_balance=1000,
         initial_principal=1000,
         price=2500,
-        tv_sl=2500 - 20,
-        risk_pct=2.03,
-        leverage=25,
-        qty_ratio=1.0,
+        tv_sl=2480,
+        tv_qty=5.0,
         symbol=CANONICAL_XAU,
     )
     assert qty_x > 0

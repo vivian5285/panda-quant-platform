@@ -91,8 +91,8 @@ def test_demo_table_1800_atr30_milestones():
 
 
 def test_tp3_is_placeable_limit():
-    assert PLACEABLE_TP_LEVELS == frozenset({1, 2, 3})
-    assert 3 in PLACEABLE_TP_LEVELS
+    assert PLACEABLE_TP_LEVELS == frozenset({1, 2})
+    assert 3 not in PLACEABLE_TP_LEVELS
 
 
 def test_short_symmetric_arm_tp1_x_1_15_shorthand():
@@ -152,7 +152,8 @@ def test_diagnose_tp3_radar_trail_title():
     assert attr["close_action_hint"] == "CLOSE_TP3"
     assert attr["close_origin"] == "radar_tp3_trail"
     assert resolve_close_alert_type(None, None, attr) == "CLOSE_TP3"
-    assert resolve_close_alert_title(None, None, attr) == "TP3平仓 · 雷达追踪收网"
+    assert resolve_close_alert_title(None, None, attr) == "TP3 止盈成交"
+    assert "雷达" not in resolve_close_alert_title(None, None, attr)
 
 
 def test_atr_refresh_does_not_rollback_steps():
@@ -218,17 +219,15 @@ def test_force_align_always_closes_on_conflict():
     assert 'on_conflict or "force_close"' in src
 
 
-def test_binance_and_deepcoin_share_ladder_and_timeout():
+def test_binance_and_deepcoin_share_breathing_and_timeout():
     import inspect
     from app.core.position_supervisor import PositionSupervisor
     from app.core.position_supervisor_deepcoin import DeepcoinPositionSupervisor
 
     for cls in (PositionSupervisor, DeepcoinPositionSupervisor):
         src = inspect.getsource(cls._process_radar_trailing)
-        assert "ATR_REFRESH_SEC" in src
         assert "TP_LIMIT_TIMEOUT_SEC" in src
-        assert "compute_vps_radar_sl" in src
-        assert "TP_SKIP_REHANG" in src or "移交雷达" in src
-        # 禁止把路径激活当成 TP1 成交
+        assert "_process_breathing_stop_tick" in src
+        # Legacy ladder path must not be the live SL path
         assert "tp1_filled=path_armed" not in src
         assert "tp1_filled=path_ok" not in src

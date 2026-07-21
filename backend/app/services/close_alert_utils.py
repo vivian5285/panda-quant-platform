@@ -1,4 +1,4 @@
-"""TV 全平信号 — 分类、明细字段、核实后钉钉文案（四家交易所共用）."""
+"""TV 全平信号 — 妈妈版分类与钉钉标题（四所共用）."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ def parse_tv_pnl_pct(raw) -> float | None:
 
 
 def extract_tv_close_fields(payload: dict | None) -> dict[str, Any]:
-    """Normalize Pine v6.9.75 精准风控 CLOSE_* webhook fields."""
     data = dict(payload or {})
     reason = str(data.get("reason") or "").strip()
     side = str(data.get("side") or "").upper().strip() or None
@@ -46,23 +45,16 @@ def extract_tv_close_fields(payload: dict | None) -> dict[str, Any]:
 
 
 def classify_tv_close_subtype(close_action: str | None, tv_reason: str | None) -> str:
-    """breakeven | hard_stop | risk_intercept | tp3 | protect | generic."""
+    """quick_exit | rsi_exit | breath_stop | tp | generic — no legacy protect keywords."""
     action = str(close_action or "").upper()
-    reason = str(tv_reason or "")
-    if "CLOSE_TP3" in action:
-        return "tp3"
-    if "CLOSE_STOPLOSS" in action:
-        if "防回吐" in reason or "保本" in reason:
-            return "breakeven"
-        if "硬止损" in reason:
-            return "hard_stop"
-        return "stoploss"
-    if "CLOSE_PROTECT" in action or action.startswith("CLOSE_PROTECT"):
-        if "风控拦截" in reason or "高优拦截" in reason:
-            return "risk_intercept"
-        return "protect"
-    if action == "CLOSE":
-        return "generic"
+    if "CLOSE_QUICK_EXIT" in action:
+        return "quick_exit"
+    if "CLOSE_RSI_EXIT" in action:
+        return "rsi_exit"
+    if "CLOSE_BREATH" in action or "BREATH_STOP" in action:
+        return "breath_stop"
+    if "CLOSE_TP" in action or "TP3" in action:
+        return "tp"
     return "generic"
 
 
@@ -76,29 +68,19 @@ def resolve_close_alert_type(
         return "CLOSE_QUICK_EXIT"
     if "CLOSE_RSI_EXIT" in action:
         return "CLOSE_RSI_EXIT"
-    if action in ("CLOSE_TP", "CLOSE_TRAIL", "CLOSE_SL_INITIAL", "CLOSE_SL_BREAKEVEN", "CLOSE_TP3"):
-        return action
+    if "CLOSE_BREATH" in action:
+        return "CLOSE_BREATH_STOP"
     hint = str((attribution or {}).get("close_action_hint") or (attribution or {}).get("sl_kind") or "")
-    if hint == "CLOSE_TP3" or (attribution or {}).get("close_origin") == "radar_tp3_trail":
-        return "CLOSE_TP3"
-    if hint in ("CLOSE_SL_INITIAL", "CLOSE_SL_BREAKEVEN"):
-        return hint
-    subtype = classify_tv_close_subtype(action, tv_reason)
-    if subtype == "tp3" or "CLOSE_TP3" in action:
-        return "CLOSE_TP3"
-    if subtype in ("breakeven", "hard_stop", "stoploss") or "CLOSE_STOPLOSS" in action:
-        return "CLOSE_STOPLOSS"
-    if "CLOSE_PROTECT" in action or action.startswith("CLOSE_PROTECT"):
-        return "CLOSE_PROTECT"
     origin = str((attribution or {}).get("close_origin") or "")
-    if origin == "exchange_limit_tp":
-        return "CLOSE_ATTRIBUTION"
+    if hint == "CLOSE_TP3" or origin in ("radar_tp3_trail", "exchange_limit_tp"):
+        return "CLOSE_TP3" if hint == "CLOSE_TP3" or origin == "radar_tp3_trail" else "CLOSE_ATTRIBUTION"
+    if origin == "breathing_stop" or (attribution or {}).get("close_trigger") == "breathing_stop_hit":
+        return "CLOSE_BREATH_STOP"
     if origin == "exchange_stop":
-        return (
-            "CLOSE_SL_BREAKEVEN"
-            if (attribution or {}).get("sl_kind") == "CLOSE_SL_BREAKEVEN"
-            else "CLOSE_SL_INITIAL"
-        )
+        return "CLOSE_BREATH_STOP"
+    # Legacy CLOSE_PROTECT / STOPLOSS → generic reverse-protect wording only
+    if "CLOSE_PROTECT" in action or "CLOSE_STOPLOSS" in action:
+        return "CLOSE"
     return "CLOSE"
 
 
@@ -107,45 +89,34 @@ def resolve_close_alert_title(
     tv_reason: str | None,
     attribution: dict | None = None,
 ) -> str:
-    hint = str((attribution or {}).get("close_action_hint") or (attribution or {}).get("sl_kind") or "")
     act = str(close_action or "").upper()
+    hint = str((attribution or {}).get("close_action_hint") or (attribution or {}).get("sl_kind") or "")
     origin = str((attribution or {}).get("close_origin") or "")
+    reason = str(tv_reason or (attribution or {}).get("human_reason") or "").strip()
+
     if hint == "CLOSE_TP3" or origin == "radar_tp3_trail" or act == "CLOSE_TP3":
-        return "TP3平仓 · 雷达追踪收网"
-    if hint == "CLOSE_SL_INITIAL" or act == "CLOSE_SL_INITIAL":
-        return "止损平仓（初始）"
-    if hint == "CLOSE_SL_BREAKEVEN" or act == "CLOSE_SL_BREAKEVEN":
-        return "止损平仓（保本/移动）"
-    subtype = classify_tv_close_subtype(close_action, tv_reason)
-    titles = {
-        "tp3": "TP3平仓 · 雷达追踪收网",
-        "breakeven": "防回吐保本 · 全平完成",
-        "hard_stop": "硬止损 · 全平完成",
-        "stoploss": "TV止损 · 全平完成",
-        "risk_intercept": "风控拦截 · 保护全平",
-        "protect": "保护性全平 · 完成",
-        "generic": "全平完成",
-    }
-    if subtype != "generic" or close_action:
-        return titles.get(subtype, "全平完成")
-    # No TV close action — prefer exchange attribution (TP fill vs radar/stop)
-    matched = (attribution or {}).get("matched_tps") or []
+        return "TP3 止盈成交"
+    if act == "CLOSE_BREATH_STOP" or origin == "breathing_stop":
+        phase2 = bool(
+            (attribution or {}).get("breakeven_phase")
+            or (attribution or {}).get("breakeven_active")
+            or "阶段二" in reason
+            or "趋势追踪" in reason
+        )
+        return "止损平仓(阶段二/趋势追踪)" if phase2 else "止损平仓(阶段一)"
+    if "CLOSE_QUICK_EXIT" in act:
+        return "反转保护"
+    if "CLOSE_RSI_EXIT" in act:
+        return "反转保护"
     if origin == "exchange_limit_tp":
+        matched = (attribution or {}).get("matched_tps") or []
         if matched:
-            levels = ",".join(str(x) for x in matched)
-            return f"限价止盈成交·TP{levels} · 全平"
-        return "限价止盈成交 · 全平"
+            return f"TP{','.join(str(x) for x in matched)} 止盈成交"
+        return "止盈成交"
     if origin == "exchange_stop":
-        if (attribution or {}).get("sl_kind") == "CLOSE_SL_INITIAL":
-            return "止损平仓（初始）"
-        return "止损平仓（保本/移动）"
-    if origin == "manual_exchange":
-        return "交易所人工平仓 · 全平"
-    if origin == "tv_forced":
-        return "TV强制平仓 · 全平"
-    human = str((attribution or {}).get("human_reason") or "").strip()
-    if human:
-        return f"{human[:40]} · 全平"
+        return "止损平仓(阶段一)"
+    if reason:
+        return "反转保护平仓"
     return "全平完成"
 
 
@@ -163,11 +134,7 @@ def build_verify_note(
         parts.append(f"实盘盈亏 {live_pnl_pct:+.2f}%")
     if tv_pnl_pct is not None:
         parts.append(f"TV报 {tv_pnl_pct:+.2f}%")
-    if tv_pnl_pct is not None and live_pnl_pct is not None:
-        delta = round(live_pnl_pct - float(tv_pnl_pct), 2)
-        if abs(delta) > 0.15:
-            parts.append(f"偏差 {delta:+.2f}%")
-    return " | ".join(parts)
+    return " · ".join(parts)
 
 
 def build_close_detail(
@@ -194,7 +161,9 @@ def build_close_detail(
         "exchange": exchange_id,
         "exchange_id": exchange_id,
         "close_action": close_action or tv.get("close_action"),
-        "close_subtype": classify_tv_close_subtype(close_action or tv.get("close_action"), tv_reason or tv.get("tv_reason")),
+        "close_subtype": classify_tv_close_subtype(
+            close_action or tv.get("close_action"), tv_reason or tv.get("tv_reason"),
+        ),
         "reason": tv_reason or tv.get("tv_reason") or "",
         "tv_reason": tv_reason or tv.get("tv_reason") or "",
         "side": side,
@@ -229,4 +198,19 @@ def build_close_detail(
 
 def format_close_dingtalk_message(tv_reason: str | None, verify_note: str) -> str:
     head = (tv_reason or "").strip() or "全平"
-    return f"{head} | {verify_note}"
+    return f"{head} · {verify_note}"
+
+
+def format_tv_close_detail_lines(detail: dict | None) -> list[str]:
+    d = dict(detail or {})
+    lines = []
+    reason = d.get("tv_reason") or d.get("reason") or ""
+    price = d.get("tv_price") or d.get("price") or d.get("exit_price")
+    if reason:
+        lines.append(f"- **原因**：{reason}")
+    if price:
+        try:
+            lines.append(f"- **价格**：{float(price):.2f}")
+        except (TypeError, ValueError):
+            lines.append(f"- **价格**：{price}")
+    return lines

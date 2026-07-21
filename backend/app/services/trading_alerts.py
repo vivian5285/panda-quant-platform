@@ -68,69 +68,72 @@ DEFAULT_THEME = EXCHANGE_THEMES["binance"]
 
 ALERT_TYPE_TAGS = {
     "OPEN": "开仓",
-    "CLOSE": "全平",
-    "CLOSE_TP": "TV对账·止盈",
-    "CLOSE_TRAIL": "TV对账·追踪",
-    "CLOSE_SL_INITIAL": "止损平仓（初始）",
-    "CLOSE_SL_BREAKEVEN": "止损平仓（保本/移动）",
-    "CLOSE_TP3": "TP3平仓（雷达追踪）",
-    "CLOSE_QUICK_EXIT": "反转快平",
-    "CLOSE_RSI_EXIT": "RSI反转全平",
-    "CLOSE_FAIL": "清仓失败",
+    "CLOSE": "反转保护",
+    "CLOSE_TP": "止盈成交",
+    "CLOSE_TRAIL": "止损移动",
+    "CLOSE_SL_INITIAL": "止损触发",
+    "CLOSE_SL_BREAKEVEN": "止损触发",
+    "CLOSE_TP3": "TP3 止盈成交",
+    "CLOSE_QUICK_EXIT": "反转保护",
+    "CLOSE_RSI_EXIT": "反转保护",
+    "CLOSE_FAIL": "异常告警",
     "CLOSE_DEFER": "开仓保护忽略CLOSE",
-    "STARTUP": "重启接管",
-    "STARTUP_FAIL": "接管失败",
-    "DEFENSE_HEAL": "止盈对齐修复",
-    "DEFENSE_HEAL_OK": "止盈已对齐",
-    "DEFENSE_HEAL_FAIL": "止盈仍异常",
-    "TRAIL": "呼吸止损·追踪",
-    "RADAR_ARM": "呼吸止损·激活(兼容)",
-    "RADAR_REVOKE": "呼吸止损只前进(已禁用解除)",
-    "BREATH_STEP": "呼吸止损·步进",
-    "BREATH_FLOOR": "呼吸止损·底限",
-    "BREATH_PHASE2": "呼吸止损·保本追踪",
-    "BREATH_TRAIL": "呼吸止损·ADX追踪",
-    "CLOSE_BREATH_STOP": "呼吸止损平仓",
-    "ADJUST": "人工异动",
-    "MANUAL_ADJUST": "人工异动",
-    "FORCE_ALIGN": "方向背离",
-    "TRADING_PAUSED": "交易暂停",
-    "POSITION_SIDE_FLIP": "逆势蚂蚁仓",
-    "TP_OVER_COMMIT": "止盈超挂",
+    "STARTUP": "重启恢复",
+    "STARTUP_FAIL": "异常告警",
+    "DEFENSE_HEAL": "异常告警",
+    "DEFENSE_HEAL_OK": "止盈对齐",
+    "DEFENSE_HEAL_FAIL": "异常告警",
+    "TRAIL": "止损移动",
+    "RADAR_ARM": "止损移动",
+    "RADAR_REVOKE": "止损移动",
+    "BREATH_STEP": "止损移动",
+    "BREATH_FLOOR": "止损移动",
+    "BREATH_PHASE2": "阶段切换",
+    "BREATH_TRAIL": "止损移动",
+    "CLOSE_BREATH_STOP": "止损触发",
+    "ATR_MISMATCH": "异常告警",
+    "ADJUST": "异常告警",
+    "MANUAL_ADJUST": "异常告警",
+    "FORCE_ALIGN": "异常告警",
+    "TRADING_PAUSED": "异常告警",
+    "POSITION_SIDE_FLIP": "异常告警",
+    "TP_OVER_COMMIT": "异常告警",
     "IDLE_WATCH": "空仓巡检",
-    "MANUAL_FLAT_TP_PURGE": "平仓撤止盈",
-    "TP_ORPHAN_PURGE": "雷达撤过时TP",
-    "TP_RETRY_FAIL": "止盈失败",
-    "SL_RETRY_FAIL": "止损失败",
-    "SENTINEL_ERROR": "哨兵异常",
-    "INSUFFICIENT_BALANCE": "余额不足",
-    "NOTIONAL_CAP": "名义敞口超限",
-    "LOCK_TIMEOUT": "锁超时",
-    "CLOSE_PROTECT_EMPTY": "空仓保护复位",
-    "SAME_DIR_TP_REFRESH": "同向智能持仓",
-    "SAME_DIR_REOPEN": "同向刷新换仓",
-    "PYRAMID": "金字塔加仓",
-    "PROFIT_ADD": "浮盈加仓",
-    "CAP_ALIGN": "叠仓纠偏",
-    "CAP_ALIGN_BLOCKED": "叠仓纠偏中止",
-    "CAP_ALIGN_FAIL": "叠仓减仓失败",
-    "CAP_ALIGN_OVERTRIM": "叠仓过度减仓",
-    "UPDATE_SL": "呼吸止损参数更新",
-    "UPDATE_TP": "动能止盈升级",
+    "MANUAL_FLAT_TP_PURGE": "异常告警",
+    "TP_ORPHAN_PURGE": "异常告警",
+    "TP_RETRY_FAIL": "异常告警",
+    "SL_RETRY_FAIL": "异常告警",
+    "SENTINEL_ERROR": "异常告警",
+    "INSUFFICIENT_BALANCE": "异常告警",
+    "NOTIONAL_CAP": "异常告警",
+    "LOCK_TIMEOUT": "异常告警",
+    "CLOSE_PROTECT_EMPTY": "异常告警",
+    "SAME_DIR_TP_REFRESH": "同向刷新",
+    "SAME_DIR_REOPEN": "同向换仓",
+    "CAP_ALIGN": "异常告警",
+    "CAP_ALIGN_BLOCKED": "异常告警",
+    "CAP_ALIGN_FAIL": "异常告警",
+    "CAP_ALIGN_OVERTRIM": "异常告警",
+    "UPDATE_SL": "止损参数",
+    "UPDATE_TP": "止盈更新",
+    "TP1_FILL": "TP1 止盈成交",
+    "TP2_FILL": "TP2 止盈成交",
+    "TP3_FILL": "TP3 止盈成交",
+    "HARD_SL_MISSING": "异常告警",
     "SIGNAL_RECV": "TV信号接收",
     "ADVERSE_SL": "呼吸止损挂载",
-    "ADVERSE_SL_DISARM": "旧盾撤销·呼吸止损接管",
-    "ADVERSE_SL_HIT": "呼吸止损触发",
-    "ADVERSE_SL_MISALIGN": "呼吸止损未对齐",
-    "ADVERSE_SL_REPAIR": "呼吸止损补挂",
-    "FALSE_FLAT": "误报空仓",
-    "CLOSE_ATTRIBUTION": "平仓归因",
-    "POSITION_RECONCILE": "头寸对账",
-    "TP_FILLED": "止盈成交(VPS)",
-    "TP_SKIP_REHANG": "拒绝补挂已成交止盈",
-    "POSITION_QTY_CHANGE": "仓位异动",
+    "ADVERSE_SL_DISARM": "呼吸止损接管",
+    "ADVERSE_SL_HIT": "止损触发",
+    "ADVERSE_SL_MISALIGN": "异常告警",
+    "ADVERSE_SL_REPAIR": "异常告警",
+    "FALSE_FLAT": "异常告警",
+    "CLOSE_ATTRIBUTION": "止盈成交",
+    "POSITION_RECONCILE": "异常告警",
+    "TP_FILLED": "止盈成交",
+    "TP_SKIP_REHANG": "异常告警",
+    "POSITION_QTY_CHANGE": "异常告警",
     "FLIP_CLEAN": "先平后开清场",
-    "API_OFFLINE": "API离线",
+    "API_OFFLINE": "异常告警",
 }
 
 ADMIN_DINGTALK_KEY_TYPES = frozenset({
@@ -324,225 +327,151 @@ def format_signal_received_message(payload: dict | None) -> str:
 
 
 def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str:
-    """VPS 开仓钉钉 — 权益×20%×5x · TP1/TP2/TP3限价(30/30/40) · 呼吸止损."""
-    from app.core.tv_entry_sizing import FIXED_LEVERAGE, FIXED_MARGIN_PCT
-    from app.core.tp_regime_targets import format_tp_ratio_pct
-
-    sym = detail.get("symbol") or detail.get("canonical_symbol")
-    lev = detail.get("leverage") or detail.get("tv_leverage") or FIXED_LEVERAGE
-    theme = resolve_exchange_theme(
-        exchange or detail.get("exchange"),
-        sym,
-        leverage=lev,
-    )
-    unit = detail.get("qty_unit") or theme["qty_unit"]
+    """妈妈版开仓钉钉短文案."""
     side = detail.get("side") or "—"
     side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(side).upper(), str(side))
-
-    lines = [
-        _line("交易所", theme["label"]),
-        _line("合约", f"{theme.get('symbol_label') or theme['symbol']} `{theme['symbol']}`"),
-        _line("类型", "开仓 OPEN"),
-        _line("方向", side_txt),
-        _line("策略", str(detail.get("bot_id") or detail.get("strategy_version") or "v6.5.6")),
-    ]
-    equity = detail.get("equity") or detail.get("sizing_base") or detail.get("equity_balance")
-    if equity is not None:
-        lines.append(_line("合约权益", f"{float(equity):.2f} USDT"))
-    margin_pct = detail.get("margin_pct")
-    if margin_pct is None:
-        margin_pct = FIXED_MARGIN_PCT * 100.0
-    lines.append(_line("保证金比例", f"{float(margin_pct):.0f}% 权益（风险资金）"))
-    lines.append(_line("杠杆上限", f"{int(FIXED_LEVERAGE)}×（名义≤权益×{int(FIXED_LEVERAGE)}）"))
-    if detail.get("effective_leverage") is not None:
-        lines.append(_line("等效杠杆", f"{float(detail['effective_leverage']):.2f}×（名义/权益）"))
-    if detail.get("margin_usd") is not None:
-        lines.append(_line("保证金", f"{float(detail['margin_usd']):.2f} USDT"))
-    notional = detail.get("notional_usd") or detail.get("order_amount") or detail.get("position_value")
-    if notional is not None:
-        lines.append(_line("名义头寸", f"{float(notional):.2f} USDT"))
-    lines.append(_line("止盈比例", f"TP1/TP2/TP3 = {format_tp_ratio_pct()}%（硬编码；限价挂齐）"))
+    price = detail.get("entry") or detail.get("price") or detail.get("tv_price") or 0
+    qty = detail.get("qty") or detail.get("watched_qty") or 0
     init_stop = float(
         detail.get("initial_stop")
         or detail.get("tv_sl")
         or detail.get("stop_loss")
-        or detail.get("tv_sl_reference")
+        or detail.get("current_sl")
         or 0
     )
-    init_atr = float(detail.get("initial_atr") or detail.get("atr") or detail.get("current_atr") or 0)
-    adx_v = float(detail.get("current_adx") or detail.get("adx") or 0)
-    if init_stop > 0:
-        lines.append(_line("呼吸止损", f"@{init_stop:.2f}（初始 1.5×ATR）"))
-    if init_atr > 0:
-        lines.append(_line("初始ATR", f"{init_atr:.4f}"))
-    if adx_v > 0:
-        lines.append(_line("ADX", f"{adx_v:.1f}"))
-    lines.append(
-        _line(
-            "盘口结构",
-            "基础单×3：TP1+TP2+TP3 限价(30/30/40) · 条件委托×1：呼吸止损；"
-            f"{format_regime_radar_activation_legend()}",
-        )
+    equity = detail.get("equity") or detail.get("sizing_base") or detail.get("equity_balance") or 0
+    msg = (
+        f"开仓 {side_txt}，价格 {float(price):.2f}，数量 {float(qty):.4f}，"
+        f"初始止损 {init_stop:.2f}，账户权益 {float(equity):.2f}"
     )
-    lines.append(_line("止损状态", "开仓即挂载 · 浮盈步进/底限后进入 ADX 追踪"))
-    mc = detail.get("mount_confirm") or {}
-    if mc or detail.get("hard_sl_mounted") is not None:
-        hs = mc.get("hard_sl") or ("✅" if detail.get("hard_sl_mounted") else "❌")
-        tp = mc.get("tp123") or ("✅" if detail.get("tp123_mounted") else "❌")
-        rd = mc.get("radar") or ("✅" if detail.get("breathing_active") or detail.get("radar_standby") is not False else "❌")
-        lines.append(_line("呼吸止损已挂载", hs))
-        lines.append(_line("TP1/TP2/TP3已挂载", tp))
-        lines.append(_line("呼吸止损激活", rd))
-    slices = detail.get("tp_slices") or []
-    if slices:
-        parts = []
-        for lv in slices[:3]:
-            if isinstance(lv, dict):
-                parts.append(
-                    f"TP{lv.get('level')} {float(lv.get('qty', 0)):.4f}@{float(lv.get('price', 0)):.2f}"
-                )
-        if parts:
-            lines.append(_line("TP 分批", " · ".join(parts)))
-    if detail.get("qty") is not None:
-        lines.append(_line("实盘数量", f"**{float(detail['qty']):.4f}** {unit}"))
-    if detail.get("entry") is not None:
-        lines.append(_line("开仓价", f"{float(detail['entry']):.2f}"))
-    if init_stop > 0:
-        lines.append(_line("止损价", f"{init_stop:.2f}"))
-    return "\n".join(lines)
+    return msg
 
 
 def format_force_align_detail_cn(detail: dict, exchange: str | None = None) -> str:
-    sym = detail.get("symbol") or detail.get("canonical_symbol")
-    theme = resolve_exchange_theme(exchange or detail.get("exchange"), sym)
-    unit = detail.get("qty_unit") or theme["qty_unit"]
-    live = detail.get("live_side") or "—"
-    tv = detail.get("tv_side") or detail.get("last_tv_side") or "—"
-    live_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(live).upper(), str(live))
-    tv_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(tv).upper(), str(tv))
-    lines = [
-        _line("交易所", theme["label"]),
-        _line("实盘方向", live_txt),
-        _line("TV 方向", tv_txt),
-        _line(
-            "触发",
-            {
-                "startup": "重启接管",
-                "sentinel": "哨兵巡检",
-            }.get(str(detail.get("trigger") or ""), str(detail.get("trigger") or "—")),
-        ),
-    ]
-    qty = detail.get("qty") or detail.get("watched_qty")
-    if qty is not None:
-        lines.append(_line("强平数量", f"**{float(qty):.4f}** {unit}"))
-    if detail.get("entry") is not None:
-        lines.append(_line("开仓价", f"{float(detail['entry']):.2f}"))
-    if detail.get("adopted_manual"):
-        lines.append(_line("来源", "人工/外部开仓"))
-    return "\n".join(lines)
+    return f"异常告警：FORCE_ALIGN，{detail.get('reason') or detail.get('message') or '方向背离'}"
 
 
 def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
-    """VPS 重启接管 — TP123 / 呼吸止损."""
-    sym = detail.get("symbol") or detail.get("canonical_symbol")
-    theme = resolve_exchange_theme(exchange or detail.get("exchange"), sym)
-    unit = detail.get("qty_unit") or theme["qty_unit"]
+    """妈妈版重启恢复短文案."""
     side = detail.get("side") or detail.get("current_side") or "—"
     side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(side).upper(), str(side))
-    lines = [
-        _line("交易所", theme["label"]),
-        _line("方向", side_txt),
-    ]
-    qty = detail.get("qty") or detail.get("live_qty") or detail.get("watched_qty")
-    if qty is not None:
-        lines.append(_line("实盘数量", f"**{float(qty):.4f}** {unit}"))
-    if detail.get("entry") is not None:
-        lines.append(_line("开仓价", f"{float(detail['entry']):.2f}"))
-    if detail.get("base_qty"):
-        lines.append(_line("首仓基准", f"{float(detail['base_qty']):.4f} {unit}"))
-    if detail.get("add_count") is not None:
-        lines.append(_line("已加仓", f"{int(detail['add_count'])} 次"))
-    if detail.get("adopted_manual"):
-        lines.append(_line("接管类型", "人工/外部持仓 · 按最新 TV 补挂"))
-    if detail.get("shield_stop_price") or detail.get("tv_sl") or detail.get("current_sl"):
-        stop_px = detail.get("shield_stop_price") or detail.get("current_sl") or detail.get("tv_sl")
-        phase = "阶段二·ADX追踪" if detail.get("breakeven_phase") or detail.get("breakeven_active") else "阶段一·步进锁本"
-        lines.append(_line("呼吸止损", f"@{float(stop_px):.2f}（{phase}）"))
-        if detail.get("initial_atr"):
-            lines.append(_line("初始ATR", f"{float(detail['initial_atr']):.4f}"))
-        if detail.get("current_adx") or detail.get("adx"):
-            lines.append(_line("ADX", f"{float(detail.get('current_adx') or detail.get('adx')):.1f}"))
-    if detail.get("force_aligned"):
-        lines.append(_line("逆势处理", "已强平对齐 TV 方向"))
-    if detail.get("startup_summary"):
-        lines.append(_line("对账摘要", str(detail["startup_summary"])))
-    if detail.get("regime") is not None:
-        lines.append(_line("档位", f"R{detail['regime']}"))
-    if detail.get("tp_ratios_pct"):
-        lines.append(_line("止盈比例", f"TP1/2/3 = {detail['tp_ratios_pct']}%"))
-    tp_m, tp_e = detail.get("tp_matched"), detail.get("tp_expected")
-    if tp_e:
-        lines.append(_line("止盈挂单", f"{tp_m or 0}/{tp_e} 档"))
-    if detail.get("pnl_track"):
-        track = "浮盈/呼吸轨" if detail["pnl_track"] == "profit_radar" else "浮亏/呼吸轨"
-        lines.append(_line("风控轨道", track))
-    radar_sl = detail.get("radar_sl") or {}
-    if radar_sl.get("expected_sl"):
-        status = "✓" if radar_sl.get("live") else "待补挂"
-        lines.append(_line("呼吸止损盘口", f"@{float(radar_sl['expected_sl']):.2f} {status}"))
-    return "\n".join(lines)
+    qty = detail.get("qty") or detail.get("live_qty") or detail.get("watched_qty") or 0
+    stop_px = detail.get("shield_stop_price") or detail.get("current_sl") or detail.get("tv_sl") or 0
+    return (
+        f"重启恢复完成，持仓 {side_txt}，数量 {float(qty):.4f}，"
+        f"当前止损 {float(stop_px):.2f}"
+    )
 
 
 def format_radar_arm_detail_cn(detail: dict, exchange: str | None = None) -> str:
-    """呼吸止损步进/底限/追踪 — 钉钉核实明细（兼容旧 RADAR_* 调用名）。"""
-    sym = detail.get("symbol") or detail.get("canonical_symbol")
-    theme = resolve_exchange_theme(exchange or detail.get("exchange"), sym)
-    lines = [
-        _line("交易所", theme["label"]),
-        _line("合约", theme.get("symbol") or sym or "—"),
-        _line("呼吸规则", format_regime_radar_activation_legend()),
-        _line("铁律", "止损只朝盈利方向移动·禁止逆向"),
+    """妈妈版止损移动 / 阶段切换短文案."""
+    event = str(detail.get("event") or "")
+    adx = float(detail.get("adx") or detail.get("current_adx") or 0)
+    trail = detail.get("trail_dist_atr")
+    if trail is None and isinstance(detail.get("meta"), dict):
+        trail = detail["meta"].get("trail_dist_atr")
+    new_sl = detail.get("new_sl") or detail.get("current_sl") or 0
+    extreme = detail.get("best_price") or detail.get("extreme") or 0
+    profit = detail.get("profit_pct") or detail.get("floating_pnl_pct")
+    side = str(detail.get("side") or "").upper()
+    move = "上移" if side != "SHORT" else "下移"
+
+    if event == "phase2_enter":
+        return (
+            f"阶段切换：止损已进入阶段二（趋势追踪），"
+            f"当前ADX={adx:.1f}，追踪距离={float(trail or 0):.2f}×ATR"
+        )
+    profit_txt = f"{float(profit):+.2f}" if profit is not None else "—"
+    return (
+        f"止损{move}至 {float(new_sl):.2f}，当前最高/最低价 {float(extreme):.2f}，"
+        f"浮盈 {profit_txt}%"
+    )
+
+
+def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
+    """妈妈版平仓 / 反转保护 / 止损触发短文案."""
+    reason = detail.get("tv_reason") or detail.get("reason") or detail.get("close_reason") or ""
+    price = detail.get("exit_price") or detail.get("tv_price") or detail.get("price") or detail.get("curr_px") or 0
+    stop = detail.get("current_sl") or detail.get("stop") or detail.get("tv_sl") or 0
+    pnl = detail.get("live_pnl_pct") or detail.get("pnl_pct") or detail.get("tv_pnl_pct")
+    phase2 = bool(detail.get("breakeven_phase") or detail.get("breakeven_active"))
+    action = str(detail.get("close_action") or detail.get("action") or "").upper()
+    pnl_txt = f"{float(pnl):+.2f}" if pnl is not None else "—"
+
+    if "BREATH" in action or detail.get("close_trigger") == "breathing_stop_hit":
+        phase = "二" if phase2 else "一"
+        return (
+            f"止损触发：价格 {float(price):.2f} 触及止损 {float(stop):.2f}，"
+            f"阶段 {phase}，盈亏 {pnl_txt}%"
+        )
+    if "QUICK" in action or "RSI" in action or reason:
+        return f"反转保护平仓，原因：{reason or action}，价格 {float(price):.2f}"
+    if detail.get("matched_tps") or "TP" in action:
+        levels = detail.get("matched_tps") or []
+        if 3 in levels or action == "CLOSE_TP3":
+            return f"TP3 止盈成交，全部平仓，盈亏 {pnl_txt}%"
+        if 2 in levels:
+            return f"TP2 止盈成交，剩余仓位 40%，当前止损 {float(stop):.2f}"
+        if 1 in levels:
+            return f"TP1 止盈成交，剩余仓位 70%，当前止损 {float(stop):.2f}"
+    return f"反转保护平仓，原因：{reason or '全平'}，价格 {float(price):.2f}"
+
+
+def format_tp_fill_detail_cn(detail: dict, alert_type: str = "") -> str:
+    stop = float(detail.get("current_sl") or detail.get("stop") or 0)
+    pnl = detail.get("pnl_pct") or detail.get("live_pnl_pct")
+    level = detail.get("tp_level") or detail.get("level")
+    at = str(alert_type or "").upper()
+    if level is None:
+        if "TP1" in at:
+            level = 1
+        elif "TP2" in at:
+            level = 2
+        elif "TP3" in at:
+            level = 3
+    lvl = int(level or 0)
+    if lvl == 1:
+        return f"TP1 止盈成交，剩余仓位 70%，当前止损 {stop:.2f}"
+    if lvl == 2:
+        return f"TP2 止盈成交，剩余仓位 40%，当前止损 {stop:.2f}"
+    if lvl == 3:
+        pnl_txt = f"{float(pnl):+.2f}" if pnl is not None else "—"
+        return f"TP3 止盈成交，全部平仓，盈亏 {pnl_txt}%"
+    rem = detail.get("remaining_qty_pct")
+    if rem is not None:
+        return f"止盈成交，剩余仓位 {float(rem)*100:.0f}%，当前止损 {stop:.2f}"
+    return f"止盈成交，当前止损 {stop:.2f}"
+
+
+def format_cap_align_detail_cn(detail: dict, exchange: str | None = None) -> str:
+    """叠仓超标对齐 — 短中文，无 JSON 块."""
+    d = dict(detail or {})
+    side = str(d.get("side") or "").upper()
+    side_cn = "做多" if side == "LONG" else ("做空" if side == "SHORT" else (side or "—"))
+    regime = d.get("regime")
+    regime_txt = f"R{int(regime)}" if regime is not None else "—"
+    live = d.get("live_qty")
+    target = d.get("target_qty") or d.get("max_qty") or d.get("new_qty")
+    trimmed = d.get("trimmed") or d.get("trim_qty")
+    margin_usd = d.get("margin_usd")
+    trigger = d.get("trigger") or ""
+    parts = [
+        f"叠仓对齐 · {side_cn} · {regime_txt}",
     ]
-    if detail.get("entry"):
-        lines.append(_line("开仓价", f"{float(detail['entry']):.2f}"))
-    if detail.get("curr_px"):
-        lines.append(_line("现价", f"{float(detail['curr_px']):.2f}"))
-    if detail.get("initial_atr") or detail.get("atr"):
-        lines.append(_line("初始ATR", f"{float(detail.get('initial_atr') or detail.get('atr')):.4f}"))
-    if detail.get("adx") is not None or detail.get("current_adx") is not None:
-        lines.append(_line("ADX", f"{float(detail.get('adx') or detail.get('current_adx')):.1f}"))
-    if detail.get("breakeven_phase") is not None:
-        lines.append(_line("阶段", "二·ADX追踪" if detail.get("breakeven_phase") else "一·步进锁本"))
-    if detail.get("event"):
-        ev_labels = {
-            "step": "阶梯上移",
-            "floor_tp1": "TP1底限",
-            "floor_tp2": "TP2底限",
-            "phase2_enter": "切入保本追踪",
-            "trail": "ADX连续追踪",
-        }
-        lines.append(_line("事件", ev_labels.get(str(detail["event"]), str(detail["event"]))))
-    meta = detail.get("meta") or {}
-    if meta.get("step_count") is not None:
-        lines.append(_line("阶梯步数", str(meta["step_count"])))
-    if meta.get("trail_dist_atr") is not None:
-        lines.append(_line("追踪距离", f"{float(meta['trail_dist_atr']):.2f}×ATR"))
-    if detail.get("new_sl") or detail.get("current_sl") or detail.get("radar_sl"):
-        sl = detail.get("new_sl") or detail.get("current_sl") or detail.get("radar_sl")
-        lines.append(_line("呼吸止损", f"@{float(sl):.2f}"))
-    if detail.get("initial_stop"):
-        lines.append(_line("初始止损", f"@{float(detail['initial_stop']):.2f}"))
-    if detail.get("best_price"):
-        lines.append(_line("极值价", f"{float(detail['best_price']):.2f}"))
-    if detail.get("floating_pnl") is not None:
-        try:
-            fp = float(detail["floating_pnl"])
-            lines.append(_line("当前浮盈", f"{fp:+.2f} USDT"))
-        except (TypeError, ValueError):
-            pass
-    if detail.get("reason"):
-        lines.append(_line("说明", str(detail["reason"])))
-    return "\n".join(lines)
+    if live is not None and target is not None:
+        parts.append(f"实盘 {float(live):.4g} → 目标 {float(target):.4g}")
+    if trimmed is not None:
+        parts.append(f"削减 {float(trimmed):.4g}")
+    if margin_usd is not None:
+        parts.append(f"档位保证金 {float(margin_usd):.2f} USDT")
+    if trigger:
+        parts.append(f"触发：{trigger}")
+    return "，".join(parts)
+
+
+def format_adverse_sl_detail_cn(detail: dict, exchange: str | None = None) -> str:
+    stop = detail.get("stop_price") or detail.get("current_sl") or detail.get("tv_sl") or 0
+    return f"呼吸止损挂载 @{float(stop):.2f}"
 
 
 def format_admin_detail_lines(
@@ -560,7 +489,7 @@ def format_admin_detail_lines(
         return format_cap_align_detail_cn(detail, ex)
     if alert_type.startswith("ADVERSE_SL"):
         return format_adverse_sl_detail_cn(detail, ex)
-    if alert_type in ("CLOSE", "CLOSE_TP3", "CLOSE_PROTECT", "CLOSE_STOPLOSS", "CLOSE_ATTRIBUTION", "CLOSE_BREATH_STOP"):
+    if alert_type in ("CLOSE", "CLOSE_TP3", "CLOSE_PROTECT", "CLOSE_STOPLOSS", "CLOSE_ATTRIBUTION", "CLOSE_BREATH_STOP", "CLOSE_QUICK_EXIT", "CLOSE_RSI_EXIT"):
         return format_close_detail_cn(detail, ex)
     if alert_type in ("RADAR_ARM", "RADAR_REVOKE", "TRAIL", "BREATH_STEP", "BREATH_FLOOR", "BREATH_PHASE2", "BREATH_TRAIL"):
         return format_radar_arm_detail_cn(detail, ex)
@@ -569,9 +498,13 @@ def format_admin_detail_lines(
     if alert_type == "FORCE_ALIGN":
         return format_force_align_detail_cn(detail, ex)
     if alert_type == "IDLE_WATCH":
-        return format_force_align_detail_cn(detail, ex) if detail.get("live_side") else format_startup_detail_cn(detail, ex)
-    if alert_type in ("OPEN", "PYRAMID", "PROFIT_ADD", "NOTIONAL_CAP") or detail.get("sizing_mode") in ("vps_open", "vps_add", "vps_open_margin_coeff"):
+        return format_startup_detail_cn(detail, ex)
+    if alert_type in ("OPEN", "NOTIONAL_CAP") or detail.get("sizing_mode") in (
+        "vps_open", "equity20_lev5_notional", "risk20_cap5x_tv_qty_cap",
+    ):
         return format_vps_entry_detail_cn(detail, ex)
+    if alert_type in ("TP_FILLED", "TP1_FILL", "TP2_FILL", "TP3_FILL"):
+        return format_tp_fill_detail_cn(detail, alert_type)
     if alert_type == "UPDATE_TP":
         theme = resolve_exchange_theme(ex, detail.get("symbol") or detail.get("canonical_symbol"))
         side = detail.get("side")
@@ -638,6 +571,16 @@ def format_trading_alert_body(
     type_label = ALERT_TYPE_TAGS.get(alert_type, alert_type)
     d = dict(detail or {})
     ex = exchange or d.get("exchange") or d.get("exchange_id")
+    # Breathing stop close title depends on phase
+    resolved_title = title
+    if alert_type == "CLOSE_BREATH_STOP":
+        phase2 = bool(d.get("breakeven_phase") or d.get("breakeven_active"))
+        if "阶段二" in str(message or "") or "趋势追踪" in str(message or ""):
+            phase2 = True
+        resolved_title = (
+            "止损平仓(阶段二/趋势追踪)" if phase2 else "止损平仓(阶段一)"
+        )
+        type_label = resolved_title
     detail_block = format_admin_detail_lines(alert_type, detail, exchange=ex)
 
     pipe = format_checklist_pipe_line(
@@ -647,7 +590,7 @@ def format_trading_alert_body(
         price=d.get("price") or d.get("mark_price") or d.get("entry") or d.get("curr_px"),
         qty=d.get("qty") or d.get("watched_qty") or d.get("live_qty"),
         equity=d.get("equity") or d.get("sizing_base") or d.get("equity_balance"),
-        remark=str(message or title or "")[:120],
+        remark=str(message or resolved_title or "")[:120],
     )
 
     body = (
@@ -657,7 +600,7 @@ def format_trading_alert_body(
         f"{theme['accent']} {theme['label']} · **{theme.get('symbol_label') or theme['symbol']}** · **{theme['leverage']}×**\n\n"
         f"**合约**：`{theme['symbol']}`（{theme.get('canonical_symbol') or ''}）\n"
         f"**用户**：{display}（UID {uid} / 内部ID {user_id}）\n\n"
-        f"**{title}**\n\n"
+        f"**{resolved_title}**\n\n"
         f"{message}\n"
     )
     if detail_block:

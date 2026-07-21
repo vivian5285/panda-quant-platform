@@ -26,19 +26,19 @@ from app.services.webhook_payload import normalize_tv_payload
 from unittest.mock import MagicMock, patch
 
 
-def test_checklist_risk20_cap5x_sizing():
-    """清单§四：风险资金=权益×20%；名义上限=权益×5；取 min 并受 TV.qty 封顶。"""
+def test_checklist_risk20_sizing():
+    """RISK20: min(risk/stop, notional/price, tv_qty)."""
     assert RISK_PCT == 0.20 and MAX_LEVERAGE == 5
     qty, meta = compute_tv_entry_qty(
-        live_balance=1000, initial_principal=1000, price=2000, tv_sl=1900,
+        live_balance=1000, initial_principal=1000, price=3300, tv_sl=3200, tv_qty=1.0,
     )
-    # risk=200 / stop=100 → 2.0; notional=5000/2000=2.5 → qty=2.0
-    assert abs(qty - 2.0) < 1e-9
-    assert "risk20" in str(meta.get("sizing_mode") or meta.get("binding") or "")
+    assert qty == pytest.approx(1.0, abs=1e-9)
+    assert meta["sizing_mode"] == "risk20_cap5x_tv_qty_cap"
     qty2, m2 = compute_tv_entry_qty(
-        live_balance=1000, initial_principal=1000, price=2000, tv_sl=1900, tv_qty=0.5,
+        live_balance=1000, initial_principal=1000, price=3300, tv_sl=3200, tv_qty=0.5,
     )
-    assert abs(qty2 - 0.5) < 1e-9
+    assert qty2 == pytest.approx(0.5, abs=1e-9)
+    assert m2["binding"] == "tv_qty_cap"
 
 
 def test_checklist_tv_fields_parsed():
@@ -59,7 +59,7 @@ def test_checklist_tv_fields_parsed():
     norm = normalize_tv_payload(raw)
     assert norm["action"] == "LONG"
     assert float(norm.get("stop_loss") or norm.get("tv_sl") or 0) == 3200.5
-    assert PLACEABLE_TP_LEVELS == frozenset({1, 2, 3})
+    assert PLACEABLE_TP_LEVELS == frozenset({1, 2})
     assert VALID_ACTIONS == frozenset({
         "LONG", "SHORT", "CLOSE_QUICK_EXIT", "CLOSE_RSI_EXIT",
     })
@@ -137,20 +137,22 @@ def test_ws_reconnect_exponential_all_exchanges():
 
 
 def test_resolve_entry_qty_eth_requires_stop():
+    """RISK20 sizing 必须有 stop。"""
     qty, meta = resolve_vps_entry_qty_eth(
         live_balance=1000.0,
         initial_principal=1000.0,
         entry_type="OPEN",
         base_qty=0,
-        price=1892.43,
+        price=3300.0,
         tv_sl=0,
         regime=3,
-        exchange_leverage=25,
+        exchange_leverage=5,
         round_fn=lambda x: x,
+        symbol="ETHUSDT",
+        tv_qty=1.0,
     )
     assert qty == 0
-    err = str(meta.get("error") or "")
-    assert "missing" in err and "stop" in err or "sl" in err
+    assert meta.get("error") == "missing_stop"
 
 
 def test_resolve_entry_qty_deepcoin_open_contracts():

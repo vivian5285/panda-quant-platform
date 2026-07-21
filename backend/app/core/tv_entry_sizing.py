@@ -1,14 +1,12 @@
-"""Entry sizing — VPS 实盘清单 v6.5.6 (all exchanges).
+"""Entry sizing — RISK20 + notional5 + TV qty cap (all exchanges).
 
-Formula (authoritative):
-  risk_capital = equity × 0.20          # 单笔最大亏损额
-  notional_cap = equity × 5             # 最大杠杆名义上限
-  risk_qty     = risk_capital / |price − stop_loss|
-  lev_qty      = notional_cap / price
-  theoretical  = min(risk_qty, lev_qty)
-  final_qty    = min(theoretical, TV.qty) if TV.qty > 0 else theoretical
-  precision    = floor(qty / step) × step
+Authoritative formula (stateless pure function):
+  risk_capital   = equity × 0.20
+  notional_cap   = equity × 5
+  theoretical    = min(risk_capital / |price − stop|, notional_cap / price)
+  qty            = floor(min(theoretical, tv_qty))
 
+Inputs only: equity, price, stop, tv_qty (+ precision). Never reads add_count / prior position.
 Exchange leverage always set to 5×.
 """
 
@@ -22,13 +20,14 @@ from app.core.position_sizing import resolve_principal_sizing_base
 
 settings = get_settings()
 
-RISK_PCT = 0.20          # 单笔风险比例
-MAX_LEVERAGE = 5         # 最大杠杆（名义上限 = equity × 5）
-FIXED_MARGIN_PCT = RISK_PCT   # compat alias
-FIXED_LEVERAGE = MAX_LEVERAGE  # compat alias
+RISK_PCT = 0.20
+MAX_LEVERAGE = 5
+FIXED_MARGIN_PCT = RISK_PCT
+FIXED_LEVERAGE = MAX_LEVERAGE
+SIZING_MODE = "risk20_cap5x_tv_qty_cap"
 
 ENTRY_TYPES = frozenset({"OPEN"})
-ENTRY_TYPES_ADD = frozenset()
+ENTRY_TYPES_ADD = frozenset()  # pyramiding disabled
 
 
 def _parse_float(raw, default: float | None = None) -> float | None:
@@ -64,8 +63,8 @@ def parse_tv_entry_fields(payload: dict | None) -> dict[str, Any]:
         "leverage": MAX_LEVERAGE,
         "tv_leverage": float(MAX_LEVERAGE),
         "qty_ratio": 1.0,
-        "qty_ratio_source": "vps_risk20_lev5",
-        "sizing_mode": "risk20_cap5x_tv_qty_cap",
+        "qty_ratio_source": "vps_risk20_notional5",
+        "sizing_mode": SIZING_MODE,
     }
 
 
@@ -97,9 +96,7 @@ def compute_tv_entry_qty(
     margin_pct: float | None = None,
     tv_qty: float | None = None,
 ) -> tuple[float, dict[str, Any]]:
-    """
-    risk_capital/stop_dist vs notional_cap/price, then min with TV.qty.
-    """
+    """Independent per-open sizing — no history / add_count."""
     from app.core.symbol_registry import normalize_canonical_symbol
 
     sizing_base, sizing_source = resolve_principal_sizing_base(live_balance, initial_principal)
@@ -118,7 +115,7 @@ def compute_tv_entry_qty(
     tv_qty_f = float(tv_qty) if tv_qty is not None and float(tv_qty) > 0 else 0.0
 
     meta: dict[str, Any] = {
-        "sizing_mode": "risk20_cap5x_tv_qty_cap",
+        "sizing_mode": SIZING_MODE,
         "entry_type": "OPEN",
         "sizing_base": round(sizing_base, 2),
         "sizing_source": sizing_source,
@@ -131,12 +128,14 @@ def compute_tv_entry_qty(
         "margin_pct_frac": risk_frac,
         "price": round(price_f, 4),
         "tv_sl": round(tv_sl_f, 4) if tv_sl_f else None,
+        "tv_qty_ref": tv_qty_f if tv_qty_f > 0 else None,
         "tv_qty_cap": tv_qty_f if tv_qty_f > 0 else None,
         "hard_notional_usd": None,
         "hard_cap_removed": True,
         "symbol": can,
         "qty_step": step,
         "qty_ratio": 1.0,
+        "binding": "risk20_notional5_tv_qty",
     }
 
     if price_f <= 0:
@@ -146,37 +145,40 @@ def compute_tv_entry_qty(
         meta["error"] = "zero_equity"
         return 0.0, meta
     if tv_sl_f <= 0:
-        meta["error"] = "missing_stop_loss"
+        meta["error"] = "missing_stop"
         return 0.0, meta
-
-    stop_distance = abs(price_f - tv_sl_f)
-    meta["sl_distance"] = round(stop_distance, 6)
-    meta["stop_distance"] = round(stop_distance, 6)
-    if stop_distance <= 0:
+    stop_dist = abs(price_f - tv_sl_f)
+    if stop_dist <= 0:
         meta["error"] = "zero_stop_distance"
+        return 0.0, meta
+    if tv_qty_f <= 0:
+        meta["error"] = "missing_tv_qty"
         return 0.0, meta
 
     risk_capital = sizing_base * risk_frac
     notional_cap = sizing_base * lev
-    risk_qty = risk_capital / stop_distance
-    lev_qty = notional_cap / price_f
-    theoretical = min(risk_qty, lev_qty)
-    binding = "risk" if risk_qty <= lev_qty else "leverage_cap"
-
-    raw_qty = theoretical
-    if tv_qty_f > 0 and tv_qty_f < raw_qty:
-        raw_qty = tv_qty_f
-        binding = "tv_qty_cap"
+    qty_by_risk = risk_capital / stop_dist
+    qty_by_notional = notional_cap / price_f
+    theoretical = min(qty_by_risk, qty_by_notional)
+    capped = min(theoretical, tv_qty_f)
 
     meta["risk_capital"] = round(risk_capital, 4)
     meta["notional_cap"] = round(notional_cap, 4)
-    meta["risk_qty"] = round(risk_qty, 6)
-    meta["leverage_limit_qty"] = round(lev_qty, 6)
+    meta["nominal_value"] = round(notional_cap, 4)
+    meta["sl_distance"] = round(stop_dist, 6)
+    meta["stop_distance"] = meta["sl_distance"]
+    meta["qty_by_risk"] = round(qty_by_risk, 6)
+    meta["qty_by_notional"] = round(qty_by_notional, 6)
     meta["theoretical_qty"] = round(theoretical, 6)
-    meta["raw_qty"] = round(raw_qty, 6)
-    meta["binding"] = binding
+    meta["raw_qty"] = round(capped, 6)
+    if qty_by_risk <= qty_by_notional and theoretical <= tv_qty_f:
+        meta["binding"] = "stop_risk"
+    elif qty_by_notional < qty_by_risk and theoretical <= tv_qty_f:
+        meta["binding"] = "notional_cap"
+    else:
+        meta["binding"] = "tv_qty_cap"
 
-    floored = floor_qty(raw_qty, step)
+    floored = floor_qty(capped, step)
     if round_fn is not None:
         qty = float(round_fn(floored))
     else:
@@ -232,21 +234,7 @@ def compute_vps_open_qty(
 
 
 def compute_vps_add_qty(**kwargs) -> tuple[float, dict[str, Any]]:
-    live_balance = kwargs.get("live_balance")
-    price = kwargs.get("price")
-    if live_balance is None or price is None:
-        return 0.0, {"sizing_mode": "risk20_cap5x_tv_qty_cap", "error": "add_disabled", "final_qty": 0.0}
-    return compute_tv_entry_qty(
-        live_balance=float(live_balance),
-        initial_principal=float(kwargs.get("initial_principal") or live_balance or 0),
-        price=float(price),
-        tv_sl=float(kwargs.get("tv_sl") or 0),
-        round_fn=kwargs.get("round_fn"),
-        min_qty=kwargs.get("min_qty"),
-        max_qty=kwargs.get("max_qty"),
-        symbol=kwargs.get("symbol"),
-        tv_qty=kwargs.get("tv_qty"),
-    )
+    return 0.0, {"sizing_mode": SIZING_MODE, "error": "add_disabled", "final_qty": 0.0}
 
 
 def compute_vps_open_contracts(
@@ -266,7 +254,6 @@ def compute_vps_open_contracts(
     tv_qty: float | None = None,
 ) -> tuple[int, dict[str, Any]]:
     fv = max(float(face_value or 0.1), 1e-9)
-    # TV qty for deepcoin may already be contracts — treat as ETH-equiv if < large
     eth_qty, meta = compute_vps_open_qty(
         live_balance=live_balance,
         initial_principal=initial_principal,
@@ -293,13 +280,7 @@ def compute_vps_open_contracts(
 
 
 def compute_vps_add_contracts(**kwargs) -> tuple[int, dict[str, Any]]:
-    fv = max(float(kwargs.get("face_value") or 0.1), 1e-9)
-    eth_qty, meta = compute_vps_add_qty(**{k: v for k, v in kwargs.items() if k != "face_value"})
-    contracts = int(math.floor(float(eth_qty) / fv + 1e-12)) if eth_qty > 0 else 0
-    meta["face_value"] = fv
-    meta["final_qty"] = contracts
-    meta["add_qty"] = contracts
-    return contracts, meta
+    return 0, {"sizing_mode": SIZING_MODE, "error": "add_disabled", "final_qty": 0}
 
 
 def resolve_vps_entry_qty_eth(
@@ -314,12 +295,15 @@ def resolve_vps_entry_qty_eth(
     exchange_leverage: int = MAX_LEVERAGE,
     round_fn,
     tv_qty_ratio: float | None = None,
-    qty_ratio_source: str = "vps_risk20_lev5",
+    qty_ratio_source: str = "vps_risk20_notional5",
     symbol: str | None = None,
     min_qty: float | None = None,
     risk_pct: float | None = None,
     tv_qty: float | None = None,
 ) -> tuple[float, dict]:
+    et = str(entry_type or "OPEN").upper()
+    if et in ("PYRAMID", "PROFIT_ADD", "ADD"):
+        return 0.0, {"sizing_mode": SIZING_MODE, "error": "add_disabled", "final_qty": 0.0}
     return compute_vps_open_qty(
         live_balance=live_balance,
         initial_principal=initial_principal,
@@ -344,11 +328,14 @@ def resolve_vps_entry_qty_deepcoin(
     exchange_leverage: int = MAX_LEVERAGE,
     face_value: float = 0.1,
     tv_qty_ratio: float | None = None,
-    qty_ratio_source: str = "vps_risk20_lev5",
+    qty_ratio_source: str = "vps_risk20_notional5",
     symbol: str | None = None,
     risk_pct: float | None = None,
     tv_qty: float | None = None,
 ) -> tuple[int, dict]:
+    et = str(entry_type or "OPEN").upper()
+    if et in ("PYRAMID", "PROFIT_ADD", "ADD"):
+        return 0, {"sizing_mode": SIZING_MODE, "error": "add_disabled", "final_qty": 0}
     return compute_vps_open_contracts(
         live_balance=live_balance,
         initial_principal=initial_principal,

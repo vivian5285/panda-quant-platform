@@ -1,5 +1,7 @@
 """Tests for GEMINI per-exchange DingTalk themes and admin-readable Chinese alerts."""
 
+import pytest
+
 from app.services.trading_alerts import (
     EXCHANGE_THEMES,
     format_admin_detail_lines,
@@ -134,8 +136,8 @@ def test_all_gemini_exchanges_share_principal_cap_guard():
         }
         max_qty, meta = sup._compute_regime_cap_target(1775.0)
         assert meta["sizing_base"] == 700.0
-        assert meta["cap_source"] == "tv_risk_formula"
-        assert meta.get("margin_pct") is None
+        assert meta["cap_source"] == "risk20_cap5x"
+        assert meta.get("margin_pct") == pytest.approx(20.0)
         assert max_qty > 0.5
 
     user = User(id=2, exchange=ExchangeType.DEEPCOIN.value, initial_principal=700.0)
@@ -157,5 +159,5 @@ def test_all_gemini_exchanges_share_principal_cap_guard():
     }
     max_c, meta_c = dc_sup._compute_regime_cap_target(3000.0)
     assert meta_c["sizing_base"] == 700.0
-    assert meta_c["cap_source"] == "tv_risk_formula"
+    assert meta_c["cap_source"] == "risk20_cap5x"
     assert max_c >= 1

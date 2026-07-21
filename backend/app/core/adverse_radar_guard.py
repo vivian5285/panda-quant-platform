@@ -6,12 +6,19 @@ import time
 from typing import Any
 
 from app.core.breathing_stop import (
+    INITIAL_SL_ATR,
     apply_breathing_tick,
     compute_initial_stop,
     init_breathing_state,
     resolve_adx,
     resolve_atr,
     stop_hit,
+)
+from app.core.market_engine import (
+    atr_mismatch_ratio,
+    ensure_fresh,
+    force_refresh,
+    implied_atr_from_tv_stop,
 )
 from app.core.position_qty_tolerance import qty_drift_tolerance
 from app.core.radar_trail import (
@@ -303,6 +310,95 @@ class AdverseRadarMixin:
         if not hasattr(self, "_last_breath_trail_alert_sl"):
             self._last_breath_trail_alert_sl = 0.0
 
+    def _pull_vps_market_indicators(self, *, force: bool = False) -> dict[str, Any]:
+        """Refresh ATR/ADX from VPS market engine. Never uses TV webhook values.
+
+        On force (open): writes current_atr + current_adx.
+        On soft refresh (tick): only updates current_adx; never mutates initial_atr.
+        """
+        self._init_adverse_radar_fields()
+        client = getattr(self, "client", None)
+        ex = getattr(self, "exchange_id", None) or getattr(client, "exchange_id", None)
+        sym = (
+            getattr(self, "canonical_symbol", None)
+            or getattr(client, "canonical_symbol", None)
+            or getattr(self, "symbol", None)
+            or getattr(client, "trading_symbol", None)
+        )
+        snap = (
+            force_refresh(client=client, exchange=ex, symbol=sym)
+            if force
+            else ensure_fresh(client=client, exchange=ex, symbol=sym)
+        )
+        atr = float(snap.get("atr") or 0)
+        adx = float(snap.get("adx") or 0)
+        if atr > 0:
+            # Never overwrite frozen initial_atr after open
+            live = (
+                float(getattr(self, "initial_atr", 0) or 0) > 0
+                and (
+                    bool(getattr(self, "monitoring", False))
+                    or float(getattr(self, "watched_qty", 0) or 0) > 0
+                )
+            )
+            if force or not live:
+                self.current_atr = atr
+            elif float(getattr(self, "current_atr", 0) or 0) <= 0:
+                self.current_atr = atr
+        if adx > 0:
+            self.current_adx = resolve_adx(adx)
+        return snap
+
+    def _maybe_alert_atr_mismatch(
+        self,
+        entry: float,
+        tv_stop: float | None,
+        vps_atr: float,
+    ) -> None:
+        """Debug-only: compare TV stop_loss-implied ATR vs VPS ATR. Never affects stops."""
+        from app.config import get_settings
+
+        implied = implied_atr_from_tv_stop(
+            float(entry or 0), float(tv_stop or 0), initial_sl_atr=INITIAL_SL_ATR,
+        )
+        vps = float(vps_atr or 0)
+        if implied <= 0 or vps <= 0:
+            return
+        ratio = atr_mismatch_ratio(vps, implied)
+        warn_pct = float(getattr(get_settings(), "ATR_COMPARE_WARN_PCT", 0.20) or 0.20)
+        if ratio < warn_pct:
+            logger.info(
+                "[User %s] ATR核对 OK: vps=%.4f tv_implied=%.4f ratio=%.1f%%",
+                getattr(self, "user_id", "?"),
+                vps, implied, ratio * 100,
+            )
+            return
+        detail = {
+            "vps_atr": vps,
+            "tv_implied_atr": implied,
+            "tv_stop_loss": float(tv_stop or 0),
+            "entry": float(entry or 0),
+            "mismatch_pct": round(ratio * 100, 2),
+            "warn_pct": warn_pct * 100,
+            "note": "仅告警·不参与止损决策",
+        }
+        logger.warning(
+            "[User %s] ATR核对偏差过大: vps=%.4f tv_implied=%.4f Δ=%.1f%%",
+            getattr(self, "user_id", "?"),
+            vps, implied, ratio * 100,
+        )
+        if hasattr(self, "_alert"):
+            try:
+                self._alert(
+                    "warning",
+                    "ATR_MISMATCH",
+                    "ATR双边核对偏差",
+                    f"VPS ATR={vps:.4f} vs TV隐含={implied:.4f} (Δ{ratio*100:.0f}%) · 请核对90m周期",
+                    detail,
+                )
+            except Exception:
+                pass
+
     def _pause_trading(self, reason: str, detail: dict | None = None) -> None:
         """Checklist §七: missing persist / direction mismatch → alert + pause opens."""
         self._init_adverse_radar_fields()
@@ -532,14 +628,13 @@ class AdverseRadarMixin:
         )
         if payload:
             entry = float(payload.get("price") or entry or 0)
-        atr = float(getattr(self, "initial_atr", 0) or 0)
-        if atr <= 0:
-            atr = float(getattr(self, "current_atr", 0) or 0)
-        if payload and payload.get("atr"):
-            atr = float(payload.get("atr") or atr)
+        # ATR/ADX from VPS market engine only — never webhook
+        snap = self._pull_vps_market_indicators(force=True)
+        atr = float(snap.get("atr") or 0) or float(getattr(self, "current_atr", 0) or 0)
         atr = resolve_atr(atr)
-        if payload and payload.get("adx") is not None:
-            self.current_adx = resolve_adx(payload.get("adx"))
+        self.current_atr = atr
+        if float(snap.get("adx") or 0) > 0:
+            self.current_adx = resolve_adx(snap.get("adx"))
         side_u = side or getattr(self, "current_side", None)
         if not side_u and payload:
             act = str(payload.get("action") or "").upper()
@@ -559,6 +654,8 @@ class AdverseRadarMixin:
             "atr": atr,
             "adx": float(getattr(self, "current_adx", 0) or 0),
             "initial_sl_atr": 1.5,
+            "market_source": snap.get("source"),
+            "bars_90": snap.get("bars_90"),
         }
         if stop > 0:
             self.tv_sl = float(stop)
@@ -567,12 +664,26 @@ class AdverseRadarMixin:
             self._tv_hard_sl_price = float(stop)
             if float(getattr(self, "initial_atr", 0) or 0) <= 0:
                 self.initial_atr = atr
-            self.current_atr = atr if float(getattr(self, "current_atr", 0) or 0) <= 0 else float(self.current_atr)
+            # Before open freeze: keep current_atr in sync with VPS
+            if float(getattr(self, "initial_atr", 0) or 0) <= 0 or not (
+                bool(getattr(self, "monitoring", False))
+                or float(getattr(self, "watched_qty", 0) or 0) > 0
+            ):
+                self.current_atr = atr
             self._vps_hard_sl_meta = meta
             logger.info(
                 "呼吸止损: entry=%.2f side=%s atr=%.4f → stop=%.2f | %s",
                 entry, side_u, atr, stop, meta,
             )
+            tv_sl_ref = None
+            if payload:
+                try:
+                    tv_sl_ref = float(
+                        payload.get("stop_loss") or payload.get("tv_sl") or 0
+                    ) or None
+                except (TypeError, ValueError):
+                    tv_sl_ref = None
+            self._maybe_alert_atr_mismatch(entry, tv_sl_ref, atr)
         else:
             self._vps_hard_sl_meta = meta
             logger.error(
@@ -594,19 +705,10 @@ class AdverseRadarMixin:
         return meta
 
     def _apply_tv_sl_from_payload(self, payload: dict | None) -> float | None:
-        """Parse atr/adx from payload; ignore TV stop_loss; recompute breathing stop at open."""
+        """Ignore TV stop_loss/atr/adx for decisions; pull VPS indicators and recompute stop at open."""
         if not payload:
             return None
         self._init_adverse_radar_fields()
-        if payload.get("atr") not in (None, ""):
-            try:
-                atr = float(payload.get("atr") or 0)
-                if atr > 0:
-                    self.current_atr = atr
-            except (TypeError, ValueError):
-                pass
-        if payload.get("adx") is not None and str(payload.get("adx")).strip() != "":
-            self.current_adx = resolve_adx(payload.get("adx"))
         # Live breathing position: never reset stop from TV / mid-trade atr
         live_breath = (
             float(getattr(self, "initial_stop", 0) or 0) > 0
@@ -617,6 +719,8 @@ class AdverseRadarMixin:
             )
         )
         if live_breath:
+            # Soft-refresh ADX only from VPS; do not touch stops/initial_atr
+            self._pull_vps_market_indicators(force=False)
             px = float(
                 getattr(self, "current_sl", 0)
                 or getattr(self, "initial_stop", 0)
@@ -624,7 +728,7 @@ class AdverseRadarMixin:
                 or 0
             )
             return px if px > 0 else None
-        # Intentionally ignore stop_loss / tv_sl for stop price
+        # Intentionally ignore stop_loss / tv_sl / atr / adx for stop price
         meta = self._recompute_vps_hard_sl(payload=payload)
         px = float(meta.get("stop_price") or 0)
         return px if px > 0 else None
@@ -947,11 +1051,10 @@ class AdverseRadarMixin:
         )
 
     def _handle_update_sl(self, payload: dict) -> dict[str, Any]:
-        """UPDATE_SL → ignore TV stop price; optional ADX refresh only (breathing owns SL)."""
+        """UPDATE_SL → ignore TV stop price; soft-refresh ADX from VPS market engine only."""
         self._init_adverse_radar_fields()
         adx_before = float(getattr(self, "current_adx", 0) or 0)
-        if payload.get("adx") is not None and str(payload.get("adx")).strip() != "":
-            self.current_adx = resolve_adx(payload.get("adx"))
+        snap = self._pull_vps_market_indicators(force=False)
         tv_sl_ignored = parse_tv_sl(payload.get("tv_sl") or payload.get("stop_loss"))
         detail = {
             "action": "UPDATE_SL",
@@ -960,7 +1063,8 @@ class AdverseRadarMixin:
             "current_sl": float(getattr(self, "current_sl", 0) or 0),
             "current_adx": float(getattr(self, "current_adx", 0) or 0),
             "adx_before": adx_before,
-            "note": "呼吸止损不采纳TV止损价；仅可刷新ADX",
+            "market_source": snap.get("source"),
+            "note": "呼吸止损不采纳TV止损价；ADX仅来自VPS行情引擎",
         }
         self._log("UPDATE_SL", "忽略TV止损价·呼吸止损自管", detail)
         if hasattr(self, "_alert") and float(getattr(self, "current_adx", 0) or 0) != adx_before:
@@ -1241,11 +1345,16 @@ class AdverseRadarMixin:
         atr: float | None = None,
         adx: float | None = None,
     ) -> dict:
-        """Initialize breathing-stop state at position open."""
+        """Initialize breathing-stop state at position open (VPS ATR/ADX only)."""
         self._init_adverse_radar_fields()
         side = getattr(self, "current_side", None) or ""
-        atr_v = atr if atr is not None else getattr(self, "current_atr", None)
-        adx_v = adx if adx is not None else getattr(self, "current_adx", None)
+        snap = self._pull_vps_market_indicators(force=True)
+        atr_v = float(snap.get("atr") or 0) or (
+            atr if atr is not None else getattr(self, "current_atr", None)
+        )
+        adx_v = float(snap.get("adx") or 0) or (
+            adx if adx is not None else getattr(self, "current_adx", None)
+        )
         st = init_breathing_state(float(entry or 0), str(side), atr=atr_v, adx=adx_v)
         self.initial_atr = float(st["initial_atr"])
         self.initial_stop = float(st["initial_stop"])
@@ -1264,13 +1373,20 @@ class AdverseRadarMixin:
             "side": side,
             "atr": float(st["initial_atr"]),
             "adx": float(st["current_adx"]),
+            "market_source": snap.get("source"),
+            "bars_90": snap.get("bars_90"),
         }
         self._last_breath_trail_alert_sl = 0.0
         return st
 
     def _process_breathing_stop_tick(self, live_qty: float, curr_px: float) -> bool:
         """Evaluate breathing stop one tick; place/improve SL; close on hit."""
+        pause_until = float(getattr(self, "_breath_resize_pause_until", 0) or 0)
+        if pause_until and time.time() < pause_until:
+            return False
         self._init_adverse_radar_fields()
+        # Soft-refresh ADX when a new 90m bar closes (never mutates initial_atr)
+        self._pull_vps_market_indicators(force=False)
         entry = float(getattr(self, "watched_entry", 0) or 0)
         side = getattr(self, "current_side", None)
         atr = float(
@@ -1295,6 +1411,7 @@ class AdverseRadarMixin:
             self.current_sl = current_sl
             self.tv_sl = current_sl
 
+        was_phase = phase
         tick = apply_breathing_tick(
             side=side,
             price=px,
@@ -1319,10 +1436,15 @@ class AdverseRadarMixin:
             self.tv_sl = new_sl
 
         if stop_hit(side, px, float(getattr(self, "current_sl", 0) or 0)):
+            phase_label = (
+                "止损平仓(阶段二/趋势追踪)"
+                if bool(getattr(self, "breakeven_phase", False)) or was_phase
+                else "止损平仓(阶段一)"
+            )
             if hasattr(self, "_close_all"):
                 try:
                     self._close_all(
-                        "呼吸止损触发",
+                        phase_label,
                         close_action="CLOSE_BREATH_STOP",
                         close_trigger="breathing_stop_hit",
                     )
@@ -1354,11 +1476,13 @@ class AdverseRadarMixin:
             else:
                 placed = bool(self._ensure_radar_sl(sl_px, live_qty))
 
+        meta = dict(tick.get("meta") or {})
+        trail_dist_atr = meta.get("trail_dist_atr")
         alert_map = {
             "step": ("BREATH_STEP", "呼吸止损·步进上移"),
             "floor_tp1": ("BREATH_FLOOR", "呼吸止损·TP1底限"),
             "floor_tp2": ("BREATH_FLOOR", "呼吸止损·TP2底限"),
-            "phase2_enter": ("BREATH_PHASE2", "呼吸止损·进入保本追踪"),
+            "phase2_enter": ("BREATH_PHASE2", "呼吸止损·阶段切换"),
             "trail": ("BREATH_TRAIL", "呼吸止损·ADX追踪"),
         }
         should_alert = event in alert_map and (
@@ -1377,18 +1501,28 @@ class AdverseRadarMixin:
                 "best_price": new_best,
                 "curr_px": px,
                 "entry": entry,
+                "switch_price": px if event == "phase2_enter" else None,
+                "trail_dist_atr": trail_dist_atr,
+                "trail_distance": (
+                    float(trail_dist_atr) * atr
+                    if trail_dist_atr is not None else None
+                ),
                 "improved": improved,
                 "placed": placed,
-                "meta": tick.get("meta") or {},
+                "meta": meta,
             }
             if hasattr(self, "_log"):
                 self._log(atype, f"{title} @{sl_px:.2f}", detail)
             if hasattr(self, "_alert"):
-                self._alert(
-                    "info", atype, title,
-                    f"SL@{sl_px:.2f} | 现价{px:.2f} | ADX={adx:.1f} | phase={'2' if new_phase else '1'}",
-                    detail,
-                )
+                if event == "phase2_enter":
+                    msg = (
+                        f"切换价{px:.2f} | ADX={adx:.1f} | "
+                        f"追踪距离={float(trail_dist_atr or 0):.2f}×ATR"
+                        f"({float(detail.get('trail_distance') or 0):.2f}) | SL@{sl_px:.2f}"
+                    )
+                else:
+                    msg = f"SL@{sl_px:.2f} | 现价{px:.2f} | ADX={adx:.1f} | phase={'2' if new_phase else '1'}"
+                self._alert("info", atype, title, msg, detail)
             if event == "trail":
                 self._last_breath_trail_alert_sl = sl_px
 
@@ -1407,6 +1541,11 @@ class AdverseRadarMixin:
         if curr_px <= 0 or not entry:
             return
         self._init_adverse_radar_fields()
+        # Soft-refresh ADX from VPS; never rewrite frozen initial_atr
+        try:
+            self._pull_vps_market_indicators(force=False)
+        except Exception:
+            pass
         side = getattr(self, "current_side", None)
         atr = float(
             getattr(self, "initial_atr", 0)
@@ -1708,17 +1847,17 @@ class AdverseRadarMixin:
                 pending.append(aid_int)
             self._pending_adverse_algo_ids = pending[-8:]
 
-        # 份额共存：条件单 closePosition / 全仓关闭，不与 TP123 reduceOnly 限价抢仓位额度
-        if hasattr(client, "place_stop_market_order"):
+        # 架构对齐：止损单必须带 quantity，以便 TP1/TP2 后收缩至 70%/40%
+        if hasattr(client, "place_stop_market_order") and qty_f > 0:
             order = client.place_stop_market_order(
-                close_side, stop_price, symbol, quantity=None,
+                close_side, stop_price, symbol, quantity=qty_f, reduce_only=True,
             )
             if order:
-                self._last_hard_sl_order_style = "stop_market_close_all"
+                self._last_hard_sl_order_style = "stop_market_qty"
                 _track_algo(order)
                 return True
 
-        # Fallback: qty Stop-Limit（可能与 TP 抢 reduceOnly 份额，仅当 closePosition 不可用）
+        # Fallback: qty Stop-Limit（closePosition 已禁用）
         if hasattr(client, "place_stop_limit_order") and qty_f > 0:
             order = client.place_stop_limit_order(
                 close_side, stop_price, limit_px, symbol,
@@ -1728,24 +1867,24 @@ class AdverseRadarMixin:
                 self._last_hard_sl_order_style = "stop_limit"
                 _track_algo(order)
                 logger.warning(
-                    "[User %s] 硬止损 closePosition 不可用，降级 Stop-Limit qty=%.4f @%.2f（注意与TP份额）",
+                    "[User %s] 硬止损降级 Stop-Limit qty=%.4f @%.2f",
                     getattr(self, "user_id", "?"),
                     qty_f,
                     float(stop_price or 0),
                 )
                 return True
 
-        if hasattr(client, "place_stop_market_order") and qty_f > 0:
+        if hasattr(client, "place_stop_market_order"):
+            # Last resort: closePosition only if qty unavailable
             order = client.place_stop_market_order(
-                close_side, stop_price, symbol, quantity=qty_f, reduce_only=True,
+                close_side, stop_price, symbol, quantity=None,
             )
             if order:
-                self._last_hard_sl_order_style = "stop_market_qty"
+                self._last_hard_sl_order_style = "stop_market_close_all"
                 _track_algo(order)
                 logger.warning(
-                    "[User %s] 硬止损降级 STOP_MARKET qty=%.4f @%.2f",
+                    "[User %s] 硬止损无 qty，降级 closePosition @%.2f",
                     getattr(self, "user_id", "?"),
-                    qty_f,
                     float(stop_price or 0),
                 )
                 return True
@@ -2434,7 +2573,7 @@ class AdverseRadarMixin:
         return 0.0
 
     def _boost_radar_after_tp_fill(self, change_type: str, curr_px: float, live_qty: float) -> None:
-        """Soft-stub: after TP fill only update remaining_qty_pct — do NOT bump SL price."""
+        """TP1/TP2 fill: update remaining pct, then atomically resize stop qty (no price bump)."""
         if change_type not in ("tp1_filled", "tp2_filled", "tp3_filled"):
             return
         consumed = list(getattr(self, "consumed_tp_levels", None) or [])
@@ -2445,19 +2584,54 @@ class AdverseRadarMixin:
         self.remaining_qty_pct = self._remaining_qty_pct_from_consumed(consumed)
         if hasattr(self, "_save_state"):
             self._save_state()
-        logger.info(
-            "[User %s] TP吃单后仅更新 remaining_qty_pct=%.2f（呼吸止损不因TP抬止损）| %s",
-            getattr(self, "user_id", "?"),
-            float(self.remaining_qty_pct),
-            change_type,
-        )
+
+        # Pause breathing price ticks while stop qty is resized (avoid race)
+        self._breath_resize_pause_until = time.time() + 8.0
+
+        resize_qty = float(live_qty or 0)
+        if resize_qty <= 0 and hasattr(self, "_resolve_adverse_live_qty"):
+            resize_qty = float(self._resolve_adverse_live_qty(0) or 0)
+        if resize_qty <= 0:
+            init_q = float(getattr(self, "initial_qty", 0) or 0)
+            resize_qty = init_q * float(self.remaining_qty_pct or 0)
+
+        stop_px = float(getattr(self, "current_sl", 0) or 0)
+        if resize_qty > 0 and stop_px > 0 and hasattr(self, "_sync_binance_merged_stop"):
+            try:
+                self._sync_binance_merged_stop(
+                    resize_qty, radar_sl=stop_px, force_replace=True, at_open=False,
+                )
+                logger.info(
+                    "[User %s] TP后止损数量收缩 remaining=%.0f%% qty=%.4f @%.2f | %s",
+                    getattr(self, "user_id", "?"),
+                    float(self.remaining_qty_pct) * 100.0,
+                    resize_qty,
+                    stop_px,
+                    change_type,
+                )
+            except Exception as exc:
+                logger.error(
+                    "[User %s] TP后止损数量收缩失败: %s",
+                    getattr(self, "user_id", "?"),
+                    exc,
+                )
+        elif change_type == "tp3_filled":
+            logger.info(
+                "[User %s] TP3不挂限价；阶段二由呼吸引擎接管 | remaining=%.2f",
+                getattr(self, "user_id", "?"),
+                float(self.remaining_qty_pct),
+            )
 
     def _orchestrate_defense_monitoring(self, live_qty: float, curr_px: float) -> None:
         """
-        Unified defense: breathing stop (hard+radar merged) + TP123.
+        Unified defense: breathing stop (hard+radar merged) + TP12.
         All exchanges share one breathing tick; exchange place APIs differ only.
         """
         if curr_px <= 0:
+            return
+        # Pause price ticks while TP-fill stop qty resize is in flight
+        pause_until = float(getattr(self, "_breath_resize_pause_until", 0) or 0)
+        if pause_until and time.time() < pause_until:
             return
 
         live_qty = self._resolve_adverse_live_qty(live_qty)

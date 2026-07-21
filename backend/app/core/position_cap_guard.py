@@ -125,7 +125,7 @@ class PositionCapGuardMixin:
             "regime": regime,
             "tv_sl": round(tv_sl, 4) if tv_sl else 0,
             "margin_pct": FIXED_MARGIN_PCT * 100.0,
-            "cap_source": "fixed_margin_20_x5",
+            "cap_source": "risk20_cap5x",
         }
 
         tracked = max(
@@ -154,6 +154,10 @@ class PositionCapGuardMixin:
                 exchange_leverage=leverage or FIXED_LEVERAGE,
                 face_value=face_value,
                 symbol=getattr(self, "canonical_symbol", None),
+                tv_qty=float(
+                    ((getattr(self, "_tv_entry_fields", None) or {}).get("tv_qty") or 0)
+                    or 1e18
+                ),
             )
             meta.update({
                 k: sizing_meta[k]
@@ -180,6 +184,11 @@ class PositionCapGuardMixin:
             ),
             symbol=getattr(self, "canonical_symbol", None),
             min_qty=float(getattr(self, "min_order_qty", 0) or 0) or None,
+            # Cap detect uses risk∩notional; do not require TV qty for detect-only
+            tv_qty=float(
+                ((getattr(self, "_tv_entry_fields", None) or {}).get("tv_qty") or 0)
+                or 1e18
+            ),
         )
         meta.update({
             k: sizing_meta[k]
@@ -316,148 +325,27 @@ class PositionCapGuardMixin:
         if not cap["oversized"]:
             return result
 
+        # Detect-only: CAP_ALIGN must NOT place reduce orders (arch align — no autonomous partial close)
         target_qty = float(cap["target_qty"])
-        tol = float(cap.get("tolerance", 0) or 0)
-        if float(cap.get("trim_qty", 0) or 0) <= tol + 1e-9:
-            logger.info(
-                "[User %s] CAP_ALIGN within tolerance: live=%.4f target=%.4f tol=%.4f",
-                self.user_id, live_qty, target_qty, tol,
-            )
-            result["aligned"] = True
-            return result
-
-        trim_plan_err = self._validate_cap_trim_plan(cap)
-        if trim_plan_err:
-            logger.error(
-                "[User %s] CAP_ALIGN blocked unsafe trim: %s | cap=%s",
-                self.user_id, trim_plan_err, cap,
-            )
-            self._log("CAP_ALIGN_BLOCKED", f"档位纠偏中止(安全校验): {trim_plan_err}", cap)
-            err_detail = self._cap_alert_detail(cap, error=trim_plan_err)
-            self._alert(
-                "critical",
-                "CAP_ALIGN_BLOCKED",
-                "叠仓超标 · 纠偏中止",
-                self._cap_admin_summary(
-                    live_qty=live_qty, target_qty=target_qty, err=trim_plan_err,
-                ),
-                err_detail,
-            )
-            result["error"] = trim_plan_err
-            return result
-
         logger.warning(
-            "[User %s] CAP_ALIGN oversized: live=%.4f target=%.4f trim=%.4f regime=%s",
-            self.user_id, live_qty, target_qty, cap["trim_qty"], self.regime,
+            "[User %s] CAP_ALIGN detect-only (no trim): live=%.4f target=%.4f regime=%s reason=%s",
+            self.user_id, live_qty, target_qty, self.regime, reason,
         )
-
-        trimmed_total = 0.0
-        for round_i in range(CAP_TRIM_MAX_ROUNDS):
-            current_qty, _ = self._read_live_position_qty()
-            if current_qty <= 0:
-                result["error"] = "trim_zero_position"
-                return result
-            if self._cap_qty_within_target(current_qty, target_qty):
-                break
-
-            slice_trim = max(0.0, current_qty - target_qty)
-            from app.core.symbol_precision import round_quantity
-            if not self._is_deepcoin_cap():
-                slice_trim = round_quantity(slice_trim)
-            if slice_trim <= 0:
-                break
-
-            if not self._place_cap_trim_order(slice_trim):
-                self._log(
-                    "CAP_ALIGN_FAIL",
-                    f"档位额度超标但减仓失败: 实盘 {current_qty:.4f} > 目标 {target_qty:.4f}",
-                    cap,
-                )
-                self._alert(
-                    "critical",
-                    "CAP_ALIGN_FAIL",
-                    "叠仓超标 · 减仓失败",
-                    self._cap_admin_summary(live_qty=current_qty, target_qty=target_qty),
-                    self._cap_alert_detail(cap),
-                )
-                result["error"] = "trim_failed"
-                return result
-
-            time.sleep(CAP_TRIM_VERIFY_DELAY)
-            after_qty, _ = self._read_live_position_qty()
-            trimmed_total += max(0.0, current_qty - after_qty)
-            if self._cap_qty_within_target(after_qty, target_qty):
-                break
-            if round_i == CAP_TRIM_MAX_ROUNDS - 1:
-                logger.warning(
-                    "[User %s] CAP_ALIGN trim rounds exhausted: want %.4f got %.4f",
-                    self.user_id, target_qty, after_qty,
-                )
-
-        new_qty, new_entry = self._read_live_position_qty()
-        if new_entry > 0:
-            entry = new_entry
-        if new_qty <= 0:
-            result["error"] = "trim_zero_position"
-            return result
-
-        unit = self._cap_qty_unit()
-        if new_qty < target_qty * 0.5 and live_qty > target_qty * 1.5:
-            self._alert(
-                "critical",
-                "CAP_ALIGN_OVERTRIM",
-                "叠仓纠偏 · 过度减仓",
-                self._cap_admin_summary(
-                    live_qty=live_qty, target_qty=target_qty, new_qty=new_qty,
-                ) + "，请立即人工核查",
-                self._cap_alert_detail(cap, new_qty=new_qty),
-            )
-            result["error"] = "over_trim"
-            result["new_qty"] = new_qty
-            return result
-
-        trimmed = max(0.0, float(live_qty) - new_qty) if trimmed_total <= 0 else trimmed_total
-        self.watched_qty = new_qty
-
-        sl_to_pass = self._radar_sl_to_pass()
-        defense = self._smart_realign_defenses(
-            new_qty,
-            entry or float(getattr(self, "watched_entry", 0) or 0),
-            dynamic_sl=sl_to_pass,
-            reason=f"雷达强制减仓对齐档位额度 ({reason})",
-        )
-
-        detail = self._cap_alert_detail(
+        self._log(
+            "CAP_ALIGN",
+            f"叠仓超标·仅告警不下单 live={live_qty:.4f} target={target_qty:.4f}",
             cap,
-            trimmed=trimmed,
-            new_qty=new_qty,
-            entry=entry,
-            regime=self.regime,
-            radar_sl_preserved=sl_to_pass,
-            defense=defense,
-            trigger=reason,
         )
-        msg = self._cap_admin_summary(
-            live_qty=live_qty,
-            target_qty=target_qty,
-            trimmed=trimmed,
-            new_qty=new_qty,
-        ) + f" | 止盈 {defense.get('matched')}/{defense.get('expected')} 档"
-        self._log("CAP_ALIGN", msg, detail)
         self._alert(
             "critical",
             "CAP_ALIGN",
-            "叠仓超标 · 雷达强制对齐",
-            msg,
-            detail,
+            "叠仓超标 · 仅检测",
+            self._cap_admin_summary(
+                live_qty=live_qty, target_qty=target_qty, err="detect_only_no_trim",
+            ),
+            self._cap_alert_detail(cap, error="detect_only_no_trim"),
         )
-        if hasattr(self, "_save_state"):
-            self._save_state()
-
-        result.update({
-            "aligned": True,
-            "trimmed": trimmed,
-            "new_qty": new_qty,
-            "defense": defense,
-        })
+        result["aligned"] = False
+        result["trimmed"] = 0.0
+        result["detect_only"] = True
         return result

@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 def test_fixed_tp_percent_all_regimes():
     assert FIXED_TP_QTY_PERCENT == (30, 30, 40)
-    assert PLACEABLE_TP_LEVELS == frozenset({1, 2, 3})
+    assert PLACEABLE_TP_LEVELS == frozenset({1, 2})
     for regime in (1, 2, 3, 4):
         assert PINE_TP_QTY_PERCENT[regime] == (30, 30, 40)
 
@@ -57,8 +57,8 @@ def test_enrich_tp_alert_detail_for_dingtalk():
     assert detail["tp_ratios_pct"] == "30/30/40"
     assert detail["regime"] == 1
     assert detail["tp_ratios"] == [0.3, 0.3, 0.4]
-    assert detail["tp3_limit_placed"] is True
-    assert detail["tp_placeable_levels"] == [1, 2, 3]
+    assert detail["tp3_limit_placed"] is False
+    assert detail["tp_placeable_levels"] == [1, 2]
 
 
 def test_format_tp_ratio_label():

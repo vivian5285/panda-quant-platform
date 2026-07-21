@@ -1,7 +1,7 @@
 """Compat re-export — canonical TP module is ``tp_regime_targets``.
 
-Checklist 简洁版: fixed 30/30/40, place TP1+TP2+TP3 limits @ TV prices,
-ignore TV qty1/qty2/qty3. Prefer importing from ``tp_regime_targets`` in new code.
+Checklist: fixed 30/30/40 qty split; place TP1+TP2 limits only (TP3 trail via breathing).
+Ignore TV qty1/qty2/qty3. Prefer importing from ``tp_regime_targets`` in new code.
 """
 
 from __future__ import annotations

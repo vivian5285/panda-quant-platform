@@ -72,7 +72,7 @@ def test_open_skips_dingtalk_when_hard_sl_aborts():
         "qty_ratio": 1.0,
     })
     sup._resolve_entry_qty = MagicMock(return_value=(1.0, {
-        "sizing_mode": "tv_risk_formula",
+        "sizing_mode": "equity20_lev5_notional",
         "order_amount": 2000,
         "sl_distance": 50,
         "sizing_source": "test",

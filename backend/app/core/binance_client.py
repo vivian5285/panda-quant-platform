@@ -269,31 +269,32 @@ class BinanceClient:
             logger.error(f"[User {self.user_id}] get position failed: {e}")
             return None
 
-    def estimate_atr(self, symbol=None, period: int = 14) -> float:
-        """Wilder ATR from recent 1h klines — fallback when TV webhook omits atr."""
+    def fetch_klines(
+        self,
+        symbol: str | None = None,
+        interval: str = "30m",
+        limit: int = 300,
+    ) -> list:
+        """USDT-M klines as Binance list rows [open_time, o, h, l, c, volume, ...]."""
         symbol = self._sym(symbol)
         try:
-            klines = self.client.futures_klines(
-                symbol=symbol, interval="1h", limit=period + 2,
+            rows = self.client.futures_klines(
+                symbol=symbol, interval=interval, limit=int(limit),
             )
-            if not klines or len(klines) < period + 1:
-                return 0.0
-            trs: list[float] = []
-            for i in range(1, len(klines)):
-                high = float(klines[i][2])
-                low = float(klines[i][3])
-                prev_close = float(klines[i - 1][4])
-                tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-                trs.append(tr)
-            if len(trs) < period:
-                return 0.0
-            atr = sum(trs[:period]) / period
-            for tr in trs[period:]:
-                atr = (atr * (period - 1) + tr) / period
-            return round(float(atr), 4)
+            return list(rows or [])
         except Exception as e:
-            logger.warning(f"[User {self.user_id}] estimate_atr failed: {e}")
-            return 0.0
+            logger.warning(f"[User {self.user_id}] fetch_klines failed: {e}")
+            return []
+
+    def estimate_atr(self, symbol=None, period: int = 14) -> float:
+        """Legacy helper — prefer market_engine 90m ATR for breathing stop."""
+        from app.core.market_engine import force_refresh
+
+        snap = force_refresh(client=self, exchange="binance", symbol=symbol)
+        atr = float(snap.get("atr") or 0)
+        if atr > 0:
+            return round(atr, 4)
+        return 0.0
 
     def _normalize_algo_order(self, row: dict) -> dict:
         """Map Binance algo conditional order into futures_get_open_orders shape."""

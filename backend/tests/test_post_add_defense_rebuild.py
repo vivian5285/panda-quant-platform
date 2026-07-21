@@ -74,38 +74,20 @@ def test_rebuild_defenses_after_tv_add_nuclear_and_radar():
     assert result["aligned"] is True
 
 
-def test_add_to_position_calls_rebuild_defenses():
+def test_add_to_position_redirects_to_flatten_open():
+    """妈妈版：加仓禁用，_add_to_position → 先平后开。"""
     sup, client = _make_supervisor()
-    sup._apply_tv_entry_context({"entry_type": "PYRAMID", "qty_ratio": 0.5, "regime": 3})
-    sup._rebuild_defenses_after_tv_add = MagicMock(
-        return_value={
-            "shield": {"aligned": True},
-            "tp_realign": {"matched_full": 3, "expected": 3},
-            "tp_slices": [{"level": 1, "qty": 0.3, "price": 2100.0}],
-            "matched": 3,
-            "expected": 3,
-            "summary": "ok",
-            "prev_tv_tps": [2050.0, 2150.0, 2250.0],
-            "radar_sl": 1980.0,
-            "radar_active": True,
-        }
-    )
-    sup._resolve_entry_qty = MagicMock(return_value=(0.5, {"base_qty": 1.0, "add_qty_ratio": 0.5}))
-    sup._smart_realign_defenses = MagicMock()
-    sup._signal_prev_tv_tps = [2050.0, 2150.0, 2250.0]
-
-    with patch.object(sup.position_manager, "get_position") as gp:
-        gp.side_effect = [
-            {"positionAmt": "1.0", "entryPrice": "2000"},
-            {"positionAmt": "1.5", "entryPrice": "2005"},
-        ]
-        sup._add_to_position("LONG", 2000.0, "PYRAMID")
-
-    sup._rebuild_defenses_after_tv_add.assert_called_once()
-    sup._smart_realign_defenses.assert_not_called()
-    call_kw = sup._rebuild_defenses_after_tv_add.call_args
-    assert call_kw[0][0] == pytest.approx(1.5)
-    assert call_kw[1]["entry_type"] == "PYRAMID"
+    flat = MagicMock(return_value=True)
+    open_pos = MagicMock(return_value={"status": "ok"})
+    rebuild = MagicMock()
+    with patch.object(sup, "_force_flat_before_open", flat), \
+         patch.object(sup, "_open_position", open_pos), \
+         patch.object(sup, "_rebuild_defenses_after_tv_add", rebuild):
+        result = PositionSupervisor._add_to_position(sup, "LONG", 2000.0, "PYRAMID")
+    flat.assert_called_once()
+    open_pos.assert_called_once_with("LONG", 2000.0)
+    rebuild.assert_not_called()
+    assert result.get("status") == "ok"
 
 
 def test_rebuild_keeps_initial_qty_when_tp_consumed():

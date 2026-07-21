@@ -224,6 +224,69 @@ class GateClient:
                 pass
         return self._get_ws_price(contract, max_age=120.0) or 0.0
 
+    def fetch_klines(
+        self,
+        symbol: str | None = None,
+        interval: str = "30m",
+        limit: int = 300,
+    ) -> list:
+        """Public candlesticks → Binance-shaped rows [open_time_ms, o, h, l, c, vol]."""
+        contract = symbol or self.trading_symbol
+        # Gate interval tokens: 30m, 1h, ...
+        try:
+            resp = requests.get(
+                f"{BASE_URL}/futures/usdt/candlesticks",
+                params={
+                    "contract": contract,
+                    "interval": interval,
+                    "limit": int(limit),
+                },
+                timeout=15,
+            )
+            if resp.status_code >= 400:
+                logger.warning(
+                    "[User %s] Gate fetch_klines status=%s", self.user_id, resp.status_code,
+                )
+                return []
+            rows = resp.json()
+            if not isinstance(rows, list):
+                return []
+            out = []
+            for row in rows:
+                try:
+                    if isinstance(row, dict):
+                        ts = int(float(row.get("t") or 0))
+                        # Gate returns seconds
+                        if ts < 1_000_000_000_000:
+                            ts *= 1000
+                        out.append([
+                            ts,
+                            float(row.get("o") or 0),
+                            float(row.get("h") or 0),
+                            float(row.get("l") or 0),
+                            float(row.get("c") or 0),
+                            float(row.get("v") or row.get("sum") or 0),
+                        ])
+                    elif isinstance(row, (list, tuple)) and len(row) >= 5:
+                        ts = int(float(row[0]))
+                        if ts < 1_000_000_000_000:
+                            ts *= 1000
+                        out.append([
+                            ts,
+                            float(row[1]),
+                            float(row[2]),
+                            float(row[3]),
+                            float(row[4]),
+                            float(row[5] if len(row) > 5 else 0),
+                        ])
+                except (TypeError, ValueError, IndexError):
+                    continue
+            out.sort(key=lambda r: r[0])
+            return out
+        except Exception as exc:
+            logger.warning("[User %s] Gate fetch_klines failed: %s", self.user_id, exc)
+            return []
+
     def start_public_price_ws(self, symbol: str | None = None) -> None:
         contract = symbol or self.trading_symbol
         if self._pub_ws_running and self._pub_ws_symbol == contract:

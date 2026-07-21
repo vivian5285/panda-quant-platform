@@ -892,36 +892,12 @@ class StartupReconcileMixin:
         return {"status": "skipped", "reason": skip_reason, "action": raw_action, "detail": detail}
 
     def _preserve_manual_on_tv_open_reopen(self, action: str, curr_px: float) -> dict[str, Any]:
-        """Same-direction TV OPEN must not 先平后开 manual positions."""
-        live_side, live_qty = resolve_supervisor_live_side(self)
-        entry = float(getattr(self, "watched_entry", 0) or 0)
-        pm = getattr(self, "position_manager", None)
-        if pm and getattr(self, "symbol", None):
-            pos = pm.get_position(self.symbol)
-            if pos:
-                entry = float(pos.get("entryPrice") or entry or 0)
-        self.adopted_manual = True
-        self.monitoring = True
-        self.current_side = action
-        self.last_tv_side = action
-        self.watched_qty = live_qty
-        self.watched_entry = entry
-
-        detail = {"side": action, "qty": live_qty, "entry": entry, "tv_price": curr_px}
-        msg = "人工同向持仓：忽略 TV OPEN 先平后开，刷新 TP123/雷达"
+        """Arch align: same-dir skip deleted — always flatten+open (caller must not use this)."""
+        detail = {"side": action, "tv_price": curr_px, "policy": "force_flat_before_open"}
+        msg = "同向跳过已禁用：LONG/SHORT 一律先平后开"
         if hasattr(self, "_log"):
             self._log("SIGNAL", msg, detail)
-        if hasattr(self, "_alert"):
-            self._alert("info", "TV_OPEN_SKIPPED", "TV开仓信号 · 保留人工持仓", msg, detail)
-
-        if live_qty > 0 and hasattr(self, "_unified_startup_defense_reconcile"):
-            unified = self._unified_startup_defense_reconcile(
-                live_qty, entry, curr_px, reason="TV_OPEN忽略先平后开",
-            )
-            detail["startup_summary"] = unified.get("startup_summary")
-        if hasattr(self, "_save_state"):
-            self._save_state()
-        return {"status": "skipped", "reason": "manual_skip_tv_open_reopen", "action": action, "detail": detail}
+        return {"status": "error", "reason": "same_dir_skip_disabled", "action": action, "detail": detail}
 
     def _purge_defense_orders_on_flat(self, trigger: str = "flat", *, notify: bool = True) -> dict:
         """Immediately tear down TP123 + STOP/algo/conditional when exchange position is flat."""

@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.core.radar_trail import DEFAULT_ATR_ETH
 from app.core.symbol_precision import round_price
 
 logger = logging.getLogger(__name__)
@@ -27,7 +26,8 @@ def enrich_tv_signal(
 ) -> dict:
     """
     v6.5.6: map aliases already done in normalize_tv_payload.
-    Only fill missing atr (radar needs it); NEVER invent tp1-3 from regime.
+    ATR/ADX are computed by VPS market engine — do NOT invent atr for decisions.
+    NEVER invent tp1-3 from regime.
     """
     out = dict(data)
     action = str(out.get("action", "")).upper().strip()
@@ -55,18 +55,11 @@ def enrich_tv_signal(
         out["regime"] = 3
         enriched.append("regime_default")
 
-    atr = float(out.get("atr") or 0)
-    if atr <= 0:
-        atr = float(fallback_atr or 0)
-    if atr <= 0 and client and hasattr(client, "estimate_atr"):
-        try:
-            atr = float(client.estimate_atr(symbol) or 0)
-        except Exception:
-            atr = 0.0
-    if atr <= 0:
-        atr = float(DEFAULT_ATR_ETH)
-        enriched.append("atr_default")
-    out["atr"] = round(float(atr), 4)
+    # Keep atr/adx on payload only if TV sent them (debug / ATR_MISMATCH compare).
+    # Do not fill defaults — breathing stop uses market_engine exclusively.
+    if fallback_atr is not None and float(out.get("atr") or 0) <= 0:
+        # retained for logging only; supervisors ignore webhook atr
+        pass
 
     # Ensure tv_* mirrors for supervisors
     if float(out.get("stop_loss") or 0) > 0:
@@ -83,8 +76,8 @@ def enrich_tv_signal(
     out["_enriched_fields"] = enriched
     if enriched:
         logger.info(
-            "[Webhook] enriched v6.5.6 entry %s fields=%s atr=%s tps=%s,%s,%s sl=%s",
-            action, enriched, out["atr"],
+            "[Webhook] enriched v6.5.6 entry %s fields=%s tps=%s,%s,%s sl=%s",
+            action, enriched,
             out.get("tv_tp1"), out.get("tv_tp2"), out.get("tv_tp3"), out.get("tv_sl"),
         )
     return out

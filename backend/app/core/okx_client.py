@@ -223,6 +223,46 @@ class OkxClient:
                 pass
         return self._get_ws_price(inst, max_age=120.0) or 0.0
 
+    def fetch_klines(
+        self,
+        symbol: str | None = None,
+        interval: str = "30m",
+        limit: int = 300,
+    ) -> list:
+        """Public candles → Binance-shaped rows [open_time_ms, o, h, l, c, vol]."""
+        inst = symbol or self.trading_symbol
+        bar = interval if interval.endswith("m") or interval.endswith("H") else interval
+        # OKX uses same 30m/1H tokens; map 1h → 1H
+        if bar.lower() == "1h":
+            bar = "1H"
+        try:
+            resp = requests.get(
+                f"{BASE_URL}/api/v5/market/candles",
+                params={"instId": inst, "bar": bar, "limit": str(int(limit))},
+                timeout=15,
+            )
+            data = resp.json()
+            rows = data.get("data") if isinstance(data, dict) else None
+            if not isinstance(rows, list):
+                return []
+            out = []
+            for row in reversed(rows):  # OKX returns newest first
+                try:
+                    out.append([
+                        int(float(row[0])),
+                        float(row[1]),
+                        float(row[2]),
+                        float(row[3]),
+                        float(row[4]),
+                        float(row[5] if len(row) > 5 else 0),
+                    ])
+                except (TypeError, ValueError, IndexError):
+                    continue
+            return out
+        except Exception as exc:
+            logger.warning("[User %s] OKX fetch_klines failed: %s", self.user_id, exc)
+            return []
+
     def _set_ws_price(self, symbol: str, price: float) -> None:
         with self._price_lock:
             self._price_cache[symbol] = price

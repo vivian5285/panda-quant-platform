@@ -41,10 +41,7 @@ from app.core.close_attribution import diagnose_flat_close, format_close_reason
 from app.core.symbol_precision import normalize_tv_targets, round_price, round_quantity, PRICE_TICK
 from app.core.position_sizing import read_contract_equity
 from app.core.tv_entry_sizing import (
-    ENTRY_TYPES_ADD,
-    max_add_times_for_regime,
     parse_tv_entry_fields,
-    regime_add_qty_ratio,
     resolve_vps_entry_qty_eth,
 )
 from app.core.position_qty_tolerance import qty_change_significant, qty_drift_tolerance, tp_slice_qty_tolerance
@@ -239,6 +236,7 @@ class PositionSupervisor(
         try:
             with open(self.state_file, "w") as f:
                 json.dump({
+                    "schema_version": 2,
                     "last_tv_side": self.last_tv_side,
                     "current_side": self.current_side,
                     "watched_qty": self.watched_qty,
@@ -486,7 +484,7 @@ class PositionSupervisor(
         self.regime = int(payload.get("regime", 3))
         self.regime = clamp_regime(self.regime)
 
-        self.current_atr = float(payload.get("atr", 30.0))
+        # ATR/ADX come from VPS market engine only — ignore webhook atr/adx for decisions
         self.tv_price = round_price(payload.get("price", 0))
         self.tv_tps = normalize_tv_targets([
             payload.get("tv_tp1", 0),
@@ -494,18 +492,12 @@ class PositionSupervisor(
             payload.get("tv_tp3", 0),
         ])
         self.risk_multiplier = float(payload.get("risk_multiplier", 1.0))
-        from app.core.breathing_stop import resolve_adx as _resolve_adx
         position_open = bool(
             getattr(self, "monitoring", False)
             or float(getattr(self, "watched_qty", 0) or 0) > 0
         )
-        if payload.get("adx") is not None and str(payload.get("adx")).strip() != "":
-            self.current_adx = _resolve_adx(payload.get("adx"))
-        elif not position_open:
-            self.current_adx = _resolve_adx(None)
-        # Freeze initial_atr after open — only set on fresh open via _init_breathing_on_open
-        if not position_open and float(getattr(self, "initial_atr", 0) or 0) <= 0:
-            self.initial_atr = float(self.current_atr or 0)
+        if not position_open and hasattr(self, "_pull_vps_market_indicators"):
+            self._pull_vps_market_indicators(force=True)
         self._apply_tv_entry_context(payload)
         self._apply_tv_sl_from_payload(payload)
         close_reason = payload.get("reason", "策略指标反转/波动率安全退出")
@@ -669,7 +661,7 @@ class PositionSupervisor(
         return {"status": "ok", "action": action, "detail": detail}
 
     def _bump_sl_after_tp_reconcile(self, leg: str) -> dict:
-        """Soft-stub: update remaining_qty_pct from consumed TP levels — do NOT bump SL."""
+        """After TP fill: update remaining_qty_pct and resize stop qty (no price bump)."""
         consumed = list(getattr(self, "consumed_tp_levels", None) or [])
         try:
             lvl = int(leg)
@@ -688,14 +680,24 @@ class PositionSupervisor(
             self.remaining_qty_pct = 0.7
         else:
             self.remaining_qty_pct = 1.0
-        if hasattr(self, "_save_state"):
+        change = {1: "tp1_filled", 2: "tp2_filled", 3: "tp3_filled"}.get(lvl)
+        live_qty = float(getattr(self, "watched_qty", 0) or 0)
+        if change and hasattr(self, "_boost_radar_after_tp_fill"):
+            try:
+                self._boost_radar_after_tp_fill(
+                    change, float(getattr(self, "tv_price", 0) or 0), live_qty,
+                )
+            except Exception:
+                pass
+        elif hasattr(self, "_save_state"):
             self._save_state()
         return {
             "ok": True,
             "sl_bumped": False,
             "remaining_qty_pct": float(self.remaining_qty_pct),
             "leg": leg,
-            "note": "breathing stop: TP fill does not bump SL",
+            "stop_resized": True,
+            "note": "breathing stop: TP fill resizes stop qty only",
         }
 
     def _apply_tv_entry_context(self, payload: dict) -> None:
@@ -770,20 +772,35 @@ class PositionSupervisor(
                 return 0.0, meta
         return qty, meta
     def _max_add_times(self) -> int:
-        tv_fields = getattr(self, "_tv_entry_fields", None) or {}
-        regime = int(tv_fields.get("regime") or self.regime or 3)
-        return max_add_times_for_regime(regime)
+        """妈妈版 pyramiding=1 — 加仓禁用."""
+        return 0
 
     def _can_add_more(self) -> tuple[bool, str]:
-        cap = self._max_add_times()
-        count = int(getattr(self, "add_count", 0) or 0)
-        if cap <= 0:
-            return False, "加仓已禁用"
-        if count >= cap:
-            return False, f"已达最大加仓次数 {count}/{cap}"
-        if float(getattr(self, "base_qty", 0) or 0) <= 0:
-            return False, "缺少首仓基准数量 base_qty"
-        return True, ""
+        return False, "加仓已禁用（妈妈版单仓）"
+
+    def _handle_tv_entry(
+        self,
+        action: str,
+        curr_px: float,
+        *,
+        has_pos: bool,
+        current_side: str | None,
+    ) -> dict:
+        """妈妈版：LONG/SHORT 一律先平后开，永不加仓。"""
+        self._log(
+            "SIGNAL",
+            f"⚡ TV OPEN [{action}] 铁律·先平后开（妈妈版单仓·无加仓）",
+        )
+        if not self._force_flat_before_open(f"TV OPEN [{action}] 铁律·先平后开"):
+            return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
+        return self._open_position(action, curr_px)
+
+    def _add_to_position(self, action: str, curr_px: float, entry_type: str) -> dict:
+        """Disabled — redirect to flatten+open."""
+        self._log("SIGNAL", f"⏭️ {entry_type} 加仓已禁用 → 降级先平后开")
+        if not self._force_flat_before_open(f"{entry_type}禁用·先平后开"):
+            return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
+        return self._open_position(action, curr_px)
 
     def _read_live_position_snapshot(self) -> tuple[str | None, float, float]:
         """Return (side, qty, entry) from exchange — Binance-style or DeepCoin."""
@@ -1069,7 +1086,9 @@ class PositionSupervisor(
         self._alert(
             "info" if ok else "warning",
             "FLIP_CLEAN",
-            "先平后开·清场完成·准备开仓" if ok else "先平后开·清场有残留",
+            "先平后开：检测到已有持仓，已市价全平并撤单，准备执行新开仓"
+            if ok
+            else "先平后开·清场有残留",
             f"{reason} | 仓位归零✓ | 挂单{book_txt} | 对账{recon_txt}"
             + (f" | tv_sl@{pending_tv_sl:.2f}" if pending_tv_sl > 0 else ""),
             {
@@ -1082,172 +1101,6 @@ class PositionSupervisor(
         )
         return True
 
-    def _handle_tv_entry(
-        self,
-        action: str,
-        curr_px: float,
-        *,
-        has_pos: bool,
-        current_side: str | None,
-    ) -> dict:
-        """
-        铁律（四所统一）:
-          - 带开仓（OPEN）→ 一律先平现有仓/清挂单，再开新仓（刷新）
-          - 平仓+开仓同到 → 门控已先平后开；此处开仓侧仍先平后开
-          - PYRAMID/PROFIT_ADD 同向追加除外；降级 OPEN / 反向 → 先平后开
-        """
-        entry_type = getattr(self, "_entry_type", "OPEN")
-        if entry_type in ENTRY_TYPES_ADD:
-            if not has_pos:
-                self._log("SIGNAL", f"⚠️ {entry_type} 无持仓，降级为 OPEN · 铁律先平后开")
-                if not self._force_flat_before_open(f"{entry_type}降级OPEN·先平后开"):
-                    return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
-                return self._open_position(action, curr_px)
-            if current_side != action:
-                self._log("SIGNAL", f"⚠️ {entry_type} 方向不一致，先平后开")
-                if not self._force_flat_before_open(f"{entry_type} 反向后降级 OPEN"):
-                    return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
-                return self._open_position(action, curr_px)
-            tv_fields = getattr(self, "_tv_entry_fields", None) or {}
-            qty_ratio = float(tv_fields.get("qty_ratio") or 0)
-            if qty_ratio <= 0:
-                skip_reason = f"TV qty_ratio={qty_ratio}，本档位不加仓"
-                self._log("SIGNAL", f"⏭️ {entry_type} 跳过: {skip_reason}")
-                self._alert(
-                    "info", entry_type,
-                    "加仓跳过",
-                    f"用户 {self.user_id} {entry_type}: {skip_reason}",
-                    {"qty_ratio": qty_ratio, "regime": tv_fields.get("regime") or self.regime},
-                )
-                return {"status": "skipped", "reason": "zero_qty_ratio", "message": skip_reason}
-            ok, skip_reason = self._can_add_more()
-            if not ok:
-                self._log("SIGNAL", f"⏭️ {entry_type} 跳过: {skip_reason}")
-                self._alert(
-                    "info", entry_type,
-                    "加仓跳过",
-                    f"用户 {self.user_id} {entry_type}: {skip_reason}",
-                    {"add_count": self.add_count, "max_add_times": self._max_add_times()},
-                )
-                return {"status": "skipped", "reason": "max_add_times", "message": skip_reason}
-            return self._add_to_position(action, curr_px, entry_type)
-
-        # factory OPEN / LONG / SHORT：一律先平后开刷新仓位（含空仓清挂单）
-        self._log(
-            "SIGNAL",
-            f"⚡ TV OPEN [{action}] 铁律·先平后开（有仓则平仓刷新；无仓则清挂单后开仓·雷达候命）",
-        )
-        if not self._force_flat_before_open(f"TV OPEN [{action}] 铁律·先平后开"):
-            return {"status": "error", "reason": "flat_timeout", "message": "平仓未确认归零"}
-        return self._open_position(action, curr_px)
-
-    def _add_to_position(self, action: str, curr_px: float, entry_type: str) -> dict:
-        pos_before = self.position_manager.get_position(self.symbol)
-        prev_qty = abs(float(pos_before.get("positionAmt", 0) or 0)) if pos_before else 0.0
-        leverage = self._bind_tv_leverage()
-
-        qty, sizing_meta = self._resolve_entry_qty(curr_px)
-        if qty <= 0:
-            err = sizing_meta.get("error", "insufficient_balance")
-            self._log("ERROR", f"{entry_type} 无法加仓: {err}")
-            self._alert("warning", "INSUFFICIENT_BALANCE", "加仓失败", f"用户 {self.user_id} {entry_type}: {err}")
-            return {"status": "error", "reason": err, "message": "加仓数量无效"}
-
-        limit_px = float(getattr(self, "tv_price", 0) or curr_px or 0)
-        self._log(
-            "SIGNAL",
-            f"📈 [{entry_type}] 同向追加: {action} +{qty} {getattr(self, 'qty_unit', 'ETH')} | "
-            f"LIMIT@{limit_px:.4f} | base={sizing_meta.get('base_qty')} × {sizing_meta.get('add_qty_ratio')}",
-        )
-        entry_meta = self._place_tv_entry_order(action, qty, limit_px)
-        sizing_meta["entry_order"] = entry_meta
-        time.sleep(1.2)
-
-        pos = self.position_manager.get_position(self.symbol)
-        if not pos or float(pos.get("positionAmt", 0)) == 0:
-            return {"status": "error", "reason": "add_failed", "message": "加仓后未检测到持仓"}
-
-        real_qty = abs(float(pos["positionAmt"]))
-        entry_price = float(pos.get("entryPrice") or self.watched_entry or 0)
-        add_qty = max(real_qty - prev_qty, qty * 0.5)
-        self.current_side = action
-        self.watched_qty = real_qty
-        self.watched_entry = entry_price
-        self.initial_qty = float(self.initial_qty or prev_qty) + add_qty
-        self.add_count = int(getattr(self, "add_count", 0) or 0) + 1
-        # base_qty 保持不变（首次 OPEN 时记录）
-        self.monitoring = True
-        self._ensure_price_ws()
-
-        prev_tv_tps = list(getattr(self, "_signal_prev_tv_tps", None) or [])
-        defense = self._rebuild_defenses_after_tv_add(
-            real_qty,
-            entry_price,
-            entry_type=entry_type,
-            prev_tv_tps=prev_tv_tps,
-        )
-        shield = defense.get("shield") or {}
-        tp_heal = defense.get("tp_realign") or {}
-        self._save_state()
-
-        theme = resolve_exchange_theme(self.exchange_id)
-        detail = {
-            "exchange": self.exchange_id,
-            "entry_type": entry_type,
-            "side": action,
-            "add_qty": round(add_qty, 6),
-            "total_qty": real_qty,
-            "entry": entry_price,
-            "tv_price": self.tv_price,
-            "tv_tps": list(self.tv_tps),
-            "leverage": leverage,
-            "atr": self.current_atr,
-            "add_count": self.add_count,
-            "max_add_times": self._max_add_times(),
-            "tp_slices": defense.get("tp_slices"),
-            "prev_tv_tps": defense.get("prev_tv_tps"),
-            "radar_sl": defense.get("radar_sl"),
-            "radar_active": defense.get("radar_active"),
-            **sizing_meta,
-        }
-        if shield:
-            detail["shield"] = shield
-            detail["tv_sl"] = self.tv_sl
-            vps_meta = getattr(self, "_vps_hard_sl_meta", None) or {}
-            if vps_meta.get("hard_sl_pct_display"):
-                detail["hard_sl_pct_display"] = vps_meta["hard_sl_pct_display"]
-            if vps_meta.get("tv_sl_reference"):
-                detail["tv_sl_reference"] = vps_meta["tv_sl_reference"]
-        if tp_heal:
-            detail["tp_realign"] = tp_heal
-        if defense.get("summary"):
-            detail["defense_summary"] = defense["summary"]
-        detail = enrich_tp_alert_detail(detail, regime=self.regime)
-        verify_note = ""
-        if defense.get("expected"):
-            verify_note += f" | 止盈 {defense.get('matched', 0)}/{defense.get('expected')} 档已对齐"
-        elif tp_heal.get("expected"):
-            verify_note += f" | 止盈 {tp_heal.get('matched_full', 0)}/{tp_heal.get('expected')} 档已对齐"
-        if shield.get("aligned") or shield.get("skipped") == "live_already_aligned":
-            sl_label = shield.get("label") or self._hard_stop_label()
-            verify_note = f" | {sl_label}已核实 @{shield.get('stop_price', 0):.2f}"
-        add_label = "金字塔加仓" if entry_type == "PYRAMID" else "浮盈加仓"
-        unit = getattr(self, "qty_unit", "ETH")
-        self._log(
-            "OPEN",
-            f"📈 {add_label}：{action} +{add_qty:.4f} → 总 {real_qty} {unit} @ {entry_price}{verify_note}",
-            detail,
-        )
-        self._alert(
-            "info",
-            entry_type,
-            f"{theme['accent']} {add_label} · {theme['label']}",
-            f"{action} +{add_qty:.4f} {unit} → 总 {real_qty} @ {entry_price} | "
-            f"首仓 {sizing_meta.get('base_qty')} × {sizing_meta.get('add_qty_ratio')} "
-            f"= +{add_qty:.4f} ({self.add_count}/{self._max_add_times()}){verify_note}",
-            detail,
-        )
-        return {"status": "ok", "action": action, "detail": {"type": entry_type.lower(), **detail}}
 
     def _handle_smart_entry(
         self,
@@ -1631,7 +1484,7 @@ class PositionSupervisor(
     def _compute_tp_slices(
         self, qty: float, exclude_levels: set[int] | None = None
     ) -> list[tuple[int, float, float]]:
-        """Fixed 30/30/40 slices at TV tp1/tp2/tp3 prices (ignore TV qty*)."""
+        """Fixed 30/30/40 slices; only TP1+TP2 placeable (ignore TV qty*)."""
         from app.core.tp_regime_targets import pine_tp_ratios_frac
 
         ratios = pine_tp_ratios_frac()
@@ -1768,7 +1621,7 @@ class PositionSupervisor(
         return set(filled) | set(past)
 
     def _active_tp_exclude_levels(self, qty: float, curr_px: float) -> set[int]:
-        """Exclude filled + mark-past levels; TP1/TP2/TP3 all placeable."""
+        """Exclude filled + mark-past levels; only PLACEABLE_TP_LEVELS hung."""
         from app.core.tp_slice_guard import should_skip_rehang_tp_level, SKIP_REHANG_HARD
         from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
 
@@ -1944,24 +1797,23 @@ class PositionSupervisor(
             return
         alerted.add(lvl)
         if lvl == 1:
-            title = "TP1止盈成交（VPS监控）·止损已保本"
+            title = "TP1 止盈成交"
             msg = (
-                f"{self.current_side} 成交价{curr_px or '—'} | "
-                f"剩余 {new_qty} | 止损已上移保本 "
+                f"TP1 止盈成交，剩余仓位 70%，当前止损 "
                 f"@{float(detail['current_sl'] or 0):.2f}"
             )
         elif lvl == 2:
-            title = "TP2止盈成交（VPS监控）·止损收紧1.5×ATR"
+            title = "TP2 止盈成交"
             msg = (
-                f"{self.current_side} 成交价{curr_px or '—'} | "
-                f"剩余 {new_qty} | 止损已收紧 "
+                f"TP2 止盈成交，剩余仓位 40%，当前止损 "
                 f"@{float(detail['current_sl'] or 0):.2f}"
             )
         elif lvl == 3:
-            title = "TP3止盈成交（VPS监控）·全平完成"
+            # TP3 limit not placed — residual managed by breathing phase-2
+            title = "止盈成交"
             msg = (
                 f"{self.current_side} 成交价{curr_px or '—'} | "
-                f"{old_qty}→{new_qty} | 限价止盈收网"
+                f"{old_qty}→{new_qty} | 阶段二由呼吸止损接管"
             )
             # Confirm flat → cancel residual orders + reset radar
             if float(new_qty or 0) <= float(getattr(self, "min_order_qty", 0) or 0) + 1e-12:
@@ -3952,11 +3804,8 @@ class PositionSupervisor(
                 self.initial_qty = self.watched_qty
             if float(getattr(self, "base_qty", 0) or 0) <= 0:
                 self.base_qty = float(open_log_qty or trade_qty or self.initial_qty or self.watched_qty)
-            if int(getattr(self, "add_count", 0) or 0) <= 0 and self.base_qty > 0:
-                ratio = regime_add_qty_ratio(int(getattr(self, "regime", 3) or 3))
-                if self.watched_qty > self.base_qty and ratio > 0:
-                    inferred = int(round((self.watched_qty - self.base_qty) / (self.base_qty * ratio)))
-                    self.add_count = min(max(inferred, 0), self._max_add_times())
+            # 妈妈版：永不推断加仓次数
+            self.add_count = 0
             self.watched_entry = float(pos["entryPrice"])
             self.current_trade_id = open_trade_id
             if hasattr(self, "_recompute_vps_hard_sl") and self.current_side in ("LONG", "SHORT"):

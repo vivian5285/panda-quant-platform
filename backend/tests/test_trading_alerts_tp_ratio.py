@@ -1,4 +1,4 @@
-"""Tests for TP ratio labels in DingTalk entry detail."""
+"""Tests for 妈妈版 DingTalk entry / close short templates."""
 
 from app.services.trading_alerts import (
     format_regime_radar_activation_legend,
@@ -6,47 +6,100 @@ from app.services.trading_alerts import (
     format_vps_entry_detail_cn,
     resolve_exchange_theme,
 )
+from app.services.close_alert_utils import resolve_close_alert_title
+
+
+FORBIDDEN_KEYWORDS = (
+    "极限逃顶", "极限逃底", "风控拦截", "降维打击", "复利保卫战",
+    "极速逃脱", "敏锐防守", "高优拦截", "动能衰竭", "变盘规避",
+    "大周期破位", "常规防守", "时间止损", "裸K反转", "加仓", "首仓", "多档位",
+)
 
 
 def test_format_regime_radar_activation_legend():
     legend = format_regime_radar_activation_legend()
-    assert "激活85%" in legend
-    assert "步进0.5ATR" in legend
-    assert "锁定0.3ATR" in legend
-    assert "TP3追踪2.0ATR" in legend
+    assert "初始1.5ATR" in legend
+    assert "步进0.75/0.4ATR" in legend
 
 
 def test_tv_open_dingtalk_shows_tv_leverage_not_config_25():
-    """OPEN detail must carry TV leverage so DingTalk header is 5× not 25×."""
     detail = {
         "entry_type": "OPEN",
         "side": "LONG",
-        "regime": 2,
-        "qty": 0.96,
-        "entry": 1892.43,
+        "qty": 0.303,
+        "entry": 3300.0,
         "leverage": 5,
-        "tv_leverage": 5,
-        "risk_pct": 1.35,
-        "qty_ratio": 1.0,
-        "sl_distance": 14.09,
-        "order_amount": 1816.73,
-        "effective_leverage": 1.82,
-        "sizing_mode": "tv_risk_formula",
-        "tv_sl": 1878.34,
-        "tv_tps": [1909.0, 1927.0, 1943.0],
-        "radar_armed": False,
+        "equity": 1000,
+        "initial_stop": 3240.0,
         "exchange": "binance",
         "symbol": "ETHUSDT",
     }
     body = format_vps_entry_detail_cn(detail, "binance")
-    assert "杠杆上限" in body
-    assert "5×" in body
-    assert "等效杠杆" in body
-    assert "1.82" in body
+    assert "开仓 做多" in body
+    assert "3300.00" in body
+    assert "0.3030" in body
+    assert "3240.00" in body
+    assert "1000.00" in body
+    for kw in FORBIDDEN_KEYWORDS:
+        assert kw not in body
+
+
+def test_open_detail_shows_mom_template():
+    body = format_vps_entry_detail_cn(
+        {
+            "side": "LONG",
+            "qty": 0.8,
+            "entry": 2000.0,
+            "initial_stop": 1940.0,
+            "equity": 1000,
+        },
+        "binance",
+    )
+    assert body.startswith("开仓")
+    assert "初始止损" in body
+    assert "账户权益" in body
+
+
+def test_open_detail_no_legacy_radar_words():
+    body = format_vps_entry_detail_cn(
+        {
+            "side": "SHORT",
+            "qty": 0.076,
+            "entry": 1840.65,
+            "initial_stop": 1844.34,
+            "equity": 500,
+        },
+        "binance",
+    )
+    assert "激活85%" not in body
+    assert "雷达" not in body
+    for kw in FORBIDDEN_KEYWORDS:
+        assert kw not in body
+
+
+def test_close_titles_mom_style():
+    assert resolve_close_alert_title("CLOSE_QUICK_EXIT", "评分反转") == "反转保护"
+    assert "风控拦截" not in resolve_close_alert_title("CLOSE_PROTECT", "风控拦截：xxx")
+    t1 = resolve_close_alert_title(
+        "CLOSE_BREATH_STOP", "止损平仓(阶段一)", {"breakeven_phase": False},
+    )
+    assert "阶段一" in t1
+    t2 = resolve_close_alert_title(
+        "CLOSE_BREATH_STOP", "阶段二", {"breakeven_phase": True},
+    )
+    assert "阶段二" in t2
+
+
+def test_alert_body_open_uses_short_detail():
     theme = resolve_exchange_theme("binance", "ETHUSDT", leverage=5)
-    assert theme["leverage"] == 5
-    assert "5x" in theme["tag"]
-    assert theme["tag"].startswith("#币安5x")
+    detail = {
+        "side": "LONG",
+        "qty": 0.3,
+        "entry": 3300,
+        "initial_stop": 3240,
+        "equity": 1000,
+        "exchange": "binance",
+    }
     alert = format_trading_alert_body(
         theme=theme,
         severity="info",
@@ -59,76 +112,5 @@ def test_tv_open_dingtalk_shows_tv_leverage_not_config_25():
         detail=detail,
         exchange="binance",
     )
-    assert "**5×**" in alert
+    assert "开仓 做多" in alert
     assert "**25×**" not in alert
-
-
-def test_open_detail_shows_pine_tp_ratio_pct():
-    body = format_vps_entry_detail_cn(
-        {
-            "entry_type": "OPEN",
-            "side": "LONG",
-            "regime": 1,
-            "qty": 0.8,
-            "entry": 2000.0,
-            "leverage": 5,
-        },
-        "binance",
-    )
-    assert "止盈比例" in body
-    assert "30/30/40" in body
-    assert "限价挂齐" in body
-
-
-def test_open_detail_radar_standby_until_tp1():
-    body = format_vps_entry_detail_cn(
-        {
-            "entry_type": "OPEN",
-            "side": "LONG",
-            "regime": 4,
-            "qty": 1.5,
-            "entry": 1935.0,
-            "radar_armed": False,
-            "leverage": 5,
-            "tv_tps": [2000.0, 2050.0, 2100.0],
-        },
-        "binance",
-    )
-    assert "雷达状态" in body
-    assert "TP1" in body
-    assert "85%" in body
-    assert "激活85%" in body
-
-
-def test_open_detail_book_structure_and_tv_hard_sl():
-    body = format_vps_entry_detail_cn(
-        {
-            "entry_type": "OPEN",
-            "side": "SHORT",
-            "regime": 1,
-            "qty": 0.076,
-            "entry": 1840.65,
-            "leverage": 5,
-            "tv_sl": 1844.34,
-            "hard_sl_pct_display": "TV",
-            "hard_sl_order_style": "stop_limit",
-            "tv_sl_reference": 1844.34,
-            "tv_tps": [1837.01, 1834.12, 1831.46],
-            "atr": 4.44,
-            "radar_armed": False,
-            "radar_activation": 0.70,
-            "radar_activation_effective": 0.95,
-            "shield": {"order_style": "stop_limit"},
-        },
-        "binance",
-    )
-    assert "盘口结构" in body
-    assert "基础单×3" in body
-    assert "TP1+TP2+TP3" in body
-    assert "条件委托" in body
-    assert "硬止损" in body
-    assert "1844.34" in body
-    assert "仅参考" not in body
-    assert "开仓价×" not in body
-    assert "雷达触发价" in body
-    assert "激活85%" in body or "70%" in body  # detail radar_activation=0.70 overrides path %

@@ -1,8 +1,6 @@
-"""TP slice ratios — fixed 30/30/40 (all exchanges).
+"""TP slice ratios — fixed 30/30/40; only TP1+TP2 hung as limits.
 
-All three legs are placeable reduceOnly LIMIT orders at TV tp1/tp2/tp3 prices.
-Qty ratios are hardcoded — ignore TV qty1/qty2/qty3.
-Radar still runs in parallel (first trigger wins: limit fill vs trail stop).
+TP3 remainder (40%) is managed by breathing-stop phase-2 — no TP3 limit order.
 """
 
 from __future__ import annotations
@@ -11,12 +9,9 @@ from typing import Any
 
 from app.core.radar_trail import merge_regime_radar
 
-# Fixed split: qty1/qty2/qty3 = 30/30/40 (hardcoded; ignore TV qty*)
 FIXED_TP_QTY_PERCENT: tuple[int, int, int] = (30, 30, 40)
-# TP1 + TP2 + TP3 hung as reduceOnly LIMIT @ TV prices
-PLACEABLE_TP_LEVELS: frozenset[int] = frozenset({1, 2, 3})
+PLACEABLE_TP_LEVELS: frozenset[int] = frozenset({1, 2})
 
-# Compat: all regimes share the same fixed ratios (regime key inert)
 PINE_TP_QTY_PERCENT: dict[int, tuple[int, int, int]] = {
     1: FIXED_TP_QTY_PERCENT,
     2: FIXED_TP_QTY_PERCENT,
@@ -55,11 +50,10 @@ def enrich_tp_alert_detail(detail: dict | None, *, regime: int = 3) -> dict:
     out["regime"] = clamp_regime(regime)
     out["tp_ratios_pct"] = format_tp_ratio_pct()
     out["tp_ratios"] = pine_tp_ratios_frac()
-    out["tp3_limit_placed"] = True
+    out["tp3_limit_placed"] = False
     out["tp_placeable_levels"] = sorted(PLACEABLE_TP_LEVELS)
     return out
 
 
 def resolve_tp_ratios_from_payload(payload: dict | None = None) -> list[float]:
-    """Always fixed 30/30/40 — TV qty1/qty2/qty3 ignored (checklist 简洁版)."""
     return pine_tp_ratios_frac()
