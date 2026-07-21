@@ -3269,9 +3269,7 @@ class PositionSupervisor(
         tp1 = float(tps[0] or 0) if tps else 0.0
         tp2 = float(tps[1] or 0) if len(tps) > 1 else 0.0
         tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
-        path_ok = False
-        if hasattr(self, "_radar_activation_reached") and curr_px > 0:
-            path_ok = bool(self._radar_activation_reached(curr_px))
+        # tp1_filled ONLY from exchange consume — NOT path-arm (else TP1 floor jumps at 85%)
         radar = compute_vps_radar_sl(
             entry=entry,
             curr_px=curr_px,
@@ -3283,7 +3281,7 @@ class PositionSupervisor(
             hard_sl=float(getattr(self, "tv_sl", 0) or 0),
             clamp_fn=self._clamp_radar_sl_to_tv_floor,
             radar_latched=bool(getattr(self, "radar_latched", False)),
-            tp1_filled=path_ok or tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
+            tp1_filled=tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
             regime=int(self.regime or 3),
             live_qty=float(getattr(self, "watched_qty", 0) or 0),
             consumed_tp_levels=list(getattr(self, "consumed_tp_levels", None) or []),
@@ -3322,12 +3320,12 @@ class PositionSupervisor(
         stage = detect_radar_stage(
             float(self.watched_entry or 0), curr_px, self.current_side, tp1, tp2, tp3,
             peak_px=float(self.best_price or 0) or None,
-            tp1_filled=self._radar_activation_reached(curr_px)
-            if curr_px > 0
-            else (
-                tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None))
-                or bool(getattr(self, "radar_latched", False))
+            tp1_filled=tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
+            armed=bool(
+                getattr(self, "radar_activated", False)
+                or getattr(self, "radar_latched", False)
             ),
+            step_count=int(getattr(self, "radar_step_count", 0) or 0),
             regime=int(self.regime or 3),
         )
         vps_meta = getattr(self, "_vps_hard_sl_meta", None) or {}
@@ -3443,7 +3441,7 @@ class PositionSupervisor(
         tp1 = float(tps[0] or 0) if tps else 0.0
         tp2 = float(tps[1] or 0) if len(tps) > 1 else 0.0
         tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
-        path_armed = True  # gate already passed
+        # tp1_filled = 实盘 TP 成交记账 only；路径激活 ≠ TP1 成交（否则 85% 就跳到 +0.5ATR 底限）
         radar = compute_vps_radar_sl(
             entry=float(self.watched_entry or 0),
             curr_px=curr_px,
@@ -3455,7 +3453,7 @@ class PositionSupervisor(
             hard_sl=float(getattr(self, "tv_sl", 0) or 0),
             clamp_fn=self._clamp_radar_sl_to_tv_floor,
             radar_latched=bool(getattr(self, "radar_latched", False)),
-            tp1_filled=path_armed or tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
+            tp1_filled=tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)),
             regime=int(self.regime or 3),
             live_qty=float(real_amt or 0),
             consumed_tp_levels=list(getattr(self, "consumed_tp_levels", None) or []),
