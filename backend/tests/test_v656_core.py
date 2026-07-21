@@ -29,9 +29,10 @@ def test_sizing_checklist():
 
 
 def test_qty_ratios_from_payload():
+    # TV qty* ignored — always hardcoded 30/30/40
     r = resolve_tp_ratios_from_payload({"qty1": 3, "qty2": 3, "qty3": 6})
-    assert abs(r[0] - 0.25) < 1e-9  # 3/12
-    assert PLACEABLE_TP_LEVELS == frozenset({1, 2})
+    assert r == [0.3, 0.3, 0.4]
+    assert PLACEABLE_TP_LEVELS == frozenset({1, 2, 3})
 
 
 def test_arm_price_long_short_symmetric():

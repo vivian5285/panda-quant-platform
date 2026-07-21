@@ -14,7 +14,7 @@ from app.core.vps_radar_stages import (
     compute_vps_radar_sl,
     tp1_filled_from_consumed,
 )
-from app.core.tp_regime_ratios import build_regime_settings, enrich_tp_alert_detail
+from app.core.tp_regime_targets import build_regime_settings, enrich_tp_alert_detail
 from app.core.same_direction_policy import (
     SameDirAction,
     evaluate_same_direction,
@@ -952,11 +952,20 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return dedupe_orders_by_id(orders)
 
     def _compute_tp_slices(self, qty, exclude_levels=None):
+        """Fixed 30/30/40 slices at TV tp1/tp2/tp3 prices (ignore TV qty*)."""
+        from app.core.tp_regime_targets import pine_tp_ratios_frac
+
+        ratios = pine_tp_ratios_frac()
+        settings = dict(self.regime_settings)
+        r = int(self.regime or 3)
+        row = dict(settings.get(r) or settings.get(3) or {})
+        row["ratios"] = ratios
+        settings[r] = row
         return compute_tp_slices(
             float(qty),
-            self.regime,
+            r,
             self.tv_tps,
-            self.regime_settings,
+            settings,
             exclude_levels=exclude_levels or set(),
             round_qty_fn=lambda x: float(max(self._safe_qty(x), 1)),
             min_qty=1.0,
@@ -1243,13 +1252,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return set(filled) | set(past)
 
     def _active_tp_exclude_levels(self, qty: float, curr_px: float) -> set[int]:
-        """Exclude filled + mark-past + TP3 (v6.5.6: TP3 is reference only, never LIMIT)."""
+        """Exclude filled + mark-past levels; TP1/TP2/TP3 all placeable."""
         from app.core.tp_slice_guard import should_skip_rehang_tp_level, SKIP_REHANG_HARD
-        from app.core.tp_regime_ratios import PLACEABLE_TP_LEVELS
+        from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
 
         exclude = self._infer_filled_tp_levels(qty, curr_px)
-        # Never place TP3 limit — leg3 exits via continuous-ladder radar
-        exclude.add(3)
         for lvl in (1, 2, 3):
             if lvl not in PLACEABLE_TP_LEVELS:
                 exclude.add(lvl)
@@ -1803,7 +1810,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             side,
             list(getattr(self, "tv_tps", []) or []),
             consumed_levels=list(getattr(self, "consumed_tp_levels", []) or []),
-            max_level=2,
+            max_level=3,
         )
         detail = format_obsolete_tp_detail(
             obsolete, radar_sl, list(getattr(self, "tv_tps", []) or []), side,
@@ -3970,7 +3977,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                             key = str(k).strip().lower()
                             if key.startswith("tp"):
                                 key = key[2:]
-                            if key not in ("1", "2", "sl") or v in (None, ""):
+                            if key not in ("1", "2", "3", "sl") or v in (None, ""):
                                 continue
                             try:
                                 cleaned[key] = int(v)

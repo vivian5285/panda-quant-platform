@@ -59,7 +59,7 @@ def test_checklist_tv_fields_parsed():
     norm = normalize_tv_payload(raw)
     assert norm["action"] == "LONG"
     assert float(norm.get("stop_loss") or norm.get("tv_sl") or 0) == 3200.5
-    assert PLACEABLE_TP_LEVELS == frozenset({1, 2})
+    assert PLACEABLE_TP_LEVELS == frozenset({1, 2, 3})
     assert VALID_ACTIONS == frozenset({
         "LONG", "SHORT", "CLOSE_QUICK_EXIT", "CLOSE_RSI_EXIT",
     })

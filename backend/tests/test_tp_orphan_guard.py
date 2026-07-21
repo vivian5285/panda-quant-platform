@@ -41,6 +41,10 @@ class TestTpLevelsObsoleteByRadar:
         levels = tp_levels_obsolete_by_radar(1855.0, "LONG", [1836.0, 1850.0, 1870.0])
         assert levels == [1, 2]
 
+    def test_long_radar_above_all_three_tps(self):
+        levels = tp_levels_obsolete_by_radar(1875.0, "LONG", [1836.0, 1850.0, 1870.0])
+        assert levels == [1, 2, 3]
+
     def test_long_radar_below_tp1_no_obsolete(self):
         levels = tp_levels_obsolete_by_radar(1830.0, "LONG", [1836.0, 1850.0, 1870.0])
         assert levels == []

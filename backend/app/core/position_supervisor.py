@@ -30,7 +30,7 @@ from app.core.vps_radar_stages import (
     detect_radar_stage,
     tp1_filled_from_consumed,
 )
-from app.core.tp_regime_ratios import build_regime_settings, enrich_tp_alert_detail
+from app.core.tp_regime_targets import build_regime_settings, enrich_tp_alert_detail
 from app.core.regime_utils import clamp_regime
 from app.core.same_direction_policy import (
     SameDirAction,
@@ -334,7 +334,7 @@ class PositionSupervisor(
                             key = str(k).strip().lower()
                             if key.startswith("tp"):
                                 key = key[2:]
-                            if key not in ("1", "2", "sl") or v in (None, ""):
+                            if key not in ("1", "2", "3", "sl") or v in (None, ""):
                                 continue
                             try:
                                 cleaned[key] = int(v)
@@ -1623,16 +1623,10 @@ class PositionSupervisor(
     def _compute_tp_slices(
         self, qty: float, exclude_levels: set[int] | None = None
     ) -> list[tuple[int, float, float]]:
-        """TP slices from TV qty1/qty2/qty3 ratios (fallback 30/30/40); TP3 excluded elsewhere."""
-        from app.core.tp_regime_ratios import resolve_tp_ratios_from_payload
+        """Fixed 30/30/40 slices at TV tp1/tp2/tp3 prices (ignore TV qty*)."""
+        from app.core.tp_regime_targets import pine_tp_ratios_frac
 
-        fields = getattr(self, "_tv_entry_fields", None) or {}
-        payload = {
-            "qty1": fields.get("tv_qty1"),
-            "qty2": fields.get("tv_qty2"),
-            "qty3": fields.get("tv_qty3"),
-        }
-        ratios = resolve_tp_ratios_from_payload(payload)
+        ratios = pine_tp_ratios_frac()
         settings = dict(self.regime_settings)
         r = int(self.regime or 3)
         row = dict(settings.get(r) or settings.get(3) or {})
@@ -1766,13 +1760,11 @@ class PositionSupervisor(
         return set(filled) | set(past)
 
     def _active_tp_exclude_levels(self, qty: float, curr_px: float) -> set[int]:
-        """Exclude filled + mark-past + TP3 (v6.5.6: TP3 is reference only, never LIMIT)."""
+        """Exclude filled + mark-past levels; TP1/TP2/TP3 all placeable."""
         from app.core.tp_slice_guard import should_skip_rehang_tp_level, SKIP_REHANG_HARD
-        from app.core.tp_regime_ratios import PLACEABLE_TP_LEVELS
+        from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
 
         exclude = self._infer_filled_tp_levels(qty, curr_px)
-        # Never place TP3 limit — leg3 exits via continuous-ladder radar
-        exclude.add(3)
         for lvl in (1, 2, 3):
             if lvl not in PLACEABLE_TP_LEVELS:
                 exclude.add(lvl)
@@ -1890,7 +1882,7 @@ class PositionSupervisor(
         *,
         heuristic: bool = False,
     ) -> None:
-        """VPS order monitor: TP1/TP2 fill → bump SL + DingTalk (TV no longer sends CLOSE_TP)."""
+        """VPS order monitor: TP1/TP2/TP3 fill → bump SL (1/2) + DingTalk."""
         lvl = int(level)
         alerted = getattr(self, "_tp_fill_dingtalk_levels", None)
         if alerted is None:
@@ -1957,6 +1949,25 @@ class PositionSupervisor(
                 f"剩余 {new_qty} | 止损已收紧 "
                 f"@{float(detail['current_sl'] or 0):.2f}"
             )
+        elif lvl == 3:
+            title = "TP3止盈成交（VPS监控）·全平完成"
+            msg = (
+                f"{self.current_side} 成交价{curr_px or '—'} | "
+                f"{old_qty}→{new_qty} | 限价止盈收网"
+            )
+            # Confirm flat → cancel residual orders + reset radar
+            if float(new_qty or 0) <= float(getattr(self, "min_order_qty", 0) or 0) + 1e-12:
+                if hasattr(self, "_purge_defense_orders_on_flat"):
+                    try:
+                        self._purge_defense_orders_on_flat("tp3_filled", notify=False)
+                    except Exception:
+                        pass
+                if hasattr(self, "_reset_adverse_radar"):
+                    try:
+                        self._reset_adverse_radar(keep_tv_sl=False)
+                    except Exception:
+                        pass
+                self.monitoring = False
         else:
             title = f"止盈TP{level}成交（VPS监控）{note}"
             msg = f"{self.current_side} {old_qty}→{new_qty} @ {curr_px or '—'} | 已成交档 {detail['consumed_tp_levels']}"

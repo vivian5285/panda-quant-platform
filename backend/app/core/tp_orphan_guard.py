@@ -13,11 +13,11 @@ def tp_levels_obsolete_by_radar(
     tv_tps: list[float],
     *,
     consumed_levels: list[int] | None = None,
-    max_level: int = 2,
+    max_level: int = 3,
 ) -> list[int]:
     """
-    TP1/TP2 limits below radar protection are pointless (LONG: radar >= TP price).
-    Only checks levels 1..max_level (default TP1+TP2).
+    TP limits below radar protection are pointless (LONG: radar >= TP price).
+    Checks levels 1..max_level (default TP1+TP2+TP3).
     """
     radar_sl = float(radar_sl or 0)
     if radar_sl <= 0 or side not in ("LONG", "SHORT"):

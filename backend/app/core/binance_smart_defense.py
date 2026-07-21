@@ -5,7 +5,7 @@ import time
 
 from app.core.symbol_precision import round_price
 from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, slices_to_level_dicts
-from app.core.tp_regime_ratios import enrich_tp_alert_detail
+from app.core.tp_regime_targets import enrich_tp_alert_detail
 from app.core.tp_orphan_guard import (
     format_obsolete_tp_detail,
     tp_levels_obsolete_by_radar,
@@ -162,7 +162,7 @@ class BinanceSmartDefenseMixin:
 
     def _cancel_obsolete_tp_after_radar_move(self, radar_sl: float) -> dict:
         """
-        After radar SL advances past TP1/TP2, stale limit TPs are useless — cancel them.
+        After radar SL advances past TP1/TP2/TP3, stale limit TPs are useless — cancel them.
         Prevents orphan limits from filling into reverse exposure after flat.
         """
         side = getattr(self, "current_side", None)
@@ -171,7 +171,7 @@ class BinanceSmartDefenseMixin:
             side,
             list(getattr(self, "tv_tps", []) or []),
             consumed_levels=list(getattr(self, "consumed_tp_levels", []) or []),
-            max_level=2,
+            max_level=3,
         )
         detail = format_obsolete_tp_detail(
             obsolete, radar_sl, list(getattr(self, "tv_tps", []) or []), side,

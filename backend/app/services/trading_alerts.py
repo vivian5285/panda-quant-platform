@@ -327,9 +327,9 @@ def format_signal_received_message(payload: dict | None) -> str:
 
 
 def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str:
-    """VPS 开仓钉钉 — v6.5.6：权益×20%×5x · TP1/TP2限价 · TP3参考 · 连续阶梯雷达."""
+    """VPS 开仓钉钉 — 权益×20%×5x · TP1/TP2/TP3限价(30/30/40) · 连续阶梯雷达."""
     from app.core.tv_entry_sizing import FIXED_LEVERAGE, FIXED_MARGIN_PCT
-    from app.core.tp_regime_ratios import format_tp_ratio_pct
+    from app.core.tp_regime_targets import format_tp_ratio_pct
     from app.core.radar_trail import RADAR_ARM_PROGRESS
 
     sym = detail.get("symbol") or detail.get("canonical_symbol")
@@ -365,14 +365,14 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
     notional = detail.get("notional_usd") or detail.get("order_amount") or detail.get("position_value")
     if notional is not None:
         lines.append(_line("名义头寸", f"{float(notional):.2f} USDT"))
-    lines.append(_line("止盈比例", f"TP1/TP2/leg3 = {format_tp_ratio_pct()}%（仅挂TP1+TP2限价）"))
+    lines.append(_line("止盈比例", f"TP1/TP2/TP3 = {format_tp_ratio_pct()}%（硬编码；限价挂齐）"))
     hang = float(detail.get("tv_sl") or detail.get("stop_loss") or detail.get("tv_sl_reference") or 0)
     if hang > 0:
         lines.append(_line("硬止损", f"@{hang:.2f}（stop_loss · 条件单）"))
     lines.append(
         _line(
             "盘口结构",
-            "基础单×2：TP1+TP2 限价 · TP3不挂（雷达退出）+ 条件委托×1：硬止损；"
+            "基础单×3：TP1+TP2+TP3 限价(30/30/40) · 条件委托×1：硬止损；"
             f"雷达 {format_regime_radar_activation_legend()}",
         )
     )
@@ -405,7 +405,7 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
         tp = mc.get("tp123") or ("✅" if detail.get("tp123_mounted") else "❌")
         rd = mc.get("radar") or ("✅" if detail.get("radar_standby") is not False else "❌")
         lines.append(_line("硬止损已挂载", hs))
-        lines.append(_line("TP1/TP2已挂载", tp))
+        lines.append(_line("TP1/TP2/TP3已挂载", tp))
         lines.append(_line("雷达候命", rd))
     slices = detail.get("tp_slices") or []
     if slices:

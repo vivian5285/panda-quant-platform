@@ -337,9 +337,9 @@ class AdverseRadarMixin:
         return None
 
     def _mark_tp_placed(self, level: int, order_id=None) -> None:
-        """Stamp TP1/TP2 hang time for 5-min timeout → cancel + hand to radar."""
+        """Stamp TP1/TP2/TP3 hang time for 5-min timeout → cancel + hand to radar."""
         lvl = int(level or 0)
-        if lvl not in (1, 2):
+        if lvl not in (1, 2, 3):
             return
         placed = dict(getattr(self, "_tp_placed_at", None) or {})
         if lvl not in placed:
@@ -349,12 +349,12 @@ class AdverseRadarMixin:
             self._remember_defense_order_id(str(lvl), order_id)
 
     def _remember_defense_order_id(self, key: str, order_id) -> None:
-        """Persist defense order id for TP1/TP2/SL (checklist 4.3 / 11.3)."""
+        """Persist defense order id for TP1/TP2/TP3/SL (checklist 4.3 / 11.3)."""
         self._init_adverse_radar_fields()
         k = str(key or "").strip().lower()
         if k.startswith("tp"):
             k = k[2:]
-        if k not in ("1", "2", "sl"):
+        if k not in ("1", "2", "3", "sl"):
             return
         try:
             oid = int(order_id) if order_id is not None and str(order_id).strip() != "" else None

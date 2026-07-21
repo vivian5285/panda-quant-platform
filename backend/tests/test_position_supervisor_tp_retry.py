@@ -69,7 +69,7 @@ def test_place_limit_with_retry_fails_after_max(supervisor, monkeypatch):
 
 
 def test_scan_open_defenses_detects_missing_tp(supervisor):
-    """Only TP1 on book → TP2 missing (TP3 never placed)."""
+    """Only TP1 on book → TP2+TP3 missing."""
     supervisor.client.get_open_orders.return_value = [
         {
             "orderId": 1,
@@ -80,13 +80,12 @@ def test_scan_open_defenses_detects_missing_tp(supervisor):
             "reduceOnly": True,
         },
     ]
-    # Placeable grid only: exclude TP3
-    slices = [s for s in supervisor._compute_tp_slices(1.0) if s[0] in (1, 2)]
+    slices = supervisor._compute_tp_slices(1.0)
 
     scan = supervisor._scan_open_defenses(slices)
 
     assert len(scan["matched_tps"]) == 1
-    assert len(scan["missing_tps"]) == 1
+    assert len(scan["missing_tps"]) == 2
     assert scan["aligned"] is False
 
 
@@ -102,7 +101,7 @@ def test_verify_and_repair_defenses_repairs_missing(supervisor, monkeypatch):
 
 
 def test_ensure_defenses_skips_when_already_aligned(supervisor, monkeypatch):
-    """VPS 重启：TP1/TP2 已在实盘且比例正确 → 不重复挂单（TP3 不挂限价）。"""
+    """VPS 重启：TP1/TP2/TP3 已在实盘且比例正确 → 不重复挂单。"""
     monkeypatch.setattr("app.core.position_supervisor.time.sleep", lambda *_: None)
     exclude = supervisor._active_tp_exclude_levels(1.0, 3500.0)
     slices = supervisor._compute_tp_slices(1.0, exclude_levels=exclude)
@@ -229,7 +228,7 @@ def test_scan_detects_duplicate_tp(supervisor):
 
 
 def test_rebuild_defenses_logs_alignment(supervisor, monkeypatch):
-    """TP1/TP2 aligned after exclude-TP3 redistribute → skip."""
+    """TP1/TP2/TP3 aligned → skip."""
     monkeypatch.setattr("app.core.position_supervisor.time.sleep", lambda *_: None)
     exclude = supervisor._active_tp_exclude_levels(1.0, 3500.0)
     slices = supervisor._compute_tp_slices(1.0, exclude_levels=exclude)
