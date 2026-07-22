@@ -22,7 +22,7 @@ echo "========================================"
 echo "  双子星AI量化 · GEMINI AI · VPS 部署"
 echo "  RISK20 + 呼吸止损（币安/深币/OKX/Gate 同一逻辑）"
 echo "  TV: LONG/SHORT/CLOSE_QUICK_EXIT/CLOSE_RSI_EXIT"
-echo "  算仓: 合约本金×20%风险 ∩ ×5名义 ∩ TV.qty调整"
+echo "  算仓: 本金×20%保证金×5杠杆 = 名义本金×1"
 echo "  $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================"
 

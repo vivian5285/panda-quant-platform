@@ -1,18 +1,13 @@
-"""Entry sizing — RISK20 + notional5 + TV qty adjusted to VPS stop distance.
+"""Entry sizing — 合约本金 ×20% 保证金 ×5 杠杆 = 名义≈本金×1.
 
 Authoritative formula (stateless pure function, computed once at open):
-  sizing_base         = 合约本金余额 (futures total equity; fallback initial_principal)
-  risk_capital        = sizing_base × 0.20
-  notional_cap        = sizing_base × 5          # NEVER haircut; NEVER (base×0.20×5)/price alone
-  vps_stop_dist       = |price − VPS initialStop|  # initialStop = entry±1.5×ATR
-  tv_implied_dist     = |price − TV.stop_loss|
-  adjust_coef         = tv_implied_dist / vps_stop_dist
-  adjusted_tv_qty_cap = TV.qty × adjust_coef
-  theoretical         = min(risk_capital/vps_stop_dist, notional_cap/price, adjusted_tv_qty_cap)
-  qty                 = floor(theoretical to exchange step)
+  sizing_base  = 合约本金余额 (futures total equity; fallback initial_principal)
+  margin_usd   = sizing_base × 0.20
+  notional     = margin_usd × 5          # ≡ sizing_base × 1（余额的 1 倍）
+  qty          = floor(notional / price to exchange step)
 
-TV.stop_loss is ONLY an input to adjust_coef — never the exchange stop price.
-Breathing engine still places stops at VPS initialStop / currentStop.
+TV.qty / TV.stop_loss / VPS initialStop 不参与下单数量（止损价仍由呼吸引擎用 VPS ATR）。
+TV.qty 仅作信号存在性校验；荒谬天文数字不影响仓位。
 """
 
 from __future__ import annotations
@@ -29,12 +24,9 @@ RISK_PCT = 0.20
 MAX_LEVERAGE = 5
 FIXED_MARGIN_PCT = RISK_PCT
 FIXED_LEVERAGE = MAX_LEVERAGE
-SIZING_MODE = "risk20_cap5x_tv_qty_cap"
-# When TV.qty is strategy.equity-inflated (e.g. 8.6e8), adjusted_tv_qty must not
-# silently disappear from the min() as a useful cap — we still require tv_qty>0 as
-# signal presence, but ignore absurd caps so risk∩notional bind.
+SIZING_MODE = "margin20_lev5_notional1x"
+# Compat: absurd-TV gate no longer changes qty (fixed 1× notional); keep constant for imports.
 ABSURD_TV_QTY_VS_CAPS = 50.0
-# Legacy alias kept for import compatibility; live notional is always full ×5.
 NOTIONAL_MARGIN_HAIRCUT = 1.0
 
 ENTRY_TYPES = frozenset({"OPEN"})
@@ -74,7 +66,7 @@ def parse_tv_entry_fields(payload: dict | None) -> dict[str, Any]:
         "leverage": MAX_LEVERAGE,
         "tv_leverage": float(MAX_LEVERAGE),
         "qty_ratio": 1.0,
-        "qty_ratio_source": "vps_risk20_notional5",
+        "qty_ratio_source": "vps_margin20_lev5",
         "sizing_mode": SIZING_MODE,
     }
 
@@ -108,14 +100,13 @@ def compute_tv_entry_qty(
     margin_pct: float | None = None,
     tv_qty: float | None = None,
 ) -> tuple[float, dict[str, Any]]:
-    """Independent per-open sizing — no history / add_count.
+    """Independent per-open sizing — always margin20 × lev5 (= 1× equity notional).
 
-    ``tv_sl`` = VPS ``initialStop`` (risk-distance denominator).
-    ``tv_stop_loss`` = TradingView ``stop_loss`` (adjustment coefficient only).
+    ``tv_sl`` / ``tv_stop_loss`` are logged only; breathing engine places the real stop.
+    ``tv_qty`` must be present as a signal field but never sizes the order.
     """
     from app.core.symbol_registry import normalize_canonical_symbol
 
-    # 铁律：永远用合约本金余额（U本位合约总权益），不是可用保证金、不是旧 (×0.20×5)/price。
     if float(live_balance or 0) > 0:
         sizing_base = float(live_balance)
         sizing_source = "contract_equity"
@@ -156,7 +147,7 @@ def compute_tv_entry_qty(
         "symbol": can,
         "qty_step": step,
         "qty_ratio": 1.0,
-        "binding": "risk20_notional5_tv_qty_adj",
+        "binding": "margin20_lev5",
         "adjust_coef": None,
     }
 
@@ -166,78 +157,45 @@ def compute_tv_entry_qty(
     if sizing_base <= 0:
         meta["error"] = "zero_equity"
         return 0.0, meta
-    if vps_stop_f <= 0:
-        meta["error"] = "missing_stop"
-        return 0.0, meta
-    vps_dist = abs(price_f - vps_stop_f)
-    if vps_dist <= 0:
-        meta["error"] = "zero_stop_distance"
-        return 0.0, meta
     if tv_qty_f <= 0:
         meta["error"] = "missing_tv_qty"
         return 0.0, meta
-    if tv_sl_f <= 0:
-        meta["error"] = "missing_tv_stop_loss"
-        return 0.0, meta
-    tv_dist = abs(price_f - tv_sl_f)
-    if tv_dist <= 0:
-        meta["error"] = "zero_tv_stop_distance"
-        return 0.0, meta
 
-    adjust_coef = tv_dist / vps_dist
-    adjusted_tv_qty = tv_qty_f * adjust_coef
+    # 铁律：本金×20% 保证金 ×5 杠杆 = 名义 = 本金×1
+    margin_usd = sizing_base * risk_frac
+    notional_target = margin_usd * lev
+    theoretical = notional_target / price_f
 
-    risk_capital = sizing_base * risk_frac
-    notional_cap = sizing_base * lev  # 合约本金余额 × 5，无折损
-    qty_by_risk = risk_capital / vps_dist
-    qty_by_notional = notional_cap / price_f
-    tv_qty_ignored_absurd = False
-    cap_ref = max(qty_by_risk, qty_by_notional)
-    if (
-        cap_ref > 0
-        and adjusted_tv_qty > cap_ref * ABSURD_TV_QTY_VS_CAPS
-    ):
-        # Pine strategy.equity inflation: TV.qty is not a meaningful cap.
-        theoretical = min(qty_by_risk, qty_by_notional)
-        tv_qty_ignored_absurd = True
-    else:
-        theoretical = min(qty_by_risk, qty_by_notional, adjusted_tv_qty)
+    vps_dist = abs(price_f - vps_stop_f) if vps_stop_f > 0 else 0.0
+    tv_dist = abs(price_f - tv_sl_f) if tv_sl_f > 0 else 0.0
+    adjust_coef = (tv_dist / vps_dist) if (tv_dist > 0 and vps_dist > 0) else None
+    adjusted_tv_qty = (tv_qty_f * adjust_coef) if adjust_coef is not None else None
+    tv_qty_ignored_absurd = bool(
+        adjusted_tv_qty is not None and adjusted_tv_qty > theoretical * ABSURD_TV_QTY_VS_CAPS
+    )
 
-    # Hard ceiling: never exceed 合约本金 × 5 notional (天文数字兜底).
-    if theoretical * price_f > notional_cap + 1e-9:
-        theoretical = qty_by_notional
-
-    meta["risk_capital"] = round(risk_capital, 4)
-    meta["notional_cap"] = round(notional_cap, 4)
-    meta["nominal_value"] = round(notional_cap, 4)
+    meta["risk_capital"] = round(margin_usd, 4)
+    meta["margin_usd_target"] = round(margin_usd, 4)
+    meta["notional_cap"] = round(notional_target, 4)
+    meta["nominal_value"] = round(notional_target, 4)
+    meta["notional_target"] = round(notional_target, 4)
     meta["notional_margin_haircut"] = 1.0
-    meta["sl_distance"] = round(vps_dist, 6)
+    meta["sl_distance"] = round(vps_dist, 6) if vps_dist else None
     meta["stop_distance"] = meta["sl_distance"]
-    meta["vps_stop_distance"] = round(vps_dist, 6)
-    meta["tv_implied_stop_distance"] = round(tv_dist, 6)
-    meta["adjust_coef"] = round(adjust_coef, 8)
-    meta["tv_qty_cap"] = round(adjusted_tv_qty, 6)
-    meta["adjusted_tv_qty_cap"] = round(adjusted_tv_qty, 6)
+    meta["vps_stop_distance"] = round(vps_dist, 6) if vps_dist else None
+    meta["tv_implied_stop_distance"] = round(tv_dist, 6) if tv_dist else None
+    meta["adjust_coef"] = round(adjust_coef, 8) if adjust_coef is not None else None
+    meta["tv_qty_cap"] = round(adjusted_tv_qty, 6) if adjusted_tv_qty is not None else None
+    meta["adjusted_tv_qty_cap"] = meta["tv_qty_cap"]
     meta["tv_qty_ignored_absurd"] = tv_qty_ignored_absurd
-    meta["qty_by_risk"] = round(qty_by_risk, 6)
-    meta["qty_by_notional"] = round(qty_by_notional, 6)
+    meta["qty_by_risk"] = None
+    meta["qty_by_notional"] = round(theoretical, 6)
     meta["theoretical_qty"] = round(theoretical, 6)
     meta["raw_qty"] = round(theoretical, 6)
-    meta["candidate_qty_by_risk"] = meta["qty_by_risk"]
+    meta["candidate_qty_by_risk"] = None
     meta["candidate_qty_by_notional"] = meta["qty_by_notional"]
     meta["candidate_qty_by_tv_adj"] = meta["adjusted_tv_qty_cap"]
-
-    if tv_qty_ignored_absurd:
-        if qty_by_risk <= qty_by_notional + 1e-12:
-            meta["binding"] = "stop_risk"
-        else:
-            meta["binding"] = "notional_cap"
-    elif qty_by_risk <= qty_by_notional + 1e-12 and qty_by_risk <= adjusted_tv_qty + 1e-12:
-        meta["binding"] = "stop_risk"
-    elif qty_by_notional <= adjusted_tv_qty + 1e-12:
-        meta["binding"] = "notional_cap"
-    else:
-        meta["binding"] = "tv_qty_cap_adjusted"
+    meta["binding"] = "margin20_lev5"
 
     floored = floor_qty(theoretical, step)
     if round_fn is not None:
@@ -250,6 +208,12 @@ def compute_tv_entry_qty(
         meta["error"] = "below_min_qty"
         meta["final_qty"] = 0.0
         return 0.0, meta
+
+    # Hard ceiling: never exceed 本金×1 notional
+    if qty * price_f > notional_target + 1e-6:
+        qty = floor_qty(notional_target / price_f, step)
+        if round_fn is not None:
+            qty = float(round_fn(qty))
 
     actual_notional = qty * price_f
     meta["margin_usd"] = round(actual_notional / lev, 4) if lev > 0 else 0.0
@@ -361,7 +325,7 @@ def resolve_vps_entry_qty_eth(
     exchange_leverage: int = MAX_LEVERAGE,
     round_fn,
     tv_qty_ratio: float | None = None,
-    qty_ratio_source: str = "vps_risk20_notional5",
+    qty_ratio_source: str = "vps_margin20_lev5",
     symbol: str | None = None,
     min_qty: float | None = None,
     risk_pct: float | None = None,
@@ -396,7 +360,7 @@ def resolve_vps_entry_qty_deepcoin(
     exchange_leverage: int = MAX_LEVERAGE,
     face_value: float = 0.1,
     tv_qty_ratio: float | None = None,
-    qty_ratio_source: str = "vps_risk20_notional5",
+    qty_ratio_source: str = "vps_margin20_lev5",
     symbol: str | None = None,
     risk_pct: float | None = None,
     tv_qty: float | None = None,
