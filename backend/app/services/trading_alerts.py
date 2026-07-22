@@ -238,10 +238,10 @@ DINGTALK_VERBOSE_EXCLUDED = frozenset({
 })
 
 
-def format_regime_radar_activation_legend() -> str:
+def format_regime_radar_activation_legend(symbol: str | None = None) -> str:
     """钉钉：呼吸止损图例（兼容旧调用名）。"""
     from app.core.breathing_stop import format_breathing_legend
-    return format_breathing_legend()
+    return format_breathing_legend(symbol)
 
 
 def resolve_exchange_theme(
@@ -274,6 +274,7 @@ def resolve_exchange_theme(
     base["qty_unit"] = qty_unit_for_symbol(can, key)
     base["symbol_label"] = label_for_symbol(can)
     tag_sym = "ETH" if can.startswith("ETH") else ("XAU" if "XAU" in can else can[:3])
+    base["symbol_tag"] = f"[{tag_sym}]"
     if prefix == "OKX":
         base["tag"] = f"#OKX{lev}x·{tag_sym}"
     else:
@@ -686,7 +687,9 @@ def push_trading_alert(
         exchange=ex,
     )
     type_label = ALERT_TYPE_TAGS.get(alert_type, alert_type)
-    push_dingtalk(f"{theme['tag']} [{type_label}] {title}", body)
+    sym_tag = theme.get("symbol_tag") or ""
+    titled = title if (not sym_tag or str(title).startswith(sym_tag)) else f"{sym_tag} {title}"
+    push_dingtalk(f"{theme['tag']} [{type_label}] {titled}", body)
 
 
 def should_push_trading_dingtalk(alert_type: str, severity: str) -> bool:

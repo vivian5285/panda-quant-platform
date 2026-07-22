@@ -1,6 +1,6 @@
 # VPS 实盘最终行为规格（完整版 · 唯一权威）
 
-> 同步：2026-07-23 · 雷达呼吸升级（TV atr + 1h 呼吸系数）  
+> 同步：2026-07-23 · ETH+XAU 双雷达（配置层分参数）+ TV atr + 1h 呼吸系数
 > 实现入口：`tv_entry_sizing.py`（算仓）· `breathing_stop.py`（止损纯函数）· `atr_1h_breathing.py`（1h ATR）· `adverse_radar_guard.py`（挂/改/触发）· `webhook_symbol_coalesce.py`（≤2.5s 缓存）
 
 ## 硬性原则
@@ -83,9 +83,23 @@ TV `stop_loss` **不参与**挂单价。
 
 ## 四、呼吸止损引擎
 
-实现：`breathing_stop.py` + `atr_1h_breathing.py` + `adverse_radar_guard.py`。
+实现：`breathing_profile.py`（ETH/XAU 参数）+ `breathing_stop.py` + `atr_1h_breathing.py` + `adverse_radar_guard.py`。
+
+**双雷达：** ETH 与 XAU 共用同一执行引擎；状态 / WebSocket / 1h ATR 拉取 / 呼吸系数表按 `canonical_symbol` 隔离。钉钉与日志带 `[ETH]` / `[XAU]` 标签。
+
+| 参数 | ETH | XAU |
+|------|-----|-----|
+| 挂单缓冲 | 0.3 | 0.5 |
+| 早保本 | 0.5×ATR | 0.3×ATR |
+| 阶梯步长/跟进 | 0.75 / 0.4 ×ATR×coef | 0.4 / 0.35 ×ATR×coef |
+| 阶段二触发 | 3.0×ATR | 3.0×ATR |
+| 呼吸系数范围 | 0.7 ~ 1.5 | 0.5 ~ 1.3 |
+| 阶段二追踪 | `initialAtr × coef` | `initialAtr × coef × 0.8` |
+| 仓位名义 | 余额×20%×5 = 1×余额 | 同左（并存合计 ≈ 2×） |
 
 ### 呼吸系数档位（`smooth_ratio = sma(atr_1h / initial_atr, 3)`）
+
+**ETH**
 
 | smooth_ratio | 呼吸系数 |
 |--------------|----------|
@@ -95,11 +109,21 @@ TV `stop_loss` **不参与**挂单价。
 | 1.4 ~ 2.0 | 1.2 ~ 1.4（线性） |
 | ≥ 2.0 | 1.5 |
 
-### 阶段一（保本前）
+**XAU（整体更紧）**
+
+| smooth_ratio | 呼吸系数 |
+|--------------|----------|
+| < 0.7 | 0.5 |
+| 0.7 ~ 1.0 | 0.7 |
+| 1.0 ~ 1.4 | 0.9 |
+| 1.4 ~ 2.0 | 1.0 ~ 1.2（线性） |
+| ≥ 2.0 | 1.3 |
+
+### 阶段一（开仓即呼吸）
 
 ```
-step_trigger = 0.75 × initialAtr × coef
-step_advance = 0.4 × initialAtr × coef
+早保本: 浮盈 ≥ early_be×ATR → 止损锁到 entry±1 tick
+step_trigger / step_advance = profile 值 × initialAtr × coef
 TP1 路径底线 entry±0.5×ATR；TP2 路径底线 entry±1.5×ATR
 浮盈 ≥ 3.0×initialAtr → 进入阶段二
 ```
@@ -107,7 +131,7 @@ TP1 路径底线 entry±0.5×ATR；TP2 路径底线 entry±1.5×ATR
 ### 阶段二（自适应追踪）
 
 ```
-trail_distance = initialAtr × coef
+trail_distance = initialAtr × coef × trail_tighten   # ETH 1.0 / XAU 0.8
 候选 = peak ∓ trail_distance   # 只朝盈利，不倒退
 ```
 

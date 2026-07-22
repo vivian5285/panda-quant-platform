@@ -34,8 +34,8 @@ _cache: dict[str, dict[str, Any]] = {}
 
 
 # Back-compat alias used by older imports / tests
-def breathing_coefficient_from_ratio(smooth_ratio: float) -> float:
-    return get_breathing_coefficient(smooth_ratio)
+def breathing_coefficient_from_ratio(smooth_ratio: float, symbol: str | None = None) -> float:
+    return get_breathing_coefficient(smooth_ratio, symbol)
 
 
 def _cache_key(symbol: str | None) -> str:
@@ -140,6 +140,7 @@ def update_breathing_coefficient(
     initial_atr: float,
     atr_1h: float,
     ratio_history: list[float] | None = None,
+    symbol: str | None = None,
 ) -> tuple[float, list[float], float]:
     """Return (coef, updated_ratios, smooth_ratio)."""
     init = float(initial_atr or 0)
@@ -153,7 +154,7 @@ def update_breathing_coefficient(
     if len(ratios) > RATIO_SMOOTH_N:
         ratios = ratios[-RATIO_SMOOTH_N:]
     smooth = sum(ratios) / len(ratios)
-    coef = get_breathing_coefficient(smooth)
+    coef = get_breathing_coefficient(smooth, symbol)
     return coef, ratios, smooth
 
 
@@ -167,6 +168,8 @@ def refresh_supervisor_breath(
     Ratio samples append only when ATR is freshly fetched (≤ every 5 min) or force.
     Soft ticks reuse the last smoothed coefficient without expanding the SMA window.
     """
+    from app.core.breathing_stop import get_breathing_coefficient as _coef_fn
+
     init = float(getattr(supervisor, "initial_atr", 0) or 0)
     client = getattr(supervisor, "client", None)
     ex = getattr(supervisor, "exchange_id", None) or getattr(client, "exchange_id", None)
@@ -181,15 +184,14 @@ def refresh_supervisor_breath(
     hist = list(getattr(supervisor, "breath_ratio_history", None) or [])
     if refreshed or force or not hist:
         coef, hist, smooth = update_breathing_coefficient(
-            initial_atr=init, atr_1h=atr_1h, ratio_history=hist,
+            initial_atr=init, atr_1h=atr_1h, ratio_history=hist, symbol=sym,
         )
     else:
-        # Recompute coef from existing smoothed ratios without appending
         if init > 0 and atr_1h > 0 and hist:
             smooth = sum(hist) / len(hist)
         else:
             smooth = float(getattr(supervisor, "breath_smooth_ratio", 1.0) or 1.0)
-        coef = get_breathing_coefficient(smooth) if hist else float(
+        coef = _coef_fn(smooth, sym) if hist else float(
             getattr(supervisor, "breathing_coefficient", 1.0) or 1.0
         )
     supervisor.atr_1h = atr_1h
@@ -202,6 +204,7 @@ def refresh_supervisor_breath(
         "smooth_ratio": smooth,
         "breathing_coefficient": coef,
         "refreshed": bool(refreshed or force),
+        "symbol": sym,
     }
 
 

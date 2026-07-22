@@ -16,9 +16,9 @@ def test_coefficient_alias_matches():
 
 def test_update_breathing_smooths_three_samples():
     coef, hist, smooth = update_breathing_coefficient(
-        initial_atr=20.0, atr_1h=14.0, ratio_history=[],
+        initial_atr=20.0, atr_1h=13.0, ratio_history=[],
     )
-    assert abs(hist[-1] - 0.7) < 1e-9
+    assert abs(hist[-1] - 0.65) < 1e-9
     assert coef == 0.7
 
     coef, hist, smooth = update_breathing_coefficient(
@@ -28,9 +28,9 @@ def test_update_breathing_smooths_three_samples():
         initial_atr=20.0, atr_1h=26.0, ratio_history=hist,
     )
     assert len(hist) == 3
-    assert abs(smooth - (0.7 + 1.0 + 1.3) / 3) < 1e-9
-    # smooth ≈ 1.0 → coef 1.0
-    assert coef == 1.0
+    assert abs(smooth - (0.65 + 1.0 + 1.3) / 3) < 1e-9
+    # smooth ≈ 0.983 → still in 0.7~1.0 band → 0.85
+    assert coef == 0.85
 
 
 def test_compute_atr_1h_from_synthetic_klines():

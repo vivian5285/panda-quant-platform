@@ -330,8 +330,20 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         threading.Thread(target=loop, daemon=True, name="idle-flat-patrol").start()
 
+    def _symbol_tag(self) -> str:
+        from app.core.breathing_profile import symbol_tag
+        can = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
+        return f"[{symbol_tag(can)}]"
+
     def _log(self, event_type: str, message: str, detail: dict | None = None, trade_id: int | None = None):
-        self.on_log(self.user_id, event_type, message, detail, trade_id)
+        tag = self._symbol_tag()
+        msg = message if str(message).startswith(tag) else f"{tag} {message}"
+        payload = dict(detail or {})
+        can = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
+        if can:
+            payload.setdefault("canonical_symbol", can)
+            payload.setdefault("symbol", can)
+        self.on_log(self.user_id, event_type, msg, payload, trade_id)
 
     def _alert(
         self,
@@ -367,7 +379,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             payload.setdefault("current_sl", float(self.current_sl))
         if getattr(self, "regime", None) is not None:
             payload.setdefault("regime", int(self.regime))
-        self.on_alert(self.user_id, severity, alert_type, title, message, payload)
+        tag = self._symbol_tag()
+        titled = title if str(title).startswith(tag) else f"{tag} {title}"
+        msg = message if str(message).startswith(tag) else f"{tag} {message}"
+        self.on_alert(self.user_id, severity, alert_type, titled, msg, payload)
 
     @staticmethod
     def _call_dingtalk(fn, **kwargs):

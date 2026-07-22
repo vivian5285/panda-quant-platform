@@ -106,7 +106,9 @@ manual_adopt: |
 
 # 关键模块
 sizing: backend/app/core/tv_entry_sizing.py          # RISK20 + FIXED_LEVERAGE=5
-breath: backend/app/core/breathing_stop.py           # 阶段一/二 + compute_tp_ladder_from_atr
+breath: backend/app/core/breathing_profile.py        # ETH/XAU 参数表
+        backend/app/core/breathing_stop.py           # 阶段一/二 + compute_tp_ladder_from_atr
+        backend/app/core/atr_1h_breathing.py         # 币安 1h ATR → 呼吸系数
 engine: backend/app/core/adverse_radar_guard.py      # 挂/改/触发止损唯一路径
 market: backend/app/core/market_engine.py            # 30m→90m ATR/ADX
 tp: backend/app/core/tp_regime_targets.py            # PLACEABLE={1,2}
@@ -466,14 +468,15 @@ https://twinstar.pro/gemini/webhook
 
 ## 呼吸止损引擎详解
 
-实现：`breathing_stop.py`（纯函数）+ `adverse_radar_guard.py`（挂单/改单/触发）。  
+实现：`breathing_profile.py`（ETH/XAU）+ `breathing_stop.py` + `adverse_radar_guard.py`。  
 权威全文：[docs/VPS_LIVE_CHECKLIST.md §二～§四](docs/VPS_LIVE_CHECKLIST.md)
 
-**与仓位计算独立：** 数量开仓一次定死；止损价每个 tick 重算。TV `price`/`stop_loss` **不参与** tick。
+**与仓位计算独立：** 数量开仓一次定死；止损价每个 tick 重算。TV `price`/`stop_loss` **不参与** tick。  
+**双币种：** 同一引擎；XAU 更紧（早保本 0.3ATR、步长 0.4/0.35、coef 0.5~1.3、追踪×0.8）。并存时各约 1× 余额名义，合计约 2×。
 
-### 止损价输入（与 TV 无关）
+### 止损价输入（与 TV 挂单价无关）
 
-开仓时：30m→90m → `initialAtr`（此后固定）→ `initialStop = entry ± 1.5×initialAtr` → 首张止损挂单价 + 阶梯基准。
+开仓时：TV `atr` → 冻结 `initialAtr` → `initialStop = entry ± 1.5×initialAtr` → 挂单时再加减执行缓冲（ETH 0.3 / XAU 0.5）。运行中呼吸系数来自币安原生 1h ATR。
 
 ### 必须持久化的状态
 
@@ -485,25 +488,27 @@ https://twinstar.pro/gemini/webhook
 | `currentStop` / `current_sl` | 当前止损，只朝盈利方向移（每 tick） |
 | `best_price`（highest/lowest） | 持仓极值（每 tick） |
 | `breakevenPhase` | 是否阶段二（只升不降） |
+| `breathing_coefficient` | 当前呼吸系数（1h ATR 刷新） |
 | `remainingQtyPct` | TP 成交后剩余比例（改挂单量，不改止损公式） |
 | `schema_version` | ≥2；旧雷达 schema → 告警暂停 |
 
-### 阶段一（保本前，每 tick）
+### 阶段一（开仓即呼吸，每 tick）
 
 ```
-step_count = floor(|price − entry| / (0.75 × initialAtr))
-step_stop  = initialStop ± step_count × 0.4 × initialAtr
-candidate  = max/min(currentStop, step_stop)   # 只朝盈利
+早保本: 浮盈 ≥ early_be×ATR → 止损锁到 entry±1 tick   # ETH 0.5 / XAU 0.3
+step_count = floor(|price − entry| / (step_trigger × initialAtr × coef))
+step_stop  = initialStop ± step_count × step_advance × initialAtr × coef
+candidate  = max/min(currentStop, step_stop, early_be)   # 只朝盈利
 
 若 |price−entry| ≥ 1.35×ATR：candidate 不低于/不高于 entry±0.5×ATR   # TP1 底线
 若 |price−entry| ≥ 2.5×ATR：candidate 不低于/不高于 entry±1.5×ATR    # TP2 底线
 若 |price−entry| ≥ 3.0×ATR → breakevenPhase=true（进入阶段二，不回退）
 ```
 
-### 阶段二（ADX 连续追踪，每 tick；ADX 仅 90m 闭合更新）
+### 阶段二（自适应追踪）
 
 ```
-trail_dist = trail_distance(adx) × initialAtr   # ADX 15→1.2 … 35→2.5
+trail_dist = initialAtr × coef × trail_tighten   # ETH 1.0 / XAU 0.8
 currentStop = max/min(currentStop, extreme ∓ trail_dist)
 ```
 
@@ -511,7 +516,7 @@ currentStop = max/min(currentStop, extreme ∓ trail_dist)
 
 ### 触发与失败兜底
 
-- 价格触及 `currentStop` → 市价全平 → 统一状态清零 → 钉钉（标明阶段一/二）  
+- 价格触及 `currentStop` → 市价全平 → 统一状态清零 → 钉钉（标明阶段一/二 + `[ETH]`/`[XAU]`）  
 - TP1/TP2 成交 → 通知引擎按 70%/40% **重挂数量**（价格仍用当前 `currentStop`）  
 - 改单/下单失败 → **`HARD_SL_FAIL_ABORT`**
 
@@ -521,12 +526,11 @@ currentStop = max/min(currentStop, extreme ∓ trail_dist)
 
 | 项 | 值 |
 |----|-----|
-| 源 | 各所 `fetch_klines`；失败可回落 Binance 公共 |
-| 合成 | 每 3 根 **30m** → 1 根 **90m**；锚点 `bucket=(t_ms//5400000)*5400000`（UTC epoch） |
-| 指标 | 闭合 90m 后 Wilder **ATR(14)** / **ADX(14)** |
-| ATR 容错 | ① 可从 `TV.stop_loss` 反推 → 本笔降级开仓 + `ATR_FALLBACK` + 暂停该 symbol 自动开仓；② 无法反推 → 拒开仓 + `ATR_INVALID`/`ATR_ANOMALY` |
+| 开仓 ATR | **TV webhook `atr`**（冻结为 `initial_atr`） |
+| 呼吸 ATR | 币安原生 **1h** K 线 ATR(14)，每 symbol 独立缓存，≤5 分钟刷新 |
+| 遗留 90m | 仅作极端 fallback；live 主路径不再依赖 VPS 自算 ATR |
 | 消费方 | 开仓算 `initialStop`、呼吸 tick、阶段二 trail、未登记仓位接管 |
-| Webhook | **禁止**用 `msg.atr` / `msg.adx` 驱动决策；可选 `bar_time` 防 OPEN 乱序 |
+| Webhook | 必填 `symbol` + `atr`；可选 `bar_time` 防 OPEN 乱序 |
 
 配置：`STRATEGY_BAR_MINUTES=90`，`KLINE_BASE_INTERVAL=30m`，`KLINE_FETCH_LIMIT=250`。
 
