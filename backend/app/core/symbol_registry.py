@@ -45,10 +45,10 @@ SYMBOL_PRECISION: dict[str, dict[str, Any]] = {
     },
     CANONICAL_XAU: {
         "price_tick": Decimal("0.01"),
-        "qty_step": Decimal("0.01"),
+        "qty_step": Decimal("0.001"),
         "price_decimals": 2,
-        "qty_decimals": 2,
-        "min_qty": 0.01,
+        "qty_decimals": 3,
+        "min_qty": 0.001,
         "qty_unit": "XAU",
         "label": "XAU 永续",
         "dingtalk_unit": "盎司",
