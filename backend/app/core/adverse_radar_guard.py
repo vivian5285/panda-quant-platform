@@ -355,37 +355,45 @@ class AdverseRadarMixin:
         tv_stop: float | None,
         vps_atr: float,
     ) -> None:
-        """Debug-only: compare TV stop_loss-implied ATR vs VPS ATR. Never affects stops."""
+        """Debug-only: compare TV stop_loss-implied ATR vs VPS ATR. Never affects stops.
+
+        TV ``stop_loss`` is typically ``entry ± TV_STOP_ATR_MULT×ATR`` (≈1.0), NOT the
+        VPS hang price ``entry ± 1.5×ATR``. Using INITIAL_SL_ATR=1.5 here falsely yields
+        ~33% mismatch whenever the two ATRs actually agree.
+        """
         from app.config import get_settings
 
+        settings = get_settings()
+        tv_mult = float(getattr(settings, "TV_STOP_ATR_MULT", 1.0) or 1.0)
         implied = implied_atr_from_tv_stop(
-            float(entry or 0), float(tv_stop or 0), initial_sl_atr=INITIAL_SL_ATR,
+            float(entry or 0), float(tv_stop or 0), initial_sl_atr=tv_mult,
         )
         vps = float(vps_atr or 0)
         if implied <= 0 or vps <= 0:
             return
         ratio = atr_mismatch_ratio(vps, implied)
-        warn_pct = float(getattr(get_settings(), "ATR_COMPARE_WARN_PCT", 0.20) or 0.20)
+        warn_pct = float(getattr(settings, "ATR_COMPARE_WARN_PCT", 0.20) or 0.20)
         if ratio < warn_pct:
             logger.info(
-                "[User %s] ATR核对 OK: vps=%.4f tv_implied=%.4f ratio=%.1f%%",
+                "[User %s] ATR核对 OK: vps=%.4f tv_implied=%.4f (÷%.2f) ratio=%.1f%%",
                 getattr(self, "user_id", "?"),
-                vps, implied, ratio * 100,
+                vps, implied, tv_mult, ratio * 100,
             )
             return
         detail = {
             "vps_atr": vps,
             "tv_implied_atr": implied,
+            "tv_stop_atr_mult": tv_mult,
             "tv_stop_loss": float(tv_stop or 0),
             "entry": float(entry or 0),
             "mismatch_pct": round(ratio * 100, 2),
             "warn_pct": warn_pct * 100,
-            "note": "仅告警·不参与止损决策",
+            "note": "仅告警·不参与止损决策；TV隐含=|price−stop|/TV_STOP_ATR_MULT",
         }
         logger.warning(
-            "[User %s] ATR核对偏差过大: vps=%.4f tv_implied=%.4f Δ=%.1f%%",
+            "[User %s] ATR核对偏差过大: vps=%.4f tv_implied=%.4f (÷%.2f) Δ=%.1f%%",
             getattr(self, "user_id", "?"),
-            vps, implied, ratio * 100,
+            vps, implied, tv_mult, ratio * 100,
         )
         if hasattr(self, "_alert"):
             try:
@@ -393,7 +401,8 @@ class AdverseRadarMixin:
                     "warning",
                     "ATR_MISMATCH",
                     "ATR双边核对偏差",
-                    f"VPS ATR={vps:.4f} vs TV隐含={implied:.4f} (Δ{ratio*100:.0f}%) · 请核对90m周期",
+                    f"VPS ATR={vps:.4f} vs TV隐含={implied:.4f} "
+                    f"(stop÷{tv_mult:g}·Δ{ratio*100:.0f}%) · 请核对90m周期",
                     detail,
                 )
             except Exception:
@@ -554,6 +563,38 @@ class AdverseRadarMixin:
             self.initial_atr = 0.0
             self.current_sl = 0.0
 
+    def _clear_position_local_state(self) -> None:
+        """Immediately wipe all breathing/position book fields after confirmed flat.
+
+        Must not leave watched_entry / best_price / side residue — that polluted
+        HARD_SL_MISSING (side=None + stale entry) and next-open stop logic.
+        """
+        self._init_adverse_radar_fields()
+        if hasattr(self, "_reset_adverse_radar"):
+            self._reset_adverse_radar(keep_tv_sl=False)
+        self.watched_qty = 0.0
+        self.watched_entry = 0.0
+        self.initial_qty = 0.0
+        self.base_qty = 0.0
+        self.add_count = 0
+        self.current_side = None
+        self.best_price = 0.0
+        self.current_sl = 0.0
+        self.initial_stop = 0.0
+        self.initial_atr = 0.0
+        self.breakeven_phase = False
+        self.remaining_qty_pct = 1.0
+        self.tv_sl = 0.0
+        self._tv_hard_sl_price = 0.0
+        self.consumed_tp_levels = []
+        if hasattr(self, "_tp_fill_dingtalk_levels"):
+            self._tp_fill_dingtalk_levels = set()
+        self.current_trade_id = None
+        self.trade_opened_at = None
+        self.radar_latched = False
+        self.radar_activated = False
+        self.radar_step_count = 0
+
     def _latch_radar(self) -> None:
         """Once radar arms, never revert to hard-only defense until flat."""
         self._init_adverse_radar_fields()
@@ -686,11 +727,17 @@ class AdverseRadarMixin:
             self._maybe_alert_atr_mismatch(entry, tv_sl_ref, atr)
         else:
             self._vps_hard_sl_meta = meta
+            # Flat / transitional wipe often has side=None + stale entry — do not
+            # critical-alert as if a live position is missing its stop.
+            live_open = (
+                bool(getattr(self, "monitoring", False))
+                or float(getattr(self, "watched_qty", 0) or 0) > 0
+            ) and side_u in ("LONG", "SHORT") and entry > 0
             logger.error(
                 "呼吸止损缺失: entry=%.2f side=%s atr=%.4f — 无法计算初始止损 | %s",
                 entry, side_u, atr, meta,
             )
-            if hasattr(self, "_alert"):
+            if live_open and hasattr(self, "_alert"):
                 try:
                     self._alert(
                         "critical",
@@ -800,6 +847,15 @@ class AdverseRadarMixin:
                     prices.add(p)
             except (TypeError, ValueError):
                 continue
+        # Always recognize any of the authoritative stop anchors (avoid missing
+        # a live algo stop when current_sl temporarily differs from tv_sl).
+        for attr in ("current_sl", "initial_stop", "tv_sl", "_tv_hard_sl_price"):
+            try:
+                p = round(float(getattr(self, attr, 0) or 0), 2)
+            except (TypeError, ValueError):
+                continue
+            if p > 0:
+                prices.add(p)
         return prices
 
     def _adverse_tier_stop_prices(self) -> set[float]:
@@ -1462,19 +1518,31 @@ class AdverseRadarMixin:
 
         sl_px = float(self.current_sl)
         placed = False
-        if hasattr(self, "_sync_binance_merged_stop"):
-            merged = self._sync_binance_merged_stop(
-                live_qty, radar_sl=sl_px, force_replace=improved,
-            ) or {}
-            placed = bool(merged.get("placed") or merged.get("aligned") or merged.get("armed"))
-        elif hasattr(self, "_sync_tv_hard_stop"):
-            merged = self._sync_tv_hard_stop(live_qty, force_replace=improved) or {}
-            placed = bool(merged.get("placed") or merged.get("aligned") or merged.get("armed"))
-        elif hasattr(self, "_ensure_radar_sl"):
-            if getattr(self, "exchange_id", "") == "deepcoin":
-                placed = bool(self._ensure_radar_sl(live_qty, sl_px))
-            else:
-                placed = bool(self._ensure_radar_sl(sl_px, live_qty))
+        # Heartbeat: only touch the exchange when price improved OR stop is missing.
+        # Never cancel/replace a live stop that already matches the target.
+        need_sync = bool(improved)
+        if not need_sync:
+            near = False
+            if hasattr(self, "_has_stop_sl_near"):
+                try:
+                    near = bool(self._has_stop_sl_near(sl_px))
+                except Exception:
+                    near = False
+            need_sync = not near
+        if need_sync:
+            if hasattr(self, "_sync_binance_merged_stop"):
+                merged = self._sync_binance_merged_stop(
+                    live_qty, radar_sl=sl_px, force_replace=improved,
+                ) or {}
+                placed = bool(merged.get("placed") or 0)
+            elif hasattr(self, "_sync_tv_hard_stop"):
+                merged = self._sync_tv_hard_stop(live_qty, force_replace=improved) or {}
+                placed = bool(merged.get("placed") or 0)
+            elif hasattr(self, "_ensure_radar_sl"):
+                if getattr(self, "exchange_id", "") == "deepcoin":
+                    placed = bool(self._ensure_radar_sl(live_qty, sl_px))
+                else:
+                    placed = bool(self._ensure_radar_sl(sl_px, live_qty))
 
         meta = dict(tick.get("meta") or {})
         trail_dist_atr = meta.get("trail_dist_atr")
@@ -1531,7 +1599,10 @@ class AdverseRadarMixin:
             self.radar_activated = True
             if hasattr(self, "_save_state"):
                 self._save_state()
-        return bool(improved or placed)
+        # CRITICAL: only report True when stop PRICE improved.
+        # Returning True on mere "aligned/placed" made the 5s sentinel treat every
+        # heartbeat as moved → force_replace cancel/rehang (risk window).
+        return bool(improved)
 
     def _refresh_breathing_state_on_recover(self, curr_px: float, entry: float) -> None:
         """Restart: restore breathing SL from persisted state + one tick at mark.
@@ -2639,26 +2710,17 @@ class AdverseRadarMixin:
             self._sync_consumed_tp_levels(live_qty, curr_px)
 
         if self._radar_activation_reached(curr_px):
-            moved = False
+            # Breathing tick owns place/improve. Trailing return = stop PRICE improved only.
             if hasattr(self, "_process_radar_trailing"):
-                moved = bool(self._process_radar_trailing(live_qty, curr_px))
+                self._process_radar_trailing(live_qty, curr_px)
             elif self._handoff_shield_to_radar(live_qty, curr_px):
-                moved = True
+                pass
             if self._uses_dual_stop_track():
                 # DeepCoin historically dual-slot; mixin forces single-track=False for breathing
                 self._process_adverse_radar_guard(live_qty, curr_px)
-            else:
-                radar = self._effective_radar_sl_for_merge() or None
-                if radar and (
-                    moved
-                    or not (
-                        hasattr(self, "_has_stop_sl_near")
-                        and self._has_stop_sl_near(float(radar))
-                    )
-                ):
-                    self._sync_binance_merged_stop(
-                        live_qty, radar_sl=radar, force_replace=moved,
-                    )
+            # Do NOT second-sync here: a follow-up force_replace on every sentinel
+            # poll was the cancel↔rehang loop (~5s). Missing stops are repaired inside
+            # _process_breathing_stop_tick when _has_stop_sl_near is false.
             return
 
         # Missing entry/ATR — keep any mounted stop repaired until breathing can arm

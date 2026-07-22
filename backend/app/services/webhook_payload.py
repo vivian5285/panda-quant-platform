@@ -1,8 +1,8 @@
-"""Parse TradingView webhook JSON — v6.5.6 Trillion_God final.
+"""Parse TradingView webhook JSON — Trillion_God / Gemini final.
 
-Canonical fields: bot_id, token, action, symbol, price, qty, qty1-3,
+Canonical fields: bot_id, secret, action, symbol, price, qty, qty1-3,
 stop_loss, tp1, tp2, tp3 (+ optional atr).
-Legacy aliases (secret/tv_sl/tv_tp*) normalized for internal supervisors.
+Legacy aliases (token/tv_sl/tv_tp*) normalized for internal supervisors.
 """
 
 from __future__ import annotations
@@ -64,11 +64,11 @@ def normalize_tv_payload(data: dict) -> dict:
     out = dict(data)
     out["action"] = str(out.get("action", "")).upper().strip()
 
-    # Auth: token (v6.5.6) ≡ secret (platform)
-    if out.get("token") and not out.get("secret"):
-        out["secret"] = str(out["token"]).strip()
-    elif out.get("secret") and not out.get("token"):
+    # Auth: secret (canonical) ≡ token (legacy TV payloads)
+    if out.get("secret") and not out.get("token"):
         out["token"] = str(out["secret"]).strip()
+    elif out.get("token") and not out.get("secret"):
+        out["secret"] = str(out["token"]).strip()
 
     # Price aliases → internal tv_*
     if out.get("stop_loss") is not None and not out.get("tv_sl"):

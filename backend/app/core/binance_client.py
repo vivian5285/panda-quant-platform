@@ -300,9 +300,13 @@ class BinanceClient:
         """Map Binance algo conditional order into futures_get_open_orders shape."""
         trigger = row.get("triggerPrice") or row.get("stopPrice")
         qty = row.get("quantity") or row.get("origQty") or row.get("qty")
-        otype = str(row.get("orderType") or row.get("type") or "").upper()
-        if otype == "CONDITIONAL":
-            otype = str(row.get("orderType") or "STOP_MARKET").upper()
+        raw_type = str(row.get("orderType") or row.get("type") or "").upper()
+        # CONDITIONAL is the algo envelope — prefer nested type, else STOP_MARKET
+        if raw_type == "CONDITIONAL":
+            nested = str(row.get("type") or "").upper()
+            otype = nested if nested and nested != "CONDITIONAL" else "STOP_MARKET"
+        else:
+            otype = raw_type or "STOP_MARKET"
         close_pos = row.get("closePosition")
         if isinstance(close_pos, bool):
             close_pos = "true" if close_pos else "false"
@@ -317,7 +321,7 @@ class BinanceClient:
             "algoId": row.get("algoId"),
             "clientOrderId": row.get("clientAlgoId") or row.get("clientOrderId"),
             "type": otype,
-            "orderType": row.get("orderType") or otype,
+            "orderType": otype,
             "stopPrice": trigger,
             "triggerPrice": trigger,
             "price": row.get("price"),

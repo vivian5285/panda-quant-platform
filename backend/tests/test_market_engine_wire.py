@@ -46,6 +46,7 @@ class _Stub(AdverseRadarMixin):
 
 def test_implied_atr_from_tv_stop():
     assert abs(implied_atr_from_tv_stop(1800, 1740, initial_sl_atr=1.5) - 40) < 1e-9
+    assert abs(implied_atr_from_tv_stop(1800, 1760, initial_sl_atr=1.0) - 40) < 1e-9
     assert implied_atr_from_tv_stop(0, 1740) == 0
 
 
@@ -93,16 +94,35 @@ def test_recompute_uses_market_engine_not_payload_atr():
 def test_atr_mismatch_alerts_when_over_threshold():
     clear_cache()
     stub = _Stub()
-    # VPS atr=40; TV stop implies atr=|1800-1700|/1.5=66.67 → ~67% mismatch
+    # TV_STOP_ATR_MULT=1.0: |1800-1700|/1.0=100 vs VPS=40 → 150% mismatch
     stub._maybe_alert_atr_mismatch(1800, 1700, 40)
     types = [a["type"] for a in stub.alerts]
     assert "ATR_MISMATCH" in types
 
 
+def test_atr_mismatch_silent_when_tv_1x_matches_vps():
+    """Regression: TV stop≈1.0×ATR must NOT false-alarm ~33% vs VPS ATR."""
+    stub = _Stub()
+    # |1930.49 - 1915.65| / 1.0 ≈ 14.84 ≈ VPS ATR
+    stub._maybe_alert_atr_mismatch(1930.49, 1915.65, 14.8288)
+    assert stub.alerts == []
+
+
 def test_atr_mismatch_silent_when_close():
     stub = _Stub()
-    stub._maybe_alert_atr_mismatch(1800, 1740, 40)  # exact match
+    # Exact match under TV_STOP_ATR_MULT=1.0
+    stub._maybe_alert_atr_mismatch(1800, 1760, 40)
     assert stub.alerts == []
+
+
+def test_live_incident_atr_was_false_positive_under_old_1p5():
+    """2026-07-22 ding alerts Δ29%~33% = wrong divisor 1.5 on matched ATRs."""
+    vps = 14.8288
+    entry, stop = 1930.49, 1915.6471582505
+    wrong = implied_atr_from_tv_stop(entry, stop, initial_sl_atr=1.5)
+    right = implied_atr_from_tv_stop(entry, stop, initial_sl_atr=1.0)
+    assert atr_mismatch_ratio(vps, wrong) > 0.25
+    assert atr_mismatch_ratio(vps, right) < 0.05
 
 
 def test_live_position_soft_refresh_does_not_reset_stop():

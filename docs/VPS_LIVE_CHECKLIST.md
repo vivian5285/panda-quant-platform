@@ -187,13 +187,36 @@ py -m pytest tests/test_breathing_stop.py tests/test_tv_v6985_sizing.py \
 
 > 非架构变更；策略参数与止损引擎逻辑不变。开发/模拟盘逐项确认。
 
+### ATR 应急降级（临时 · 非静默）
+
+| 触发（任一） | 行为 |
+|--------------|------|
+| VPS ATR 无效/缺失 | 若有 TV `stop_loss` → 本笔用 TV隐含ATR，钉钉 `ATR_FALLBACK`，开仓后暂停 |
+| VPS ATR < 中位数×0.3 | 同上 |
+| 连续 `ATR_FALLBACK_STREAK`(默认3) 次开仓信号 Δ≥`ATR_FALLBACK_MISMATCH_PCT`(默认20%) | 同上 |
+| 无 TV stop 可反推 | **仍拒开仓**（不静默换源） |
+
+- TV隐含ATR = `|price−stop_loss| / TV_STOP_ATR_MULT`（默认 1.0）
+- `initialStop` / 呼吸倍数仍按 **1.5× / 0.75×…** 计算，**只换 ATR 数值来源**
+- 恢复：人工确认 VPS ATR 正常后手动解除 `trading_paused`
+- 实现：`atr_emergency_fallback.py` + `PositionSupervisor._resolve_entry_qty`
+
 ### 一、90 分钟合成 K 线边界对齐（阻塞上线）
 
 | 项 | 状态 |
 |----|------|
 | 实现 | UTC epoch 90m 地板桶（见上）；`utc_90m_bucket_ms` + 单测覆盖非零日界 |
 | 上线前人工验证 | 取历史段：TV 90m vs VPS `bar_open_ms` 逐根对齐；抽样 ATR/ADX 误差 **≤5%** |
+| ATR 双边告警 | `ATR_MISMATCH` 用 `TV_STOP_ATR_MULT`（默认 **1.0**）反推 TV 隐含 ATR；**勿**用 VPS 挂单 1.5×。2026-07-22 钉钉 Δ≈33% 为误用 1.5 反推的假阳性（\|1−1/1.5\|） |
 | 未通过 | **禁止凑合上线**；先改锚点再复验 |
+
+### 先平后开失败（与 `HARD_SL_FAIL_ABORT` 对等）
+
+| 项 | 行为 |
+|----|------|
+| 重试 | 平仓未归零 → 间隔 `FORCE_FLAT_RETRY_DELAYS_SEC`（默认 1,3,6）共 3 次 |
+| 仍失败 / 挂单残留 | **中止本次开仓** + 钉钉 `FLIP_CLEAN_ABORT`（需人工介入）+ `_pause_trading` |
+| 禁止 | 仓位/挂单状态不明时继续开新仓 |
 
 ### 二、Webhook `bar_time` 乱序兜底（非阻塞）
 

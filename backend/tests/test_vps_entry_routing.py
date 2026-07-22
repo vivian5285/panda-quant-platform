@@ -126,9 +126,86 @@ def test_force_flat_before_open_still_sizes():
     assert meta.get("error") is None
 
 
-def test_atr_invalid_refuses_without_pause():
-    """ATR≤0：拒开仓 + 告警，不永久暂停（后续信号仍可试）。"""
+def test_force_flat_close_fail_retries_then_pauses():
+    """平仓未归零：1/3/6 重试后中止开仓并暂停（严禁不明仓位继续开新仓）。"""
     sup, _ = _make_supervisor()
+    sup.tv_sl = 3200.0
+    sup._tv_hard_sl_price = 3200.0
+    sup._get_active_position = MagicMock(
+        return_value={"size": 1.0, "side": "SHORT", "entry_price": 3300.0},
+    )
+    sup.position_manager = MagicMock()
+    sup.position_manager.get_position.return_value = {"positionAmt": -1.0, "entryPrice": 3300.0}
+    sup._purge_defense_orders_on_flat = MagicMock()
+    sup._cancel_all_verified = MagicMock()
+    sup._close_all = MagicMock()
+    sup._wait_until_flat = MagicMock(return_value=False)
+    sup._alert = MagicMock()
+    sup._pause_trading = MagicMock()
+    sup._reconcile_live_vs_book = MagicMock(return_value={"ok": False})
+    sup._save_state = MagicMock()
+    with patch("app.core.position_supervisor.time.sleep", return_value=None):
+        ok = PositionSupervisor._force_flat_before_open(sup, "TV OPEN [LONG] 铁律·先平后开")
+    assert ok is False
+    assert sup._close_all.call_count == 3
+    sup._pause_trading.assert_called()
+    types = [c.args[1] for c in sup._alert.call_args_list]
+    assert "FLIP_CLEAN_ABORT" in types
+
+
+def test_force_flat_dirty_book_after_flat_aborts():
+    """仓位已平但挂单残留：不得继续开仓。"""
+    sup, _ = _make_supervisor()
+    sup.tv_sl = 3200.0
+    sup._get_active_position = MagicMock(
+        return_value={"size": 1.0, "side": "LONG", "entry_price": 3300.0},
+    )
+    sup._purge_defense_orders_on_flat = MagicMock()
+    sup._cancel_all_verified = MagicMock()
+    sup._close_all = MagicMock()
+    # Flat succeeds on first wait; dirty book must still abort open
+    dirty = {
+        "ok": False, "orders_after": 2, "orders_before": 2, "rounds": 3, "reason": "x",
+    }
+    clean = MagicMock(return_value=dirty)
+    recon = MagicMock(return_value={"ok": True})
+    sup._wait_until_flat = MagicMock(return_value=True)
+    sup._alert = MagicMock()
+    sup._pause_trading = MagicMock()
+    with patch.object(sup, "_ensure_book_clean_before_open", clean), \
+         patch.object(sup, "_reconcile_live_vs_book", recon), \
+         patch("app.core.position_supervisor.time.sleep", return_value=None):
+        ok = PositionSupervisor._force_flat_before_open(sup, "TV OPEN [LONG]")
+    assert ok is False
+    sup._pause_trading.assert_called()
+    types = [c.args[1] for c in sup._alert.call_args_list]
+    assert "FLIP_CLEAN_ABORT" in types
+
+
+def test_atr_invalid_falls_back_when_tv_stop_present():
+    """ATR≤0 且有 TV stop → 应急降级用 TV 隐含 ATR，不永久拒单。"""
+    sup, _ = _make_supervisor()
+    sup.current_atr = 0.0
+    sup._pull_vps_market_indicators = MagicMock(return_value={"atr": 0.0, "atr_series": []})
+    sup._pause_trading = MagicMock()
+    sup._alert = MagicMock()
+    qty, meta = sup._resolve_entry_qty(3300.0)
+    assert qty > 0
+    assert meta.get("atr_source") == "tv_emergency_fallback"
+    assert meta.get("atr_fallback") is True
+    # TV implied = |3300-3200|/1.0 = 100
+    assert meta.get("sizing_atr") == pytest.approx(100.0)
+    types = [c.args[1] for c in sup._alert.call_args_list]
+    assert "ATR_FALLBACK" in types
+    assert getattr(sup, "_atr_fallback_pending_pause", False) is True
+
+
+def test_atr_invalid_still_rejects_without_tv_stop():
+    """无 TV stop 可反推时，ATR无效仍拒开仓（禁止静默换源）。"""
+    sup, _ = _make_supervisor()
+    sup.tv_sl = 0.0
+    sup._pending_open_tv_sl = 0.0
+    sup._tv_hard_sl_price = 0.0
     sup.current_atr = 0.0
     sup._pull_vps_market_indicators = MagicMock(return_value={"atr": 0.0, "atr_series": []})
     sup._pause_trading = MagicMock()
@@ -136,13 +213,11 @@ def test_atr_invalid_refuses_without_pause():
     qty, meta = sup._resolve_entry_qty(3300.0)
     assert qty == 0
     assert meta.get("error") == "atr_invalid"
-    assert not getattr(sup, "trading_paused", False)
     sup._pause_trading.assert_not_called()
-    sup._alert.assert_called()
 
 
-def test_atr_anomaly_below_median_refuses():
-    """当前 ATR < 中位数×0.3 → 拒开仓，不暂停。"""
+def test_atr_anomaly_falls_back_when_tv_stop_present():
+    """当前 ATR < 中位数×0.3 → 降级用 TV 隐含，不静默拒单。"""
     from app.core.market_indicators import evaluate_atr_sanity
 
     series = [100.0] * 50
@@ -151,21 +226,19 @@ def test_atr_anomaly_below_median_refuses():
     assert sanity["error"] == "atr_anomaly"
 
     sup, _ = _make_supervisor()
-    # ATR=20 vs median~100 → anomaly
+    atr = 20.0
     series = [100.0] * 50
     series[-1] = 20.0
-    atr = 20.0
     sup.current_atr = atr
+    # TV stop 3200 @ entry 3300 → implied 100
     sup._pull_vps_market_indicators = MagicMock(
         return_value={"atr": atr, "atr_series": series, "adx": 25.0}
     )
-    # Bypass compute_initial_stop path by failing atr guard first
     sup._pause_trading = MagicMock()
     qty, meta = sup._resolve_entry_qty(3300.0)
-    assert qty == 0
-    assert meta.get("error") == "atr_anomaly"
-    assert not getattr(sup, "trading_paused", False)
-    sup._pause_trading.assert_not_called()
+    assert qty > 0
+    assert meta.get("atr_source") == "tv_emergency_fallback"
+    assert meta.get("sizing_atr") == pytest.approx(100.0)
 
 
 def test_open_position_recovers_wiped_tv_sl():

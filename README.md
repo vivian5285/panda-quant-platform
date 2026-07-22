@@ -24,7 +24,7 @@
 | 行情 | 交易所 30m → **合成 90m** → ATR(14)/ADX(14) |
 | 加仓 | **禁用**；同向亦先平后开 |
 | CAP_ALIGN | **仅检测告警，不下单减仓** |
-| 保留兜底 | `HARD_SL_FAIL_ABORT`、重启 `FORCE_ALIGN` |
+| 保留兜底 | `HARD_SL_FAIL_ABORT`、`FLIP_CLEAN_ABORT`（先平后开失败暂停）、重启 `FORCE_ALIGN` |
 
 | 生产域名 | [https://twinstar.pro](https://twinstar.pro) |
 |----------|---------------------------------------------|
@@ -380,6 +380,7 @@ https://twinstar.pro/gemini/webhook
 
 | 字段 | VPS 怎么用 | 参与交易所止损价？ |
 |------|------------|-------------------|
+| `secret` | 鉴权（必填）；旧字段 `token` 仍兼容 | **否** |
 | `price` | 开仓参考价；与 `stop_loss` 算 TV 隐含止损距（只改仓位） | **否** |
 | `qty` | 三选一候选（须先 × 调整系数） | **否** |
 | `qty1` / `qty2` | TP1/TP2 限价挂单数量 | **否** |
@@ -409,9 +410,10 @@ https://twinstar.pro/gemini/webhook
 
 ### 时序与幂等
 
+- Secret：JSON 字段名 **`secret`**（值与后台/env 一致）；旧 `token` 仍接受  
 - 同 bar `OPEN+CLOSE`：门控 **先 CLOSE 再 OPEN**（`webhook_seq_gate`）  
 - 幂等：`action+symbol` 默认约 60s；含 `bar_index+seq` 时 24h Redis 键  
-- Secret：管理后台 runtime 优先于 `.env`
+- Secret 来源：管理后台 runtime 优先于 `.env`
 
 ---
 

@@ -95,10 +95,13 @@ class _DingtalkBridge:
 
     _TYPE_MAP = {
         "report_supervisor_open": ("OPEN", "info", "GEMINI开仓"),
+        "report_supervisor_close": ("CLOSE", "info", "全平完成"),
         "report_intervention": ("TRAIL", "info", "雷达追踪"),
         "report_system_alert": ("SENTINEL_ERROR", "warning", "系统告警"),
         "report_force_align": ("FORCE_ALIGN", "critical", "方向背离"),
         "report_close": ("CLOSE", "info", "全平完成"),
+        "report_recover_takeover": ("STARTUP", "info", "重启接管"),
+        "report_manual_position_change": ("MANUAL_ADJUST", "warning", "人工调仓"),
     }
 
     def __init__(self, supervisor: "DeepcoinPositionSupervisor"):
@@ -349,15 +352,68 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         """兼容 VPS 旧版 self._dt.py（缺少 verified / swept_dust 等新参数）"""
         try:
             fn(**kwargs)
+            return
         except TypeError as exc:
-            if "unexpected keyword argument" not in str(exc):
-                raise
-            legacy = {
-                k: v for k, v in kwargs.items()
-                if k not in ("verified", "swept_dust")
-            }
-            logger.warning(f"钉钉旧版降级播报 {getattr(fn, '__name__', 'dingtalk')}: {exc}")
-            fn(**legacy)
+            msg = str(exc)
+            legacy = None
+            # Strip unknown kwargs and retry (legacy report_* signatures vary)
+            if "unexpected keyword argument" in msg or "got an unexpected keyword" in msg:
+                import inspect
+                try:
+                    sig = inspect.signature(fn)
+                    allowed = {
+                        p.name for p in sig.parameters.values()
+                        if p.kind in (
+                            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                            inspect.Parameter.KEYWORD_ONLY,
+                        )
+                    }
+                    has_var_kw = any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD
+                        for p in sig.parameters.values()
+                    )
+                    if has_var_kw:
+                        raise  # accepts **kwargs — original error is elsewhere
+                    legacy = {k: v for k, v in kwargs.items() if k in allowed}
+                except (TypeError, ValueError):
+                    legacy = {
+                        k: v for k, v in kwargs.items()
+                        if k not in ("verified", "swept_dust", "verify_note", "alert_type", "title")
+                    }
+                logger.warning(
+                    "钉钉旧版降级播报 %s: %s | dropped=%s",
+                    getattr(fn, "__name__", "dingtalk"),
+                    exc,
+                    sorted(set(kwargs) - set(legacy or {})),
+                )
+                if legacy:
+                    try:
+                        fn(**legacy)
+                        return
+                    except TypeError as exc2:
+                        msg = str(exc2)
+                        exc = exc2
+                else:
+                    # No overlapping kwargs — fall through to positional fallback
+                    msg = "missing required positional argument"
+            # Missing required positional — try reason-only / message-only fallbacks
+            if (
+                "required positional" in msg
+                or "missing" in msg.lower()
+                or "unexpected keyword" in msg
+            ):
+                for key in ("reason", "message", "title", "verify_note"):
+                    if key in kwargs:
+                        try:
+                            fn(kwargs[key])
+                            logger.warning(
+                                "钉钉参数降级(positional) %s via %s: %s",
+                                getattr(fn, "__name__", "dingtalk"), key, exc,
+                            )
+                            return
+                        except TypeError:
+                            continue
+            raise
 
     def _start_signal_worker(self):
         if self._signal_worker_started:
@@ -798,11 +854,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 self.symbol, close_side, pos["posSide"], live_sz, reduce_only=True,
             )
             time.sleep(1.0)
-        self.watched_qty = 0
-        self.initial_qty = 0
-        self.base_qty = 0
-        self.add_count = 0
-        self.current_side = None
+        if hasattr(self, "_clear_position_local_state"):
+            self._clear_position_local_state()
+        else:
+            self.watched_qty = 0
+            self.watched_entry = 0.0
+            self.initial_qty = 0
+            self.base_qty = 0
+            self.add_count = 0
+            self.current_side = None
+            self.best_price = 0.0
         self._save_state()
         self._purge_defense_orders_on_flat("dust_sweep", notify=True)
         self._report_flat_close(reason, swept_dust=True)
@@ -860,11 +921,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         )
         self._purge_defense_orders_on_flat("startup_reconcile", notify=True)
         self.monitoring = False
-        self.watched_qty = 0
-        self.initial_qty = 0
-        self.base_qty = 0
-        self.add_count = 0
-        self.current_side = None
+        if hasattr(self, "_clear_position_local_state"):
+            self._clear_position_local_state()
+        else:
+            self.watched_qty = 0
+            self.watched_entry = 0.0
+            self.initial_qty = 0
+            self.base_qty = 0
+            self.add_count = 0
+            self.current_side = None
+            self.best_price = 0.0
         self._save_state()
 
         verify_note = (
@@ -2290,6 +2356,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         """深币最小 1 张限制 + 余数吸收：qty1+qty2+qty3 恒等于 total_qty"""
         if total_qty <= 0:
             return 0, 0, 0
+        if not ratios or len(ratios) < 3:
+            # Guard against empty/partial regime ratios → IndexError
+            return max(1, int(total_qty)), 0, 0
 
         qty1 = max(1, round(total_qty * ratios[0]))
         remaining = total_qty - qty1
@@ -2629,17 +2698,70 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             or getattr(self, "tv_sl", 0)
             or 0
         )
+        from app.core.atr_emergency_fallback import (
+            apply_fallback_atr,
+            evaluate_emergency_atr_fallback,
+        )
         from app.core.open_atr_guard import check_open_atr_or_reject
 
-        atr_ok, atr_meta = check_open_atr_or_reject(
-            self,
-            atr=atr,
+        fb = evaluate_emergency_atr_fallback(
+            vps_atr=atr,
             atr_series=atr_series,
-            side=side,
-            tv_sl_ref=tv_sl_ref if tv_sl_ref > 0 else None,
+            entry=price,
+            tv_stop_loss=tv_sl_ref if tv_sl_ref > 0 else None,
+            mismatch_streak=int(getattr(self, "atr_mismatch_streak", 0) or 0),
         )
-        if not atr_ok:
-            return 0, atr_meta
+        self.atr_mismatch_streak = int(fb.get("mismatch_streak_next") or 0)
+        atr_source = "vps"
+        self._atr_fallback_pending_pause = False
+        if fb.get("need_fallback"):
+            fb_atr = apply_fallback_atr(fb)
+            if fb_atr > 0:
+                atr = fb_atr
+                atr_source = "tv_emergency_fallback"
+                self._atr_fallback_pending_pause = True
+                self.atr_fallback_active = True
+                self.current_atr = atr
+                logger.error(
+                    "⚠️ ATR应急降级·本笔使用TV隐含ATR=%.4f (VPS=%s reason=%s)",
+                    atr, fb.get("vps_atr"), fb.get("reason"),
+                )
+                if hasattr(self, "_alert"):
+                    self._alert(
+                        "critical",
+                        "ATR_FALLBACK",
+                        "ATR应急降级·需人工确认后恢复",
+                        (
+                            f"原因={fb.get('reason')} | VPS ATR={fb.get('vps_atr')} | "
+                            f"TV隐含ATR={fb.get('tv_implied_atr')} | "
+                            f"Δ={fb.get('mismatch_pct')}% | 本笔已用降级ATR开仓；"
+                            f"随后暂停本 symbol 自动开仓"
+                        ),
+                        dict(fb),
+                    )
+            else:
+                atr_ok, atr_meta = check_open_atr_or_reject(
+                    self,
+                    atr=float(fb.get("vps_atr") or 0),
+                    atr_series=atr_series,
+                    side=side,
+                    tv_sl_ref=tv_sl_ref if tv_sl_ref > 0 else None,
+                )
+                if not atr_ok:
+                    atr_meta["atr_fallback"] = fb
+                    return 0, atr_meta
+        else:
+            atr_ok, atr_meta = check_open_atr_or_reject(
+                self,
+                atr=atr,
+                atr_series=atr_series,
+                side=side,
+                tv_sl_ref=tv_sl_ref if tv_sl_ref > 0 else None,
+            )
+            if not atr_ok:
+                atr_meta["atr_fallback"] = fb
+                return 0, atr_meta
+            self.atr_fallback_active = False
 
         sizing_stop = 0.0
         if atr > 0 and price > 0 and side in ("LONG", "SHORT"):
@@ -2663,12 +2785,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         meta["sizing_stop"] = round(sizing_stop, 4) if sizing_stop else None
         meta["sizing_atr"] = round(atr, 4) if atr else None
         meta["sizing_side"] = side or None
+        meta["atr_source"] = atr_source
+        meta["atr_fallback"] = bool(atr_source == "tv_emergency_fallback")
+        meta["atr_fallback_detail"] = fb
         if sizing_stop > 0:
             self._sizing_initial_stop = sizing_stop
             self.initial_atr = atr if atr > 0 else float(getattr(self, "initial_atr", 0) or 0)
         self._log(
             "SIGNAL",
             "📐 开仓算仓 "
+            f"atr_src={atr_source} "
             f"adj={meta.get('adjust_coef')} "
             f"risk={meta.get('candidate_qty_by_risk')} "
             f"notional={meta.get('candidate_qty_by_notional')} "
@@ -2942,6 +3068,18 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             if isinstance(protect, dict) and protect.get("aborted"):
                 logger.error("开仓后硬止损失败已撤仓·跳过OPEN钉钉")
                 return {"status": "error", "reason": "hard_sl_fail_abort", "detail": protect}
+            if getattr(self, "_atr_fallback_pending_pause", False):
+                self._atr_fallback_pending_pause = False
+                if hasattr(self, "_pause_trading"):
+                    self._pause_trading(
+                        "ATR应急降级后暂停·待人工确认VPS ATR恢复",
+                        {
+                            "atr_source": sizing_meta.get("atr_source"),
+                            "atr_fallback_detail": sizing_meta.get("atr_fallback_detail"),
+                            "trade_id": self.current_trade_id,
+                            "tag": "atr_emergency_fallback",
+                        },
+                    )
             return {"status": "ok", "action": action, "trade_id": self.current_trade_id}
 
     def _protect_and_monitor(self, qty, entry_price):
@@ -3581,12 +3719,17 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.monitoring = False
         self._unbind_price_ws_listener()
         self._disarm_adverse_staged_stops(reason="flat_reset", notify=False)
-        self._reset_adverse_radar(keep_tv_sl=False)
-        self.watched_qty = 0
-        self.initial_qty = 0
-        self.base_qty = 0
-        self.add_count = 0
-        self.current_side = None
+        if hasattr(self, "_clear_position_local_state"):
+            self._clear_position_local_state()
+        else:
+            self._reset_adverse_radar(keep_tv_sl=False)
+            self.watched_qty = 0
+            self.watched_entry = 0.0
+            self.initial_qty = 0
+            self.base_qty = 0
+            self.add_count = 0
+            self.current_side = None
+            self.best_price = 0.0
         self._save_state()
         self._purge_defense_orders_on_flat("flat_reset", notify=True)
 

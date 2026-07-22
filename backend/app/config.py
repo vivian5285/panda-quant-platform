@@ -109,9 +109,17 @@ class Settings(BaseSettings):
     KLINE_FETCH_LIMIT_30M: int = 250
     KLINE_FETCH_LIMIT: int = 250
     ATR_COMPARE_WARN_PCT: float = 0.20
+    # TV 策略 stop_loss 用的 ATR 倍数（Trillion_God atrMultiplierSL≈1.0）；
+    # 与 VPS 挂单 initialStop 的 1.5×ATR 无关。误用 1.5 反推会稳定误报 Δ≈33%。
+    TV_STOP_ATR_MULT: float = 1.0
+    # 应急降级：连续 N 次开仓信号 VPS↔TV隐含偏差≥阈值 → 本笔用 TV 隐含 ATR，随后暂停开仓
+    ATR_FALLBACK_MISMATCH_PCT: float = 0.20
+    ATR_FALLBACK_STREAK: int = 3
     ATR_MEDIAN_LOOKBACK: int = 50
-    ATR_MEDIAN_FLOOR_RATIO: float = 0.30  # 当前 ATR < median×0.3 → 拒开仓
+    ATR_MEDIAN_FLOOR_RATIO: float = 0.30  # 当前 ATR < median×0.3 → 拒开仓/可降级
     WEBHOOK_BAR_TIME_ENABLED: bool = True  # 有 bar_time 才校验；缺省字段不拦截
+    # 先平后开：平仓失败重试间隔（秒），用尽后中止开仓并暂停该 symbol
+    FORCE_FLAT_RETRY_DELAYS_SEC: str = "1,3,6"
 
     SETTLEMENT_PRIMARY_DAYS: int = 30
     SETTLEMENT_EXTENDED_DAYS: int = 35

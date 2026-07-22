@@ -136,6 +136,8 @@ class _AdverseProbe(AdverseRadarMixin):
 def test_latched_radar_never_revokes_on_path_collapse():
     """铁律：雷达锁定后路径回撤也不得解除。"""
     probe = _AdverseProbe()
+    probe.monitoring = True
+    probe.initial_atr = 30.0
     probe.radar_latched = True
     probe.current_sl = 2003.0
     probe.watched_entry = 2000.0
@@ -174,8 +176,9 @@ def test_disarm_when_live_stop_even_if_flag_false():
 
 
 def test_arm_at_open_places_close_position_stop():
-    """Hard SL → closePosition 条件单（不与 TP123 reduceOnly 抢份额）。"""
+    """Hard SL → qty STOP_MARKET（TP 后可收缩仓位；closePosition 仅作兜底）。"""
     probe = _AdverseProbe()
+    probe.current_sl = float(probe.tv_sl)
     with patch("app.core.adverse_radar_guard.time.sleep", lambda *_: None):
         result = probe._arm_adverse_shield_at_open(0.6)
     assert result["armed"] is True
@@ -184,12 +187,13 @@ def test_arm_at_open_places_close_position_stop():
     args, kwargs = probe.client.place_stop_market_order.call_args
     assert args[0] == "SELL"
     assert float(args[1]) == pytest.approx(1900.0, rel=0.001)
-    assert kwargs.get("quantity") is None
+    assert float(kwargs.get("quantity") or 0) == pytest.approx(0.6, rel=0.01)
     probe.client.place_limit_order.assert_not_called()
 
 
 def test_arm_aligned_with_close_position_stop():
     probe = _AdverseProbe()
+    probe.current_sl = float(probe.tv_sl)
     plan = probe._compute_adverse_stop_plan(0.6)
     probe.client.get_open_orders.return_value = [
         {
@@ -208,6 +212,7 @@ def test_arm_aligned_with_close_position_stop():
 
 def test_verify_retries_finds_delayed_stop():
     probe = _AdverseProbe()
+    probe.current_sl = float(probe.tv_sl)
     plan = probe._compute_adverse_stop_plan(0.6)
     stop_order = {
         "type": "STOP",
@@ -234,6 +239,7 @@ def test_verify_retries_finds_delayed_stop():
 
 def test_arm_aligned_with_algo_trigger_price_only():
     probe = _AdverseProbe()
+    probe.current_sl = float(probe.tv_sl)
     plan = probe._compute_adverse_stop_plan(0.6)
     probe.client.get_open_orders.return_value = [
         {
@@ -254,6 +260,7 @@ def test_arm_aligned_with_algo_trigger_price_only():
 
 def test_collect_pending_algo_id_when_open_list_empty():
     probe = _AdverseProbe()
+    probe.current_sl = float(probe.tv_sl)
     plan = probe._compute_adverse_stop_plan(0.6)
     stop_px = plan[0]["stop_price"]
     probe.client.get_open_orders.return_value = []
@@ -313,15 +320,16 @@ def test_sync_merged_stop_clamps_hot_radar_stop():
     ):
         result = probe._sync_binance_merged_stop(0.6, radar_sl=1791.0)
     assert result.get("stop_price", 0) < 1785.0
-    # Clamped stop uses closePosition (no reduceOnly qty fight with TP123)
+    # Clamped stop prefers qty STOP so TP fills can shrink remaining stop size
     probe.client.place_stop_market_order.assert_called()
     kwargs = probe.client.place_stop_market_order.call_args.kwargs
-    assert kwargs.get("quantity") is None
+    assert float(kwargs.get("quantity") or 0) == pytest.approx(0.6, rel=0.01)
     probe.client.place_limit_order.assert_not_called()
 
 
 def test_arm_skips_when_already_aligned():
     probe = _AdverseProbe()
+    probe.current_sl = float(probe.tv_sl)
     plan = probe._compute_adverse_stop_plan(0.6)
     probe.client.get_open_orders.return_value = [
         {
@@ -341,6 +349,8 @@ def test_arm_skips_when_already_aligned():
 def test_orchestrate_skips_hard_sl_when_radar_latched_on_rebound():
     """Latched radar must not fall back to adverse hard-stop repair on price rebound."""
     probe = _AdverseProbe()
+    probe.monitoring = True
+    probe.initial_atr = 30.0
     probe.current_side = "SHORT"
     probe.watched_entry = 1800.0
     probe.tv_sl = 1870.0
@@ -357,12 +367,14 @@ def test_orchestrate_skips_hard_sl_when_radar_latched_on_rebound():
         probe._orchestrate_defense_monitoring(0.6, rebound_px)
     trail.assert_called_once()
     guard.assert_not_called()
-    if merged.called:
-        assert merged.call_args.kwargs.get("radar_sl") == pytest.approx(1798.2, rel=0.001)
+    # Orchestrate must NOT second-sync (that caused 5s cancel/rehang).
+    merged.assert_not_called()
 
 
 def test_orchestrate_radar_coexist_route_a():
     probe = _AdverseProbe()
+    probe.monitoring = True
+    probe.initial_atr = 30.0
     probe.adverse_sl_armed = True
     probe.current_sl = 2003.0
     probe.radar_latched = True
@@ -374,9 +386,9 @@ def test_orchestrate_radar_coexist_route_a():
     ) as merged:
         probe._orchestrate_defense_monitoring(0.6, 2045.0)
     trail.assert_called_once()
-    merged.assert_called_once()
+    # Breathing tick (inside trailing) owns sync; orchestrate must not force_replace again.
+    merged.assert_not_called()
     guard.assert_not_called()
-
 
 def test_orchestrate_maintains_hard_stop_before_radar():
     probe = _AdverseProbe()
@@ -402,3 +414,95 @@ def test_binance_supervisor_has_orchestration():
     assert hasattr(sup, "_orchestrate_qty_change")
     assert ADVERSE_HARD_STOP_PCT == 0.10
     assert ADVERSE_REPAIR_COOLDOWN_SEC >= 15
+
+
+def test_stop_heartbeat_does_not_cancel_rehang_when_aligned():
+    """止损已对齐时，多次哨兵心跳不得撤单重挂（复现实盘 ~5s 抖动根因）。"""
+    from app.core.breathing_stop import compute_initial_stop
+
+    probe = _AdverseProbe()
+    probe.monitoring = True
+    probe.watched_entry = 1927.55
+    probe.initial_atr = 14.30
+    probe.current_atr = 14.30
+    probe.current_adx = 30.0
+    probe.current_side = "LONG"
+    stop_px = compute_initial_stop(probe.watched_entry, "LONG", probe.initial_atr)
+    probe.initial_stop = stop_px
+    probe.current_sl = stop_px
+    probe.tv_sl = stop_px
+    probe.best_price = probe.watched_entry
+    probe.breakeven_phase = False
+    live_stop = {
+        "algoId": 9001,
+        "orderId": 9001,
+        "type": "STOP_MARKET",
+        "orderType": "STOP_MARKET",
+        "triggerPrice": str(round(stop_px, 2)),
+        "stopPrice": str(round(stop_px, 2)),
+        "origQty": "0.049",
+        "quantity": "0.049",
+        "side": "SELL",
+        "isAlgoOrder": True,
+        "reduceOnly": "true",
+    }
+    probe.client.get_open_orders.return_value = [live_stop]
+    probe.client.cancel_order = MagicMock()
+    probe.client.place_stop_market_order = MagicMock(return_value={"algoId": 9002})
+
+    with patch.object(probe, "_pull_vps_market_indicators", return_value={"atr": 14.30, "adx": 30.0, "source": "test"}):
+        for _ in range(12):  # ~60s of 5s heartbeats
+            probe._orchestrate_defense_monitoring(0.049, 1935.0)
+
+    probe.client.cancel_order.assert_not_called()
+    probe.client.place_stop_market_order.assert_not_called()
+
+
+def test_breathing_tick_return_true_only_when_improved():
+    """aligned/armed 不得伪装成 moved，否则 orchestrate 会 force_replace。"""
+    from app.core.breathing_stop import compute_initial_stop
+
+    probe = _AdverseProbe()
+    probe.monitoring = True
+    probe.watched_entry = 1927.55
+    probe.initial_atr = 14.30
+    probe.current_atr = 14.30
+    probe.current_adx = 25.0
+    stop_px = compute_initial_stop(probe.watched_entry, "LONG", probe.initial_atr)
+    probe.initial_stop = stop_px
+    probe.current_sl = stop_px
+    probe.tv_sl = stop_px
+    probe.best_price = probe.watched_entry
+    probe.breakeven_phase = False
+    probe.client.get_open_orders.return_value = [{
+        "algoId": 1,
+        "type": "STOP_MARKET",
+        "triggerPrice": str(round(stop_px, 2)),
+        "stopPrice": str(round(stop_px, 2)),
+        "origQty": "0.05",
+        "side": "SELL",
+        "isAlgoOrder": True,
+    }]
+    with patch.object(probe, "_pull_vps_market_indicators", return_value={"atr": 14.30, "adx": 25.0}):
+        moved = probe._process_breathing_stop_tick(0.05, 1930.0)
+    assert moved is False
+
+
+def test_clear_position_local_state_wipes_entry_and_side():
+    probe = _AdverseProbe()
+    probe.watched_entry = 1901.54
+    probe.current_side = "LONG"
+    probe.best_price = 1910.0
+    probe.current_sl = 1880.0
+    probe.initial_stop = 1880.0
+    probe.initial_atr = 14.0
+    probe.breakeven_phase = True
+    probe.watched_qty = 0.03
+    probe._clear_position_local_state()
+    assert probe.watched_entry == 0.0
+    assert probe.current_side is None
+    assert probe.best_price == 0.0
+    assert probe.current_sl == 0.0
+    assert probe.initial_atr == 0.0
+    assert probe.breakeven_phase is False
+    assert probe.watched_qty == 0.0

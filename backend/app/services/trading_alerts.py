@@ -92,6 +92,7 @@ ALERT_TYPE_TAGS = {
     "BREATH_TRAIL": "止损移动",
     "CLOSE_BREATH_STOP": "止损触发",
     "ATR_MISMATCH": "异常告警",
+    "ATR_FALLBACK": "异常告警",
     "ATR_ANOMALY": "异常告警",
     "ATR_INVALID": "异常告警",
     "STALE_BAR_TIME": "异常告警",
@@ -136,6 +137,7 @@ ALERT_TYPE_TAGS = {
     "TP_SKIP_REHANG": "异常告警",
     "POSITION_QTY_CHANGE": "异常告警",
     "FLIP_CLEAN": "先平后开清场",
+    "FLIP_CLEAN_ABORT": "异常告警",
     "API_OFFLINE": "异常告警",
 }
 
@@ -194,11 +196,21 @@ ADMIN_DINGTALK_KEY_TYPES = frozenset({
     "TP_SKIP_REHANG",
     "POSITION_QTY_CHANGE",
     "FLIP_CLEAN",
+    "FLIP_CLEAN_ABORT",
     "TRAIL",
     "ATR_ANOMALY",
     "ATR_INVALID",
     "ATR_MISMATCH",
+    "ATR_FALLBACK",
     "STALE_BAR_TIME",
+    "HARD_SL_MISSING",
+    "CLOSE_PROTECT_EMPTY",
+    # Fill / shield lifecycle (info-level must still reach DingTalk)
+    "TP1_FILL",
+    "TP2_FILL",
+    "TP3_FILL",
+    "ADVERSE_SL_DISARM",
+    "SIGNAL_RECV",
 })
 
 DINGTALK_VERBOSE_EXCLUDED = frozenset({

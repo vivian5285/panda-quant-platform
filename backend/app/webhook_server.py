@@ -188,8 +188,11 @@ def webhook():
         )
         return jsonify({"status": "error", "message": "Empty payload"}), 400
 
-    # v6.5.6 uses token; legacy secret still accepted
-    secret = str(data.get("token") or data.get("secret") or "").strip()
+    # Canonical auth field is `secret`; legacy `token` still accepted.
+    # Deprecation: remove `token` fallback after all TV alerts are confirmed on
+    # `secret` for ≥14 consecutive days with zero Invalid-secret rejects from token-only payloads
+    # (track via webhook auth logs). Target remove window: post-stabilization cutover.
+    secret = str(data.get("secret") or data.get("token") or "").strip()
     if secret != get_webhook_secret():
         _log_reject_async(
             payload=data,

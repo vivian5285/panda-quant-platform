@@ -70,6 +70,33 @@ def test_empty_payload():
     assert err == "Empty payload"
 
 
+def test_secret_canonical_mirrors_to_token():
+    """TV 现用 secret；内部仍镜像 token 供兼容路径读取。"""
+    raw = (
+        '{"bot_id":"Trillion_God_v6.5","secret":"528586","action":"LONG",'
+        '"symbol":"ETHUSDT.P","price":"1930.49","qty":1,"stop_loss":1915.65,'
+        '"tp1":1950.5,"tp2":1967.6,"tp3":1983.9}'
+    )
+    data, err = parse_webhook_payload(raw)
+    assert err is None
+    assert data["secret"] == "528586"
+    assert data["token"] == "528586"
+    assert data["action"] == "LONG"
+    assert data["tv_sl"] == 1915.65
+
+
+def test_legacy_token_mirrors_to_secret():
+    raw = (
+        '{"bot_id":"Trillion_God_v6.5","token":"528586","action":"SHORT",'
+        '"symbol":"ETHUSDT.P","price":1900,"qty":1,"stop_loss":1915,'
+        '"tp1":1850,"tp2":1830,"tp3":1800}'
+    )
+    data, err = parse_webhook_payload(raw)
+    assert err is None
+    assert data["token"] == "528586"
+    assert data["secret"] == "528586"
+
+
 def test_v6975_close_stoploss_breakeven():
     raw = (
         '{"action":"CLOSE_STOPLOSS","secret":"528586","regime":2,'

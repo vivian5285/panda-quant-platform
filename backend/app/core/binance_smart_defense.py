@@ -951,7 +951,9 @@ class BinanceSmartDefenseMixin:
         qty = live_qty if live_qty is not None else getattr(self, "watched_qty", 0)
         if hasattr(self, "_uses_dual_stop_track") and not self._uses_dual_stop_track():
             if hasattr(self, "_sync_binance_merged_stop"):
-                result = self._sync_binance_merged_stop(qty, radar_sl=sl, force_replace=True)
+                # Never force-replace on ensure — cancel only when audit says misaligned
+                # or price actually moved (caller passes improved via breathing tick).
+                result = self._sync_binance_merged_stop(qty, radar_sl=sl, force_replace=False)
                 return bool(result.get("aligned") or result.get("armed"))
         if self._has_stop_sl_near(sl):
             return True

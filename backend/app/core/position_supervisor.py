@@ -277,6 +277,8 @@ class PositionSupervisor(
                     "defense_order_ids": dict(getattr(self, "_defense_order_ids", None) or {}),
                     "trading_paused": bool(getattr(self, "trading_paused", False)),
                     "trading_pause_reason": str(getattr(self, "trading_pause_reason", "") or ""),
+                    "atr_mismatch_streak": int(getattr(self, "atr_mismatch_streak", 0) or 0),
+                    "atr_fallback_active": bool(getattr(self, "atr_fallback_active", False)),
                     "current_trade_id": getattr(self, "current_trade_id", None),
                     "canonical_symbol": getattr(self, "canonical_symbol", None),
                 }, f)
@@ -363,6 +365,8 @@ class PositionSupervisor(
                         self._defense_order_ids = {}
                     self.trading_paused = bool(s.get("trading_paused", False))
                     self.trading_pause_reason = str(s.get("trading_pause_reason") or "")
+                    self.atr_mismatch_streak = max(int(s.get("atr_mismatch_streak", 0) or 0), 0)
+                    self.atr_fallback_active = bool(s.get("atr_fallback_active", False))
                     tid = s.get("current_trade_id")
                     if tid is not None:
                         try:
@@ -772,17 +776,78 @@ class PositionSupervisor(
             or getattr(self, "tv_sl", 0)
             or 0
         )
+        from app.core.atr_emergency_fallback import (
+            apply_fallback_atr,
+            evaluate_emergency_atr_fallback,
+        )
         from app.core.open_atr_guard import check_open_atr_or_reject
 
-        atr_ok, atr_meta = check_open_atr_or_reject(
-            self,
-            atr=atr,
+        fb = evaluate_emergency_atr_fallback(
+            vps_atr=atr,
             atr_series=atr_series,
-            side=side,
-            tv_sl_ref=tv_sl_ref if tv_sl_ref > 0 else None,
+            entry=price,
+            tv_stop_loss=tv_sl_ref if tv_sl_ref > 0 else None,
+            mismatch_streak=int(getattr(self, "atr_mismatch_streak", 0) or 0),
         )
-        if not atr_ok:
-            return 0.0, atr_meta
+        self.atr_mismatch_streak = int(fb.get("mismatch_streak_next") or 0)
+        atr_source = "vps"
+        self._atr_fallback_pending_pause = False
+        if fb.get("need_fallback"):
+            fb_atr = apply_fallback_atr(fb)
+            if fb_atr > 0:
+                atr = fb_atr
+                atr_source = "tv_emergency_fallback"
+                self._atr_fallback_pending_pause = True
+                self.atr_fallback_active = True
+                self.current_atr = atr
+                self._log(
+                    "ERROR",
+                    f"⚠️ ATR应急降级·本笔使用TV隐含ATR={atr:.4f} "
+                    f"(VPS={fb.get('vps_atr')} reason={fb.get('reason')})",
+                    fb,
+                )
+                self._alert(
+                    "critical",
+                    "ATR_FALLBACK",
+                    "ATR应急降级·需人工确认后恢复",
+                    (
+                        f"原因={fb.get('reason')} | VPS ATR={fb.get('vps_atr')} | "
+                        f"TV隐含ATR={fb.get('tv_implied_atr')} | "
+                        f"Δ={fb.get('mismatch_pct')}% | 本笔已用降级ATR开仓；"
+                        f"随后暂停本 symbol 自动开仓"
+                    ),
+                    dict(fb),
+                )
+            else:
+                atr_ok, atr_meta = check_open_atr_or_reject(
+                    self,
+                    atr=float(fb.get("vps_atr") or 0),
+                    atr_series=atr_series,
+                    side=side,
+                    tv_sl_ref=tv_sl_ref if tv_sl_ref > 0 else None,
+                )
+                if not atr_ok:
+                    atr_meta["atr_fallback"] = fb
+                    return 0.0, atr_meta
+        else:
+            atr_ok, atr_meta = check_open_atr_or_reject(
+                self,
+                atr=atr,
+                atr_series=atr_series,
+                side=side,
+                tv_sl_ref=tv_sl_ref if tv_sl_ref > 0 else None,
+            )
+            if not atr_ok:
+                # No TV-implied available for degrade → keep reject
+                atr_meta["atr_fallback"] = fb
+                return 0.0, atr_meta
+            self.atr_fallback_active = False
+
+        if hasattr(self, "_save_state"):
+            try:
+                self._save_state()
+            except Exception:
+                pass
 
         sizing_stop = 0.0
         if atr > 0 and price > 0 and side in ("LONG", "SHORT"):
@@ -807,12 +872,16 @@ class PositionSupervisor(
         meta["sizing_stop"] = round(sizing_stop, 4) if sizing_stop else None
         meta["sizing_atr"] = round(atr, 4) if atr else None
         meta["sizing_side"] = side or None
+        meta["atr_source"] = atr_source
+        meta["atr_fallback"] = bool(atr_source == "tv_emergency_fallback")
+        meta["atr_fallback_detail"] = fb
         if sizing_stop > 0:
             self._sizing_initial_stop = sizing_stop
             self.initial_atr = atr if atr > 0 else float(getattr(self, "initial_atr", 0) or 0)
         self._log(
             "SIGNAL",
             "📐 开仓算仓 "
+            f"atr_src={atr_source} "
             f"adj={meta.get('adjust_coef')} "
             f"risk={meta.get('candidate_qty_by_risk')} "
             f"notional={meta.get('candidate_qty_by_notional')} "
@@ -1040,7 +1109,7 @@ class PositionSupervisor(
                 "warning",
                 "FLIP_CLEAN",
                 "开仓前挂单残留·已尽力撤单",
-                f"仍有 {detail['orders_after']} 笔挂单 | {reason} — 继续开仓前请留意",
+                f"仍有 {detail['orders_after']} 笔挂单 | {reason} — 上层将中止开仓",
                 detail,
             )
         else:
@@ -1050,11 +1119,60 @@ class PositionSupervisor(
             self._save_state()
         return detail
 
+    def _force_flat_retry_delays(self) -> tuple[float, ...]:
+        """Backoff seconds between close retries (default 1 / 3 / 6)."""
+        raw = str(getattr(settings, "FORCE_FLAT_RETRY_DELAYS_SEC", "1,3,6") or "1,3,6")
+        out: list[float] = []
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                out.append(max(0.0, float(part)))
+            except (TypeError, ValueError):
+                continue
+        return tuple(out) if out else (1.0, 3.0, 6.0)
+
+    def _abort_force_flat(
+        self,
+        reason: str,
+        *,
+        fail_kind: str,
+        detail: dict | None = None,
+    ) -> bool:
+        """平仓/清场失败：放弃本次开仓 + 暂停该 symbol + 高优钉钉（需人工介入）。"""
+        meta = {"reason": reason, "fail_kind": fail_kind, **(detail or {})}
+        self._log("ERROR", f"先平后开中止·{fail_kind}", meta)
+        msg = (
+            f"【需人工介入】{reason} — {fail_kind}；"
+            f"已中止开仓并暂停本 symbol 自动开仓，确认交易所持仓后手动恢复"
+        )
+        self._alert(
+            "critical",
+            "FLIP_CLEAN_ABORT",
+            "先平后开失败·需人工介入",
+            msg,
+            meta,
+        )
+        if hasattr(self, "_pause_trading"):
+            try:
+                self._pause_trading(f"先平后开失败·{fail_kind}", meta)
+            except Exception as e:
+                logger.warning("[User %s] pause after force_flat fail: %s", self.user_id, e)
+        try:
+            self._reconcile_live_vs_book(
+                expect_flat=True, context="force_flat_abort", notify_ok=False,
+            )
+        except Exception:
+            pass
+        return False
+
     def _force_flat_before_open(self, reason: str) -> bool:
         """
         铁律：任意带开仓的 TV → 先干净平仓（仓位归零 + 撤尽 TP/雷达/硬止损），再开新仓。
         已空仓时仅清残留挂单/状态，不刷屏钉钉。
         注意：清场不得抹掉本笔 TV 已下发的 tv_sl（否则开仓算仓会 missing_tv_sl）。
+        平仓失败：按 1s/3s/6s 重试；仍失败则中止开仓并暂停（严禁仓位不明时开新仓）。
         """
         # 本笔 OPEN 的 tv_sl 在 handle_signal 已写入；close_all 默认会 wipe，需保留并恢复
         pending_tv_sl = float(getattr(self, "tv_sl", 0) or 0)
@@ -1072,78 +1190,111 @@ class PositionSupervisor(
                 live = {"size": abs(amt), "side": "LONG" if amt > 0 else "SHORT"}
         already_flat = not live or float(live.get("size") or 0) <= 0
 
-        def _restore_pending_tv_sl() -> None:
-            if pending_tv_sl > 0:
-                self.tv_sl = pending_tv_sl
-                self._tv_hard_sl_price = pending_hard or pending_tv_sl
-                if hasattr(self, "_recompute_vps_hard_sl"):
-                    try:
-                        self._recompute_vps_hard_sl(
-                            payload={"tv_sl": pending_tv_sl},
-                        )
-                    except Exception:
-                        pass
-
         if already_flat:
             self._log("SIGNAL", f"先平后开·已空仓→清挂单后开新仓 | {reason}")
             clean = self._ensure_book_clean_before_open(reason)
-            _restore_pending_tv_sl()
+            if hasattr(self, "_clear_position_local_state"):
+                self._clear_position_local_state()
+            else:
+                self.watched_qty = 0.0
+                self.watched_entry = 0.0
+                self.initial_qty = 0.0
+                self.base_qty = 0.0
+                self.add_count = 0
+                self.consumed_tp_levels = []
+                self._tp_fill_dingtalk_levels = set()
+                self.current_side = None
+            # Preserve pending TV stop for the imminent OPEN (after wipe)
+            if pending_tv_sl > 0:
+                self.tv_sl = pending_tv_sl
+                self._tv_hard_sl_price = pending_hard or pending_tv_sl
+                self._pending_open_tv_sl = pending_tv_sl
+            if hasattr(self, "radar_latched"):
+                self.radar_latched = False
+            if hasattr(self, "_save_state"):
+                self._save_state()
+            if not bool(clean.get("ok", True)):
+                return self._abort_force_flat(
+                    reason,
+                    fail_kind="空仓但挂单未清零",
+                    detail={"clean": clean},
+                )
+            return True
+
+        self._log("SIGNAL", f"先平后开·清现有仓再刷新 | {reason}")
+        delays = self._force_flat_retry_delays()
+        flat_ok = False
+        last_err: str | None = None
+        for attempt, delay in enumerate(delays, start=1):
+            # 先撤单再平仓，减少平仓瞬间旧 TP 误成
+            if hasattr(self, "_purge_defense_orders_on_flat"):
+                self._purge_defense_orders_on_flat(
+                    f"force_flat_pre_{attempt}", notify=False,
+                )
+            try:
+                if hasattr(self, "_cancel_all_verified"):
+                    self._cancel_all_verified()
+                else:
+                    self.client.cancel_all_open_orders(self.symbol)
+            except Exception as e:
+                last_err = str(e)
+                logger.warning(
+                    "[User %s] force_flat cancel attempt %s: %s",
+                    self.user_id, attempt, e,
+                )
+            time.sleep(0.45)
+            try:
+                self._close_all(
+                    reason if attempt == 1 else f"{reason}·残仓扫尾#{attempt}",
+                )
+            except Exception as e:
+                last_err = str(e)
+                logger.warning(
+                    "[User %s] force_flat close attempt %s: %s",
+                    self.user_id, attempt, e,
+                )
+            wait_to = 5.0 if attempt > 1 else 8.0
+            if self._wait_until_flat(timeout=wait_to):
+                flat_ok = True
+                break
+            if attempt < len(delays) and delay > 0:
+                self._log(
+                    "SIGNAL",
+                    f"先平后开·平仓未归零，{delay:g}s 后重试 ({attempt}/{len(delays)})",
+                    {"reason": reason, "attempt": attempt, "last_err": last_err},
+                )
+                time.sleep(delay)
+
+        if not flat_ok:
+            return self._abort_force_flat(
+                reason,
+                fail_kind="平仓后仓位未归零",
+                detail={
+                    "attempts": len(delays),
+                    "delays_sec": list(delays),
+                    "last_err": last_err,
+                },
+            )
+
+        clean = self._ensure_book_clean_before_open(reason)
+        if hasattr(self, "_clear_position_local_state"):
+            self._clear_position_local_state()
+        else:
             self.watched_qty = 0.0
+            self.watched_entry = 0.0
             self.initial_qty = 0.0
             self.base_qty = 0.0
             self.add_count = 0
             self.consumed_tp_levels = []
             self._tp_fill_dingtalk_levels = set()
-            if hasattr(self, "radar_latched"):
-                self.radar_latched = False
             self.current_side = None
-            if hasattr(self, "_save_state"):
-                self._save_state()
-            return bool(clean.get("ok", True))
-
-        self._log("SIGNAL", f"先平后开·清现有仓再刷新 | {reason}")
-        # 先撤单再平仓，减少平仓瞬间旧 TP 误成
-        if hasattr(self, "_purge_defense_orders_on_flat"):
-            self._purge_defense_orders_on_flat("force_flat_pre", notify=False)
-        if hasattr(self, "_cancel_all_verified"):
-            self._cancel_all_verified()
-        else:
-            self.client.cancel_all_open_orders(self.symbol)
-        time.sleep(0.45)
-
-        self._close_all(reason)
-        if not self._wait_until_flat():
-            for _ in range(2):
-                if hasattr(self, "_purge_defense_orders_on_flat"):
-                    self._purge_defense_orders_on_flat("force_flat_retry", notify=False)
-                try:
-                    self._close_all(f"{reason}·残仓扫尾")
-                except Exception as e:
-                    logger.warning("[User %s] force_flat retry close: %s", self.user_id, e)
-                if self._wait_until_flat(timeout=5.0):
-                    break
-        if not self._wait_until_flat(timeout=3.0):
-            self._log("ERROR", "先平后开：平仓后仍未归零，暂缓新开仓", {"reason": reason})
-            self._alert(
-                "critical",
-                "FLIP_CLEAN",
-                "先平后开失败·仓位未归零",
-                f"{reason} — 已中止开仓，请人工核查",
-                {"reason": reason},
-            )
-            self._reconcile_live_vs_book(expect_flat=True, context="force_flat", notify_ok=False)
-            return False
-
-        clean = self._ensure_book_clean_before_open(reason)
-        _restore_pending_tv_sl()
-        self.watched_qty = 0.0
-        self.initial_qty = 0.0
-        self.base_qty = 0.0
-        self.add_count = 0
-        self.consumed_tp_levels = []
-        self._tp_fill_dingtalk_levels = set()
-        self.current_side = None
-        recon = self._reconcile_live_vs_book(expect_flat=True, context="force_flat", notify_ok=False)
+        if pending_tv_sl > 0:
+            self.tv_sl = pending_tv_sl
+            self._tv_hard_sl_price = pending_hard or pending_tv_sl
+            self._pending_open_tv_sl = pending_tv_sl
+        recon = self._reconcile_live_vs_book(
+            expect_flat=True, context="force_flat", notify_ok=False,
+        )
         book_ok = bool(clean.get("ok"))
         recon_ok = bool(recon.get("ok", True))
         ok = book_ok and recon_ok
@@ -1166,6 +1317,12 @@ class PositionSupervisor(
                 "pending_tv_sl": pending_tv_sl,
             },
         )
+        if not ok:
+            return self._abort_force_flat(
+                reason,
+                fail_kind="仓位已平但挂单/对账未干净",
+                detail={"clean": clean, "reconcile": recon},
+            )
         return True
 
 
@@ -1535,6 +1692,18 @@ class PositionSupervisor(
                 context="open",
                 notify_ok=True,
             )
+            if getattr(self, "_atr_fallback_pending_pause", False):
+                self._atr_fallback_pending_pause = False
+                if hasattr(self, "_pause_trading"):
+                    self._pause_trading(
+                        "ATR应急降级后暂停·待人工确认VPS ATR恢复",
+                        {
+                            "atr_source": sizing_meta.get("atr_source"),
+                            "atr_fallback_detail": sizing_meta.get("atr_fallback_detail"),
+                            "trade_id": self.current_trade_id,
+                            "tag": "atr_emergency_fallback",
+                        },
+                    )
             return {
                 "status": "ok",
                 "action": action,
@@ -1542,6 +1711,14 @@ class PositionSupervisor(
                 "trade_id": self.current_trade_id,
                 "detail": detail,
             }
+        if getattr(self, "_atr_fallback_pending_pause", False):
+            # 降级已触发但开仓未成交：仍暂停，避免带着坏 ATR 连打
+            self._atr_fallback_pending_pause = False
+            if hasattr(self, "_pause_trading"):
+                self._pause_trading(
+                    "ATR应急降级后开仓未成交·已暂停待人工确认",
+                    {"atr_fallback_detail": sizing_meta.get("atr_fallback_detail")},
+                )
         return {"status": "error", "reason": "open_failed", "message": "下单后未检测到持仓"}
 
     def _close_order_side(self) -> str:
@@ -3216,15 +3393,20 @@ class PositionSupervisor(
             attribution=attribution,
             extra_detail={"swept_dust": True, "sweep_label": reason},
         )
-        self.watched_qty = 0.0
-        self.initial_qty = 0.0
-        self.base_qty = 0.0
-        self.add_count = 0
-        self.current_side = None
-        self.consumed_tp_levels = []
-        self._tp_fill_dingtalk_levels = set()
-        self.current_trade_id = None
-        self.trade_opened_at = None
+        if hasattr(self, "_clear_position_local_state"):
+            self._clear_position_local_state()
+        else:
+            self.watched_qty = 0.0
+            self.watched_entry = 0.0
+            self.initial_qty = 0.0
+            self.base_qty = 0.0
+            self.add_count = 0
+            self.current_side = None
+            self.best_price = 0.0
+            self.consumed_tp_levels = []
+            self._tp_fill_dingtalk_levels = set()
+            self.current_trade_id = None
+            self.trade_opened_at = None
         self._save_state()
         self._purge_defense_orders_on_flat("dust_sweep", notify=True)
 
@@ -3295,14 +3477,19 @@ class PositionSupervisor(
                 "flat_reconcile": True,
             },
         )
-        self.watched_qty = 0.0
-        self.initial_qty = 0.0
-        self.base_qty = 0.0
-        self.add_count = 0
-        self.current_side = None
-        self.consumed_tp_levels = []
-        self.current_trade_id = None
-        self.trade_opened_at = None
+        if hasattr(self, "_clear_position_local_state"):
+            self._clear_position_local_state()
+        else:
+            self.watched_qty = 0.0
+            self.watched_entry = 0.0
+            self.initial_qty = 0.0
+            self.base_qty = 0.0
+            self.add_count = 0
+            self.current_side = None
+            self.best_price = 0.0
+            self.consumed_tp_levels = []
+            self.current_trade_id = None
+            self.trade_opened_at = None
         self._save_state()
         return True
 
@@ -3807,15 +3994,21 @@ class PositionSupervisor(
         self.monitoring = False
         self._unbind_price_ws_listener()
         self._disarm_adverse_staged_stops(reason="flat_reset", notify=False)
-        self._reset_adverse_radar(keep_tv_sl=False)
-        self.watched_qty = 0.0
-        self.initial_qty = 0.0
-        self.base_qty = 0.0
-        self.add_count = 0
-        self.consumed_tp_levels = []
-        self._tp_fill_dingtalk_levels = set()
-        self.current_trade_id = None
-        self.trade_opened_at = None
+        if hasattr(self, "_clear_position_local_state"):
+            self._clear_position_local_state()
+        else:
+            self._reset_adverse_radar(keep_tv_sl=False)
+            self.watched_qty = 0.0
+            self.watched_entry = 0.0
+            self.initial_qty = 0.0
+            self.base_qty = 0.0
+            self.add_count = 0
+            self.consumed_tp_levels = []
+            self._tp_fill_dingtalk_levels = set()
+            self.current_side = None
+            self.best_price = 0.0
+            self.current_trade_id = None
+            self.trade_opened_at = None
         self._save_state()
         self._purge_defense_orders_on_flat("flat_reset", notify=True)
         if closed_successfully:
