@@ -47,14 +47,38 @@ def test_tv_screenshot_close_protect_payload():
     assert "裸K" in data["reason"]
 
 
-def test_v6975_minimal_entry_after_enrich_validates():
+def test_v6975_minimal_entry_after_enrich_requires_atr():
     raw = (
         '{"action":"LONG","secret":"528586","symbol":"ETHUSDT.P","price":3500,'
-        '"risk_pct":2.03,"leverage":25,"tv_sl":3400,"qty_ratio":1.0}'
+        '"risk_pct":2.03,"leverage":25,"tv_sl":3400,"qty_ratio":1.0,'
+        '"tp1":3550,"tp2":3600}'
     )
     data, err = parse_webhook_payload(raw)
     assert err is None
     ok, msg = validate_signal_payload(data)
+    assert not ok
+    assert "atr" in msg.lower()
+
+
+def test_entry_rejects_missing_zero_negative_atr():
+    base = {
+        "action": "LONG",
+        "symbol": "ETHUSDT",
+        "price": 3500,
+        "stop_loss": 3400,
+        "tp1": 3550,
+        "tp2": 3600,
+    }
+    ok, msg = validate_signal_payload(dict(base))
+    assert not ok and "atr" in msg.lower()
+
+    ok, msg = validate_signal_payload({**base, "atr": 0})
+    assert not ok and "atr" in msg.lower()
+
+    ok, msg = validate_signal_payload({**base, "atr": -1.5})
+    assert not ok and "atr" in msg.lower()
+
+    ok, msg = validate_signal_payload({**base, "atr": 42.5})
     assert ok, msg
 
 

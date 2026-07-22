@@ -556,7 +556,7 @@ class PositionSupervisor(
         self.regime = int(payload.get("regime", 3))
         self.regime = clamp_regime(self.regime)
 
-        # Prefer TV webhook atr as frozen initial_atr; VPS 90m only as fallback
+        # Open path: freeze initial_atr from TV webhook atr only (no VPS invent on open)
         position_open = bool(
             getattr(self, "monitoring", False)
             or float(getattr(self, "watched_qty", 0) or 0) > 0
@@ -577,10 +577,6 @@ class PositionSupervisor(
             payload.get("tv_tp3", 0),
         ])
         self.risk_multiplier = float(payload.get("risk_multiplier", 1.0))
-        if not position_open and hasattr(self, "_pull_vps_market_indicators"):
-            # Soft fallback only when TV atr missing
-            if float(getattr(self, "_tv_atr_ref", 0) or 0) <= 0:
-                self._pull_vps_market_indicators(force=True)
         self._apply_tv_entry_context(payload)
         self._apply_tv_sl_from_payload(payload)
         close_reason = payload.get("reason", "策略指标反转/波动率安全退出")
@@ -863,21 +859,14 @@ class PositionSupervisor(
         if side not in ("LONG", "SHORT"):
             side = str(getattr(self, "last_tv_side", None) or "").upper()
 
-        snap: dict = {}
         tv_atr = float(getattr(self, "_tv_atr_ref", 0) or 0)
         if tv_atr <= 0:
             try:
                 tv_atr = float(tv_fields.get("atr") or 0)
             except (TypeError, ValueError):
                 tv_atr = 0.0
-        if tv_atr <= 0 and hasattr(self, "_pull_vps_market_indicators"):
-            try:
-                snap = self._pull_vps_market_indicators(force=True) or {}
-            except Exception:
-                snap = {}
-        atr = float(tv_atr or snap.get("atr") or getattr(self, "current_atr", 0) or 0)
-        atr_series = list(snap.get("atr_series") or [])
-        atr_source = "tv_webhook" if tv_atr > 0 else "vps"
+        atr = float(tv_atr or 0)
+        atr_source = "tv_webhook" if atr > 0 else "missing"
         tv_sl_ref = self._pine_stop_loss_ref() if hasattr(self, "_pine_stop_loss_ref") else float(
             getattr(self, "_tv_stop_loss_ref", 0)
             or getattr(self, "_pending_open_tv_sl", 0)
@@ -887,10 +876,32 @@ class PositionSupervisor(
         self.atr_fallback_active = False
         fb: dict = {}
 
+        # Hard floor: never invent open ATR from VPS K-lines
+        if atr <= 0:
+            atr_meta = {
+                "error": "atr_invalid",
+                "final_qty": 0.0,
+                "sizing_atr": 0.0,
+                "atr_source": atr_source,
+                "message": "开仓要求 TV webhook atr>0（禁止 VPS 回退）",
+            }
+            if hasattr(self, "_alert"):
+                try:
+                    self._alert(
+                        "critical",
+                        "ATR_INVALID",
+                        "ATR开仓校验失败",
+                        atr_meta["message"],
+                        atr_meta,
+                    )
+                except Exception:
+                    pass
+            return 0.0, atr_meta
+
         atr_ok, atr_meta = check_open_atr_or_reject(
             self,
             atr=atr,
-            atr_series=atr_series,
+            atr_series=None,
             side=side,
             tv_sl_ref=tv_sl_ref if tv_sl_ref > 0 else None,
         )
@@ -1534,6 +1545,33 @@ class PositionSupervisor(
         if hasattr(self, "_clear_trading_pause"):
             self._clear_trading_pause("new_open")
         self._pending_open_side = str(action or "").upper()
+        # Per-symbol daily loss circuit (−5.5% equity UTC day)
+        try:
+            from app.core.daily_loss_circuit import check_allows_open
+            equity = read_contract_equity(self.client)
+            ok_dl, dl_meta = check_allows_open(
+                user_id=self.user_id,
+                symbol=getattr(self, "canonical_symbol", None) or self.symbol,
+                equity=equity,
+            )
+            if not ok_dl:
+                self._log("ERROR", f"⛔ 日亏损熔断拒绝开仓: {dl_meta}")
+                self._alert(
+                    "critical",
+                    "DAILY_LOSS_CIRCUIT",
+                    "日亏损熔断·拒绝开仓",
+                    f"今日已亏 {dl_meta.get('loss_pct', 0)*100:.2f}% ≥ 5.5% "
+                    f"pnl={dl_meta.get('realized_pnl_usd')} equity={dl_meta.get('equity_ref')}",
+                    dl_meta,
+                )
+                return {
+                    "status": "error",
+                    "reason": "daily_loss_circuit",
+                    "message": "日亏损达5.5%熔断，拒绝开仓",
+                    **dl_meta,
+                }
+        except Exception as exc:
+            self._log("WARN", f"daily_loss_circuit check failed: {exc}")
         leverage = self._bind_tv_leverage()
         self.client.cancel_all_open_orders(self.symbol)
         if hasattr(self, "_cancel_binance_all_close_stops"):
@@ -1825,35 +1863,11 @@ class PositionSupervisor(
     def _compute_tp_slices(
         self, qty: float, exclude_levels: set[int] | None = None
     ) -> list[tuple[int, float, float]]:
-        """TP1/TP2 only. Prefer TV qty1/qty2 when present; else 30/30 of live qty."""
+        """TP1/TP2 only — always 30%/30% of live qty (ignore TV qty1/qty2 absolute)."""
         from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
 
         exclude = set(exclude_levels or set())
         qty_f = float(qty or 0)
-        tps = list(self.tv_tps or [])
-        fields = getattr(self, "_tv_entry_fields", None) or {}
-        tv_q1 = fields.get("tv_qty1")
-        tv_q2 = fields.get("tv_qty2")
-
-        # Absolute TV qty1/qty2 when both valid and sum ≤ live qty (+eps)
-        if (
-            tv_q1 is not None and tv_q2 is not None
-            and float(tv_q1) > 0 and float(tv_q2) > 0
-            and qty_f > 0
-        ):
-            q1 = self._round_qty(min(float(tv_q1), qty_f))
-            rem = max(qty_f - q1, 0.0)
-            q2 = self._round_qty(min(float(tv_q2), rem))
-            out: list[tuple[int, float, float]] = []
-            for level, part, px_i in ((1, q1, 0), (2, q2, 1)):
-                if level in exclude or level not in PLACEABLE_TP_LEVELS:
-                    continue
-                px = float(tps[px_i]) if px_i < len(tps) else 0.0
-                if part > 0 and px > 0:
-                    out.append((level, part, px))
-            if out:
-                return out
-
         settings = dict(self.regime_settings)
         r = int(self.regime or 3)
         row = dict(settings.get(r) or settings.get(3) or {})
@@ -3497,6 +3511,17 @@ class PositionSupervisor(
             )
 
         self.on_trade_close(self.current_trade_id, exit_price, pnl, display_reason, funding_fee)
+        try:
+            from app.core.daily_loss_circuit import record_close_pnl
+            from app.core.position_sizing import read_contract_equity as _eq
+            record_close_pnl(
+                user_id=self.user_id,
+                symbol=getattr(self, "canonical_symbol", None) or self.symbol,
+                pnl_usd=float(pnl or 0),
+                equity=_eq(self.client),
+            )
+        except Exception:
+            pass
         self._log("CLOSE", display_reason, close_detail)
         alert_type = resolve_close_alert_type(close_action, display_reason, attribution)
         alert_title = resolve_close_alert_title(close_action, display_reason, attribution)

@@ -17,10 +17,16 @@ def test_classify_loss_shield_when_underwater():
     assert classify_startup_pnl_track(2000.0, 1900.0, "LONG", radar_progress=0.2) == "loss_shield"
 
 
-def test_classify_profit_radar_when_path_reaches_activation():
-    """路径达档位激活比例（R1=50%…R4=80%）→ 与实盘哨兵一致走雷达轨。"""
-    assert classify_startup_pnl_track(2000.0, 2010.0, "LONG", radar_progress=0.85) == "profit_radar"
-    assert classify_startup_pnl_track(2000.0, 2010.0, "LONG", radar_progress=1.0) == "profit_radar"
+def test_classify_profit_radar_requires_tp1_or_active():
+    """进度阈值不再单独升轨；需 TP1 成交或 radar_active。"""
+    assert classify_startup_pnl_track(2000.0, 2010.0, "LONG", radar_progress=0.85) == "loss_shield"
+    assert classify_startup_pnl_track(2000.0, 2010.0, "LONG", radar_progress=1.0) == "loss_shield"
+    assert classify_startup_pnl_track(
+        2000.0, 2010.0, "LONG", radar_progress=0.2, radar_active=True,
+    ) == "profit_radar"
+    assert classify_startup_pnl_track(
+        2000.0, 2010.0, "LONG", consumed_tp_levels=[1],
+    ) == "profit_radar"
 
 
 def test_classify_loss_shield_when_profit_but_radar_not_active():
@@ -36,7 +42,7 @@ def test_format_startup_summary():
         "shield": {"aligned": True},
         "defenses_skipped": True,
     })
-    assert "浮亏/防护轨" in s
+    assert "浮亏/呼吸轨" in s
     assert "TP3/3" in s
     assert "未重复挂单" in s
 

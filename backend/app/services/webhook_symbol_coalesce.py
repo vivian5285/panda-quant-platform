@@ -62,7 +62,7 @@ class WebhookSymbolCoalesce:
             return sum(len(b.messages) for b in self._buckets.values())
 
     def window_sec(self) -> float:
-        raw = float(getattr(get_settings(), "WEBHOOK_COALESCE_SEC", 1.0) or 1.0)
+        raw = float(getattr(get_settings(), "WEBHOOK_COALESCE_SEC", 2.5) or 2.5)
         return max(COALESCE_WINDOW_MIN_SEC, min(COALESCE_WINDOW_MAX_SEC, raw))
 
     def submit(

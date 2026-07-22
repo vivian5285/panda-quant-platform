@@ -938,6 +938,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         tid = trade_id_snapshot or self.current_trade_id
         if tid and exit_price > 0:
             self.on_trade_close(tid, exit_price, pnl, display_reason, 0.0)
+        try:
+            from app.core.daily_loss_circuit import record_close_pnl
+            record_close_pnl(
+                user_id=self.user_id,
+                symbol=getattr(self, "canonical_symbol", None) or self.symbol,
+                pnl_usd=float(pnl or 0),
+                equity=read_contract_equity(self.client),
+            )
+        except Exception:
+            pass
 
         attribution = close_detail.get("attribution") if isinstance(close_detail.get("attribution"), dict) else None
         alert_type = resolve_close_alert_type(close_action, display_reason, attribution)
@@ -2600,9 +2610,6 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self._tv_atr_ref = tv_atr
             if not position_open:
                 self.current_atr = tv_atr
-        if not position_open and hasattr(self, "_pull_vps_market_indicators"):
-            if float(getattr(self, "_tv_atr_ref", 0) or 0) <= 0:
-                self._pull_vps_market_indicators(force=True)
         self._apply_tv_entry_context(payload)
         self._apply_tv_sl_from_payload(payload)
         self.tv_price = self._safe_float(payload.get("price"), 0.0)
@@ -2873,94 +2880,58 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if side not in ("LONG", "SHORT"):
             side = str(getattr(self, "last_tv_side", None) or "").upper()
 
-        snap = {}
         tv_atr = float(getattr(self, "_tv_atr_ref", 0) or 0)
         if tv_atr <= 0:
             try:
                 tv_atr = float((getattr(self, "_tv_entry_fields", None) or {}).get("atr") or 0)
             except (TypeError, ValueError):
                 tv_atr = 0.0
-        if hasattr(self, "_pull_vps_market_indicators"):
-            try:
-                snap = self._pull_vps_market_indicators(force=(tv_atr <= 0)) or {}
-            except Exception:
-                snap = {}
-        atr = float(tv_atr or snap.get("atr") or getattr(self, "current_atr", 0) or 0)
-        atr_series = list(snap.get("atr_series") or [])
-        atr_source = "tv_webhook" if tv_atr > 0 else "vps"
+        atr = float(tv_atr or 0)
+        atr_source = "tv_webhook" if atr > 0 else "missing"
         tv_sl_ref = self._pine_stop_loss_ref() if hasattr(self, "_pine_stop_loss_ref") else float(
             getattr(self, "_tv_stop_loss_ref", 0)
             or getattr(self, "_pending_open_tv_sl", 0)
             or 0
         )
-        from app.core.atr_emergency_fallback import (
-            apply_fallback_atr,
-            evaluate_emergency_atr_fallback,
-        )
         from app.core.open_atr_guard import check_open_atr_or_reject
 
-        fb = evaluate_emergency_atr_fallback(
-            vps_atr=atr,
-            atr_series=atr_series,
-            entry=price,
-            tv_stop_loss=tv_sl_ref if tv_sl_ref > 0 else None,
-            mismatch_streak=int(getattr(self, "atr_mismatch_streak", 0) or 0),
-        )
-        self.atr_mismatch_streak = int(fb.get("mismatch_streak_next") or 0)
         self._atr_fallback_pending_pause = False
-        if atr_source != "tv_webhook" and fb.get("need_fallback"):
-            fb_atr = apply_fallback_atr(fb)
-            if fb_atr > 0:
-                atr = fb_atr
-                atr_source = "tv_emergency_fallback"
-                self._atr_fallback_pending_pause = True
-                self.atr_fallback_active = True
-                self.current_atr = atr
-                logger.error(
-                    "⚠️ ATR应急降级·本笔使用TV隐含ATR=%.4f (VPS=%s reason=%s)",
-                    atr, fb.get("vps_atr"), fb.get("reason"),
-                )
-                if hasattr(self, "_alert"):
+        self.atr_fallback_active = False
+        fb: dict = {}
+
+        if atr <= 0:
+            atr_meta = {
+                "error": "atr_invalid",
+                "final_qty": 0,
+                "sizing_atr": 0.0,
+                "atr_source": atr_source,
+                "message": "开仓要求 TV webhook atr>0（禁止 VPS 回退）",
+            }
+            if hasattr(self, "_alert"):
+                try:
                     self._alert(
                         "critical",
-                        "ATR_FALLBACK",
-                        "ATR应急降级·需人工确认后恢复",
-                        (
-                            f"原因={fb.get('reason')} | VPS ATR={fb.get('vps_atr')} | "
-                            f"TV隐含ATR={fb.get('tv_implied_atr')} | "
-                            f"Δ={fb.get('mismatch_pct')}% | 本笔已用降级ATR开仓；"
-                            f"随后暂停本 symbol 自动开仓"
-                        ),
-                        dict(fb),
+                        "ATR_INVALID",
+                        "ATR开仓校验失败",
+                        atr_meta["message"],
+                        atr_meta,
                     )
-            else:
-                atr_ok, atr_meta = check_open_atr_or_reject(
-                    self,
-                    atr=float(fb.get("vps_atr") or 0),
-                    atr_series=atr_series,
-                    side=side,
-                    tv_sl_ref=tv_sl_ref if tv_sl_ref > 0 else None,
-                )
-                if not atr_ok:
-                    atr_meta["atr_fallback"] = fb
-                    return 0, atr_meta
-        elif atr_source == "tv_webhook":
-            self.atr_fallback_active = False
-            self.current_atr = atr
-            if float(getattr(self, "initial_atr", 0) or 0) <= 0:
-                self.initial_atr = atr
-        else:
-            atr_ok, atr_meta = check_open_atr_or_reject(
-                self,
-                atr=atr,
-                atr_series=atr_series,
-                side=side,
-                tv_sl_ref=tv_sl_ref if tv_sl_ref > 0 else None,
-            )
-            if not atr_ok:
-                atr_meta["atr_fallback"] = fb
-                return 0, atr_meta
-            self.atr_fallback_active = False
+                except Exception:
+                    pass
+            return 0, atr_meta
+
+        atr_ok, atr_meta = check_open_atr_or_reject(
+            self,
+            atr=atr,
+            atr_series=None,
+            side=side,
+            tv_sl_ref=tv_sl_ref if tv_sl_ref > 0 else None,
+        )
+        if not atr_ok:
+            return 0, atr_meta
+        self.current_atr = atr
+        if float(getattr(self, "initial_atr", 0) or 0) <= 0:
+            self.initial_atr = atr
 
         sizing_stop = 0.0
         if atr > 0 and price > 0 and side in ("LONG", "SHORT"):
@@ -2985,7 +2956,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         meta["sizing_atr"] = round(atr, 4) if atr else None
         meta["sizing_side"] = side or None
         meta["atr_source"] = atr_source
-        meta["atr_fallback"] = bool(atr_source == "tv_emergency_fallback")
+        meta["atr_fallback"] = False
         meta["atr_fallback_detail"] = fb
         if sizing_stop > 0:
             self._sizing_initial_stop = sizing_stop
@@ -3192,6 +3163,33 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
     def _open_position(self, action, curr_px):
         if hasattr(self, "_clear_trading_pause"):
             self._clear_trading_pause("new_open")
+        try:
+            from app.core.daily_loss_circuit import check_allows_open
+            equity = read_contract_equity(self.client)
+            ok_dl, dl_meta = check_allows_open(
+                user_id=self.user_id,
+                symbol=getattr(self, "canonical_symbol", None) or self.symbol,
+                equity=equity,
+            )
+            if not ok_dl:
+                logger.error("⛔ 日亏损熔断拒绝开仓: %s", dl_meta)
+                if hasattr(self, "_alert"):
+                    self._alert(
+                        "critical",
+                        "DAILY_LOSS_CIRCUIT",
+                        "日亏损熔断·拒绝开仓",
+                        f"今日已亏 {dl_meta.get('loss_pct', 0)*100:.2f}% ≥ 5.5% "
+                        f"pnl={dl_meta.get('realized_pnl_usd')} equity={dl_meta.get('equity_ref')}",
+                        dl_meta,
+                    )
+                return {
+                    "status": "error",
+                    "reason": "daily_loss_circuit",
+                    "message": "日亏损达5.5%熔断，拒绝开仓",
+                    **dl_meta,
+                }
+        except Exception as exc:
+            logger.warning("daily_loss_circuit check failed: %s", exc)
         leverage = self._bind_tv_leverage()
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.4)

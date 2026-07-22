@@ -221,6 +221,25 @@ def webhook():
             error_message=err,
             response_status="error",
         )
+        # ATR rejects are a funds-safety floor — always DingTalk
+        err_l = str(err).lower()
+        if "atr" in err_l:
+            try:
+                from app.services.dingtalk_notify import push_system_alert
+                from app.core.symbol_registry import extract_payload_symbol, normalize_canonical_symbol
+                can = extract_payload_symbol(data, require=False) or normalize_canonical_symbol(
+                    data.get("symbol") or data.get("ticker")
+                )
+                tag = "[XAU]" if can and "XAU" in str(can) else "[ETH]"
+                push_system_alert(
+                    "critical",
+                    "ATR_INVALID",
+                    f"{tag} 开仓拒绝·ATR无效",
+                    f"{tag} Webhook拒绝开仓: {err} | action={data.get('action')} "
+                    f"symbol={data.get('symbol')} atr={data.get('atr')!r} price={data.get('price')}",
+                )
+            except Exception as exc:
+                logger.warning("[Webhook] ATR reject DingTalk failed: %s", exc)
         return jsonify({"status": "error", "message": err}), 400
 
     from app.services.trading_control import is_globally_paused

@@ -19,7 +19,7 @@ from app.core.position_exposure_guard import (
     live_side_from_amt,
     resolve_booked_side,
 )
-from app.core.radar_trail import RADAR_STARTUP_PROFIT_PROGRESS, tp1_consumed
+from app.core.radar_trail import tp1_consumed
 from app.core.symbol_precision import merge_tv_targets
 from app.services.tv_signal_enrich import compute_tv_tps_from_regime
 
@@ -545,18 +545,16 @@ def classify_startup_pnl_track(
     activation: float | None = None,
 ) -> str:
     """
-    loss_shield — 未达雷达激活：保 TP123 + TV tv_sl 硬止损（无 VPS 宽止损）
-    profit_radar — TP1 已成交、雷达已锁、或路径进度 ≥ 档位激活比例（与实盘哨兵一致）
+    loss_shield — 未成交 TP1 且雷达未锁：呼吸轨仍按初始止损防守
+    profit_radar — TP1+ 已成交，或雷达已显式激活（不再用 0.85 进度阈值臆测）
     """
     consumed = list(consumed_tp_levels or [])
     if tp1_consumed(consumed) or any(x in consumed for x in (2, 3)):
         return "profit_radar"
     if radar_active:
         return "profit_radar"
-    act = float(activation if activation is not None else RADAR_STARTUP_PROFIT_PROGRESS)
-    if float(radar_progress or 0) + 1e-9 >= act:
-        return "profit_radar"
-    _ = (entry, curr_px, side)
+    # radar_progress / activation retained for callers/logs only — not a startup gate
+    _ = (entry, curr_px, side, radar_progress, activation)
     return "loss_shield"
 
 

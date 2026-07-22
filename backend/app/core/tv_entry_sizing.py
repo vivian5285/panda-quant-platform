@@ -216,6 +216,19 @@ def compute_tv_entry_qty(
             qty = float(round_fn(qty))
 
     actual_notional = qty * price_f
+    # Exchange MIN_NOTIONAL pre-reject (ETH≈20 / XAU≈5)
+    try:
+        from app.core.symbol_registry import symbol_meta
+        min_notional = float(symbol_meta(can).get("min_notional") or 0)
+    except Exception:
+        min_notional = 0.0
+    meta["min_notional"] = min_notional or None
+    if qty > 0 and min_notional > 0 and actual_notional + 1e-9 < min_notional:
+        meta["error"] = "below_min_notional"
+        meta["final_qty"] = 0.0
+        meta["notional_usd"] = round(actual_notional, 4)
+        return 0.0, meta
+
     meta["margin_usd"] = round(actual_notional / lev, 4) if lev > 0 else 0.0
     meta["position_value"] = round(actual_notional, 4)
     meta["order_amount"] = round(actual_notional, 4)

@@ -124,11 +124,12 @@ def validate_signal_payload(data: dict) -> tuple[bool, str]:
                     return False, f"Invalid {field}"
             if not ok:
                 return False, f"Missing required field for {action}: {field}"
-        if data.get("atr") is not None:
-            try:
-                if float(data.get("atr", 0)) <= 0:
-                    return False, "atr must be > 0 when provided"
-            except (TypeError, ValueError):
-                return False, "Invalid atr"
+        if data.get("atr") is None or str(data.get("atr")).strip() == "":
+            return False, f"Missing required field for {action}: atr"
+        try:
+            if float(data.get("atr")) <= 0:
+                return False, "atr must be > 0"
+        except (TypeError, ValueError):
+            return False, "Invalid atr"
 
     return True, ""
