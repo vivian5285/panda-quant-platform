@@ -10,9 +10,10 @@
 
 | 项 | 状态 |
 |----|------|
-| commit/push | 见本次提交（含 tv_sl 拆分 / haircut / absurd qty / OPEN_FAILED 原文） |
-| VPS 部署 | `git pull` + `docker compose build/up backend`；**保持暂停** |
-| health | `status=ok`；HEAD 对齐本次提交 |
+| commit/push | **`89285ff`** → `origin/main`（tv_sl 拆分 / haircut / absurd qty / OPEN_FAILED 原文） |
+| VPS 部署 | 已执行 `_vps_deploy_fix_keep_paused.sh`：pull → 锁暂停 → rebuild backend → **KEEP PAUSED** |
+| 部署后状态 | `HEAD=89285fffeb0d7f0777dbe5396c979c0852728f91`；`trading_paused=True`；`qty=0 side=None`；`/health status=ok` |
+| health 版本说明 | `/api/health` 的 `version` 字段仍为静态 `1.0.0`；**以仓库 HEAD=`89285ff` 为本次修复对齐依据**（容器内已含 `ABSURD_TV_QTY_VS_CAPS`/`NOTIONAL_MARGIN_HAIRCUT`） |
 
 ### 1.2 `tv_sl` 污染：代码位置与修复方式
 
@@ -26,7 +27,13 @@
 | 开仓失败文案 | 「下单后未检测到持仓」 | `OPEN_FAILED` 钉钉带交易所原文（如 `-2019`） |
 
 **判定：** 修复目标是「**禁止非 TV 来源写入 `tv_sl`**」+「挂单价走独立字段」；不是仅对 ATR 一条路径打补丁。  
-遗留：少数日志/详情仍**读取** `tv_sl` 作展示；挂单执行路径已优先 `current_sl`/`_exchange_stop_px()`。DeepCoin 旁路仍有历史镜像逻辑，需同样标准后续对齐（本轮 Binance 主路径已收紧）。
+
+**允许的写入（Binance 主路径）：** webhook `stop_loss` → `tv_sl`/`_tv_stop_loss_ref`；从 `_tv_stop_loss_ref`/`_pending_open_tv_sl` 恢复；`keep_tv_sl` 复位时保留原 Pine 值；state 反序列化。  
+
+**遗留（需知悉，非本次事故触发点）：**  
+- `binance_smart_defense._rebuild_defenses_after_tv_add`：若 `_recompute` 后 `tv_sl` 为空，会把**先前的 `tv_sl`（应为 Pine）**写回——加仓路径当前生产关闭（`ENTRY_TYPES_ADD` 空），风险低。  
+- DeepCoin `position_supervisor_deepcoin` 仍有把 recovered/`prev_sl` 镜像进 `tv_sl` 的历史逻辑，**未按本次同一标准对齐**。  
+- `_tv_hard_sl_price` 命名仍像 TV，实为交易所挂单价镜像。
 
 ### 1.3 其他 `tv_*` / 易混淆字段全局排查
 

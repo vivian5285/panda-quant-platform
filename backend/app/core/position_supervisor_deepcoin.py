@@ -647,6 +647,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         try:
             with open(self.state_file, 'w') as f:
                 json.dump({
+                    "schema_version": 2,
                     "last_tv_side": self.last_tv_side,
                     "current_side": self.current_side,
                     "watched_qty": self.watched_qty,
@@ -665,7 +666,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "best_price": self.best_price,
                     "initial_qty": self.initial_qty,
                     "base_qty": float(getattr(self, "base_qty", 0) or 0),
-                    "add_count": int(getattr(self, "add_count", 0) or 0),
+                    "add_count": 0,
                     "consumed_tp_levels": list(self.consumed_tp_levels),
                     "last_tv_signal": self.last_tv_signal,
                     "adverse_sl_armed": self.adverse_sl_armed,
@@ -674,9 +675,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "adverse_arm_dingtalk_sent": bool(getattr(self, "adverse_arm_dingtalk_sent", False)),
                     "adverse_last_repair_ts": float(getattr(self, "_adverse_last_repair_ts", 0) or 0),
                     "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
+                    "tv_stop_loss_ref": float(getattr(self, "_tv_stop_loss_ref", 0) or 0),
                     "tv_hard_sl_price": float(
                         getattr(self, "_tv_hard_sl_price", 0)
-                        or getattr(self, "tv_sl", 0)
+                        or getattr(self, "current_sl", 0)
                         or 0
                     ),
                     "leverage": int(getattr(self, "leverage", 0) or 0),
@@ -2248,6 +2250,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             sl_meta = self._recompute_vps_hard_sl(entry_px=entry, side=side)
             if float(getattr(self, "tv_sl", 0) or 0) <= 0 and prev_sl > 0:
                 self.tv_sl = prev_sl
+                self._tv_stop_loss_ref = prev_sl
+                self._pending_open_tv_sl = prev_sl
                 sl_meta["restored_prev_tv_sl"] = prev_sl
                 sl_meta["stop_price"] = prev_sl
                 self._vps_hard_sl_meta = sl_meta
@@ -2833,10 +2837,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 snap = {}
         atr = float(snap.get("atr") or getattr(self, "current_atr", 0) or 0)
         atr_series = list(snap.get("atr_series") or [])
-        tv_sl_ref = float(
-            getattr(self, "_pending_open_tv_sl", 0)
-            or getattr(self, "_tv_hard_sl_price", 0)
-            or getattr(self, "tv_sl", 0)
+        tv_sl_ref = self._pine_stop_loss_ref() if hasattr(self, "_pine_stop_loss_ref") else float(
+            getattr(self, "_tv_stop_loss_ref", 0)
+            or getattr(self, "_pending_open_tv_sl", 0)
             or 0
         )
         from app.core.atr_emergency_fallback import (
@@ -3139,14 +3142,15 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         time.sleep(0.4)
         if float(getattr(self, "tv_sl", 0) or 0) <= 0:
             recovered = float(
-                getattr(self, "_tv_hard_sl_price", 0)
+                getattr(self, "_tv_stop_loss_ref", 0)
                 or getattr(self, "_pending_open_tv_sl", 0)
                 or 0
             )
             if recovered > 0:
                 self.tv_sl = recovered
-                self._tv_hard_sl_price = recovered
-                logger.info(f"开仓前恢复 tv_sl@{recovered:.4f}（清场曾被抹掉）")
+                self._tv_stop_loss_ref = recovered
+                self._pending_open_tv_sl = recovered
+                logger.info(f"开仓前恢复 TV stop_loss ref@{recovered:.4f}")
         qty, sizing_meta = self._resolve_entry_qty(curr_px)
         if qty <= 0:
             err = sizing_meta.get("error", "insufficient_balance")
@@ -3957,6 +3961,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.breakeven_phase = bool(s.get("breakeven_phase", False))
                     self.current_adx = float(s.get("current_adx", 25) or 25)
                     self.remaining_qty_pct = float(s.get("remaining_qty_pct", 1.0) or 1.0)
+                    # Old radar schema detection (activated/stepCount without breathing fields)
+                    has_old = (
+                        ("radar_activated" in s or "radar_step_count" in s or "step_count" in s)
+                        and float(s.get("initial_atr", 0) or 0) <= 0
+                    )
+                    self._state_schema_legacy = bool(has_old) or int(s.get("schema_version") or 0) < 2
                     self.tv_tps = self._sanitize_tp_prices(s.get("tv_tps", [0.0, 0.0, 0.0]))
                     self.tv_price = float(s.get("tv_price", 0.0) or 0.0)
                     self.best_price = s.get("best_price", 0.0)
@@ -3964,7 +3974,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.watched_entry = s.get("watched_entry", 0.0)
                     self.initial_qty = s.get("initial_qty", 0)
                     self.base_qty = float(s.get("base_qty", 0) or s.get("initial_qty", 0) or 0)
-                    self.add_count = int(s.get("add_count", 0) or 0)
+                    self.add_count = 0
                     self.consumed_tp_levels = [
                         int(x) for x in (s.get("consumed_tp_levels") or []) if int(x) in (1, 2, 3)
                     ]
@@ -3979,11 +3989,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self._adverse_last_repair_ts = float(s.get("adverse_last_repair_ts", 0) or 0)
                     self.adverse_arm_dingtalk_sent = bool(s.get("adverse_arm_dingtalk_sent", False))
                     self.tv_sl = float(s.get("tv_sl", 0) or 0)
-                    self._tv_hard_sl_price = float(
-                        s.get("tv_hard_sl_price") or s.get("tv_sl", 0) or 0
+                    self._tv_stop_loss_ref = float(
+                        s.get("tv_stop_loss_ref") or s.get("tv_sl", 0) or 0
                     )
-                    if self._tv_hard_sl_price <= 0 and self.tv_sl > 0:
-                        self._tv_hard_sl_price = self.tv_sl
+                    self._tv_hard_sl_price = float(
+                        s.get("tv_hard_sl_price")
+                        or s.get("current_sl", 0)
+                        or 0
+                    )
+                    if self._tv_hard_sl_price <= 0 and float(s.get("initial_stop", 0) or 0) > 0:
+                        self._tv_hard_sl_price = float(s.get("initial_stop") or 0)
                     lev = int(s.get("leverage", 0) or 0)
                     if lev > 0:
                         self.leverage = lev
@@ -4138,6 +4153,26 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                             summary,
                             {"force_aligned": True, **side_sync},
                         )
+                    return
+
+                # Checklist §六: old radar schema → alert + pause (parity with Binance)
+                if bool(getattr(self, "_state_schema_legacy", False)) and (
+                    float(getattr(self, "initial_atr", 0) or 0) <= 0
+                    or float(getattr(self, "initial_stop", 0) or 0) <= 0
+                ):
+                    msg = "重启检测到旧雷达schema(activated/stepCount)且无initialAtr · 暂停交易"
+                    if hasattr(self, "_pause_trading"):
+                        self._pause_trading(msg, {
+                            "schema_legacy": True,
+                            "side": side,
+                            "qty": real_amt,
+                        })
+                    self.monitoring = False
+                    self._save_state()
+                    self._dt.report_recover_takeover(
+                        side=side, qty=real_amt, entry=self.watched_entry,
+                        summary=f"PAUSED · {msg}",
+                    )
                     return
 
                 has_persist_tp = any(float(x or 0) > 0 for x in (self.tv_tps or []))

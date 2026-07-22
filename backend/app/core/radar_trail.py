@@ -24,7 +24,7 @@ RADAR_STEP_ATR = 0.50
 RADAR_LOCK_ATR = 0.30
 RADAR_TP1_FLOOR_ATR = 0.50
 RADAR_TP2_FLOOR_ATR = 1.50
-RADAR_TP3_TRAIL_ATR = 2.00
+RADAR_TP3_TRAIL_ATR = 2.00  # LEGACY constant only — LIVE hang uses breathing ADX trail (1.2~2.5)
 RADAR_BREAKEVEN_TICK_PCT = 0.0003  # ~1 tick slack past entry
 DEFAULT_ATR_ETH = 12.0  # when TV omits atr (ETH 10~15 pts)
 

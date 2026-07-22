@@ -29,10 +29,43 @@ def _msg(action: str, symbol: str = "ETHUSDT", price: float = 3300.0, **extra):
     return d, compute_fingerprint(d)
 
 
-def test_coalesce_window_default_clamped():
+def test_coalesce_window_hard_capped_at_1s(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.webhook_symbol_coalesce.get_settings",
+        lambda: MagicMock(WEBHOOK_COALESCE_SEC=2.0),
+    )
     c = WebhookSymbolCoalesce()
-    # default settings may vary; clamp is 1~2
-    assert 1.0 <= c.window_sec() <= 2.0
+    assert c.window_sec() == 1.0
+
+
+def test_coalesce_window_default_clamped(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.webhook_symbol_coalesce.get_settings",
+        lambda: MagicMock(WEBHOOK_COALESCE_SEC=1.0),
+    )
+    c = WebhookSymbolCoalesce()
+    assert c.window_sec() == 1.0
+
+
+def test_close_open_same_window_notifies_dingtalk(coalesce, monkeypatch):
+    calls = []
+
+    def fake_notify(severity, alert_type, title, message, detail=None):
+        calls.append((severity, alert_type, title, message, detail))
+
+    monkeypatch.setattr(
+        "app.services.alert_service.notify_system",
+        fake_notify,
+    )
+    released = []
+    coalesce.set_dispatch(lambda p, fp: released.append(p["action"]))
+    coalesce.submit(*_msg("CLOSE_QUICK_EXIT", price=3290))
+    coalesce.submit(*_msg("SHORT", price=3301))
+    coalesce.flush_now("ETHUSDT")
+    assert released == ["CLOSE_QUICK_EXIT", "SHORT"]
+    assert len(calls) == 1
+    assert calls[0][1] == "COALESCE_WINDOW"
+    assert "平仓+开仓同时到达" in calls[0][3]
 
 
 def test_close_then_open_same_window_not_ignore_open(coalesce):
@@ -138,6 +171,12 @@ def test_idempotency_60s_includes_price():
     assert a == c
     d = compute_fingerprint({"action": "SHORT", "symbol": "ETHUSDT", "price": 3300.5})
     assert a != d
+
+
+def test_coalesce_window_type_in_system_dingtalk():
+    from app.services.alert_service import SYSTEM_DINGTALK_TYPES
+
+    assert "COALESCE_WINDOW" in SYSTEM_DINGTALK_TYPES
 
 
 def test_webhook_server_uses_coalesce_not_seq_gate():

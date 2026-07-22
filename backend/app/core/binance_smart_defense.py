@@ -1232,6 +1232,8 @@ class BinanceSmartDefenseMixin:
             sl_meta = self._recompute_vps_hard_sl(entry_px=entry, side=side)
             if float(getattr(self, "tv_sl", 0) or 0) <= 0 and prev_sl > 0:
                 self.tv_sl = prev_sl
+                self._tv_stop_loss_ref = prev_sl
+                self._pending_open_tv_sl = prev_sl
                 sl_meta["restored_prev_tv_sl"] = prev_sl
                 sl_meta["stop_price"] = prev_sl
                 self._vps_hard_sl_meta = sl_meta

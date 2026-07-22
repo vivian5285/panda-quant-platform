@@ -1,6 +1,6 @@
 """Per-symbol TV webhook coalesce — checklist §消息顺序处理.
 
-Cache 1~2s per symbol (default 1.0s), then execute:
+Cache ≤1s per symbol (default 1.0s), then execute:
   1. At most one CLOSE_* (idempotent flat)
   2. Latest LONG/SHORT (open path still force-flats)
 
@@ -25,6 +25,9 @@ DispatchFn = Callable[[dict, str], None]
 
 CLOSE_ACTIONS = frozenset({"CLOSE_QUICK_EXIT", "CLOSE_RSI_EXIT"})
 ENTRY_ACTIONS = frozenset({"LONG", "SHORT"})
+# Spec §13.6 / §1.5: hard-cap at 1.0s — never wait longer for a late sibling msg.
+COALESCE_WINDOW_MAX_SEC = 1.0
+COALESCE_WINDOW_MIN_SEC = 0.5
 
 
 @dataclass
@@ -60,7 +63,7 @@ class WebhookSymbolCoalesce:
 
     def window_sec(self) -> float:
         raw = float(getattr(get_settings(), "WEBHOOK_COALESCE_SEC", 1.0) or 1.0)
-        return max(1.0, min(2.0, raw))
+        return max(COALESCE_WINDOW_MIN_SEC, min(COALESCE_WINDOW_MAX_SEC, raw))
 
     def submit(
         self,
@@ -184,6 +187,9 @@ class WebhookSymbolCoalesce:
             [f"{m.action}" for m in plan],
         )
 
+        if exits and entries:
+            self._notify_close_open_same_window(symbol, msgs, plan)
+
         released = 0
         for m in plan:
             try:
@@ -195,6 +201,38 @@ class WebhookSymbolCoalesce:
                     symbol, m.action,
                 )
         return released
+
+    @staticmethod
+    def _notify_close_open_same_window(
+        symbol: str,
+        raw_msgs: list[_CachedMsg],
+        plan: list[_CachedMsg],
+    ) -> None:
+        """Checklist §10.11 — DingTalk when CLOSE+OPEN share one coalesce window."""
+        try:
+            from app.services.alert_service import notify_system
+
+            raw_actions = [m.action for m in raw_msgs]
+            plan_actions = [m.action for m in plan]
+            notify_system(
+                "info",
+                "COALESCE_WINDOW",
+                "缓存窗口处理",
+                (
+                    f"检测到平仓+开仓同时到达，已按先平后开顺序执行 "
+                    f"| symbol={symbol} raw={raw_actions} plan={plan_actions}"
+                ),
+                {
+                    "symbol": symbol,
+                    "raw_actions": raw_actions,
+                    "plan_actions": plan_actions,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "[WebhookCoalesce] COALESCE_WINDOW notify failed symbol=%s",
+                symbol,
+            )
 
 
 _coalesce: WebhookSymbolCoalesce | None = None

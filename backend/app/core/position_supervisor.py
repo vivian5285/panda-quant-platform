@@ -277,7 +277,7 @@ class PositionSupervisor(
                     "tv_tps": self.tv_tps,
                     "initial_qty": self.initial_qty,
                     "base_qty": float(getattr(self, "base_qty", 0) or 0),
-                    "add_count": int(getattr(self, "add_count", 0) or 0),
+                    "add_count": 0,
                     "consumed_tp_levels": self.consumed_tp_levels,
                     "adverse_sl_armed": self.adverse_sl_armed,
                     "adverse_sl_prices": self.adverse_sl_prices,
@@ -336,7 +336,7 @@ class PositionSupervisor(
                     self.monitoring = bool(s.get("monitoring", False))
                     self.initial_qty = float(s.get("initial_qty", 0) or 0)
                     self.base_qty = float(s.get("base_qty", 0) or s.get("initial_qty", 0) or 0)
-                    self.add_count = int(s.get("add_count", 0) or 0)
+                    self.add_count = 0
                     self.tv_tps = normalize_tv_targets(s.get("tv_tps", [0.0, 0.0, 0.0]))
                     self.consumed_tp_levels = [
                         int(x) for x in (s.get("consumed_tp_levels") or []) if int(x) in (1, 2, 3)
@@ -4165,7 +4165,7 @@ class PositionSupervisor(
                     empty_detail["tv_pnl_pct"] = round(float(tv_pnl_pct), 2)
                 self._log(
                     "CLOSE_PROTECT_EMPTY",
-                    f"🛡️ 空仓保护性全平：撤单复位（{reason.split('：', 1)[-1] if '：' in reason else reason}）",
+                    f"🛡️ 空仓复位：撤单复位（{reason.split('：', 1)[-1] if '：' in reason else reason}）",
                     empty_detail,
                 )
                 self._alert(
