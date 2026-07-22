@@ -11,7 +11,7 @@ from app.core.symbol_precision import format_price, format_quantity
 logger = logging.getLogger(__name__)
 settings = get_settings()
 WS_MARKET_BASE = "wss://fstream.binance.com/market/ws"
-CLIENT_VERSION = "v13.4.6-flat-reconcile"
+CLIENT_VERSION = "v13.4.7-rest-cache"
 
 
 def _error_indicates_sub_account_only(err: str) -> bool:
@@ -144,6 +144,8 @@ class BinanceClient:
         """Subscribe markPrice@1s — radar uses WS push, REST only as fallback."""
         symbol = self._sym(symbol)
         if self._pub_ws_running and self._pub_ws_symbol == symbol:
+            # Still ensure private user stream (shared per user) is up
+            self._ensure_user_stream()
             return
         self._pub_ws_symbol = symbol
         if not self._pub_ws_running:
@@ -155,6 +157,31 @@ class BinanceClient:
                 name=f"binance-ws-u{self.user_id}",
             ).start()
             logger.info(f"[User {self.user_id}] public WS started: {symbol}@markPrice@1s")
+        self._ensure_user_stream()
+
+    def _ensure_user_stream(self) -> None:
+        try:
+            from app.core.binance_user_stream import ensure_binance_user_stream
+            ensure_binance_user_stream(user_id=self.user_id, client=self)
+        except Exception as exc:
+            logger.debug("[User %s] user stream start skipped: %s", self.user_id, exc)
+
+    def _invalidate_book_cache(self, reason: str = "") -> None:
+        try:
+            from app.core.rest_book_cache import invalidate
+            invalidate("binance", self.user_id, reason=reason)
+        except Exception:
+            pass
+
+    def _trading_symbols(self) -> list[str]:
+        try:
+            from app.core.symbol_registry import enabled_trading_symbols, exchange_native_symbol
+            cans = list(enabled_trading_symbols() or [])
+            if cans:
+                return [exchange_native_symbol("binance", c) for c in cans]
+        except Exception:
+            pass
+        return [self.trading_symbol]
 
     def _public_price_ws_loop(self, symbol: str) -> None:
         try:
@@ -266,13 +293,20 @@ class BinanceClient:
 
         API/network failures raise ExchangeTransientError — never return None on
         failure (None previously meant flat and could wipe live books).
+
+        Dual-symbol: shared REST cache — one all-position fetch serves ETH+XAU.
         """
         from app.core.exchange_errors import raise_exchange_transient
+        from app.core.rest_book_cache import get_cached_position
 
         symbol = self._sym(symbol)
         try:
-            positions = self.client.futures_position_information(symbol=symbol)
-            return positions[0] if positions else None
+            return get_cached_position(
+                exchange="binance",
+                user_id=self.user_id,
+                symbol=symbol,
+                fetch_all=lambda: self.client.futures_position_information() or [],
+            )
         except Exception as e:
             logger.error(f"[User {self.user_id}] get position failed: {e}")
             raise_exchange_transient(e, exchange="binance", op="get_position")
@@ -373,27 +407,56 @@ class BinanceClient:
 
     def get_open_algo_orders(self, symbol=None) -> list[dict]:
         """Conditional STOP/TP orders live on the algo book after 2025-12 migration."""
+        from app.core.rest_book_cache import get_cached_algo_orders
+
         symbol = self._sym(symbol)
-        try:
-            raw = self.client._request_futures_api(
-                "get", "openAlgoOrders", signed=True, data={"symbol": symbol},
-            )
-            rows = self._parse_algo_order_rows(raw)
-            out = []
-            for row in rows or []:
-                status = str(row.get("algoStatus") or row.get("status") or "").upper()
-                if status in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "FILLED"):
-                    continue
-                out.append(self._normalize_algo_order(row))
+        symbols = self._trading_symbols()
+        if symbol not in symbols:
+            symbols = list(symbols) + [symbol]
+
+        def _fetch(syms: list[str]) -> dict[str, list]:
+            out: dict[str, list] = {}
+            for sym in syms:
+                try:
+                    raw = self.client._request_futures_api(
+                        "get", "openAlgoOrders", signed=True, data={"symbol": sym},
+                    )
+                    rows = self._parse_algo_order_rows(raw)
+                    cleaned = []
+                    for row in rows or []:
+                        status = str(row.get("algoStatus") or row.get("status") or "").upper()
+                        if status in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "FILLED"):
+                            continue
+                        cleaned.append(self._normalize_algo_order(row))
+                    out[sym] = cleaned
+                except Exception as e:
+                    logger.warning(f"[User {self.user_id}] get algo orders failed: {e}")
+                    out[sym] = []
             return out
+
+        try:
+            return get_cached_algo_orders(
+                exchange="binance",
+                user_id=self.user_id,
+                symbol=symbol,
+                fetch_for_symbols=_fetch,
+                symbols=symbols,
+            )
         except Exception as e:
             logger.warning(f"[User {self.user_id}] get algo orders failed: {e}")
             return []
 
     def get_open_orders(self, symbol=None):
+        from app.core.rest_book_cache import get_cached_open_orders
+
         symbol = self._sym(symbol)
         try:
-            regular = self.client.futures_get_open_orders(symbol=symbol) or []
+            regular = get_cached_open_orders(
+                exchange="binance",
+                user_id=self.user_id,
+                symbol=symbol,
+                fetch_all=lambda: self.client.futures_get_open_orders() or [],
+            )
         except Exception as e:
             logger.error(f"[User {self.user_id}] get orders failed: {e}")
             regular = []
@@ -405,10 +468,14 @@ class BinanceClient:
 
     def _place_algo_stop_market(self, params: dict) -> dict | None:
         try:
+            # Dual-symbol: small jitter so ETH/XAU amend peaks don't align
+            import random
+            time.sleep(random.uniform(0.0, 0.15))
             res = self.client._request_futures_api(
                 "post", "algoOrder", signed=True, data=params,
             )
             if isinstance(res, dict):
+                self._invalidate_book_cache("algo_stop_place")
                 logger.info(
                     f"[User {self.user_id}] algo stop {params.get('side')} "
                     f"trigger={params.get('triggerPrice')} "
@@ -442,6 +509,7 @@ class BinanceClient:
                 params["reduceOnly"] = "true"
             self._last_market_order_params = dict(params)
             order = self.client.futures_create_order(**params)
+            self._invalidate_book_cache("market_order")
             logger.info(
                 f"[User {self.user_id}] market {side} {qty_str} {symbol} reduce={reduce_only} "
                 f"params={params} resp_id={order.get('orderId') if isinstance(order, dict) else order}"
@@ -664,6 +732,7 @@ class BinanceClient:
             )
         except Exception as e:
             logger.debug(f"[User {self.user_id}] cancel algo orders: {e}")
+        self._invalidate_book_cache("cancel_all")
 
     def test_connection(self) -> bool:
         try:

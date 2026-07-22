@@ -1,7 +1,7 @@
 # VPS 实盘最终行为规格（完整版 · 唯一权威）
 
-> 同步：2026-07-23 · ETH+XAU 双雷达（配置层分参数）+ TV atr + 1h 呼吸系数
-> 实现入口：`tv_entry_sizing.py`（算仓）· `breathing_stop.py`（止损纯函数）· `atr_1h_breathing.py`（1h ATR）· `adverse_radar_guard.py`（挂/改/触发）· `webhook_symbol_coalesce.py`（≤2.5s 缓存）
+> 同步：2026-07-23 · 双雷达 REST 限频适配（1s+抖动 / 合并账本缓存 / user-data 失效）
+> 实现入口：`tv_entry_sizing.py`（算仓）· `breathing_stop.py`（止损纯函数）· `atr_1h_breathing.py`（1h ATR）· `adverse_radar_guard.py`（挂/改/触发）· `webhook_symbol_coalesce.py`（≤2.5s 缓存）· `rest_book_cache.py`（双币合并 REST）· `binance_user_stream.py`（成交失效缓存）
 
 ## 硬性原则
 

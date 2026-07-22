@@ -76,12 +76,15 @@ HEAL_PLACE_ROUNDS = 2
 SIGNAL_QUEUE_TTL = 120.0
 SIGNAL_LOCK_SLICE = 5.0
 SENTINEL_POLL_NORMAL = 5.0
-# Near TP1 / TP fill monitor: checklist §4.2 / §13.11 (~0.5s)
-SENTINEL_POLL_ARMING = 0.5
-# Radar engaged: trail tightly on WS
-SENTINEL_POLL_RADAR = 0.5
+# Near TP1 / TP fill monitor (REST book) — dual-symbol rate-limit safe
+SENTINEL_POLL_ARMING = 1.0
+# Radar engaged: trail on markPrice WS; REST sentinel at 1s + jitter
+SENTINEL_POLL_RADAR = 1.0
+# Order-book / TP audit REST cadence (fills prefer user-data WS invalidate)
+SENTINEL_ORDER_AUDIT_SEC = 2.0
 # WS tick → radar evaluate throttle (avoid place/cancel thrash)
 RADAR_WS_TICK_MIN_SEC = 0.45
+SENTINEL_POLL_JITTER_SEC = 0.2
 DUST_QTY_ETH = 0.004
 TP_COMPLETE_RESIDUAL_RATIO = 0.12
 RADAR_SL_MIN_MOVE = 1.0
@@ -194,6 +197,7 @@ class PositionSupervisor(
         self.consumed_tp_levels: list[int] = []
         self.adopted_manual = False
         self._scan_ticks = 0
+        self._last_tp_audit_ts = 0.0
         self._init_adverse_radar_fields()
 
         state_key = supervisor_state_key(self.exchange_id, user_id, self.canonical_symbol)
@@ -3827,12 +3831,14 @@ class PositionSupervisor(
         return detail
 
     def _sentinel_poll_sec(self, curr_px: float = 0.0) -> float:
-        """WS-aligned cadence: arming/trail ~1s; far from TP1 slightly slower."""
+        """REST sentinel cadence: ≥1s + jitter; order fills rely on user-data WS."""
+        import random
+
         if self._breakeven_sl_active() or self._is_radar_engaged():
-            return SENTINEL_POLL_RADAR
-        if curr_px > 0 and tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)):
-            return SENTINEL_POLL_RADAR
-        if curr_px > 0 and self.watched_entry and self.tv_tps:
+            base = SENTINEL_POLL_RADAR
+        elif curr_px > 0 and tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)):
+            base = SENTINEL_POLL_RADAR
+        elif curr_px > 0 and self.watched_entry and self.tv_tps:
             progress = self._radar_activation_progress(curr_px)
             act = 0.70
             if hasattr(self, "_regime_radar_activation"):
@@ -3840,10 +3846,14 @@ class PositionSupervisor(
             else:
                 row = (self.regime_settings.get(self.regime) or {})
                 act = float(row.get("activation") or 0.70)
-            # Approaching arm threshold → poll at WS markPrice@1s pace
+            # Approaching arm threshold → poll at ~1s + jitter
             if progress + 1e-9 >= max(0.40, act * 0.55):
-                return SENTINEL_POLL_ARMING
-        return SENTINEL_POLL_NORMAL
+                base = SENTINEL_POLL_ARMING
+            else:
+                base = SENTINEL_POLL_NORMAL
+        else:
+            base = SENTINEL_POLL_NORMAL
+        return float(base) + random.uniform(0.0, SENTINEL_POLL_JITTER_SEC)
 
     def _process_radar_trailing(self, real_amt: float, curr_px: float) -> bool:
         # TP limit timeout: only cancel if mark already reached the TP (stuck fill),
@@ -4063,6 +4073,8 @@ class PositionSupervisor(
                         self._save_state()
 
                     self._scan_ticks += 1
+                    now_ts = time.time()
+                    last_audit = float(getattr(self, "_last_tp_audit_ts", 0) or 0)
                     if curr_px > 0:
                         self.best_price = (
                             max(self.best_price, curr_px)
@@ -4079,8 +4091,12 @@ class PositionSupervisor(
                                 gained_c[0], self.watched_qty, actual_qty, curr_px,
                             )
 
-                    if not qty_changed and self._scan_ticks % 10 == 0:
-                        # 仅补挂未成交更高档；雷达/硬止损另槽，不带 dynamic_sl 抢份额
+                    # Order-book REST audit ≤ every 2s (fills prefer user-data WS)
+                    if (
+                        not qty_changed
+                        and (now_ts - last_audit) >= SENTINEL_ORDER_AUDIT_SEC
+                    ):
+                        self._last_tp_audit_ts = now_ts
                         audit = self._audit_tp_levels(actual_qty, curr_px=curr_px or None)
                         if audit["issues"]:
                             logger.info(

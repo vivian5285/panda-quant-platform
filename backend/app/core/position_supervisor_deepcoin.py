@@ -77,9 +77,11 @@ settings = get_settings()
 
 DEEPCOIN_SUPERVISOR_VERSION = "v13.4.7-ws-radar"
 SENTINEL_POLL_NORMAL = 5.0
-# Align with Binance/OKX/Gate — TP1/TP2 order monitor cadence (checklist §4.2 / 拍板)
-SENTINEL_POLL_ARMING = 0.5
-SENTINEL_POLL_RADAR = 0.5
+# Align with Binance/OKX/Gate — dual-symbol REST rate-limit safe
+SENTINEL_POLL_ARMING = 1.0
+SENTINEL_POLL_RADAR = 1.0
+SENTINEL_POLL_JITTER_SEC = 0.2
+SENTINEL_ORDER_AUDIT_SEC = 2.0
 RADAR_WS_TICK_MIN_SEC = 0.45
 DUST_ORPHAN_CONTRACTS = 1
 TP_COMPLETE_RESIDUAL_RATIO = 0.12
@@ -3522,14 +3524,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return 0.0
 
     def _sentinel_poll_sec(self, curr_px=0.0):
-        """WS-aligned cadence: arming/trail ~1s; far from TP1 slightly slower."""
+        """REST sentinel cadence: ≥1s + jitter; order fills rely on WS where available."""
+        import random
+
         if hasattr(self, "_is_radar_engaged") and self._is_radar_engaged():
-            return SENTINEL_POLL_RADAR
-        if self._is_radar_active():
-            return SENTINEL_POLL_RADAR
-        if tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)):
-            return SENTINEL_POLL_RADAR
-        if curr_px > 0 and self.watched_entry and self.tv_tps:
+            base = SENTINEL_POLL_RADAR
+        elif self._is_radar_active():
+            base = SENTINEL_POLL_RADAR
+        elif tp1_filled_from_consumed(getattr(self, "consumed_tp_levels", None)):
+            base = SENTINEL_POLL_RADAR
+        elif curr_px > 0 and self.watched_entry and self.tv_tps:
             progress = self._radar_activation_progress(curr_px)
             act = 0.70
             if hasattr(self, "_regime_radar_activation"):
@@ -3538,8 +3542,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 row = (self.regime_settings.get(self.regime) or {})
                 act = float(row.get("activation") or 0.70)
             if progress + 1e-9 >= max(0.40, act * 0.55):
-                return SENTINEL_POLL_ARMING
-        return SENTINEL_POLL_NORMAL
+                base = SENTINEL_POLL_ARMING
+            else:
+                base = SENTINEL_POLL_NORMAL
+        else:
+            base = SENTINEL_POLL_NORMAL
+        return float(base) + random.uniform(0.0, SENTINEL_POLL_JITTER_SEC)
 
     def _process_radar_trailing(self, real_amt, curr_px):
         # Same as Binance: only timeout-cancel when mark already past TP; refresh stamp otherwise.
@@ -3756,7 +3764,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                             self, gained_c[0], self.watched_qty, real_amt, curr_px,
                         )
 
-                    if not qty_changed and self._scan_ticks % 10 == 0:
+                    now_ts = time.time()
+                    last_audit = float(getattr(self, "_last_tp_audit_ts", 0) or 0)
+                    if (
+                        not qty_changed
+                        and (now_ts - last_audit) >= SENTINEL_ORDER_AUDIT_SEC
+                    ):
+                        self._last_tp_audit_ts = now_ts
                         audit = self._audit_tp_levels(real_amt, curr_px=curr_px)
                         if audit["issues"]:
                             logger.info(
