@@ -6,8 +6,8 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-07-22 · 币安执行层验收通过）**  
-> 凡与本文冲突的旧描述（含「妈妈版」权益×1 算仓、挂 TP123、原生 4H、旧雷达 0.5/0.3/2.0ATR、钉钉独立 25× 杠杆源）**一律作废**。  
+> **文档同步（2026-07-23 · 清单终验 + 算仓铁律）**  
+> 凡与本文冲突的旧描述（含「妈妈版」权益×1 算仓、挂 TP123、原生 4H、旧雷达 0.5/0.3/2.0ATR、钉钉独立 25× 杠杆源、名义 0.85 haircut）**一律作废**。  
 > **最终状态清单：** [docs/GEMINI_FINAL_STATUS_20260722.md](docs/GEMINI_FINAL_STATUS_20260722.md)  
 > 行为规格权威：[docs/VPS_LIVE_CHECKLIST.md](docs/VPS_LIVE_CHECKLIST.md)  
 > 旧逻辑清除清单：[docs/LEGACY_PURGE_LIST_20260722.md](docs/LEGACY_PURGE_LIST_20260722.md)  
@@ -16,33 +16,34 @@
 
 ### 当前实盘一句话
 
-**VPS = 先平后开开仓 + RISK20 独立算仓 + 呼吸止损引擎（唯一止损写入方）+ 仅挂 TP1/TP2 + 90m 行情 ATR/ADX + 反转保护执行 + 钉钉字段取自本笔执行快照。**  
+**VPS = 先平后开开仓 + 合约本金余额×20%风险∩×5名义算仓 + 呼吸止损引擎（唯一止损写入方）+ 仅挂 TP1/TP2 + 90m 行情 ATR/ADX + 1s 缓存先平后开 + 反转保护。**  
 除 TV 的 4 类信号与引擎自身止损触发外，不存在第三方平仓判断路径。
 
 ### 生产代码锚点
 
 | 项 | 值 |
 |----|-----|
-| 代码提交（执行层） | **`77d171b`** — 杠杆根治 + 未登记仓位市价接管 |
-| 观察窗文档 | `48ed021`（仅文档，无需 rebuild） |
+| 代码提交（执行层） | **见 `main` HEAD** — 算仓铁律（合约本金×20%∩×5，无 haircut）+ 天文 qty 兜底 |
 | VPS 路径 | `/home/panda/panda-quant-platform` |
 | Webhook | `https://twinstar.pro/gemini/webhook` → `:6010` |
 | 默认交易对 | **ETH + XAU**（`TRADING_SYMBOLS=ETHUSDT,XAUUSDT`） |
 
-**近期已入库修复：** 止损撤挂抖动；TP 超时误撤→重复挂单；仓位查询失败≠空仓；平仓归因证据门；钉钉杠杆双源根治；未登记仓位 ATR 接管。详见下方[更新记录](#技术栈与更新记录)。
+**近期已入库修复：** 止损撤挂抖动；TP 超时误撤→重复挂单；仓位查询失败≠空仓；平仓归因证据门；钉钉杠杆双源根治；未登记仓位 ATR 接管；**天文数字下单**（荒谬 TV.qty 忽略 + 名义硬顶 本金×5）。
 
 | 项 | 现行值 |
 |----|--------|
 | TV 消息 | 仅 `LONG` / `SHORT` / `CLOSE_QUICK_EXIT` / `CLOSE_RSI_EXIT` |
-| 算仓 | `min(权益×20%/VPS止损距, 权益×5/价, TV.qty×(TV止损距/VPS止损距))`；挂止损用 VPS `initialStop` |
+| 算仓铁律 | **永远** `min(合约本金×20%/VPS止损距, 合约本金×5/价, TV.qty×(TV止损距/VPS止损距))`；无 0.85 折损；荒谬 TV.qty 忽略 |
 | 止盈 | **只挂 TP1+TP2**（优先 TV `qty1`/`qty2`；否则约 30%/30%；余仓交阶段二） |
 | 止损 | 呼吸引擎两阶段：阶梯 0.75/0.4 + TP 底线 0.5/1.5ATR → ADX 追踪 1.2–2.5×ATR |
+| 同时到达 | 同 symbol **1 秒缓存**；CLOSE_* 优先；平仓确认归零后再开 |
 | 杠杆 | 执行/钉钉/API 校验/client 初始化 **一律 `FIXED_LEVERAGE=5`** |
 | 行情 | 交易所 30m → **合成 90m** → ATR(14)/ADX(14) |
 | 加仓 | **禁用**；同向亦先平后开 |
 | CAP_ALIGN | **仅检测告警，不下单减仓** |
 | 未登记仓位 | 市价 ATR 接管呼吸止损 + 推导 TP；钉钉「来源待核实」 |
 | 保留兜底 | `HARD_SL_FAIL_ABORT`、`FLIP_CLEAN_ABORT`、`FORCE_ALIGN`、`EXCHANGE_QUERY_FAIL` |
+| 通知 | 管理员渠道当前为 **钉钉**（VPS 已配）；文案已清旧「雷达/保护性全平/TP3止盈/加仓」 |
 
 | 生产域名 | [https://twinstar.pro](https://twinstar.pro) |
 |----------|---------------------------------------------|
@@ -63,7 +64,7 @@ domain: twinstar.pro
 repo_path_on_vps: /home/panda/panda-quant-platform
 authority: docs/VPS_LIVE_CHECKLIST.md
 legacy_purge: docs/LEGACY_PURGE_LIST_20260722.md
-code_anchor: 77d171b
+code_anchor: main HEAD  # 合约本金×20%∩×5 算仓铁律
 
 services:
   frontend:6080    # React + nginx /api/
@@ -74,13 +75,13 @@ services:
 # 信号主链路
 TradingView POST → nginx /gemini/webhook → :6010/webhook
   → 校验 secret / action∈{LONG,SHORT,CLOSE_QUICK_EXIT,CLOSE_RSI_EXIT} / 幂等
-  → 立即 HTTP 200 → SignalDispatcher → PositionSupervisor.handle_signal()
+  → 同 symbol 1s 缓存（CLOSE > OPEN）→ HTTP 200 → SignalDispatcher → handle_signal()
 
 # 四条硬性原则
 rules:
-  - 开仓永远先平后开（不问同向/反向；外部仓亦同）
+  - 开仓永远先平后开（不问同向/反向；外部仓亦同；须仓位归零确认）
   - 单仓不加仓（无 PYRAMID / PROFIT_ADD 生效路径）
-  - 仓位无状态纯函数（不读 add_count / 历史仓）
+  - 仓位无状态纯函数：合约本金余额×20%风险 ∩ ×5名义 ∩ TV.qty调整（永远）
   - 止损单唯一写入方 = 呼吸止损引擎（adverse_radar_guard + breathing_stop）
   - 钉钉杠杆/关键字段 = 本笔执行快照（_resolve_entry_leverage → FIXED_LEVERAGE）
 
@@ -88,7 +89,7 @@ rules:
 open_flow: |
   查实盘 → 非空则市价全平+撤单+等确认 → 重置呼吸状态
   → 拉 VPS ATR → initialStop=entry±1.5×ATR
-  → qty=min(风险/VPS距, 名义/价, TV.qty×TV距/VPS距)   # TV.stop_loss 只调系数
+  → qty=min(本金×20%/VPS距, 本金×5/价, TV.qty×TV距/VPS距)   # 无 haircut；荒谬TV.qty忽略
   → LIMIT@TV price（不足市价补）→ 挂 TP1/TP2 → 呼吸引擎挂止损(带qty)
   → 行情引擎持续供 ATR/ADX → 钉钉开仓（leverage=5 写入 detail）
 
@@ -329,19 +330,22 @@ POST /gemini/webhook
 权威细则：[docs/VPS_LIVE_CHECKLIST.md §二](docs/VPS_LIVE_CHECKLIST.md)
 
 ```
-风险资金 = 合约权益 × 0.20
-名义上限 = 合约权益 × 5
+风险资金 = 合约本金余额 × 0.20
+名义上限 = 合约本金余额 × 5                 # 永远满额 5×，无 0.85 折损
 initialStop = 开仓价 ± 1.5 × VPS_ATR          # 开仓前 market_engine
 VPS实际止损距离 = |开仓价 − initialStop|
 TV隐含止损距离 = |开仓价 − TV.stop_loss|
 调整系数 = TV隐含止损距离 / VPS实际止损距离
 调整后的TV数量上限 = TV.qty × 调整系数
 理论数量 = min(风险资金/VPS实际止损距离, 名义上限/开仓价, 调整后的TV数量上限)
+# 若调整后 TV.qty 相对 risk∩notional 荒谬（≥50×）→ 忽略 TV 上限
+# 硬顶：qty×price ≤ 合约本金×5（防天文数字）
 最终数量 = floor(理论数量 / 步长) × 步长
 ```
 
 | 规则 | 说明 |
 |------|------|
+| 本金 | **合约本金余额** = U 本位合约总权益（非可用保证金） |
 | TV `stop_loss` | **只参与调整系数**；真实挂止损价仍是 VPS `initialStop` |
 | 调整时机 | **仅开仓算一次**；后续 tick 不重算 |
 | 缺 `TV.qty` | **拒开仓** |
@@ -349,7 +353,7 @@ TV隐含止损距离 = |开仓价 − TV.stop_loss|
 | ATR 异常且无可用 `TV.stop_loss` | **拒开仓** + `ATR_INVALID`/`ATR_ANOMALY` |
 | 杠杆 | **`FIXED_LEVERAGE=5`**（client / bind / 钉钉 / API 校验同源） |
 | 加仓路径 | 返回 `add_disabled` / qty=0 |
-| 开仓日志 | 记录 `adjust_coef`、三候选 qty、`binding`、`atr_source` |
+| 开仓日志 | 记录 `adjust_coef`、三候选 qty、`binding`、`atr_source`、`tv_qty_ignored_absurd` |
 
 ### 四、开仓后挂单
 

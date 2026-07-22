@@ -2012,7 +2012,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             if hasattr(self, "_log"):
                 self._log(
                     "TP_ORPHAN_PURGE",
-                    f"雷达止损 {radar_sl:.2f} 已越过 TP{obsolete}，撤销 {detail['cancelled']} 张",
+                    f"呼吸止损 {radar_sl:.2f} 已越过 TP{obsolete}，撤销 {detail['cancelled']} 张",
                     detail,
                 )
             if hasattr(self, "_alert"):
@@ -2410,7 +2410,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self._alert(
                 "warning",
                 "TP_RETRY_FAIL",
-                "雷达止损挂单重试失败",
+                "呼吸止损挂单重试失败",
                 f"SL @ {sl_price} 重试 {self.TP_RETRY_MAX} 次仍失败",
                 result,
             )

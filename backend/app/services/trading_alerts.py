@@ -77,7 +77,7 @@ ALERT_TYPE_TAGS = {
     "CLOSE_TRAIL": "止损移动",
     "CLOSE_SL_INITIAL": "止损触发",
     "CLOSE_SL_BREAKEVEN": "止损触发",
-    "CLOSE_TP3": "TP3 止盈成交",
+    "CLOSE_TP3": "止盈成交",
     "CLOSE_QUICK_EXIT": "反转保护",
     "CLOSE_RSI_EXIT": "反转保护",
     "CLOSE_FAIL": "异常告警",
@@ -126,7 +126,7 @@ ALERT_TYPE_TAGS = {
     "UPDATE_TP": "止盈更新",
     "TP1_FILL": "TP1 止盈成交",
     "TP2_FILL": "TP2 止盈成交",
-    "TP3_FILL": "TP3 止盈成交",
+    "TP3_FILL": "止盈成交",
     "HARD_SL_MISSING": "异常告警",
     "SIGNAL_RECV": "TV信号接收",
     "COALESCE_WINDOW": "缓存窗口处理",
@@ -450,7 +450,7 @@ def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
             levels = detail["attribution"].get("matched_tps") or []
         if 3 in levels or action == "CLOSE_TP3" or origin == "radar_tp3_trail":
             prefix = "（推断）" if confidence in ("inferred", "low") else ""
-            return f"{prefix}TP3 止盈成交，全部平仓，盈亏 {pnl_txt}%"
+            return f"{prefix}余仓止盈成交（阶段二），全部平仓，盈亏 {pnl_txt}%"
         if 2 in levels:
             return f"TP2 止盈成交，剩余仓位 40%，当前止损 {float(stop):.2f}"
         if 1 in levels:
@@ -486,7 +486,7 @@ def format_tp_fill_detail_cn(detail: dict, alert_type: str = "") -> str:
         return f"TP2 止盈成交，剩余仓位 40%，当前止损 {stop:.2f}"
     if lvl == 3:
         pnl_txt = f"{float(pnl):+.2f}" if pnl is not None else "—"
-        return f"TP3 止盈成交，全部平仓，盈亏 {pnl_txt}%"
+        return f"余仓止盈成交（阶段二），全部平仓，盈亏 {pnl_txt}%"
     rem = detail.get("remaining_qty_pct")
     if rem is not None:
         return f"止盈成交，剩余仓位 {float(rem)*100:.0f}%，当前止损 {stop:.2f}"

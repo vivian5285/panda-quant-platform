@@ -187,7 +187,7 @@ class BinanceSmartDefenseMixin:
             if hasattr(self, "_log"):
                 self._log(
                     "TP_ORPHAN_PURGE",
-                    f"雷达止损 {radar_sl:.2f} 已越过 TP{obsolete}，撤销 {detail['cancelled']} 张",
+                    f"呼吸止损 {radar_sl:.2f} 已越过 TP{obsolete}，撤销 {detail['cancelled']} 张",
                     detail,
                 )
             if hasattr(self, "_alert"):

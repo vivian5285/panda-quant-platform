@@ -95,7 +95,7 @@ def resolve_close_alert_title(
     reason = str(tv_reason or (attribution or {}).get("human_reason") or "").strip()
 
     if hint == "CLOSE_TP3" or origin == "radar_tp3_trail" or act == "CLOSE_TP3":
-        return "TP3 止盈成交"
+        return "余仓止盈（阶段二）"
     if act == "CLOSE_BREATH_STOP" or origin == "breathing_stop":
         phase2 = bool(
             (attribution or {}).get("breakeven_phase")

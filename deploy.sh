@@ -1,8 +1,9 @@
 #!/bin/bash
 # 双子星AI量化 · GEMINI AI · VPS 一键部署
 # 流程: 清理旧端口进程 → 拉取 GitHub 最新代码 → 构建启动 → 强制自检 → 账户接管
-# v6.5.6: 全交易所统一逻辑 — TV只发开仓+反转；VPS 挂单/监控/连续阶梯雷达；
-#         方向不一致（含重启）→强制全平对齐TV+钉钉；Webhook :6010
+# 全交易所统一逻辑 — TV只发开仓+反转；VPS 挂单/监控/呼吸止损；
+# 方向不一致（含重启）→强制全平对齐TV+钉钉；Webhook :6010
+# 算仓铁律：合约本金余额×20%风险 ∩ ×5名义 ∩ TV.qty调整
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -19,9 +20,9 @@ SKIP_GIT_PULL="${SKIP_GIT_PULL:-0}"
 
 echo "========================================"
 echo "  双子星AI量化 · GEMINI AI · VPS 部署"
-echo "  交易规则 v6.5.6（币安/深币/OKX/Gate 同一逻辑）"
-echo "  TV只发开仓+反转保护 · VPS监控TP成交/雷达"
-echo "  方向不一致 → 强制全平对齐 TV · 连续阶梯雷达 0.5/0.3ATR"
+echo "  RISK20 + 呼吸止损（币安/深币/OKX/Gate 同一逻辑）"
+echo "  TV: LONG/SHORT/CLOSE_QUICK_EXIT/CLOSE_RSI_EXIT"
+echo "  算仓: 合约本金×20%风险 ∩ ×5名义 ∩ TV.qty调整"
 echo "  $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================"
 

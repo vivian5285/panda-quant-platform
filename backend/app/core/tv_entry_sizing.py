@@ -1,9 +1,10 @@
 """Entry sizing — RISK20 + notional5 + TV qty adjusted to VPS stop distance.
 
 Authoritative formula (stateless pure function, computed once at open):
-  risk_capital        = equity × 0.20
-  notional_cap        = equity × 5
-  vps_stop_dist       = |price − VPS initialStop|     # initialStop = entry±1.5×ATR
+  sizing_base         = 合约本金余额 (futures total equity; fallback initial_principal)
+  risk_capital        = sizing_base × 0.20
+  notional_cap        = sizing_base × 5          # NEVER haircut; NEVER (base×0.20×5)/price alone
+  vps_stop_dist       = |price − VPS initialStop|  # initialStop = entry±1.5×ATR
   tv_implied_dist     = |price − TV.stop_loss|
   adjust_coef         = tv_implied_dist / vps_stop_dist
   adjusted_tv_qty_cap = TV.qty × adjust_coef
@@ -31,10 +32,10 @@ FIXED_LEVERAGE = MAX_LEVERAGE
 SIZING_MODE = "risk20_cap5x_tv_qty_cap"
 # When TV.qty is strategy.equity-inflated (e.g. 8.6e8), adjusted_tv_qty must not
 # silently disappear from the min() as a useful cap — we still require tv_qty>0 as
-# signal presence, but ignore absurd caps so risk∩notional bind. Haircut leaves
-# margin headroom so Binance -2019 is less likely at full 5× notional.
+# signal presence, but ignore absurd caps so risk∩notional bind.
 ABSURD_TV_QTY_VS_CAPS = 50.0
-NOTIONAL_MARGIN_HAIRCUT = 0.85
+# Legacy alias kept for import compatibility; live notional is always full ×5.
+NOTIONAL_MARGIN_HAIRCUT = 1.0
 
 ENTRY_TYPES = frozenset({"OPEN"})
 ENTRY_TYPES_ADD = frozenset()  # pyramiding disabled
@@ -114,10 +115,12 @@ def compute_tv_entry_qty(
     """
     from app.core.symbol_registry import normalize_canonical_symbol
 
-    sizing_base, sizing_source = resolve_principal_sizing_base(live_balance, initial_principal)
+    # 铁律：永远用合约本金余额（U本位合约总权益），不是可用保证金、不是旧 (×0.20×5)/price。
     if float(live_balance or 0) > 0:
         sizing_base = float(live_balance)
-        sizing_source = "total_equity"
+        sizing_source = "contract_equity"
+    else:
+        sizing_base, sizing_source = resolve_principal_sizing_base(live_balance, initial_principal)
 
     price_f = float(price or 0)
     vps_stop_f = float(tv_sl or 0)
@@ -185,7 +188,7 @@ def compute_tv_entry_qty(
     adjusted_tv_qty = tv_qty_f * adjust_coef
 
     risk_capital = sizing_base * risk_frac
-    notional_cap = sizing_base * lev * NOTIONAL_MARGIN_HAIRCUT
+    notional_cap = sizing_base * lev  # 合约本金余额 × 5，无折损
     qty_by_risk = risk_capital / vps_dist
     qty_by_notional = notional_cap / price_f
     tv_qty_ignored_absurd = False
@@ -200,10 +203,14 @@ def compute_tv_entry_qty(
     else:
         theoretical = min(qty_by_risk, qty_by_notional, adjusted_tv_qty)
 
+    # Hard ceiling: never exceed 合约本金 × 5 notional (天文数字兜底).
+    if theoretical * price_f > notional_cap + 1e-9:
+        theoretical = qty_by_notional
+
     meta["risk_capital"] = round(risk_capital, 4)
     meta["notional_cap"] = round(notional_cap, 4)
     meta["nominal_value"] = round(notional_cap, 4)
-    meta["notional_margin_haircut"] = NOTIONAL_MARGIN_HAIRCUT
+    meta["notional_margin_haircut"] = 1.0
     meta["sl_distance"] = round(vps_dist, 6)
     meta["stop_distance"] = meta["sl_distance"]
     meta["vps_stop_distance"] = round(vps_dist, 6)
