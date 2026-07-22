@@ -55,14 +55,14 @@
 | C2 阶梯基准 initialStop | **符合** | `breathing_stop.py` `step_stop = initial_stop ± step_count * STEP * atr` |
 | C3 TP1/TP2 底线 | **符合** | `TP1_FLOOR_ATR=0.5` `TP2_FLOOR_ATR=1.5` |
 | C4 ADX 追踪 1.2~2.5 | **符合** | `TRAIL_DIST_WEAK/STRONG` + `trail_distance_by_adx` |
-| C5 TP 后止损 qty 收缩 | **部分符合** | 代码有（TP fill → sync force_replace）；**本轮未真实触 TP**，见已知问题 |
+| C5 TP 后止损 qty 收缩 | **符合** | 受控模拟：真实调用链 `_orchestrate_qty_change`（与 sentinel qty_changed 同路径）；TP1→qty=剩余仓、ID 撤旧挂新；pause 8s 内 tick 零 cancel/place。证据：`backend/tests/test_tp_fill_stop_qty_resize.py` + `backend/data/_tp_resize_verify_report.json`。**未碰**实盘 0.033 ETH |
 
 ### D. 状态清理
 
 | # | 判定 | 证据 |
 |---|------|------|
-| D1 全路径清零 | **符合** | `_close_all` / dust / startup flat / force_flat → `_clear_position_local_state`（Binance+DeepCoin） |
-| D2 无半清理残留 | **符合** | 清零含 entry/side/best/sl/atr/breakeven；FORCE_FLAT 不再 side=None 时乱报 HARD_SL_MISSING |
+| D1 全路径清零 | **符合** | `_close_all` / dust / startup flat / force_flat → `_clear_position_local_state`；另见 **阶段二全平补验** |
+| D2 无半清理残留 | **符合** | 清零含 entry/side/best/sl/atr/breakeven；阶段二 trail hit 模拟确认无 `side=None`+残留 entry |
 
 ### E. ATR 应急兜底
 
@@ -96,6 +96,30 @@
 
 ---
 
+## C5 补验：TP 成交后止损 qty 收缩（2026-07-22）
+
+- **方式**：代码层调用与 sentinel 完全相同的 `_orchestrate_qty_change`（RecordingClient 仅替换交易所 I/O）；**未**对实盘 0.033 ETH 下单
+- **路径**：`_sentinel_loop` qty_changed → `_orchestrate_qty_change` → `_boost_radar_after_tp_fill` → `_sync_binance_merged_stop(force_replace=True)`（同一次 orchestrate 内还有一次 TP 分支二次 sync，属生产行为）
+- **TP1**：止损 `9001/0.033@1895.79` → 撤旧挂新终态 `1002/0.017@1895.79`；`remaining_qty_pct=0.7`；价=当前 `current_sl`
+- **TP2**：`9100/0.017` → 终态 `1002/0.013@1895.79`；`remaining_qty_pct=0.4`
+- **竞态**：resize 后立刻打 breathing tick + defense orchestrate；pause≈8s 内 **0** 次 cancel/place
+- **证据文件**：`backend/tests/test_tp_fill_stop_qty_resize.py`（2 passed）、`backend/data/_tp_resize_verify_report.json`
+
+---
+
+## 阶段二 / TP3 收网全平 + 状态清零补验（2026-07-22）
+
+- **产品语义**：TP3 **不挂限价**；TP1+TP2 后剩余约 40% 由呼吸引擎阶段二（ADX 追踪）接管；全平发生在 **追踪止损触达**，不是 TP3 限价成交
+- **方式**：调用与生产相同的 `PositionSupervisor._process_breathing_stop_tick` → `stop_hit` → `_close_all(CLOSE_BREATH_STOP)` → `_clear_position_local_state`；**未碰**实盘 0.033 ETH
+- **触发前（脏状态）**：`entry=1918` `side=LONG` `breakeven_phase=True` `sl=1975.5` `qty=0.013` `consumed=[1,2]` `radar_latched=True`
+- **触发**：价 `1973.5` 跌破追踪止损 → reason=`止损平仓(阶段二/趋势追踪)`
+- **触发后**：`entry=0` `side=None` `best/sl/atr/tv_sl=0` `breakeven=False` `qty=0` `consumed=[]` `trade_id=None` `radar_latched=False` `monitoring=False`
+- **半吊子断言**：禁止 `side=None` 且 `watched_entry>0` — **通过**
+- **附带**：交易所已先平仓时，`_close_all` 仍执行清零（2nd case）
+- **证据**：`backend/tests/test_tp3_phase2_flat_clear.py`（2 passed）、`backend/data/_tp3_phase2_flat_clear_report.json`
+
+---
+
 ## 任务三交付物
 
 1. 本报告 + `docs/VPS_DEPLOY.md` + `docs/KNOWN_ISSUES.md`
@@ -105,3 +129,16 @@
 ## 仍需你人工确认的一项
 
 钉钉群是否收到两条「验收测试」消息（本环境无法贴截图）。
+
+---
+
+## 清单 v2 补验（多用户隔离 + DeepCoin 对照）
+
+### 一、多用户 / 多 symbol 隔离 — PASS
+- 池键 `(user_id, canonical)`；同用户 ETH+XAU 呼吸状态互不污染；双用户同 ETH 并发 seed 不串读；API key 绑定在各自 client；sizing 权益并发不串
+- 证据：`backend/tests/test_user_symbol_isolation.py`
+
+### 二、DeepCoin 对照 — A/D/E 原已 SYNCED；B/C 本轮补齐 → 全 SYNCED
+- 对照表：`docs/DEEPCOIN_BINANCE_PARITY.md`
+- 单测：`backend/tests/test_deepcoin_binance_parity.py`
+- 代码：DC `_bump_sl_after_tp_reconcile` 对齐 boost；DC/BN TV 对账 flat + DC 重启空仓 → `_clear_position_local_state`

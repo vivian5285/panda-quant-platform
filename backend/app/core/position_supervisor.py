@@ -646,20 +646,32 @@ class PositionSupervisor(
                         self._purge_defense_orders_on_flat(reason=f"reconcile_{action}")
                     except Exception:
                         pass
-                if hasattr(self, "_reset_adverse_radar"):
+                if hasattr(self, "_clear_position_local_state"):
+                    try:
+                        self._clear_position_local_state()
+                    except Exception:
+                        pass
+                elif hasattr(self, "_reset_adverse_radar"):
                     try:
                         self._reset_adverse_radar(keep_tv_sl=False)
                     except Exception:
                         pass
                 detail["flat_confirmed"] = True
                 detail["radar_reset"] = True
+                detail["local_state_cleared"] = True
         elif live_qty <= 0:
             if hasattr(self, "_purge_defense_orders_on_flat"):
                 try:
                     self._purge_defense_orders_on_flat(reason=f"reconcile_{action}")
                 except Exception:
                     pass
+            if hasattr(self, "_clear_position_local_state"):
+                try:
+                    self._clear_position_local_state()
+                except Exception:
+                    pass
             detail["flat_confirmed"] = True
+            detail["local_state_cleared"] = True
         self._log(action, f"TV对账 {action} leg={leg or '-'} live={live_qty}", detail)
         self._alert(
             "info",
@@ -1813,7 +1825,9 @@ class PositionSupervisor(
             list(self.tv_tps or []),
             peak_px=float(getattr(self, "best_price", 0) or 0),
         )
-        # 仅「真·全仓恢复」且现价未过 TP 才清记账（现价已过 TP1 时禁止清掉再补挂）
+        # 仅「真·误记账」才清 consumed：仓位仍满仓 + 现价未过 TP + 盘口上该档限价仍在。
+        # 禁止在「TP 5min 超时撤单后 live==anchor」时清空 — 那会立刻触发核武重挂，
+        # 与「超时移交·禁止重挂」铁律冲突，并在撤单滞后时叠出重复 TP。
         restore_tol = 1.0 if is_dc else 0.001
         if (
             tp1_slice > 0
@@ -1821,16 +1835,37 @@ class PositionSupervisor(
             and self.consumed_tp_levels
             and not past_early
         ):
-            logger.warning(
-                "[User %s] 仓位回到开仓锚，清除 TP 成交记账 %s",
+            open_pxs = (
+                self._open_tp_prices_on_book()
+                if hasattr(self, "_open_tp_prices_on_book")
+                else []
+            )
+            still_on_book = False
+            for lvl in list(self.consumed_tp_levels or []):
+                try:
+                    idx = int(lvl) - 1
+                    tp_px = float((self.tv_tps or [0, 0, 0])[idx] or 0) if idx >= 0 else 0.0
+                except (TypeError, ValueError, IndexError):
+                    tp_px = 0.0
+                if tp_px > 0 and any(tp_price_matches(tp_px, p) for p in open_pxs):
+                    still_on_book = True
+                    break
+            if still_on_book:
+                logger.warning(
+                    "[User %s] 仓位仍满且 TP 限价仍在盘口，清除误记账 consumed=%s",
+                    self.user_id, self.consumed_tp_levels,
+                )
+                self.consumed_tp_levels = []
+                if hasattr(self, "_tp_fill_dingtalk_levels"):
+                    self._tp_fill_dingtalk_levels = set()
+                if hasattr(self, "_save_state"):
+                    self._save_state()
+                return []
+            logger.info(
+                "[User %s] 满仓但 consumed=%s 且盘口无对应 TP → 保留记账"
+                "（多为超时移交，禁止清掉后重挂）",
                 self.user_id, self.consumed_tp_levels,
             )
-            self.consumed_tp_levels = []
-            if hasattr(self, "_tp_fill_dingtalk_levels"):
-                self._tp_fill_dingtalk_levels = set()
-            if hasattr(self, "_save_state"):
-                self._save_state()
-            return []
         inferred = infer_filled_tp_levels(
             live,
             curr_px,
@@ -3626,9 +3661,12 @@ class PositionSupervisor(
         return SENTINEL_POLL_NORMAL
 
     def _process_radar_trailing(self, real_amt: float, curr_px: float) -> bool:
-        # TP limit 5-min timeout → cancel + consume + never rehang (ATR refresh removed)
+        # TP limit timeout: only cancel if mark already reached the TP (stuck fill),
+        # never cancel healthy resting TPs still away from market — that caused a
+        # 5-min cancel→clear-consumed→nuclear-rehang loop and duplicate limits.
         try:
             import time as _t
+            from app.core.tp_slice_guard import tp_would_instant_fill
             from app.core.vps_radar_stages import TP_LIMIT_TIMEOUT_SEC
             now = _t.time()
             placed = dict(getattr(self, "_tp_placed_at", None) or {})
@@ -3641,6 +3679,20 @@ class PositionSupervisor(
                         self._tp_placed_at = placed
                         continue
                     try:
+                        idx = int(lvl) - 1
+                        tp_px = float((self.tv_tps or [0, 0, 0])[idx] or 0) if idx >= 0 else 0.0
+                    except (TypeError, ValueError, IndexError):
+                        tp_px = 0.0
+                    # Healthy resting TP (price not reached) — refresh stamp, keep on book
+                    if tp_px > 0 and float(curr_px or 0) > 0 and not tp_would_instant_fill(
+                        self.current_side, tp_px, float(curr_px or 0),
+                    ):
+                        placed[lvl] = now
+                        self._tp_placed_at = placed
+                        if hasattr(self, "_save_state"):
+                            self._save_state()
+                        continue
+                    try:
                         cancelled = 0
                         if hasattr(self, "_cancel_tp_orders_at_levels"):
                             cancelled = int(self._cancel_tp_orders_at_levels([int(lvl)]) or 0)
@@ -3649,17 +3701,18 @@ class PositionSupervisor(
                         self.consumed_tp_levels = sorted(consumed)
                         placed.pop(lvl, None)
                         self._tp_placed_at = placed
-                        if hasattr(self, "_remaining_qty_pct_from_consumed"):
-                            self.remaining_qty_pct = self._remaining_qty_pct_from_consumed(
-                                self.consumed_tp_levels
-                            )
                         if hasattr(self, "_save_state"):
                             self._save_state()
                         self._alert(
                             "warning", "TP_SKIP_REHANG", "TP挂单超时·移交呼吸止损",
-                            f"TP{lvl} 超过{int(TP_LIMIT_TIMEOUT_SEC)}s未成交"
+                            f"TP{lvl} 超过{int(TP_LIMIT_TIMEOUT_SEC)}s且现价已过"
                             f"（撤单{cancelled}）·禁止重挂",
-                            {"level": int(lvl), "cancelled": cancelled},
+                            {
+                                "level": int(lvl),
+                                "cancelled": cancelled,
+                                "timeout_not_fill": True,
+                                "mark_past_tp": True,
+                            },
                         )
                     except Exception:
                         pass

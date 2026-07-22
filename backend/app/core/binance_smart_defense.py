@@ -980,7 +980,12 @@ class BinanceSmartDefenseMixin:
         return on_book
 
     def _rebuild_tp_limit_orders(self, qty: float, entry: float, dynamic_sl=None) -> int:
-        """Place remaining TP tiers for live qty; skip consumed levels (e.g. TP1 already eaten)."""
+        """Place remaining TP tiers for live qty; skip consumed levels (e.g. TP1 already eaten).
+
+        CRITICAL: must not place a second limit at a price that already has a matching
+        reduce-only TP on the book (duplicate TP bug). Same existence check as
+        `_patch_missing_tp_levels`.
+        """
         close_side = "SHORT" if self.current_side == "LONG" else "LONG"
 
         live_qty = self._resolve_live_qty(qty)
@@ -998,9 +1003,16 @@ class BinanceSmartDefenseMixin:
         if hasattr(self, "_sync_consumed_tp_levels"):
             self._sync_consumed_tp_levels(live_qty, curr_px)
         self._cancel_tp_orders_for_consumed_levels()
+        # Dedupe first — never stack another layer on existing duplicates
+        if self._has_duplicate_tp_orders():
+            purged = self._purge_duplicate_tp_orders(live_qty)
+            if purged:
+                self._def_log(f"🧹 重建前去重撤销 {purged} 张多余止盈", logging.WARNING)
+                time.sleep(0.35)
         levels = self._expected_tp_levels(live_qty, curr_px)
         placed = 0
         consumed = self._consumed_tp_level_set()
+        price_tol = self._tp_price_tol()
         open_prices = (
             self._open_tp_prices_on_book()
             if hasattr(self, "_open_tp_prices_on_book")
@@ -1046,6 +1058,26 @@ class BinanceSmartDefenseMixin:
                     if hasattr(self, "_save_state"):
                         self._save_state()
                 continue
+            # Fresh book check — identical to _patch_missing_tp_levels
+            orders = self._collect_tp_limit_orders()
+            at_px = [o for o in orders if tp_price_matches(o["price"], px, price_tol)]
+            if len(at_px) == 1 and tp_qty_matches(q, at_px[0]["qty"], live_qty):
+                self._def_log(f"  ✓ TP{level} @ {px:.2f} 已存在 {at_px[0]['qty']}，跳过（防重复挂单）")
+                if hasattr(self, "_mark_tp_placed"):
+                    self._mark_tp_placed(level, order_id=at_px[0].get("orderId"))
+                continue
+            if len(at_px) > 1:
+                self._purge_duplicate_tp_orders(live_qty)
+                orders = self._collect_tp_limit_orders()
+                at_px = [o for o in orders if tp_price_matches(o["price"], px, price_tol)]
+                if len(at_px) == 1 and tp_qty_matches(q, at_px[0]["qty"], live_qty):
+                    continue
+            for o in at_px:
+                oid = o.get("orderId")
+                if oid:
+                    self.client.cancel_order(self.symbol, int(oid))
+                    time.sleep(0.25)
+            self._def_log(f"  + 重建挂 TP{level} @ {px:.2f} qty={q}")
             res = self.client.place_limit_order(
                 close_side, q, px, symbol=self.symbol, reduce_only=True
             )
@@ -1053,6 +1085,12 @@ class BinanceSmartDefenseMixin:
                 placed += 1
                 if hasattr(self, "_mark_tp_placed"):
                     self._mark_tp_placed(level, order_id=res.get("orderId"))
+                # Refresh open_prices so next tier sees the new order
+                open_prices = (
+                    self._open_tp_prices_on_book()
+                    if hasattr(self, "_open_tp_prices_on_book")
+                    else [float(o.get("price", 0) or 0) for o in self._collect_tp_limit_orders()]
+                )
             time.sleep(0.35)
 
         return placed

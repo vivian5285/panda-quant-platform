@@ -8,12 +8,15 @@
 
 > **文档同步（2026-07-22 · 唯一权威规格）**  
 > 凡与本文冲突的旧描述（含「妈妈版」权益×1 算仓、挂 TP123、原生 4H、旧雷达 0.5/0.3/2.0ATR）**一律作废**。  
-> 完整行为规格见 **[`docs/VPS_LIVE_CHECKLIST.md`](docs/VPS_LIVE_CHECKLIST.md)**（与代码同步）。
+> 完整行为规格见 **[`docs/VPS_LIVE_CHECKLIST.md`](docs/VPS_LIVE_CHECKLIST.md)**（与代码同步）。  
+> 币安执行层验收进度：[docs/BINANCE_EXECUTION_ACCEPTANCE.md](docs/BINANCE_EXECUTION_ACCEPTANCE.md)（B1–B3 仍待实盘自然触发）。
 
 ### 当前实盘一句话
 
 **VPS = 先平后开开仓 + RISK20 独立算仓 + 呼吸止损引擎（唯一止损写入方）+ 仅挂 TP1/TP2 + 90m 行情 ATR/ADX + 反转保护执行。**  
 除 TV 的 3 类信号与引擎自身止损触发外，不存在第三方平仓判断路径。
+
+**近期修复（已入库）：** 止损撤挂抖动；TP 5 分钟超时误撤 → `consumed` 清空 → 核武重挂导致 **TP 重复**（见 [docs/TP_DUPLICATE_INCIDENT_20260722.md](docs/TP_DUPLICATE_INCIDENT_20260722.md)）。
 
 | 项 | 现行值 |
 |----|--------|
@@ -236,6 +239,10 @@ panda-quant-platform/
 │   │   └── dingtalk_* / settlement / deposit_monitor …
 │   └── tests/
 ├── docs/VPS_LIVE_CHECKLIST.md               # ★ 行为规格摘要
+├── docs/BINANCE_EXECUTION_ACCEPTANCE.md     # 币安执行层验收跟踪（B1–B3）
+├── docs/TP_DUPLICATE_INCIDENT_20260722.md   # TP 重复挂单事故与修复
+├── docs/DEEPCOIN_BINANCE_PARITY.md          # DeepCoin ↔ Binance 语义对齐
+├── docs/KNOWN_ISSUES.md
 ├── frontend/  deploy/  docker-compose.yml  deploy.sh
 └── production_check.sh
 ```
@@ -300,10 +307,12 @@ TV隐含止损距离 = |开仓价 − TV.stop_loss|
 |------|------|
 | TV `stop_loss` | **只参与调整系数**；真实挂止损价仍是 VPS `initialStop` |
 | 调整时机 | **仅开仓算一次**；后续 tick 不重算 |
-| 缺 `initialStop`（ATR 异常）/ 缺 `TV.qty` / 缺 `TV.stop_loss` | **拒开仓**；ATR=0 告警暂停该 symbol |
+| 缺 `TV.qty` | **拒开仓** |
+| ATR 异常且可从 `TV.stop_loss` 反推 | **应急降级开仓**（见「VPS 行情引擎 · ATR 容错」），非静默拒单 |
+| ATR 异常且无可用 `TV.stop_loss` | **拒开仓** + `ATR_INVALID`/`ATR_ANOMALY` |
 | 杠杆 | 交易所统一设 **5×**（`FIXED_LEVERAGE`） |
 | 加仓路径 | 返回 `add_disabled` / qty=0 |
-| 开仓日志 | 记录 `adjust_coef`、三候选 qty、`binding` |
+| 开仓日志 | 记录 `adjust_coef`、三候选 qty、`binding`、`atr_source` |
 
 ### 四、开仓后挂单
 
@@ -475,7 +484,7 @@ currentStop = max/min(currentStop, extreme ∓ trail_dist)
 | 源 | 各所 `fetch_klines`；失败可回落 Binance 公共 |
 | 合成 | 每 3 根 **30m** → 1 根 **90m**；锚点 `bucket=(t_ms//5400000)*5400000`（UTC epoch，非进程启动） |
 | 指标 | 闭合 90m 后 Wilder **ATR(14)** / **ADX(14)** |
-| ATR 容错 | ≤0 或 < 近50根中位数×0.3 → **拒本次开仓**+钉钉（不永久暂停） |
+| ATR 容错 | **现行两级（见 `atr_emergency_fallback`）**：① VPS ATR 不可用/低于近50根中位数×0.3、或与 TV 隐含 ATR 连续偏离达阈值，**且**能从 `TV.stop_loss` 反推隐含 ATR → **本笔降级用 TV 隐含 ATR 开仓**（`atr_source=tv_emergency_fallback`）+ 钉钉 `ATR_FALLBACK`，随后**暂停该 symbol 自动开仓**直至人工恢复；② 无法反推（无可用 TV stop）→ **拒本次开仓**+钉钉 `ATR_INVALID`/`ATR_ANOMALY`（不永久暂停全局）。呼吸倍数不变，只换 ATR 数值来源。 |
 | 消费方 | 开仓算 `initialStop`、呼吸 tick、阶段二 trail |
 | Webhook | **禁止**用 `msg.atr` / `msg.adx` 驱动决策；可选 `bar_time` 防 OPEN 乱序 |
 
@@ -646,6 +655,9 @@ docker compose logs -f backend | grep -E "先平后开|BREATH|FORCE_ALIGN|CAP_AL
 
 ## 生产就绪与验收
 
+**状态跟踪（权威）：** [docs/BINANCE_EXECUTION_ACCEPTANCE.md](docs/BINANCE_EXECUTION_ACCEPTANCE.md)  
+判定口令：仅当 **B1+B2+B3** 均有真实交易所证据后，方可宣布「Gemini 币安执行层验收通过」。
+
 ### 上线前
 
 - [ ] Webhook Secret 与 TV JSON 一致；`curl` POST 四 action 行为正确  
@@ -654,6 +666,9 @@ docker compose logs -f backend | grep -E "先平后开|BREATH|FORCE_ALIGN|CAP_AL
 - [ ] ATR/ADX 与 TV 90m 图核对  
 - [ ] 先平后开：确认完成前不提前算仓开仓  
 - [ ] `docs/VPS_LIVE_CHECKLIST.md` 与 README 一致  
+- [ ] **B1** TP 重复修复后 30–60min 无核武重挂复发  
+- [ ] **B2** 真实 TP 成交 → 止损 qty 收缩  
+- [ ] **B3** 真实全平 → supervisor 状态清零  
 
 ### 自动化验收
 
@@ -663,7 +678,10 @@ py -m pytest tests/test_breathing_stop.py tests/test_tv_v6985_sizing.py \
   tests/test_vps_entry_routing.py tests/test_pine_tp_regime_ratios.py \
   tests/test_market_indicators.py tests/test_market_engine_wire.py \
   tests/test_close_alert_utils.py tests/test_position_cap_guard.py \
-  tests/test_vps_dev_checklist.py tests/test_v656_core.py -q
+  tests/test_vps_dev_checklist.py tests/test_v656_core.py \
+  tests/test_tp_rebuild_no_duplicate.py tests/test_tp_timeout_no_thrash.py \
+  tests/test_tp_fill_stop_qty_resize.py tests/test_tp3_phase2_flat_clear.py \
+  tests/test_user_symbol_isolation.py tests/test_deepcoin_binance_parity.py -q
 ```
 
 ---
@@ -684,7 +702,8 @@ py -m pytest tests/test_breathing_stop.py tests/test_tv_v6985_sizing.py \
 |--------|------|
 | `8623f0b` | RISK20 算仓；TP12；90m；止损带 qty + TP 后收缩；CAP detect-only；钉钉清理 |
 | `3b61a3e` | 开仓用 **VPS initialStop** 算仓；止损写入收拢呼吸引擎；旧 schema 暂停；checklist 同步 |
-| （本节） | TV.qty × **止损距调整系数**（TV 距/VPS 距），避免 1.5ATR 止损放大风险预算 |
+| `ba76f31` / `3524ac6` | 90m 锚点；ATR 两级兜底；止损撤挂抖动与空仓清零；钉钉送达；TV.qty×止损距系数 |
+| （本节） | **防 TP 重复**：超时勿误撤有效 TP；盘口已有匹配 TP 则跳过 rebuild；DeepCoin 对齐；验收/事故文档 |
 
 ### 历史说明（勿再当现行）
 

@@ -231,8 +231,9 @@ py -m pytest tests/test_breathing_stop.py tests/test_tv_v6985_sizing.py \
 
 | 项 | 状态 |
 |----|------|
-| ATR≤0 / 缺失 | 拒开仓 + 钉钉 `ATR_INVALID`（critical）；**不**永久暂停 |
-| 当前 ATR < 近 50 根 ATR 中位数 × 0.3 | 拒开仓 + 钉钉 `ATR_ANOMALY`；后续信号仍可再试 |
+| ATR≤0 / 缺失 / < 中位数×0.3 | **优先**走「ATR 应急降级」：有 TV stop → 本笔用 TV 隐含 ATR 开仓 + `ATR_FALLBACK` + 随后暂停该 symbol；**无** TV stop 可反推 → 拒开仓 + `ATR_INVALID`/`ATR_ANOMALY`（不永久暂停全局） |
+| 与 README「VPS 行情引擎 · ATR 容错」 | 已对齐为上述两级策略（勿再写「一律拒开仓」） |
+| 实现 | `atr_emergency_fallback.py` → 失败则 `open_atr_guard.check_open_atr_or_reject` |
 | 配置 | `ATR_MEDIAN_LOOKBACK=50`、`ATR_MEDIAN_FLOOR_RATIO=0.30`；K 线拉取 ≥250 根 30m |
 | 实现 | `evaluate_atr_sanity` + `open_atr_guard`（全交易所共用） |
 

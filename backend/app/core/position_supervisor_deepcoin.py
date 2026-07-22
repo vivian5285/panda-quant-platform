@@ -1059,7 +1059,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             list(self.tv_tps or []),
             peak_px=float(getattr(self, "best_price", 0) or 0),
         )
-        # 手数噪声带（1 张）；现价已过 TP 时禁止清记账再补挂 TP1
+        # 手数噪声带（1 张）；仅当盘口仍挂着对应 TP 限价时才清误记账。
+        # 超时撤单后 live==anchor 且盘口已空 → 必须保留 consumed，禁止核武重挂循环。
         restore_tol = 1.0
         if (
             tp1_slice > 0
@@ -1067,13 +1068,29 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             and self.consumed_tp_levels
             and not past_early
         ):
-            logger.warning("仓位回到开仓锚，清除 TP 成交记账 %s", self.consumed_tp_levels)
-            self.consumed_tp_levels = []
-            if hasattr(self, "_tp_fill_dingtalk_levels"):
-                self._tp_fill_dingtalk_levels = set()
-            if hasattr(self, "_save_state"):
-                self._save_state()
-            return []
+            open_prices = [float(o.get("price", 0)) for o in self._collect_tp_limit_orders()]
+            still_on_book = False
+            for lvl in list(self.consumed_tp_levels or []):
+                try:
+                    idx = int(lvl) - 1
+                    tp_px = float((self.tv_tps or [0, 0, 0])[idx] or 0) if idx >= 0 else 0.0
+                except (TypeError, ValueError, IndexError):
+                    tp_px = 0.0
+                if tp_px > 0 and any(abs(float(p) - tp_px) <= 0.05 for p in open_prices):
+                    still_on_book = True
+                    break
+            if still_on_book:
+                logger.warning("仓位仍满且 TP 限价仍在盘口，清除误记账 %s", self.consumed_tp_levels)
+                self.consumed_tp_levels = []
+                if hasattr(self, "_tp_fill_dingtalk_levels"):
+                    self._tp_fill_dingtalk_levels = set()
+                if hasattr(self, "_save_state"):
+                    self._save_state()
+                return []
+            logger.info(
+                "满仓但 consumed=%s 且盘口无对应 TP → 保留记账（超时移交，禁止重挂）",
+                self.consumed_tp_levels,
+            )
         open_prices = [float(o.get("price", 0)) for o in self._collect_tp_limit_orders()]
         inferred = infer_filled_tp_levels(
             live,
@@ -2577,12 +2594,18 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self._purge_defense_orders_on_flat(reason=f"reconcile_{action}")
                 except Exception:
                     pass
-            if hasattr(self, "_reset_adverse_radar"):
+            if hasattr(self, "_clear_position_local_state"):
+                try:
+                    self._clear_position_local_state()
+                except Exception:
+                    pass
+            elif hasattr(self, "_reset_adverse_radar"):
                 try:
                     self._reset_adverse_radar(keep_tv_sl=False)
                 except Exception:
                     pass
             detail["flat_confirmed"] = True
+            detail["local_state_cleared"] = True
         self._log(action, f"TV对账 {action} leg={leg or '-'} live={live_qty}", detail)
         self._alert(
             "info",
@@ -2594,7 +2617,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return {"status": "ok", "action": action, "detail": detail}
 
     def _bump_sl_after_tp_reconcile(self, leg: str) -> dict:
-        """Soft-stub: update remaining_qty_pct only — do NOT bump SL price."""
+        """After TP fill: update remaining_qty_pct and resize stop qty (no price bump).
+
+        Aligned with PositionSupervisor — must call _boost_radar_after_tp_fill so
+        DeepCoin TV-reconcile path also cancel/replace stop qty (70%/40%).
+        """
         consumed = list(getattr(self, "consumed_tp_levels", None) or [])
         try:
             lvl = int(leg)
@@ -2613,14 +2640,24 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self.remaining_qty_pct = 0.7
         else:
             self.remaining_qty_pct = 1.0
-        if hasattr(self, "_save_state"):
+        change = {1: "tp1_filled", 2: "tp2_filled", 3: "tp3_filled"}.get(lvl)
+        live_qty = float(getattr(self, "watched_qty", 0) or 0)
+        if change and hasattr(self, "_boost_radar_after_tp_fill"):
+            try:
+                self._boost_radar_after_tp_fill(
+                    change, float(getattr(self, "tv_price", 0) or 0), live_qty,
+                )
+            except Exception:
+                pass
+        elif hasattr(self, "_save_state"):
             self._save_state()
         return {
             "ok": True,
             "sl_bumped": False,
             "remaining_qty_pct": float(self.remaining_qty_pct),
             "leg": leg,
-            "note": "breathing stop: TP fill does not bump SL",
+            "stop_resized": True,
+            "note": "breathing stop: TP fill resizes stop qty only",
         }
 
     def _handle_manual_flat_detected(self, reason, *, skip_eager_purge=False):
@@ -2629,11 +2666,20 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if not skip_eager_purge:
             self._purge_defense_orders_on_flat("manual_flat", notify=True)
         self.monitoring = False
-        self.watched_qty = 0
-        self.initial_qty = 0
-        self.base_qty = 0
-        self.add_count = 0
-        self.current_side = None
+        if hasattr(self, "_clear_position_local_state"):
+            self._clear_position_local_state()
+        else:
+            self.watched_qty = 0
+            self.watched_entry = 0.0
+            self.initial_qty = 0
+            self.base_qty = 0
+            self.add_count = 0
+            self.current_side = None
+            self.best_price = 0.0
+            self.current_sl = 0.0
+            self.initial_stop = 0.0
+            self.initial_atr = 0.0
+            self.breakeven_phase = False
         self._save_state()
         self._report_flat_close(reason or "仓位归零 (人工全平 / 止盈吃满)")
 
@@ -3340,8 +3386,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return SENTINEL_POLL_NORMAL
 
     def _process_radar_trailing(self, real_amt, curr_px):
-        # TP limit 5-min timeout only (ATR refresh removed); breathing tick handles stop
+        # Same as Binance: only timeout-cancel when mark already past TP; refresh stamp otherwise.
         try:
+            from app.core.tp_slice_guard import tp_would_instant_fill
             from app.core.vps_radar_stages import TP_LIMIT_TIMEOUT_SEC
             now = time.time()
             placed = dict(getattr(self, "_tp_placed_at", None) or {})
@@ -3353,6 +3400,18 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self._tp_placed_at = placed
                     continue
                 try:
+                    idx = int(lvl) - 1
+                    tp_px = float((self.tv_tps or [0, 0, 0])[idx] or 0) if idx >= 0 else 0.0
+                except (TypeError, ValueError, IndexError):
+                    tp_px = 0.0
+                if tp_px > 0 and float(curr_px or 0) > 0 and not tp_would_instant_fill(
+                    self.current_side, tp_px, float(curr_px or 0),
+                ):
+                    placed[lvl] = now
+                    self._tp_placed_at = placed
+                    self._save_state()
+                    continue
+                try:
                     cancelled = 0
                     if hasattr(self, "_cancel_tp_orders_at_levels"):
                         cancelled = int(self._cancel_tp_orders_at_levels([int(lvl)]) or 0)
@@ -3361,16 +3420,18 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.consumed_tp_levels = sorted(consumed)
                     placed.pop(lvl, None)
                     self._tp_placed_at = placed
-                    if hasattr(self, "_remaining_qty_pct_from_consumed"):
-                        self.remaining_qty_pct = self._remaining_qty_pct_from_consumed(
-                            self.consumed_tp_levels
-                        )
                     self._save_state()
                     self._alert(
                         "warning", "TP_SKIP_REHANG", "TP挂单超时·移交呼吸止损",
-                        f"TP{lvl} 超过{int(TP_LIMIT_TIMEOUT_SEC)}s未成交"
+                        f"TP{lvl} 超过{int(TP_LIMIT_TIMEOUT_SEC)}s且现价已过"
                         f"（撤单{cancelled}）·禁止重挂",
-                        {"level": int(lvl), "cancelled": cancelled, "exchange": "deepcoin"},
+                        {
+                            "level": int(lvl),
+                            "cancelled": cancelled,
+                            "exchange": "deepcoin",
+                            "timeout_not_fill": True,
+                            "mark_past_tp": True,
+                        },
                     )
                 except Exception:
                     pass
@@ -4088,11 +4149,20 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 self.client.cancel_all_open_orders(self.symbol)
                 logger.info("🔄 [系统重启点火] 盘口干净无持仓，账本复位为空仓待命。")
                 self.monitoring = False
-                self.watched_qty = 0
-                self.initial_qty = 0
-                self.base_qty = 0
-                self.add_count = 0
-                self.current_side = None
+                if hasattr(self, "_clear_position_local_state"):
+                    self._clear_position_local_state()
+                else:
+                    self.watched_qty = 0
+                    self.watched_entry = 0.0
+                    self.initial_qty = 0
+                    self.base_qty = 0
+                    self.add_count = 0
+                    self.current_side = None
+                    self.best_price = 0.0
+                    self.current_sl = 0.0
+                    self.initial_stop = 0.0
+                    self.initial_atr = 0.0
+                    self.breakeven_phase = False
                 self._save_state()
         except Exception as e:
             logger.error(f"❌ 闪电接管异常: {e}")
