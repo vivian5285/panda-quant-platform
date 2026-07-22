@@ -154,3 +154,77 @@ def test_recover_tick_never_retreats_long():
         adx_val=20,
     )
     assert out["current_sl"] >= raised - 1e-9
+
+
+def test_phase1_to_phase2_and_adx_trail_interpolation():
+    """Scenario-3 supplement: simulated price path into phase2 + ADX trail distance.
+
+    Not a live fill — verifies the same calculate_stop_long math used in production.
+    """
+    entry = 1920.74
+    atr = 13.8737
+    initial_stop = entry - INITIAL_SL_ATR * atr
+    current_stop = initial_stop
+    highest = entry
+    phase = False
+
+    # Phase1: exactly 1 step of +0.75 ATR favorable
+    p1 = entry + 0.75 * atr
+    current_stop, highest, phase, meta = calculate_stop_long(
+        p1, entry, atr, initial_stop, current_stop, highest, phase, 20,
+    )
+    assert phase is False
+    assert meta["event"] == "step"
+    expected_step = initial_stop + 1 * 0.4 * atr
+    assert abs(current_stop - expected_step) < 1e-6
+
+    # Enter phase2 at +3.0 ATR (also past TP2 → TP2 floor may raise stop before trail)
+    p2 = entry + BREAKEVEN_TRIGGER_ATR * atr
+    current_stop, highest, phase, meta = calculate_stop_long(
+        p2, entry, atr, initial_stop, current_stop, highest, phase, 25,
+    )
+    assert phase is True
+    assert meta["event"] == "phase2_enter"
+    dist_mid = trail_distance_by_adx(25)
+    assert abs(dist_mid - 1.85) < 1e-9
+    tp2_floor = entry + 1.5 * atr
+    trailed = highest - dist_mid * atr
+    expected_enter = max(tp2_floor, trailed)
+    assert abs(current_stop - expected_enter) < 1e-6
+
+    # Stronger ADX → wider trail; stop must not retreat when price dips within trail
+    peak = p2 + atr
+    current_stop, highest, phase, meta = calculate_stop_long(
+        peak, entry, atr, initial_stop, current_stop, highest, phase, 35,
+    )
+    assert phase is True
+    dist_strong = trail_distance_by_adx(35)
+    assert dist_strong == 2.5
+    raised = current_stop
+    # Pullback that should not retreat stop
+    pull = peak - 0.5 * atr
+    current_stop, highest, phase, meta = calculate_stop_long(
+        pull, entry, atr, initial_stop, current_stop, highest, phase, 35,
+    )
+    assert current_stop >= raised - 1e-9
+    assert highest == peak
+
+
+def test_phase2_short_symmetric_sim():
+    entry = 1920.74
+    atr = 13.8737
+    initial_stop = entry + INITIAL_SL_ATR * atr
+    current_stop = initial_stop
+    lowest = entry
+    phase = False
+    p2 = entry - BREAKEVEN_TRIGGER_ATR * atr
+    current_stop, lowest, phase, meta = calculate_stop_short(
+        p2, entry, atr, initial_stop, current_stop, lowest, phase, 25,
+    )
+    assert phase is True
+    assert meta["event"] == "phase2_enter"
+    dist = trail_distance_by_adx(25)
+    tp2_floor = entry - 1.5 * atr
+    trailed = lowest + dist * atr
+    expected_enter = min(tp2_floor, trailed)
+    assert abs(current_stop - expected_enter) < 1e-6
