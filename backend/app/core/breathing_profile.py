@@ -1,6 +1,7 @@
-"""Per-symbol breathing profiles — shared engine, config-layer differences.
+"""Per-symbol breathing profiles — continuous trailDistanceMultiplier (final spec).
 
-ETH and XAU use the same execution path; only multipliers / buffers / coef ladders differ.
+ETH/XAU share ratioFloor/ratioCeiling; only minMult/maxMult differ.
+XAU tightness is entirely in min/max — no extra trail_tighten layer.
 """
 
 from __future__ import annotations
@@ -14,13 +15,18 @@ from app.core.symbol_registry import (
     normalize_canonical_symbol,
 )
 
+# Shared continuous-interpolation bounds (both symbols)
+RATIO_FLOOR = 0.6
+RATIO_CEILING = 2.2
+# Cold-start assumption before any live ATR sample: market ≈ open ATR
+COLD_START_RATIO = 1.0
+
 
 @dataclass(frozen=True)
 class BreathingProfile:
     symbol_tag: str  # ETH | XAU
     initial_sl_atr: float = 1.5
     stop_order_buffer: float = 0.3
-    # Early lock to entry±1 tick when float ≥ this × ATR (0 = disabled)
     early_breakeven_atr: float = 0.5
     step_trigger_atr: float = 0.75
     step_advance_atr: float = 0.4
@@ -30,13 +36,11 @@ class BreathingProfile:
     tp2_atr: float = 2.5
     tp2_floor_atr: float = 1.5
     tp3_atr: float = 4.0
-    # Phase-2 trail = initial_atr × coef × trail_tighten
-    trail_tighten: float = 1.0
-    coef_min: float = 0.7
-    coef_max: float = 1.5
-    # Ladder breakpoints for get_breathing_coefficient(ratio)
-    # (upper_exclusive, value_or_None for linear segment)
-    # Linear segment: (lo_ratio, hi_ratio, lo_coef, hi_coef)
+    # Continuous trailDistanceMultiplier range (= breathing_coefficient)
+    coef_min: float = 1.2  # minMult
+    coef_max: float = 2.5  # maxMult
+    ratio_floor: float = RATIO_FLOOR
+    ratio_ceiling: float = RATIO_CEILING
 
 
 ETH_PROFILE = BreathingProfile(
@@ -47,9 +51,8 @@ ETH_PROFILE = BreathingProfile(
     step_trigger_atr=0.75,
     step_advance_atr=0.4,
     phase2_trigger_atr=3.0,
-    trail_tighten=1.0,
-    coef_min=0.7,
-    coef_max=1.5,
+    coef_min=1.2,
+    coef_max=2.5,
 )
 
 XAU_PROFILE = BreathingProfile(
@@ -60,9 +63,8 @@ XAU_PROFILE = BreathingProfile(
     step_trigger_atr=0.4,
     step_advance_atr=0.35,
     phase2_trigger_atr=3.0,
-    trail_tighten=0.8,
-    coef_min=0.5,
-    coef_max=1.3,
+    coef_min=0.8,
+    coef_max=1.8,
 )
 
 _PROFILES: dict[str, BreathingProfile] = {
@@ -80,48 +82,63 @@ def symbol_tag(symbol: str | None = None) -> str:
     return profile_for_symbol(symbol).symbol_tag
 
 
+def trail_distance_multiplier(ratio: float, profile: BreathingProfile | None = None) -> float:
+    """Continuous linear interpolation — no discrete ladder jumps.
+
+    ratio = smoothed(realtime_atr / initial_atr)
+    """
+    p = profile or ETH_PROFILE
+    try:
+        r = float(ratio)
+    except (TypeError, ValueError):
+        r = COLD_START_RATIO
+    if r != r:  # NaN
+        r = COLD_START_RATIO
+    lo, hi = float(p.ratio_floor), float(p.ratio_ceiling)
+    mn, mx = float(p.coef_min), float(p.coef_max)
+    if r <= lo:
+        return mn
+    if r >= hi:
+        return mx
+    span = hi - lo
+    if span <= 0:
+        return mn
+    return mn + (mx - mn) * (r - lo) / span
+
+
+def cold_start_multiplier(profile: BreathingProfile | None = None) -> float:
+    """0 samples → ratio=1.0 into the continuous formula."""
+    return trail_distance_multiplier(COLD_START_RATIO, profile)
+
+
 def get_breathing_coefficient_for_profile(
     smooth_ratio: float,
     profile: BreathingProfile | None = None,
 ) -> float:
-    """Map smoothed (atr_1h / initial_atr) → breathing coefficient for this profile."""
+    """Alias: breathing_coefficient == trailDistanceMultiplier(smoothedRatio)."""
     p = profile or ETH_PROFILE
-    r = float(smooth_ratio or 0)
+    if smooth_ratio is None:
+        return cold_start_multiplier(p)
+    try:
+        r = float(smooth_ratio)
+    except (TypeError, ValueError):
+        return cold_start_multiplier(p)
+    # Non-positive / missing treated as cold-start (conservative mid)
     if r <= 0:
-        return 1.0 if p.symbol_tag == "ETH" else 0.9
-
-    if p.symbol_tag == "XAU":
-        # 0.5 / 0.7 / 0.9 / 1.0~1.2 / 1.3
-        if r < 0.7:
-            return 0.5
-        if r < 1.0:
-            return 0.7
-        if r < 1.4:
-            return 0.9
-        if r < 2.0:
-            return 1.0 + (r - 1.4) / 0.6 * 0.2
-        return 1.3
-
-    # ETH: 0.7 / 0.85 / 1.0 / 1.2~1.4 / 1.5
-    if r < 0.7:
-        return 0.7
-    if r < 1.0:
-        return 0.85
-    if r < 1.4:
-        return 1.0
-    if r < 2.0:
-        return 1.2 + (r - 1.4) / 0.6 * 0.2
-    return 1.5
+        return cold_start_multiplier(p)
+    return trail_distance_multiplier(r, p)
 
 
 def resolve_coef(coef: float | None, profile: BreathingProfile | None = None) -> float:
     p = profile or ETH_PROFILE
+    if coef is None:
+        return cold_start_multiplier(p)
     try:
-        c = float(coef if coef is not None else 1.0)
+        c = float(coef)
     except (TypeError, ValueError):
-        c = 1.0
+        return cold_start_multiplier(p)
     if c <= 0:
-        c = 1.0
+        return cold_start_multiplier(p)
     return max(p.coef_min, min(p.coef_max, c))
 
 
@@ -134,7 +151,9 @@ def profile_as_dict(profile: BreathingProfile) -> dict[str, Any]:
         "step_trigger_atr": profile.step_trigger_atr,
         "step_advance_atr": profile.step_advance_atr,
         "phase2_trigger_atr": profile.phase2_trigger_atr,
-        "trail_tighten": profile.trail_tighten,
         "coef_min": profile.coef_min,
         "coef_max": profile.coef_max,
+        "ratio_floor": profile.ratio_floor,
+        "ratio_ceiling": profile.ratio_ceiling,
+        "trail_tighten": 1.0,  # removed — always 1.0 (tightness in min/max)
     }

@@ -17,6 +17,7 @@ from app.core.breathing_stop import (
     resolve_breathing_coef,
     stop_hit,
 )
+from app.core.initial_atr_lock import InitialAtrDescriptor
 from app.core.market_engine import (
     atr_mismatch_ratio,
     ensure_fresh,
@@ -249,9 +250,12 @@ class AdverseRadarMixin:
     """
     Unified breathing-stop defense (all exchanges / ETH+XAU):
     - Open: initial SL = entry ± 1.5×ATR (TV stop_loss ignored)
-    - Phase 1: ATR step ladder × breath coef + early BE + TP floors (per-symbol profile)
-    - Phase 2: trail = initial_atr × coef × trail_tighten after +3.0×ATR float
+    - Phase 1: ATR step ladder on locked initial_atr + early BE + TP floors
+    - Phase 2: trail = initial_atr × continuous trailDistanceMultiplier
     """
+
+    # Spec §五: initial_atr locked after open; only flat→0 clears
+    initial_atr = InitialAtrDescriptor()
 
     adverse_sl_armed: bool
     adverse_sl_prices: list[float]
@@ -307,14 +311,17 @@ class AdverseRadarMixin:
             self._tv_hard_sl_price = 0.0
         if not hasattr(self, "_vps_hard_sl_meta"):
             self._vps_hard_sl_meta = {}
-        if not hasattr(self, "initial_atr"):
-            self.initial_atr = 0.0
+        if not hasattr(self, "_initial_atr_value"):
+            self._initial_atr_value = 0.0
+            self._initial_atr_locked = False
         if not hasattr(self, "initial_stop"):
             self.initial_stop = 0.0
         if not hasattr(self, "breakeven_phase"):
             self.breakeven_phase = False
         if not hasattr(self, "breathing_coefficient"):
-            self.breathing_coefficient = 1.0
+            from app.core.breathing_profile import cold_start_multiplier, profile_for_symbol
+            can = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
+            self.breathing_coefficient = cold_start_multiplier(profile_for_symbol(can))
         if not hasattr(self, "breath_ratio_history"):
             self.breath_ratio_history = []
         if not hasattr(self, "atr_1h"):
@@ -1635,11 +1642,15 @@ class AdverseRadarMixin:
             self._tv_hard_sl_price = new_sl
 
         if stop_hit(side, px, float(getattr(self, "current_sl", 0) or 0)):
-            phase_label = (
-                "止损平仓(阶段二/自适应追踪)"
-                if bool(getattr(self, "breakeven_phase", False)) or was_phase
-                else "止损平仓(阶段一)"
-            )
+            consumed = list(getattr(self, "consumed_tp_levels", None) or [])
+            rem = float(getattr(self, "remaining_qty_pct", 1.0) or 1.0)
+            after_tp = bool(consumed) or rem < 0.999
+            if bool(getattr(self, "breakeven_phase", False)) or was_phase:
+                phase_label = "追踪止损平仓（阶段二）"
+            elif after_tp:
+                phase_label = "保本止损平仓（阶段一·TP后）"
+            else:
+                phase_label = "初始止损平仓（阶段一）"
             if hasattr(self, "_close_all"):
                 try:
                     self._close_all(

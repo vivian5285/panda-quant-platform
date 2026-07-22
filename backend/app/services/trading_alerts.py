@@ -410,8 +410,8 @@ def format_radar_arm_detail_cn(detail: dict, exchange: str | None = None) -> str
 
     if event == "phase2_enter":
         return (
-            f"阶段切换：止损已进入阶段二（趋势追踪），"
-            f"当前ADX={adx:.1f}，追踪距离={float(trail or 0):.2f}×ATR"
+            f"阶段切换：止损已进入阶段二（自适应追踪），"
+            f"追踪距离={float(trail or 0):.2f}×initial_atr"
         )
     profit_txt = f"{float(profit):+.2f}" if profit is not None else "—"
     return (
@@ -437,10 +437,17 @@ def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
     pnl_txt = f"{float(pnl):+.2f}" if pnl is not None else "—"
 
     if "BREATH" in action or detail.get("close_trigger") == "breathing_stop_hit":
-        phase = "二" if phase2 else "一"
+        if phase2 or "阶段二" in str(reason):
+            kind = "追踪止损（阶段二）"
+        elif "TP后" in str(reason) or "保本" in str(reason):
+            kind = "保本止损（阶段一·TP后）"
+        elif "初始" in str(reason):
+            kind = "初始止损（阶段一）"
+        else:
+            kind = "呼吸止损（阶段一）"
         return (
-            f"止损触发：价格 {float(price):.2f} 触及止损 {float(stop):.2f}，"
-            f"阶段 {phase}，盈亏 {pnl_txt}%"
+            f"{kind}触发：价格 {float(price):.2f} 触及止损 {float(stop):.2f}，"
+            f"盈亏 {pnl_txt}%"
         )
     # Only explicit TV reverse-protect actions — never promote arbitrary reason text
     if "QUICK" in action or "RSI" in action:
@@ -499,22 +506,20 @@ def format_cap_align_detail_cn(detail: dict, exchange: str | None = None) -> str
     d = dict(detail or {})
     side = str(d.get("side") or "").upper()
     side_cn = "做多" if side == "LONG" else ("做空" if side == "SHORT" else (side or "—"))
-    regime = d.get("regime")
-    regime_txt = f"R{int(regime)}" if regime is not None else "—"
     live = d.get("live_qty")
     target = d.get("target_qty") or d.get("max_qty") or d.get("new_qty")
     trimmed = d.get("trimmed") or d.get("trim_qty")
     margin_usd = d.get("margin_usd")
     trigger = d.get("trigger") or ""
     parts = [
-        f"叠仓对齐 · {side_cn} · {regime_txt}",
+        f"叠仓对齐 · {side_cn}",
     ]
     if live is not None and target is not None:
         parts.append(f"实盘 {float(live):.4g} → 目标 {float(target):.4g}")
     if trimmed is not None:
         parts.append(f"削减 {float(trimmed):.4g}")
     if margin_usd is not None:
-        parts.append(f"档位保证金 {float(margin_usd):.2f} USDT")
+        parts.append(f"保证金 {float(margin_usd):.2f} USDT")
     if trigger:
         parts.append(f"触发：{trigger}")
     return "，".join(parts)
@@ -587,7 +592,6 @@ def format_admin_detail_lines(
     lines = [_line("交易所", theme["label"]), _line("合约", theme["symbol"])]
     for key, label in (
         ("side", "方向"),
-        ("regime", "档位"),
         ("qty", "数量"),
         ("live_qty", "实盘数量"),
         ("entry", "开仓价"),
@@ -599,8 +603,6 @@ def format_admin_detail_lines(
             val = detail[key]
             if key == "side":
                 val = {"LONG": "做多", "SHORT": "做空"}.get(str(val).upper(), val)
-            elif key == "regime":
-                val = f"R{val}"
             lines.append(_line(label, str(val)))
     return "\n".join(lines) if len(lines) > 1 else ""
 
@@ -626,11 +628,17 @@ def format_trading_alert_body(
     resolved_title = title
     if alert_type == "CLOSE_BREATH_STOP":
         phase2 = bool(d.get("breakeven_phase") or d.get("breakeven_active"))
-        if "阶段二" in str(message or "") or "趋势追踪" in str(message or ""):
+        msg = str(message or "")
+        if "阶段二" in msg or "追踪" in msg:
             phase2 = True
-        resolved_title = (
-            "止损平仓(阶段二/趋势追踪)" if phase2 else "止损平仓(阶段一)"
-        )
+        if phase2:
+            resolved_title = "追踪止损平仓（阶段二）"
+        elif "TP后" in msg or "保本" in msg:
+            resolved_title = "保本止损平仓（阶段一·TP后）"
+        elif "初始" in msg:
+            resolved_title = "初始止损平仓（阶段一）"
+        else:
+            resolved_title = "呼吸止损平仓（阶段一）"
         type_label = resolved_title
     detail_block = format_admin_detail_lines(alert_type, detail, exchange=ex)
 

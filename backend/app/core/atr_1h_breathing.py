@@ -142,12 +142,21 @@ def update_breathing_coefficient(
     ratio_history: list[float] | None = None,
     symbol: str | None = None,
 ) -> tuple[float, list[float], float]:
-    """Return (coef, updated_ratios, smooth_ratio)."""
+    """Return (coef, updated_ratios, smooth_ratio).
+
+    Smooth the raw ratio first, then apply continuous trailDistanceMultiplier once.
+    Empty history → cold-start ratio=1.0 (not a discrete ladder bucket).
+    """
+    from app.core.breathing_profile import cold_start_multiplier, profile_for_symbol
+
     init = float(initial_atr or 0)
     cur = float(atr_1h or 0)
     ratios = list(ratio_history or [])
+    p = profile_for_symbol(symbol)
     if init <= 0 or cur <= 0:
-        return 1.0, ratios[-RATIO_SMOOTH_N:], 1.0
+        smooth = 1.0
+        coef = cold_start_multiplier(p)
+        return coef, ratios[-RATIO_SMOOTH_N:], smooth
 
     ratio = cur / init
     ratios.append(ratio)
@@ -167,7 +176,9 @@ def refresh_supervisor_breath(
 
     Ratio samples append only when ATR is freshly fetched (≤ every 5 min) or force.
     Soft ticks reuse the last smoothed coefficient without expanding the SMA window.
+    0 samples → cold-start continuous formula at ratio=1.0.
     """
+    from app.core.breathing_profile import cold_start_multiplier, profile_for_symbol
     from app.core.breathing_stop import get_breathing_coefficient as _coef_fn
 
     init = float(getattr(supervisor, "initial_atr", 0) or 0)
@@ -182,18 +193,24 @@ def refresh_supervisor_breath(
         client=client, exchange=ex, symbol=sym, force=force,
     )
     hist = list(getattr(supervisor, "breath_ratio_history", None) or [])
+    p = profile_for_symbol(sym)
     if refreshed or force or not hist:
-        coef, hist, smooth = update_breathing_coefficient(
-            initial_atr=init, atr_1h=atr_1h, ratio_history=hist, symbol=sym,
-        )
+        if init > 0 and atr_1h > 0:
+            coef, hist, smooth = update_breathing_coefficient(
+                initial_atr=init, atr_1h=atr_1h, ratio_history=hist, symbol=sym,
+            )
+        else:
+            smooth = 1.0
+            coef = cold_start_multiplier(p)
     else:
         if init > 0 and atr_1h > 0 and hist:
             smooth = sum(hist) / len(hist)
+            coef = _coef_fn(smooth, sym)
         else:
             smooth = float(getattr(supervisor, "breath_smooth_ratio", 1.0) or 1.0)
-        coef = _coef_fn(smooth, sym) if hist else float(
-            getattr(supervisor, "breathing_coefficient", 1.0) or 1.0
-        )
+            coef = cold_start_multiplier(p) if not hist else float(
+                getattr(supervisor, "breathing_coefficient", 0) or cold_start_multiplier(p)
+            )
     supervisor.atr_1h = atr_1h
     supervisor.breath_ratio_history = hist
     supervisor.breathing_coefficient = coef

@@ -161,11 +161,11 @@ class _DingtalkBridge:
         title = (
             f"{theme['accent']} GEMINI开仓 · "
             f"{theme.get('symbol_label') or getattr(self._sup, 'canonical_symbol', '')} "
-            f"· {theme['label']} 档位{getattr(self._sup, 'regime', '')} · {theme['leverage']}×"
+            f"· {theme['label']} · {theme['leverage']}×"
         )
         message = (
             f"{getattr(self._sup, 'canonical_symbol', '')} {side} {qty} 张 @ {entry} | "
-            f"TV杠杆{theme['leverage']}× | {verify_note}"
+            f"杠杆{theme['leverage']}× | initial_atr {getattr(self._sup, 'initial_atr', 0)} | {verify_note}"
         ).strip(" |")
         self._sup._alert("info", "OPEN", title, message, detail)
         if hasattr(self._sup, "_reconcile_live_vs_book"):

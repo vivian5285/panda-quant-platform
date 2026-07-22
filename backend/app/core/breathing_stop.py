@@ -1,8 +1,8 @@
 """Breathing stop — shared engine; ETH/XAU differ only via breathing_profile.
 
-Phase 1: early breakeven + ATR step ladder × breathing_coefficient
-Phase 2: trail = initial_atr × coef × trail_tighten
-initial_atr from TV webhook atr; coef from Binance 1h ATR ratio.
+Phase 1: early BE + ATR step ladder × locked initial_atr (no breath coef)
+Phase 2: trail = initial_atr × trailDistanceMultiplier(smoothedRatio)
+initial_atr from TV webhook atr (locked); coef from continuous interpolation.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from typing import Any
 
 from app.core.breathing_profile import (
     ETH_PROFILE,
+    cold_start_multiplier,
     get_breathing_coefficient_for_profile,
     profile_for_symbol,
     resolve_coef,
@@ -29,13 +30,13 @@ TP2_ATR = ETH_PROFILE.tp2_atr
 TP2_FLOOR_ATR = ETH_PROFILE.tp2_floor_atr
 TP3_ATR = ETH_PROFILE.tp3_atr
 DEFAULT_ATR = 30.0
-DEFAULT_BREATHING_COEF = 1.0
+DEFAULT_BREATHING_COEF = cold_start_multiplier(ETH_PROFILE)
 STOP_ORDER_BUFFER_USDT = ETH_PROFILE.stop_order_buffer
 
 ADX_WEAK_BOUND = 15.0
 ADX_STRONG_BOUND = 35.0
-TRAIL_DIST_WEAK_ATR = 1.2
-TRAIL_DIST_STRONG_ATR = 2.5
+TRAIL_DIST_WEAK_ATR = ETH_PROFILE.coef_min
+TRAIL_DIST_STRONG_ATR = ETH_PROFILE.coef_max
 DEFAULT_ADX = 25.0
 
 
@@ -50,6 +51,7 @@ def resolve_breathing_coef(coef: float | None, symbol: str | None = None) -> flo
 
 
 def trail_distance_by_adx(adx_val: float) -> float:
+    """Legacy ADX trail helper — maps to ETH continuous ends (kept for imports)."""
     adx = float(adx_val if adx_val is not None else DEFAULT_ADX)
     if adx <= ADX_WEAK_BOUND:
         return TRAIL_DIST_WEAK_ATR
@@ -148,7 +150,7 @@ def init_breathing_state(
 ) -> dict[str, Any]:
     p = profile_for_symbol(symbol)
     atr_v = resolve_atr(atr)
-    coef = resolve_coef(breathing_coefficient, p)
+    coef = resolve_coef(breathing_coefficient, p) if breathing_coefficient is not None else cold_start_multiplier(p)
     entry_v = float(entry or 0)
     stop = compute_initial_stop(entry_v, side, atr_v, symbol=symbol)
     return {
@@ -199,9 +201,11 @@ def calculate_stop_long(
         "symbol_tag": p.symbol_tag,
     }
 
-    step_trigger = p.step_trigger_atr * initial_atr * coef
-    step_advance = p.step_advance_atr * initial_atr * coef
-    trail_dist = initial_atr * coef * p.trail_tighten
+    # Phase-1 ladders / floors / BE / phase2 gate: locked initial_atr only (no coef)
+    step_trigger = p.step_trigger_atr * initial_atr
+    step_advance = p.step_advance_atr * initial_atr
+    # Phase-2 trail: initial_atr × trailDistanceMultiplier (coef)
+    trail_dist = initial_atr * coef
 
     if not new_phase:
         step_count = (
@@ -241,7 +245,7 @@ def calculate_stop_long(
             new_stop = max(new_stop, trailed)
             event = "phase2_enter"
             meta["mode"] = "phase2"
-            meta["trail_dist_atr"] = coef * p.trail_tighten
+            meta["trail_dist_atr"] = coef
             meta["trail_distance"] = trail_dist
     else:
         candidate = new_highest - trail_dist
@@ -249,7 +253,7 @@ def calculate_stop_long(
             event = "trail"
         new_stop = max(current_stop, candidate)
         meta["mode"] = "phase2"
-        meta["trail_dist_atr"] = coef * p.trail_tighten
+        meta["trail_dist_atr"] = coef
         meta["trail_distance"] = trail_dist
 
     meta["event"] = event
@@ -291,9 +295,9 @@ def calculate_stop_short(
         "symbol_tag": p.symbol_tag,
     }
 
-    step_trigger = p.step_trigger_atr * initial_atr * coef
-    step_advance = p.step_advance_atr * initial_atr * coef
-    trail_dist = initial_atr * coef * p.trail_tighten
+    step_trigger = p.step_trigger_atr * initial_atr
+    step_advance = p.step_advance_atr * initial_atr
+    trail_dist = initial_atr * coef
 
     if not new_phase:
         step_count = (
@@ -334,7 +338,7 @@ def calculate_stop_short(
             new_stop = min(new_stop, trailed)
             event = "phase2_enter"
             meta["mode"] = "phase2"
-            meta["trail_dist_atr"] = coef * p.trail_tighten
+            meta["trail_dist_atr"] = coef
             meta["trail_distance"] = trail_dist
     else:
         candidate = new_lowest + trail_dist
@@ -342,7 +346,7 @@ def calculate_stop_short(
             event = "trail"
         new_stop = min(current_stop, candidate) if current_stop > 0 else candidate
         meta["mode"] = "phase2"
-        meta["trail_dist_atr"] = coef * p.trail_tighten
+        meta["trail_dist_atr"] = coef
         meta["trail_distance"] = trail_dist
 
     meta["event"] = event
@@ -427,8 +431,8 @@ def format_breathing_legend(symbol: str | None = None) -> str:
     p = profile_for_symbol(symbol)
     return (
         f"[{p.symbol_tag}] 初始{p.initial_sl_atr}ATR±{p.stop_order_buffer}"
-        f" · 步进{p.step_trigger_atr}/{p.step_advance_atr}×呼吸"
+        f" · 步进{p.step_trigger_atr}/{p.step_advance_atr}×initial_atr"
         f" · 早保本{p.early_breakeven_atr}ATR"
         f" · 阶段二={p.phase2_trigger_atr}ATR"
-        f" · 追踪×{p.trail_tighten}"
+        f" · 追踪{p.coef_min}~{p.coef_max}×ATR(连续插值)"
     )

@@ -90,33 +90,51 @@ def resolve_close_alert_title(
     attribution: dict | None = None,
 ) -> str:
     act = str(close_action or "").upper()
-    hint = str((attribution or {}).get("close_action_hint") or (attribution or {}).get("sl_kind") or "")
-    origin = str((attribution or {}).get("close_origin") or "")
-    reason = str(tv_reason or (attribution or {}).get("human_reason") or "").strip()
+    attr = attribution or {}
+    hint = str(attr.get("close_action_hint") or attr.get("sl_kind") or "")
+    origin = str(attr.get("close_origin") or "")
+    reason = str(tv_reason or attr.get("human_reason") or "").strip()
+    confidence = str(attr.get("confidence") or "")
 
     if hint == "CLOSE_TP3" or origin == "radar_tp3_trail" or act == "CLOSE_TP3":
         return "余仓止盈（阶段二）"
     if act == "CLOSE_BREATH_STOP" or origin == "breathing_stop":
         phase2 = bool(
-            (attribution or {}).get("breakeven_phase")
-            or (attribution or {}).get("breakeven_active")
+            attr.get("breakeven_phase")
+            or attr.get("breakeven_active")
             or "阶段二" in reason
-            or "趋势追踪" in reason
+            or "追踪" in reason
         )
-        return "止损平仓(阶段二/趋势追踪)" if phase2 else "止损平仓(阶段一)"
+        if phase2:
+            return "追踪止损平仓（阶段二）"
+        if "TP后" in reason or "保本" in reason:
+            return "保本止损平仓（阶段一·TP后）"
+        if "初始" in reason:
+            return "初始止损平仓（阶段一）"
+        return "呼吸止损平仓（阶段一）"
     if "CLOSE_QUICK_EXIT" in act:
-        return "反转保护"
+        return "反转保护（快速退出）"
     if "CLOSE_RSI_EXIT" in act:
-        return "反转保护"
+        return "反转保护（RSI退出）"
     if origin == "exchange_limit_tp":
-        matched = (attribution or {}).get("matched_tps") or []
+        matched = attr.get("matched_tps") or []
         if matched:
             return f"TP{','.join(str(x) for x in matched)} 止盈成交"
         return "止盈成交"
     if origin == "exchange_stop":
-        return "止损平仓(阶段一)"
-    if reason:
+        if "初始" in reason:
+            return "初始止损平仓（阶段一）"
+        return "保本/移动止损平仓"
+    if origin == "platform_market":
+        return "平台主动平仓"
+    if origin == "unknown" or confidence == "insufficient" or "待核实" in reason:
+        return "平仓原因待核实"
+    if "CLOSE_PROTECT" in act or "CLOSE_STOPLOSS" in act:
         return "反转保护平仓"
+    if reason and ("反转" in reason or "保护" in reason or "RSI" in reason or "QUICK" in act):
+        return "反转保护平仓"
+    if reason:
+        return reason[:24] if len(reason) > 24 else reason
     return "全平完成"
 
 

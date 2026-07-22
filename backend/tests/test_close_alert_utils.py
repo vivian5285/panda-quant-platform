@@ -15,7 +15,7 @@ def test_classify_quick_rsi():
 def test_titles_no_legacy_protect_keywords():
     title = resolve_close_alert_title("CLOSE_PROTECT", "风控拦截：动能衰竭")
     assert "风控拦截" not in title
-    assert title in ("反转保护平仓", "全平完成", "反转保护")
+    assert title in ("反转保护平仓", "全平完成", "反转保护", "平仓原因待核实")
 
 
 def test_breath_stop_phase_titles():

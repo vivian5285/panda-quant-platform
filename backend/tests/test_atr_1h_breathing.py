@@ -19,7 +19,7 @@ def test_update_breathing_smooths_three_samples():
         initial_atr=20.0, atr_1h=13.0, ratio_history=[],
     )
     assert abs(hist[-1] - 0.65) < 1e-9
-    assert coef == 0.7
+    assert abs(coef - get_breathing_coefficient(0.65)) < 1e-9
 
     coef, hist, smooth = update_breathing_coefficient(
         initial_atr=20.0, atr_1h=20.0, ratio_history=hist,
@@ -29,12 +29,10 @@ def test_update_breathing_smooths_three_samples():
     )
     assert len(hist) == 3
     assert abs(smooth - (0.65 + 1.0 + 1.3) / 3) < 1e-9
-    # smooth ≈ 0.983 → still in 0.7~1.0 band → 0.85
-    assert coef == 0.85
+    assert abs(coef - get_breathing_coefficient(smooth)) < 1e-9
 
 
 def test_compute_atr_1h_from_synthetic_klines():
-    # Build enough 1h bars with TR≈10
     rows = []
     t0 = 1_700_000_000_000
     close = 100.0

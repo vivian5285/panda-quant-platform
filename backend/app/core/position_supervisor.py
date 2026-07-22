@@ -1784,7 +1784,7 @@ class PositionSupervisor(
                 enrich_suffix = f" | {enrich_note}"
             open_title = (
                 f"{theme['accent']} GEMINI开仓 · {theme.get('symbol_label') or self.canonical_symbol} "
-                f"· {theme['label']} 档位{self.regime} · {leverage}×"
+                f"· {theme['label']} · {leverage}×"
             )
             self._log(
                 "OPEN",
@@ -1795,8 +1795,9 @@ class PositionSupervisor(
                 "info", "OPEN",
                 open_title,
                 f"{self.canonical_symbol} {action} {real_qty} {unit} @ {entry_price} | 滑点 {slip:+.2f} | "
-                f"TV杠杆{leverage}× | 等效{detail.get('effective_leverage') or leverage}× | "
-                f"TP {self.tv_tps} | ATR {self.current_atr}{verify_note}{enrich_suffix}",
+                f"杠杆{leverage}× | 等效{detail.get('effective_leverage') or leverage}× | "
+                f"TP {self.tv_tps} | initial_atr {getattr(self, 'initial_atr', 0) or self.current_atr}"
+                f"{verify_note}{enrich_suffix}",
                 detail,
             )
             self._reconcile_live_vs_book(

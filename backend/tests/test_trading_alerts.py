@@ -82,12 +82,11 @@ def test_cap_align_detail_chinese_readable_no_json():
         "radar_sl_preserved": 1775.0,
     }
     block = format_admin_detail_lines("CAP_ALIGN", detail, exchange="binance")
-    assert "档位保证金" in block
+    assert "保证金" in block
     assert "264.25 USDT" in block
     assert "2.954" in block
     assert "1.489" in block
     assert "做多" in block
-    assert "R3" in block
     assert "```" not in block
 
     body = format_trading_alert_body(
