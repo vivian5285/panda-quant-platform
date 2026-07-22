@@ -42,7 +42,8 @@ class BinanceClient:
         self.api_key = api_key
         self.api_secret = api_secret
         self.trading_symbol = trading_symbol or settings.SYMBOL
-        self.trading_leverage = settings.LEVERAGE
+        from app.core.tv_entry_sizing import FIXED_LEVERAGE
+        self.trading_leverage = int(FIXED_LEVERAGE)
         self.canonical_symbol = trading_symbol or settings.SYMBOL
         self.client = Client(api_key, api_secret)
         self._one_way_checked = False

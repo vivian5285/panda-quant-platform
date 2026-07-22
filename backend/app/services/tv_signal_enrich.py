@@ -104,6 +104,7 @@ def merge_supervisor_fallbacks(
     )
 
 
-# Removed: compute_tv_tps_from_regime / REGIME_TP_ATR_MULT (old logic deleted)
-def compute_tv_tps_from_regime(*args, **kwargs) -> list[float]:
-    return [0.0, 0.0, 0.0]
+# Market ATR ladder for recovery/manual adopt only — webhook still requires TV tp1/tp2.
+def compute_tv_tps_from_regime(entry, atr, regime=3, side="LONG", *args, **kwargs) -> list[float]:
+    from app.core.breathing_stop import compute_tp_ladder_from_atr
+    return compute_tp_ladder_from_atr(float(entry or 0), str(side or "").upper(), atr)

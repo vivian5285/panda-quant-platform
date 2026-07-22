@@ -41,7 +41,8 @@ class OkxClient:
         self.passphrase = passphrase or ""
         self.user_id = user_id
         self.trading_symbol = trading_symbol or settings.OKX_SYMBOL
-        self.trading_leverage = settings.OKX_LEVERAGE
+        from app.core.tv_entry_sizing import FIXED_LEVERAGE
+        self.trading_leverage = int(FIXED_LEVERAGE)
         self.canonical_symbol = None
         self._ct_val = float(settings.OKX_CONTRACT_VALUE)
         self._lot_sz = float(settings.OKX_LOT_SIZE)

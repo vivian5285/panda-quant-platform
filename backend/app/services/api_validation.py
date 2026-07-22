@@ -1,6 +1,6 @@
 import logging
 
-from app.config import get_settings
+from app.config import exchange_leverage, get_settings
 from app.core.binance_client import BinanceClient
 
 logger = logging.getLogger(__name__)
@@ -160,7 +160,8 @@ def validate_binance_api(api_key: str, api_secret: str, user_id: int = 0) -> dic
     checks.append(_check_item("one_way", one_way, hint_key=one_way_hint))
 
     price = client.get_current_price(settings.SYMBOL)
-    leverage_ok = client.set_leverage(settings.SYMBOL, settings.LEVERAGE) is not None
+    lev = exchange_leverage("binance")
+    leverage_ok = client.set_leverage(settings.SYMBOL, lev) is not None
     checks.append(
         _check_item(
             "leverage",
@@ -181,7 +182,7 @@ def validate_binance_api(api_key: str, api_secret: str, user_id: int = 0) -> dic
         "enable_futures": enable_futures,
         "symbol": settings.SYMBOL,
         "symbol_price": price,
-        "leverage": settings.LEVERAGE,
+        "leverage": lev,
         "open_orders_count": activity["open_orders"],
         "open_positions_count": activity["open_positions"],
         "hedge_mode": hedge,
@@ -258,7 +259,8 @@ def validate_deepcoin_api(
     checks.append(_check_item("balance", equity > 0, hint_key="api.hint.balance"))
     checks.append(_check_item("can_trade", True))
 
-    lev_res = client.set_leverage(settings.DEEPCOIN_SYMBOL, settings.DEEPCOIN_LEVERAGE)
+    lev = exchange_leverage("deepcoin")
+    lev_res = client.set_leverage(settings.DEEPCOIN_SYMBOL, lev)
     leverage_ok = bool(lev_res and client._is_success(lev_res))
     checks.append(_check_item("leverage", leverage_ok, hint_key="api.hint.leverage"))
 
@@ -275,7 +277,7 @@ def validate_deepcoin_api(
         "enable_futures": True,
         "symbol": settings.DEEPCOIN_SYMBOL,
         "symbol_price": price,
-        "leverage": settings.DEEPCOIN_LEVERAGE,
+        "leverage": lev,
         "exchange": "deepcoin",
         "open_orders_count": 0,
         "open_positions_count": 0,
@@ -423,7 +425,7 @@ def validate_okx_api(
         exchange="okx",
         client=client,
         symbol=settings.OKX_SYMBOL,
-        leverage=settings.OKX_LEVERAGE,
+        leverage=exchange_leverage("okx"),
         require_passphrase=True,
         passphrase=passphrase,
     )
@@ -437,7 +439,7 @@ def validate_gate_api(api_key: str, api_secret: str, user_id: int = 0) -> dict:
         exchange="gate",
         client=client,
         symbol=settings.GATE_SYMBOL,
-        leverage=settings.GATE_LEVERAGE,
+        leverage=exchange_leverage("gate"),
         require_passphrase=False,
     )
 

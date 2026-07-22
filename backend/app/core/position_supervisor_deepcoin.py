@@ -224,7 +224,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self._lock = threading.Lock()
 
         self.regime_settings = build_regime_settings()
-        self.leverage = int(getattr(client, "trading_leverage", settings.DEEPCOIN_LEVERAGE))
+        from app.core.tv_entry_sizing import FIXED_LEVERAGE
+        self.leverage = int(
+            getattr(client, "trading_leverage", None) or FIXED_LEVERAGE
+        )
         self.face_value = 0.1
 
         self.regime = 3
@@ -345,6 +348,24 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if getattr(self, "qty_unit", None):
             payload.setdefault("qty_unit", self.qty_unit)
         payload.setdefault("exchange", "deepcoin")
+        if hasattr(self, "_resolve_entry_leverage"):
+            try:
+                payload["leverage"] = int(self._resolve_entry_leverage())
+            except Exception:
+                if int(getattr(self, "leverage", 0) or 0) > 0:
+                    payload.setdefault("leverage", int(self.leverage))
+        elif int(getattr(self, "leverage", 0) or 0) > 0:
+            payload.setdefault("leverage", int(self.leverage))
+        if getattr(self, "current_side", None):
+            payload.setdefault("side", self.current_side)
+        if float(getattr(self, "watched_qty", 0) or 0) > 0:
+            payload.setdefault("qty", float(self.watched_qty))
+        if float(getattr(self, "watched_entry", 0) or 0) > 0:
+            payload.setdefault("entry", float(self.watched_entry))
+        if float(getattr(self, "current_sl", 0) or 0) > 0:
+            payload.setdefault("current_sl", float(self.current_sl))
+        if getattr(self, "regime", None) is not None:
+            payload.setdefault("regime", int(self.regime))
         self.on_alert(self.user_id, severity, alert_type, title, message, payload)
 
     @staticmethod
@@ -4041,6 +4062,20 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 open_log_qty = self._safe_qty(reconcile.get("open_log_qty") or 0)
                 if open_log_qty <= 0:
                     prepare_manual_adopt(self)
+                    if hasattr(self, "_alert"):
+                        self._alert(
+                            "warning",
+                            "STARTUP",
+                            "未登记来源仓位 · 系统接管",
+                            "未登记来源仓位·系统接管（来源待核实）",
+                            {
+                                "adopt_source": "unregistered_live",
+                                "side": self.current_side,
+                                "qty": real_amt,
+                                "entry": float(pos.get("entry_price") or 0),
+                                "source_verified": False,
+                            },
+                        )
                 restored = max(saved_initial, open_log_qty, real_amt)
                 self.watched_qty = real_amt
                 if restored > real_amt:

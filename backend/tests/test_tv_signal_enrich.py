@@ -1,5 +1,7 @@
 """Webhook enrichment — ATR/ADX not invented; TP1/TP2 required from TV."""
 
+import pytest
+
 from app.services.tv_signal_enrich import (
     compute_tv_tps_from_regime,
     enrich_tv_signal,
@@ -24,10 +26,12 @@ def test_entry_without_tps_fails_validation():
     assert not ok
 
 
-def test_compute_tv_tps_from_regime_disabled():
-    """Old regime-TP invent removed — stub returns zeros."""
+def test_compute_tv_tps_from_regime_market_ladder():
+    """Recovery/manual adopt may derive TP ladder from ATR (webhook still requires TV tp)."""
     tps = compute_tv_tps_from_regime(3500.0, 25.0, 3, "LONG")
-    assert tps == [0.0, 0.0, 0.0]
+    assert tps[0] == pytest.approx(3500.0 + 1.35 * 25.0)
+    assert tps[1] == pytest.approx(3500.0 + 2.5 * 25.0)
+    assert tps[2] == pytest.approx(3500.0 + 4.0 * 25.0)
 
 
 def test_legacy_close_stoploss_rejected():

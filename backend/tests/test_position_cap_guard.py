@@ -96,7 +96,7 @@ def test_cap_blocks_unsafe_trim_plan():
         "max_qty": 0.024,
     }
     err = probe._validate_cap_trim_plan(bad)
-    assert err is not None
+    assert err == "cap_trim_disabled"
 
 
 def test_cap_within_tolerance_not_oversized():

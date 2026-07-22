@@ -21,6 +21,8 @@ TP1_ATR = 1.35
 TP1_FLOOR_ATR = 0.5
 TP2_ATR = 2.5
 TP2_FLOOR_ATR = 1.5
+# TP3 price is reference-only (phase-2 remainder); never hung as a limit.
+TP3_ATR = 4.0
 
 ADX_WEAK_BOUND = 15.0
 ADX_STRONG_BOUND = 35.0
@@ -64,6 +66,28 @@ def compute_initial_stop(entry: float, side: str, atr: float) -> float:
     if side == "SHORT":
         return entry + INITIAL_SL_ATR * atr
     return 0.0
+
+
+def compute_tp_ladder_from_atr(
+    entry: float,
+    side: str,
+    atr: float | None = None,
+) -> list[float]:
+    """Market-derived TP1/TP2/TP3 prices for external/manual adopt (no TV history).
+
+    Only TP1+TP2 are placeable as limits; TP3 is kept for phase-2 remainder math.
+    """
+    entry_v = float(entry or 0)
+    atr_v = resolve_atr(atr)
+    side_u = str(side or "").upper()
+    if entry_v <= 0 or side_u not in ("LONG", "SHORT"):
+        return [0.0, 0.0, 0.0]
+    sign = 1.0 if side_u == "LONG" else -1.0
+    return [
+        entry_v + sign * TP1_ATR * atr_v,
+        entry_v + sign * TP2_ATR * atr_v,
+        entry_v + sign * TP3_ATR * atr_v,
+    ]
 
 
 def init_breathing_state(

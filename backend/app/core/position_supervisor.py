@@ -146,7 +146,10 @@ class PositionSupervisor(
         )
         self.symbol = getattr(client, "trading_symbol", None) or settings.SYMBOL
         self.exchange_id = getattr(client, "exchange_id", "binance")
-        self.leverage = int(getattr(client, "trading_leverage", settings.LEVERAGE))
+        from app.core.tv_entry_sizing import FIXED_LEVERAGE
+        self.leverage = int(
+            getattr(client, "trading_leverage", None) or FIXED_LEVERAGE
+        )
         self.qty_unit = qty_unit_for_symbol(self.canonical_symbol, self.exchange_id)
         self.symbol_label = label_for_symbol(self.canonical_symbol)
         self.min_order_qty = min_qty_for(self.canonical_symbol)
@@ -230,6 +233,26 @@ class PositionSupervisor(
         ex = getattr(self, "exchange_id", None) or getattr(self, "exchange", None)
         if ex:
             payload.setdefault("exchange", ex)
+        # Execution-context snapshot — never let theme/config invent leverage
+        if hasattr(self, "_resolve_entry_leverage"):
+            try:
+                payload["leverage"] = int(self._resolve_entry_leverage())
+            except Exception:
+                payload.setdefault(
+                    "leverage", int(getattr(self, "leverage", 0) or 0) or None,
+                )
+        elif int(getattr(self, "leverage", 0) or 0) > 0:
+            payload.setdefault("leverage", int(self.leverage))
+        if getattr(self, "current_side", None):
+            payload.setdefault("side", self.current_side)
+        if float(getattr(self, "watched_qty", 0) or 0) > 0:
+            payload.setdefault("qty", float(self.watched_qty))
+        if float(getattr(self, "watched_entry", 0) or 0) > 0:
+            payload.setdefault("entry", float(self.watched_entry))
+        if float(getattr(self, "current_sl", 0) or 0) > 0:
+            payload.setdefault("current_sl", float(self.current_sl))
+        if getattr(self, "regime", None) is not None:
+            payload.setdefault("regime", int(self.regime))
         self.on_alert(self.user_id, severity, alert_type, title, message, payload)
 
     def _save_state(self):
@@ -4290,12 +4313,30 @@ class PositionSupervisor(
                 audit["vps_hard_sl_meta"] = sl_meta
             if not open_trade_id and not trade_ctx:
                 audit["adopted_manual"] = True
-                audit["adopt_source"] = "live_position+latest_tv"
+                audit["adopt_source"] = "unregistered_live"
                 prepare_manual_adopt(self)
+                adopt_msg = "未登记来源仓位·系统接管（来源待核实）"
                 self._log(
                     "STARTUP",
-                    f"人工/外部持仓接管: {self.current_side} {self.watched_qty} @ {self.watched_entry} "
-                    f"| TV={self.last_tv_side} SL={getattr(self, 'tv_sl', 0)}",
+                    f"{adopt_msg}: {self.current_side} {self.watched_qty} @ {self.watched_entry} "
+                    f"| SL={getattr(self, 'initial_stop', 0) or getattr(self, 'tv_sl', 0)} "
+                    f"ATR={getattr(self, 'initial_atr', 0) or getattr(self, 'current_atr', 0)}",
+                )
+                self._alert(
+                    "warning",
+                    "STARTUP",
+                    "未登记来源仓位 · 系统接管",
+                    adopt_msg,
+                    {
+                        "adopt_source": "unregistered_live",
+                        "side": self.current_side,
+                        "qty": self.watched_qty,
+                        "entry": self.watched_entry,
+                        "initial_stop": float(getattr(self, "initial_stop", 0) or 0),
+                        "initial_atr": float(getattr(self, "initial_atr", 0) or 0),
+                        "tv_tps": list(getattr(self, "tv_tps", []) or []),
+                        "source_verified": False,
+                    },
                 )
 
             side_sync = self._try_force_align_opposite_to_tv(

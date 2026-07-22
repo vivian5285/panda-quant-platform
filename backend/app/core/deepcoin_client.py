@@ -43,7 +43,8 @@ class DeepcoinClient:
         self.passphrase = passphrase or ""
         self.user_id = user_id
         self.trading_symbol = trading_symbol or settings.DEEPCOIN_SYMBOL
-        self.trading_leverage = settings.DEEPCOIN_LEVERAGE
+        from app.core.tv_entry_sizing import FIXED_LEVERAGE
+        self.trading_leverage = int(FIXED_LEVERAGE)
         self.canonical_symbol = None
         self.exchange_id = "deepcoin"
         self.base_url = "https://api.deepcoin.com"

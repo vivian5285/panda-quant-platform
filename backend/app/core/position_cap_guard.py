@@ -88,12 +88,13 @@ class PositionCapGuardMixin:
         return read_contract_equity(self.client)
 
     def _resolve_cap_leverage(self) -> int:
+        from app.core.tv_entry_sizing import FIXED_LEVERAGE
         if hasattr(self, "_resolve_entry_leverage"):
             try:
                 return max(int(self._resolve_entry_leverage()), 1)
             except Exception:
                 pass
-        return max(int(getattr(self, "leverage", 0) or settings.LEVERAGE or 1), 1)
+        return max(int(getattr(self, "leverage", 0) or 0) or FIXED_LEVERAGE, 1)
 
     def _compute_regime_cap_target(self, price: float) -> tuple[float, dict[str, Any]]:
         """
@@ -232,52 +233,12 @@ class PositionCapGuardMixin:
         }
 
     def _validate_cap_trim_plan(self, cap: dict[str, Any]) -> str | None:
-        """Return error string if trim plan looks unsafe (would flatten instead of align)."""
-        live = float(cap.get("live_qty", 0) or 0)
-        target = float(cap.get("target_qty", 0) or 0)
-        trim = float(cap.get("trim_qty", 0) or 0)
-        if live <= 0 or target <= 0:
-            return "invalid_qty"
-        if trim <= 0:
-            return None
-        retain = target / live
-        if retain < CAP_MIN_RETAIN_RATIO and live > target * 2:
-            return (
-                f"unsafe_retain_ratio={retain:.3f}: target {target:.4f} too small vs live {live:.4f} "
-                f"(likely depleted balance skewed max_qty)"
-            )
-        if trim > live * 0.85 and target < live * 0.15:
-            return (
-                f"unsafe_trim_ratio: would cut {trim:.4f} of {live:.4f}, retaining only {target:.4f}"
-            )
-        if abs(trim - (live - target)) > max(live * 0.05, 0.01):
-            return f"trim_mismatch: trim={trim:.4f} expected={live - target:.4f}"
-        return None
+        """Stub: CAP trim removed (detect-only). Always reports disabled."""
+        return "cap_trim_disabled"
 
     def _place_cap_trim_order(self, trim_qty: float) -> bool:
-        if trim_qty <= 0:
-            return False
-        symbol = getattr(self, "symbol", None)
-        if self._is_deepcoin_cap():
-            pos = self._get_active_position()
-            if not pos:
-                return False
-            close_side = "sell" if str(pos.get("posSide", "long")).lower() == "long" else "buy"
-            pos_side = pos.get("posSide", "long")
-            trim_int = max(int(trim_qty), 1)
-            order = self.client.place_market_order(
-                symbol, close_side, pos_side, trim_int, reduce_only=True,
-            )
-            return order is not None
-
-        from app.core.symbol_precision import round_quantity
-
-        qty = round_quantity(trim_qty)
-        if qty <= 0:
-            return False
-        close_side = self._close_order_side()
-        order = self.client.place_market_order(close_side, qty, symbol, reduce_only=True)
-        return order is not None
+        """Stub: never place autonomous CAP reduce orders."""
+        return False
 
     def _read_live_position_qty(self) -> tuple[float, float]:
         """Return (qty, entry_price)."""
@@ -308,8 +269,8 @@ class PositionCapGuardMixin:
         reason: str = "档位额度对齐",
     ) -> dict[str, Any]:
         """
-        Radar-authority: trim excess over regime cap, then realign TP limits.
-        Active radar SL (breakeven trail) is passed through and preserved.
+        Detect-only: log/alert when live qty exceeds regime cap.
+        Must NOT place reduce orders (no autonomous partial close).
         """
         result: dict[str, Any] = {
             "aligned": True,

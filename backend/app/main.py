@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from app.config import get_settings
+from app.config import exchange_leverage, get_settings
 from app.database import engine, Base, SessionLocal
 from app.models import User, UserRole
 from app.api import auth, users, referrals, admin, wallet, public, strategies, notifications, settings_api, billing, system
@@ -315,5 +315,5 @@ def health():
         "dingtalk_configured": is_dingtalk_configured(),
         "startup_failures": len(supervisor_pool.last_startup_failures),
         "symbol": settings.SYMBOL,
-        "leverage": settings.LEVERAGE,
+        "leverage": exchange_leverage("binance"),
     }

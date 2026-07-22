@@ -35,7 +35,8 @@ class GateClient:
         self.api_secret = api_secret or ""
         self.user_id = user_id
         self.trading_symbol = trading_symbol or settings.GATE_SYMBOL
-        self.trading_leverage = settings.GATE_LEVERAGE
+        from app.core.tv_entry_sizing import FIXED_LEVERAGE
+        self.trading_leverage = int(FIXED_LEVERAGE)
         self.canonical_symbol = None
         self._quanto = float(settings.GATE_QUANTO_MULTIPLIER)
         self._one_way_checked = False

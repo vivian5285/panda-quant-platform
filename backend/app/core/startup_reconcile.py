@@ -62,7 +62,7 @@ def recompute_vps_hard_sl_on_recovery(
     side: str | None = None,
     tv_sl_reference: float | None = None,
 ) -> dict:
-    """Recovery: hard SL = TradingView tv_sl only (no VPS entry×regime fallback)."""
+    """Recovery hard SL = breathing initial stop from VPS ATR (TV stop is reference only)."""
     if not hasattr(supervisor, "_recompute_vps_hard_sl"):
         return {}
     entry = float(
@@ -80,14 +80,17 @@ def recompute_vps_hard_sl_on_recovery(
         return {"error": "missing_entry_or_side", "entry": entry, "side": side_u}
 
     prev_sl = float(getattr(supervisor, "tv_sl", 0) or 0)
-    ref = float(tv_sl_reference or 0)
-    if ref <= 0:
-        ref = float(getattr(supervisor, "_tv_hard_sl_price", 0) or 0)
-    if ref <= 0:
-        ref = extract_tv_sl_reference(
-            getattr(supervisor, "last_tv_signal", None),
-            {"tv_sl": getattr(supervisor, "tv_sl", 0)},
-        )
+    # Manual/unregistered: never seed TV stop_loss into recovery payload
+    adopted = bool(getattr(supervisor, "adopted_manual", False))
+    ref = 0.0 if adopted else float(tv_sl_reference or 0)
+    if not adopted:
+        if ref <= 0:
+            ref = float(getattr(supervisor, "_tv_hard_sl_price", 0) or 0)
+        if ref <= 0:
+            ref = extract_tv_sl_reference(
+                getattr(supervisor, "last_tv_signal", None),
+                {"tv_sl": getattr(supervisor, "tv_sl", 0)},
+            )
     payload: dict = {
         "regime": int(getattr(supervisor, "regime", 3) or 3),
         "atr": float(getattr(supervisor, "current_atr", 0) or 30.0),
@@ -145,7 +148,7 @@ def should_skip_startup_tv_close_flatten(
 ) -> tuple[bool, str]:
     """Never flatten on restart when live still matches the opening TV direction.
 
-    Exception: latest TV is CLOSE_PROTECT / CLOSE_STOPLOSS / CLOSE_TP3 → always flatten.
+    Exception: latest TV is CLOSE_QUICK_EXIT / CLOSE_RSI_EXIT → always flatten.
     """
     reconcile = reconcile or {}
     latest = (reconcile.get("latest_tv_action") or "").upper().strip()
@@ -224,11 +227,16 @@ def finalize_recovery_tv_params(supervisor, report: dict, recovery: dict | None)
 
 
 def prepare_manual_adopt(supervisor) -> None:
-    """Reset anchor qty so false TP1 consumption does not drop TP123 on manual takeover."""
+    """Adopt unregistered live position with VPS ATR/initialStop + market TP ladder.
+
+    Does not invent historical TV association. Callers must DingTalk:
+    「未登记来源仓位·系统接管（来源待核实）」.
+    """
     qty = float(getattr(supervisor, "watched_qty", 0) or 0)
     if qty <= 0:
         return
     entry = float(getattr(supervisor, "watched_entry", 0) or 0)
+    side = str(getattr(supervisor, "current_side", "") or "").upper()
     supervisor.initial_qty = qty
     if float(getattr(supervisor, "base_qty", 0) or 0) <= 0:
         supervisor.base_qty = qty
@@ -236,8 +244,36 @@ def prepare_manual_adopt(supervisor) -> None:
     supervisor.adopted_manual = True
     if entry > 0:
         supervisor.best_price = entry
-    # 人工接管首挂仅 VPS 硬止损 + TP123；雷达待达 TP1 路径比例后再激活
-    supervisor.current_sl = 0.0
+
+    # Independent market ATR → breathing initialStop (ignore TV stop_loss)
+    if (
+        hasattr(supervisor, "_recompute_vps_hard_sl")
+        and side in ("LONG", "SHORT")
+        and entry > 0
+    ):
+        supervisor._recompute_vps_hard_sl(entry_px=entry, side=side, payload={})
+    else:
+        supervisor.current_sl = 0.0
+
+    # Derive TP1/TP2 (+TP3 ref) from ATR when missing — TP3 not hung as limit
+    tps = list(getattr(supervisor, "tv_tps", None) or [0.0, 0.0, 0.0])
+    placeable = sum(1 for t in tps[:2] if float(t or 0) > 0)
+    if placeable < 2 and entry > 0 and side in ("LONG", "SHORT"):
+        from app.core.breathing_stop import compute_tp_ladder_from_atr
+        from app.core.symbol_precision import merge_tv_targets
+
+        atr = float(
+            getattr(supervisor, "initial_atr", 0)
+            or getattr(supervisor, "current_atr", 0)
+            or 0
+        )
+        derived = compute_tp_ladder_from_atr(entry, side, atr)
+        supervisor.tv_tps = merge_tv_targets(tps, derived)
+        if hasattr(supervisor, "_log"):
+            supervisor._log(
+                "STARTUP",
+                f"未登记仓位 TP 由市价 ATR 推导: {supervisor.tv_tps} atr={atr}",
+            )
 
 
 TV_CLOSE_ACTIONS = frozenset({
@@ -1195,10 +1231,14 @@ class StartupReconcileMixin:
                     self._alert(
                         "info",
                         "IDLE_WATCH",
-                        "空仓巡检 · 同向持仓接管",
-                        f"{side} {live_qty} @ {entry:.2f} | "
-                        f"{audit.get('startup_summary', 'TP123/雷达已补挂')}",
-                        {**audit, **detail},
+                        "未登记来源仓位 · 系统接管",
+                        "未登记来源仓位·系统接管（来源待核实）",
+                        {
+                            **audit,
+                            **detail,
+                            "adopt_source": "unregistered_live",
+                            "source_verified": False,
+                        },
                     )
             elif audit.get("error"):
                 self._idle_adopt_cooldown_until = (

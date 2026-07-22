@@ -102,6 +102,8 @@ def test_prepare_manual_adopt_resets_consumed():
         consumed_tp_levels = [1]
         current_sl = 1808.0
         best_price = 1810.0
+        current_side = None
+        tv_tps = [0.0, 0.0, 0.0]
 
     sup = Sup()
     prepare_manual_adopt(sup)
@@ -110,6 +112,43 @@ def test_prepare_manual_adopt_resets_consumed():
     assert sup.adopted_manual is True
     assert sup.current_sl == 0.0
     assert sup.best_price == 1806.01
+
+
+def test_prepare_manual_adopt_arms_market_atr_ladder():
+    class Sup:
+        watched_qty = 0.1
+        watched_entry = 2000.0
+        initial_qty = 0.0
+        base_qty = 0.0
+        consumed_tp_levels = []
+        current_sl = 0.0
+        best_price = 0.0
+        current_side = "LONG"
+        tv_tps = [0.0, 0.0, 0.0]
+        current_atr = 40.0
+        initial_atr = 0.0
+        initial_stop = 0.0
+        logs = []
+
+        def _recompute_vps_hard_sl(self, entry_px=None, *, payload=None, side=None):
+            from app.core.breathing_stop import compute_initial_stop
+            atr = float(self.current_atr)
+            stop = compute_initial_stop(float(entry_px or self.watched_entry), side or self.current_side, atr)
+            self.initial_atr = atr
+            self.initial_stop = stop
+            self.current_sl = stop
+            self.tv_sl = stop
+            return {"stop_price": stop, "atr": atr, "source": "breathing_initial"}
+
+        def _log(self, *a, **k):
+            self.logs.append((a, k))
+
+    sup = Sup()
+    prepare_manual_adopt(sup)
+    assert sup.adopted_manual is True
+    assert sup.initial_stop == pytest.approx(2000.0 - 1.5 * 40.0)
+    assert float(sup.tv_tps[0]) == pytest.approx(2000.0 + 1.35 * 40.0)
+    assert float(sup.tv_tps[1]) == pytest.approx(2000.0 + 2.5 * 40.0)
 
 
 def test_ensure_radar_sl_blocked_before_tp1_on_manual_adopt():
@@ -185,7 +224,7 @@ def test_should_skip_tv_close_for_manual_position():
 
 
 def test_hard_close_never_skipped_for_manual_adopt():
-    """CLOSE_PROTECT / STOPLOSS / TP3 always flatten — even adopted_manual (ETH/XAU)."""
+    """CLOSE_QUICK_EXIT / CLOSE_RSI_EXIT always flatten — even adopted_manual."""
     from app.core.startup_reconcile import is_hard_tv_close_action
 
     class Sup:
@@ -197,18 +236,18 @@ def test_hard_close_never_skipped_for_manual_adopt():
         symbol = "ETHUSDT"
         position_manager = None
 
-    assert is_hard_tv_close_action("CLOSE_PROTECT")
-    assert is_hard_tv_close_action("CLOSE_STOPLOSS")
-    assert is_hard_tv_close_action("CLOSE_TP3")
+    assert is_hard_tv_close_action("CLOSE_QUICK_EXIT")
+    assert is_hard_tv_close_action("CLOSE_RSI_EXIT")
+    assert not is_hard_tv_close_action("CLOSE_PROTECT")
     assert not is_hard_tv_close_action("CLOSE")
 
-    for action in ("CLOSE_PROTECT", "CLOSE_STOPLOSS", "CLOSE_TP3"):
+    for action in ("CLOSE_QUICK_EXIT", "CLOSE_RSI_EXIT"):
         skip, _ = should_skip_tv_close_for_manual(Sup(), action)
         assert skip is False, action
 
 
 def test_tv_screenshot_close_protect_not_skipped():
-    """Exact TV payload from 2026-07-16 23:00 ETHUSDT.P protect alert."""
+    """Legacy CLOSE_PROTECT is not bare CLOSE — skip helper does not swallow it."""
     class Sup:
         adopted_manual = True
         current_trade_id = None
@@ -247,7 +286,7 @@ def test_startup_hard_close_not_skipped():
         Sup(),
         {
             "state_last_tv_side": "SHORT",
-            "latest_tv_action": "CLOSE_PROTECT",
+            "latest_tv_action": "CLOSE_QUICK_EXIT",
             "latest_entry_tv_action": "SHORT",
         },
     )
@@ -297,8 +336,8 @@ def test_execute_signal_skips_close_for_manual_adopt():
     sup.client.place_market_order.assert_not_called()
 
 
-def test_execute_signal_close_protect_flattens_manual_adopt():
-    """Regression: TV CLOSE_PROTECT must not be swallowed by adopted_manual."""
+def test_execute_signal_quick_exit_flattens_manual_adopt():
+    """CLOSE_QUICK_EXIT must flatten adopted_manual (not swallowed)."""
     from unittest.mock import MagicMock, patch
 
     from app.core.position_supervisor import PositionSupervisor
@@ -308,7 +347,7 @@ def test_execute_signal_close_protect_flattens_manual_adopt():
     client.get_current_price.return_value = 1882.85
     client.trading_symbol = "ETHUSDT"
     client.exchange_id = "binance"
-    client.trading_leverage = 25
+    client.trading_leverage = 5
 
     sup = PositionSupervisor(user_id=1, client=client, initial_principal=1000.0)
     sup.adopted_manual = True
@@ -331,19 +370,18 @@ def test_execute_signal_close_protect_flattens_manual_adopt():
     ) as preserve:
         result = sup._execute_signal({
             "symbol": "ETHUSDT.P",
-            "action": "CLOSE_PROTECT",
+            "action": "CLOSE_QUICK_EXIT",
             "secret": "528586",
             "regime": 4,
             "price": 1882.85,
-            "atr": 13.1372332303,
             "side": "SHORT",
-            "reason": "常规防守：大级别转多或动能衰竭",
+            "reason": "quick exit",
             "pnl_pct": 0.26,
         })
     preserve.assert_not_called()
     close_all.assert_called_once()
     assert result["status"] == "ok"
-    assert result["action"] == "CLOSE_PROTECT"
+    assert result["action"] == "CLOSE_QUICK_EXIT"
 
 
 def test_idle_watch_does_not_flatten_manual_on_tv_close():

@@ -5,18 +5,22 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.config import exchange_leverage, get_settings
+from app.core.tv_entry_sizing import FIXED_LEVERAGE
 from app.services.dingtalk_notify import push_dingtalk
 
 settings = get_settings()
 
-# GEMINI 量化：各交易所独立 UI 主题（leverage/tag 由 resolve_exchange_theme 从配置注入）
+# Leverage always FIXED_LEVERAGE — themes must not seed a second source
+_FIXED_LEV = int(FIXED_LEVERAGE)
+
+# GEMINI 量化：各交易所独立 UI 主题（leverage/tag 由 resolve_exchange_theme 注入 FIXED）
 EXCHANGE_THEMES: dict[str, dict] = {
     "binance": {
         "label": "币安",
         "symbol": "ETHUSDT",
-        "leverage": settings.LEVERAGE,
+        "leverage": _FIXED_LEV,
         "brand": "GEMINI量化 · 币安合约实盘引擎",
-        "tag": f"#币安{settings.LEVERAGE}x",
+        "tag": f"#币安{_FIXED_LEV}x",
         "accent": "🔷",
         "palette": "靛蓝",
         "header": "━━ 🔷 GEMINI量化 · 币安 ━━",
@@ -25,9 +29,9 @@ EXCHANGE_THEMES: dict[str, dict] = {
     "deepcoin": {
         "label": "深币",
         "symbol": "ETH-USDT-SWAP",
-        "leverage": settings.DEEPCOIN_LEVERAGE,
+        "leverage": _FIXED_LEV,
         "brand": "GEMINI量化 · 深币 SWAP 实盘引擎",
-        "tag": f"#深币{settings.DEEPCOIN_LEVERAGE}x",
+        "tag": f"#深币{_FIXED_LEV}x",
         "accent": "🟢",
         "palette": "翡翠绿",
         "header": "━━ 🟢 GEMINI量化 · 深币 ━━",
@@ -36,9 +40,9 @@ EXCHANGE_THEMES: dict[str, dict] = {
     "okx": {
         "label": "OKX",
         "symbol": "ETH-USDT-SWAP",
-        "leverage": settings.OKX_LEVERAGE,
+        "leverage": _FIXED_LEV,
         "brand": "GEMINI量化 · OKX 合约实盘引擎",
-        "tag": f"#OKX{settings.OKX_LEVERAGE}x",
+        "tag": f"#OKX{_FIXED_LEV}x",
         "accent": "🟣",
         "palette": "紫罗兰",
         "header": "━━ 🟣 GEMINI量化 · OKX ━━",
@@ -47,9 +51,9 @@ EXCHANGE_THEMES: dict[str, dict] = {
     "gate": {
         "label": "Gate.io",
         "symbol": "ETH_USDT",
-        "leverage": settings.GATE_LEVERAGE,
+        "leverage": _FIXED_LEV,
         "brand": "GEMINI量化 · Gate 合约实盘引擎",
-        "tag": f"#Gate{settings.GATE_LEVERAGE}x",
+        "tag": f"#Gate{_FIXED_LEV}x",
         "accent": "🟠",
         "palette": "琥珀橙",
         "header": "━━ 🟠 GEMINI量化 · Gate.io ━━",
