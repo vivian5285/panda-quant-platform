@@ -309,8 +309,38 @@ def is_hard_tv_close_action(action: str | None) -> bool:
     return a in TV_HARD_CLOSE_ACTIONS
 
 
+# After OPEN, delayed CLOSE_QUICK/RSI (meant for the prior bar) must not flatten the new position.
+OPEN_FORCE_CLOSE_GRACE_SEC = 5.0
 # Bare TV CLOSE right after OPEN often is a regime/chart chase alert, not SL/TP.
 OPEN_BARE_CLOSE_GRACE_SEC = 60.0
+
+
+def should_ignore_late_close_after_open(supervisor, action: str | None) -> tuple[bool, str]:
+    """Ignore CLOSE_QUICK_EXIT / CLOSE_RSI_EXIT within grace after a successful OPEN.
+
+    Same-window CLOSE+OPEN still close-then-open via coalesce. This only covers
+    cross-window: OPEN executed first, CLOSE arrives ~1–2s later alone.
+    """
+    from app.services.webhook_guard import is_force_flat_close
+
+    a = (action or "").upper().strip()
+    if not is_force_flat_close(a):
+        return False, ""
+    opened = float(getattr(supervisor, "trade_opened_at", 0) or 0)
+    if opened <= 0:
+        return False, ""
+    age = time.time() - opened
+    if age < 0 or age > OPEN_FORCE_CLOSE_GRACE_SEC:
+        return False, ""
+    live_side, live_qty = resolve_supervisor_live_side(supervisor)
+    if live_side not in ("LONG", "SHORT") or live_qty <= 0:
+        return False, ""
+    if bool(getattr(supervisor, "adopted_manual", False)):
+        return False, ""
+    return True, (
+        f"开仓后 {OPEN_FORCE_CLOSE_GRACE_SEC:.0f}s 内忽略迟到平仓 {a}"
+        f"（已持仓 {age:.1f}s，防 TV 先开后到的旧平仓误杀；同窗先平后开仍生效）"
+    )
 
 
 def should_ignore_bare_close_after_open(supervisor, action: str | None) -> tuple[bool, str]:

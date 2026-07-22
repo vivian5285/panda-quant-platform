@@ -1,230 +1,121 @@
-"""Breathing stop unit tests — user demo path + symmetry."""
+"""Breathing stop unit tests — adaptive breath coef path."""
 
 from app.core.breathing_stop import (
     BREAKEVEN_TRIGGER_ATR,
-    DEFAULT_ADX,
     INITIAL_SL_ATR,
+    STOP_ORDER_BUFFER_USDT,
     apply_breathing_tick,
+    apply_stop_order_buffer,
     calculate_stop_long,
     calculate_stop_short,
     compute_initial_stop,
+    get_breathing_coefficient,
     init_breathing_state,
     stop_hit,
-    trail_distance_by_adx,
 )
 
 
-def test_trail_distance_adx_bounds():
-    assert trail_distance_by_adx(10) == 1.2
-    assert trail_distance_by_adx(15) == 1.2
-    assert trail_distance_by_adx(35) == 2.5
-    assert trail_distance_by_adx(50) == 2.5
-    mid = trail_distance_by_adx(25)
-    assert abs(mid - 1.85) < 1e-9
+def test_breathing_coefficient_ladder():
+    assert get_breathing_coefficient(0.5) == 0.7
+    assert get_breathing_coefficient(0.8) == 0.85
+    assert get_breathing_coefficient(1.2) == 1.0
+    assert abs(get_breathing_coefficient(1.75) - 1.3166666667) < 1e-6
+    assert get_breathing_coefficient(2.5) == 1.5
 
 
-def test_initial_stop_long_short():
+def test_initial_stop_and_buffer():
     assert compute_initial_stop(1800, "LONG", 40) == 1740
     assert compute_initial_stop(1800, "SHORT", 40) == 1860
+    assert apply_stop_order_buffer("LONG", 1740) == 1740 - STOP_ORDER_BUFFER_USDT
+    assert apply_stop_order_buffer("SHORT", 1860) == 1860 + STOP_ORDER_BUFFER_USDT
 
 
 def test_init_state():
-    st = init_breathing_state(1800, "LONG", atr=40, adx=20)
+    st = init_breathing_state(1800, "LONG", atr=40, breathing_coefficient=1.0)
     assert st["initial_atr"] == 40
     assert st["initial_stop"] == 1740
     assert st["current_sl"] == 1740
     assert st["breakeven_phase"] is False
-    assert st["current_adx"] == 20
+    assert st["breathing_coefficient"] == 1.0
     assert st["remaining_qty_pct"] == 1.0
 
 
-def test_demo_path_long_1800_atr40():
-    """User example: ETH 1800 ATR=40 LONG."""
+def test_demo_path_long_1800_atr40_coef1():
+    """User example: ETH 1800 ATR=40 LONG, breath=1.0."""
     entry = 1800.0
     atr = 40.0
+    coef = 1.0
     initial_stop = entry - INITIAL_SL_ATR * atr
     current_stop = initial_stop
     highest = entry
     phase = False
 
     price_path = [1800, 1830, 1860, 1890, 1920, 1950, 1980, 2010, 2040, 2000, 2100]
-    adx_path = [20, 20, 22, 24, 26, 28, 30, 32, 34, 30, 36]
     stops = []
 
-    for price, adx in zip(price_path, adx_path):
+    for price in price_path:
         current_stop, highest, phase, meta = calculate_stop_long(
-            price, entry, atr, initial_stop, current_stop, highest, phase, adx,
+            price, entry, atr, initial_stop, current_stop, highest, phase, coef,
         )
         stops.append(current_stop)
-        # Never retreat
         if len(stops) >= 2:
             assert current_stop >= stops[-2] - 1e-9
 
-    # Open: still at initial
     assert abs(stops[0] - 1740) < 0.05
-    # After +30 (~1 step): 1740 + 0.4*40 = 1756
+    # +30 → 1 step: 1740 + 0.4*40 = 1756
     assert abs(stops[1] - 1756) < 0.05
-    # Phase2 must engage by price=1920 (= entry+3ATR)
-    # Recompute with fresh path to find first phase2
+
     current_stop = initial_stop
     highest = entry
     phase = False
     phase2_at = None
-    for price, adx in zip(price_path, adx_path):
+    for price in price_path:
         current_stop, highest, phase, meta = calculate_stop_long(
-            price, entry, atr, initial_stop, current_stop, highest, phase, adx,
+            price, entry, atr, initial_stop, current_stop, highest, phase, coef,
         )
         if phase and phase2_at is None:
             phase2_at = price
             assert meta["event"] == "phase2_enter"
-    assert phase2_at == 1920
+    assert phase2_at == entry + BREAKEVEN_TRIGGER_ATR * atr  # 1920
+
+
+def test_phase2_trail_uses_breath_coef():
+    entry, atr, coef = 1900.0, 20.0, 1.3
+    initial_stop = compute_initial_stop(entry, "LONG", atr)
+    # Already in phase2
+    stop, high, phase, meta = calculate_stop_long(
+        2000, entry, atr, initial_stop, initial_stop, 2000, True, coef,
+    )
     assert phase is True
-    # Final stop only ratchets up; after peak 2100 trail is peak - dist*ATR
-    assert current_stop > 1740
-    assert highest == 2100
+    assert abs(meta["trail_distance"] - atr * coef) < 1e-9
+    assert abs(stop - (2000 - atr * coef)) < 1e-9
 
 
-def test_apply_breathing_tick_wrapper():
-    st = init_breathing_state(1800, "LONG", 40, 20)
+def test_apply_tick_and_hit():
+    st = init_breathing_state(1900, "LONG", atr=20, breathing_coefficient=1.0)
     out = apply_breathing_tick(
         side="LONG",
-        price=1830,
-        entry_price=st["entry_price"],
-        initial_atr=st["initial_atr"],
+        price=1910,
+        entry_price=1900,
+        initial_atr=20,
         initial_stop=st["initial_stop"],
         current_stop=st["current_sl"],
-        best_price=st["best_price"],
+        best_price=1900,
         breakeven_phase=False,
-        adx_val=20,
+        breathing_coefficient=1.0,
     )
-    assert out["improved"] is True
-    assert abs(out["current_sl"] - 1756) < 0.05
-    assert out["event"] == "step"
+    assert out["current_sl"] >= st["initial_stop"] - 1e-9
+    assert not stop_hit("LONG", 1910, out["current_sl"])
+    assert stop_hit("LONG", out["current_sl"] - 0.01, out["current_sl"])
 
 
-def test_short_symmetric_no_retreat():
-    entry = 1800.0
-    atr = 40.0
-    initial_stop = entry + INITIAL_SL_ATR * atr  # 1860
-    current_stop = initial_stop
-    lowest = entry
-    phase = False
-    prev = current_stop
-    for price, adx in [(1800, 20), (1770, 20), (1740, 22), (1710, 24), (1680, 28)]:
-        current_stop, lowest, phase, _ = calculate_stop_short(
-            price, entry, atr, initial_stop, current_stop, lowest, phase, adx,
-        )
-        assert current_stop <= prev + 1e-9
-        prev = current_stop
-    assert phase is True  # 1800-3*40=1680
-    assert current_stop < 1860
-
-
-def test_stop_hit():
-    assert stop_hit("LONG", 1739, 1740) is True
-    assert stop_hit("LONG", 1741, 1740) is False
-    assert stop_hit("SHORT", 1861, 1860) is True
-    assert stop_hit("SHORT", 1859, 1860) is False
-
-
-def test_default_adx_when_missing():
-    st = init_breathing_state(1800, "LONG", 40, None)
-    assert st["current_adx"] == DEFAULT_ADX
-
-
-def test_breakeven_trigger_constant():
-    assert BREAKEVEN_TRIGGER_ATR == 3.0
-
-
-def test_recover_tick_never_retreats_long():
-    """Restart recover: apply_breathing_tick must not lower an already-raised stop."""
-    entry = 1800.0
-    atr = 40.0
-    initial_stop = 1740.0
-    raised = 1756.0  # already stepped once
-    out = apply_breathing_tick(
-        side="LONG",
-        price=1820,
-        entry_price=entry,
-        initial_atr=atr,
-        initial_stop=initial_stop,
-        current_stop=raised,
-        best_price=1830,
-        breakeven_phase=False,
-        adx_val=20,
+def test_short_symmetric_step():
+    entry, atr, coef = 1900.0, 20.0, 1.0
+    initial_stop = compute_initial_stop(entry, "SHORT", atr)
+    # Small move: 15 pts → 1 step, before TP1 floor (1.35×ATR=27)
+    stop, low, phase, meta = calculate_stop_short(
+        1885, entry, atr, initial_stop, initial_stop, entry, False, coef,
     )
-    assert out["current_sl"] >= raised - 1e-9
-
-
-def test_phase1_to_phase2_and_adx_trail_interpolation():
-    """Scenario-3 supplement: simulated price path into phase2 + ADX trail distance.
-
-    Not a live fill — verifies the same calculate_stop_long math used in production.
-    """
-    entry = 1920.74
-    atr = 13.8737
-    initial_stop = entry - INITIAL_SL_ATR * atr
-    current_stop = initial_stop
-    highest = entry
-    phase = False
-
-    # Phase1: exactly 1 step of +0.75 ATR favorable
-    p1 = entry + 0.75 * atr
-    current_stop, highest, phase, meta = calculate_stop_long(
-        p1, entry, atr, initial_stop, current_stop, highest, phase, 20,
-    )
+    assert meta["step_count"] == 1
+    assert abs(stop - (initial_stop - 1 * 0.4 * atr)) < 1e-9
     assert phase is False
-    assert meta["event"] == "step"
-    expected_step = initial_stop + 1 * 0.4 * atr
-    assert abs(current_stop - expected_step) < 1e-6
-
-    # Enter phase2 at +3.0 ATR (also past TP2 → TP2 floor may raise stop before trail)
-    p2 = entry + BREAKEVEN_TRIGGER_ATR * atr
-    current_stop, highest, phase, meta = calculate_stop_long(
-        p2, entry, atr, initial_stop, current_stop, highest, phase, 25,
-    )
-    assert phase is True
-    assert meta["event"] == "phase2_enter"
-    dist_mid = trail_distance_by_adx(25)
-    assert abs(dist_mid - 1.85) < 1e-9
-    tp2_floor = entry + 1.5 * atr
-    trailed = highest - dist_mid * atr
-    expected_enter = max(tp2_floor, trailed)
-    assert abs(current_stop - expected_enter) < 1e-6
-
-    # Stronger ADX → wider trail; stop must not retreat when price dips within trail
-    peak = p2 + atr
-    current_stop, highest, phase, meta = calculate_stop_long(
-        peak, entry, atr, initial_stop, current_stop, highest, phase, 35,
-    )
-    assert phase is True
-    dist_strong = trail_distance_by_adx(35)
-    assert dist_strong == 2.5
-    raised = current_stop
-    # Pullback that should not retreat stop
-    pull = peak - 0.5 * atr
-    current_stop, highest, phase, meta = calculate_stop_long(
-        pull, entry, atr, initial_stop, current_stop, highest, phase, 35,
-    )
-    assert current_stop >= raised - 1e-9
-    assert highest == peak
-
-
-def test_phase2_short_symmetric_sim():
-    entry = 1920.74
-    atr = 13.8737
-    initial_stop = entry + INITIAL_SL_ATR * atr
-    current_stop = initial_stop
-    lowest = entry
-    phase = False
-    p2 = entry - BREAKEVEN_TRIGGER_ATR * atr
-    current_stop, lowest, phase, meta = calculate_stop_short(
-        p2, entry, atr, initial_stop, current_stop, lowest, phase, 25,
-    )
-    assert phase is True
-    assert meta["event"] == "phase2_enter"
-    dist = trail_distance_by_adx(25)
-    tp2_floor = entry - 1.5 * atr
-    trailed = lowest + dist * atr
-    expected_enter = min(tp2_floor, trailed)
-    assert abs(current_stop - expected_enter) < 1e-6

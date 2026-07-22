@@ -19,6 +19,7 @@ from app.core.startup_reconcile import (
     prepare_manual_adopt,
     recovery_section,
     should_ignore_bare_close_after_open,
+    should_ignore_late_close_after_open,
     should_skip_tv_close_for_manual,
 )
 from app.core.binance_smart_defense import BinanceSmartDefenseMixin
@@ -271,6 +272,11 @@ class PositionSupervisor(
                     "initial_atr": float(getattr(self, "initial_atr", 0) or 0),
                     "initial_stop": float(getattr(self, "initial_stop", 0) or 0),
                     "breakeven_phase": bool(getattr(self, "breakeven_phase", False)),
+                    "breathing_coefficient": float(getattr(self, "breathing_coefficient", 1.0) or 1.0),
+                    "breath_ratio_history": list(getattr(self, "breath_ratio_history", None) or []),
+                    "atr_1h": float(getattr(self, "atr_1h", 0) or 0),
+                    "breath_smooth_ratio": float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
+                    "tv_atr_ref": float(getattr(self, "_tv_atr_ref", 0) or 0),
                     "current_adx": float(getattr(self, "current_adx", 25) or 25),
                     "remaining_qty_pct": float(getattr(self, "remaining_qty_pct", 1.0) or 1.0),
                     "monitoring": self.monitoring,
@@ -325,6 +331,13 @@ class PositionSupervisor(
                     self.initial_atr = float(s.get("initial_atr", 0) or 0)
                     self.initial_stop = float(s.get("initial_stop", 0) or 0)
                     self.breakeven_phase = bool(s.get("breakeven_phase", False))
+                    self.breathing_coefficient = float(s.get("breathing_coefficient", 1.0) or 1.0)
+                    self.breath_ratio_history = [
+                        float(x) for x in (s.get("breath_ratio_history") or [])
+                    ]
+                    self.atr_1h = float(s.get("atr_1h", 0) or 0)
+                    self.breath_smooth_ratio = float(s.get("breath_smooth_ratio", 1.0) or 1.0)
+                    self._tv_atr_ref = float(s.get("tv_atr_ref", 0) or 0)
                     self.current_adx = float(s.get("current_adx", 25) or 25)
                     self.remaining_qty_pct = float(s.get("remaining_qty_pct", 1.0) or 1.0)
                     # Old radar schema detection (activated/stepCount without breathing fields)
@@ -523,7 +536,20 @@ class PositionSupervisor(
         self.regime = int(payload.get("regime", 3))
         self.regime = clamp_regime(self.regime)
 
-        # ATR/ADX come from VPS market engine only — ignore webhook atr/adx for decisions
+        # Prefer TV webhook atr as frozen initial_atr; VPS 90m only as fallback
+        position_open = bool(
+            getattr(self, "monitoring", False)
+            or float(getattr(self, "watched_qty", 0) or 0) > 0
+        )
+        tv_atr_raw = payload.get("atr")
+        try:
+            tv_atr = float(tv_atr_raw) if tv_atr_raw is not None and tv_atr_raw != "" else 0.0
+        except (TypeError, ValueError):
+            tv_atr = 0.0
+        if tv_atr > 0:
+            self._tv_atr_ref = tv_atr
+            if not position_open:
+                self.current_atr = tv_atr
         self.tv_price = round_price(payload.get("price", 0))
         self.tv_tps = normalize_tv_targets([
             payload.get("tv_tp1", 0),
@@ -531,12 +557,10 @@ class PositionSupervisor(
             payload.get("tv_tp3", 0),
         ])
         self.risk_multiplier = float(payload.get("risk_multiplier", 1.0))
-        position_open = bool(
-            getattr(self, "monitoring", False)
-            or float(getattr(self, "watched_qty", 0) or 0) > 0
-        )
         if not position_open and hasattr(self, "_pull_vps_market_indicators"):
-            self._pull_vps_market_indicators(force=True)
+            # Soft fallback only when TV atr missing
+            if float(getattr(self, "_tv_atr_ref", 0) or 0) <= 0:
+                self._pull_vps_market_indicators(force=True)
         self._apply_tv_entry_context(payload)
         self._apply_tv_sl_from_payload(payload)
         close_reason = payload.get("reason", "策略指标反转/波动率安全退出")
@@ -572,6 +596,21 @@ class PositionSupervisor(
                     "status": "skipped",
                     "reason": "open_grace_bare_close",
                     "message": ignore_reason,
+                }
+            late, late_reason = should_ignore_late_close_after_open(self, raw_action)
+            if late:
+                self._log("SIGNAL", f"⏭️ {late_reason}", {"action": raw_action, "tv_reason": tv_reason})
+                self._alert(
+                    "info",
+                    "CLOSE_DEFER",
+                    "开仓保护期 · 忽略迟到平仓",
+                    late_reason,
+                    {"action": raw_action, "tv_reason": tv_reason, "regime": self.regime},
+                )
+                return {
+                    "status": "skipped",
+                    "reason": "open_grace_late_close",
+                    "message": late_reason,
                 }
 
         def _tv_close_kwargs() -> dict:
@@ -787,12 +826,13 @@ class PositionSupervisor(
         return lev
 
     def _resolve_entry_qty(self, curr_px: float) -> tuple[float, dict]:
-        """RISK20 sizing once at open: risk∩notional∩(TV.qty×TV_dist/VPS_dist).
+        """Sizing once at open: equity×20%×5 (=1× notional). ATR from TV webhook.
 
-        VPS initialStop = entry ± 1.5×ATR (risk distance + real stop).
-        TV stop_loss only scales TV.qty — never the exchange stop price.
+        initialStop = entry ± 1.5×ATR ± 0.3 buffer (exchange hang).
+        TV stop_loss is never the exchange stop price.
         """
         from app.core.breathing_stop import compute_initial_stop
+        from app.core.open_atr_guard import check_open_atr_or_reject
 
         equity = read_contract_equity(self.client)
         leverage = self._resolve_entry_leverage()
@@ -803,85 +843,39 @@ class PositionSupervisor(
         if side not in ("LONG", "SHORT"):
             side = str(getattr(self, "last_tv_side", None) or "").upper()
 
-        snap = {}
-        if hasattr(self, "_pull_vps_market_indicators"):
+        snap: dict = {}
+        tv_atr = float(getattr(self, "_tv_atr_ref", 0) or 0)
+        if tv_atr <= 0:
+            try:
+                tv_atr = float(tv_fields.get("atr") or 0)
+            except (TypeError, ValueError):
+                tv_atr = 0.0
+        if tv_atr <= 0 and hasattr(self, "_pull_vps_market_indicators"):
             try:
                 snap = self._pull_vps_market_indicators(force=True) or {}
             except Exception:
                 snap = {}
-        atr = float(snap.get("atr") or getattr(self, "current_atr", 0) or 0)
+        atr = float(tv_atr or snap.get("atr") or getattr(self, "current_atr", 0) or 0)
         atr_series = list(snap.get("atr_series") or [])
+        atr_source = "tv_webhook" if tv_atr > 0 else "vps"
         tv_sl_ref = self._pine_stop_loss_ref() if hasattr(self, "_pine_stop_loss_ref") else float(
             getattr(self, "_tv_stop_loss_ref", 0)
             or getattr(self, "_pending_open_tv_sl", 0)
             or 0
         )
-        from app.core.atr_emergency_fallback import (
-            apply_fallback_atr,
-            evaluate_emergency_atr_fallback,
-        )
-        from app.core.open_atr_guard import check_open_atr_or_reject
-
-        fb = evaluate_emergency_atr_fallback(
-            vps_atr=atr,
-            atr_series=atr_series,
-            entry=price,
-            tv_stop_loss=tv_sl_ref if tv_sl_ref > 0 else None,
-            mismatch_streak=int(getattr(self, "atr_mismatch_streak", 0) or 0),
-        )
-        self.atr_mismatch_streak = int(fb.get("mismatch_streak_next") or 0)
-        atr_source = "vps"
         self._atr_fallback_pending_pause = False
-        if fb.get("need_fallback"):
-            fb_atr = apply_fallback_atr(fb)
-            if fb_atr > 0:
-                atr = fb_atr
-                atr_source = "tv_emergency_fallback"
-                self._atr_fallback_pending_pause = True
-                self.atr_fallback_active = True
-                self.current_atr = atr
-                self._log(
-                    "ERROR",
-                    f"⚠️ ATR应急降级·本笔使用TV隐含ATR={atr:.4f} "
-                    f"(VPS={fb.get('vps_atr')} reason={fb.get('reason')})",
-                    fb,
-                )
-                self._alert(
-                    "critical",
-                    "ATR_FALLBACK",
-                    "ATR应急降级·需人工确认后恢复",
-                    (
-                        f"原因={fb.get('reason')} | VPS ATR={fb.get('vps_atr')} | "
-                        f"TV隐含ATR={fb.get('tv_implied_atr')} | "
-                        f"Δ={fb.get('mismatch_pct')}% | 本笔已用降级ATR开仓；"
-                        f"随后暂停本 symbol 自动开仓"
-                    ),
-                    dict(fb),
-                )
-            else:
-                atr_ok, atr_meta = check_open_atr_or_reject(
-                    self,
-                    atr=float(fb.get("vps_atr") or 0),
-                    atr_series=atr_series,
-                    side=side,
-                    tv_sl_ref=tv_sl_ref if tv_sl_ref > 0 else None,
-                )
-                if not atr_ok:
-                    atr_meta["atr_fallback"] = fb
-                    return 0.0, atr_meta
-        else:
-            atr_ok, atr_meta = check_open_atr_or_reject(
-                self,
-                atr=atr,
-                atr_series=atr_series,
-                side=side,
-                tv_sl_ref=tv_sl_ref if tv_sl_ref > 0 else None,
-            )
-            if not atr_ok:
-                # No TV-implied available for degrade → keep reject
-                atr_meta["atr_fallback"] = fb
-                return 0.0, atr_meta
-            self.atr_fallback_active = False
+        self.atr_fallback_active = False
+        fb: dict = {}
+
+        atr_ok, atr_meta = check_open_atr_or_reject(
+            self,
+            atr=atr,
+            atr_series=atr_series,
+            side=side,
+            tv_sl_ref=tv_sl_ref if tv_sl_ref > 0 else None,
+        )
+        if not atr_ok:
+            return 0.0, atr_meta
 
         if hasattr(self, "_save_state"):
             try:
@@ -913,19 +907,17 @@ class PositionSupervisor(
         meta["sizing_atr"] = round(atr, 4) if atr else None
         meta["sizing_side"] = side or None
         meta["atr_source"] = atr_source
-        meta["atr_fallback"] = bool(atr_source == "tv_emergency_fallback")
+        meta["atr_fallback"] = False
         meta["atr_fallback_detail"] = fb
         if sizing_stop > 0:
             self._sizing_initial_stop = sizing_stop
             self.initial_atr = atr if atr > 0 else float(getattr(self, "initial_atr", 0) or 0)
+            self.current_atr = self.initial_atr
         self._log(
             "SIGNAL",
             "📐 开仓算仓 "
             f"atr_src={atr_source} "
-            f"adj={meta.get('adjust_coef')} "
-            f"risk={meta.get('candidate_qty_by_risk')} "
-            f"notional={meta.get('candidate_qty_by_notional')} "
-            f"tv_adj={meta.get('candidate_qty_by_tv_adj')} "
+            f"notional={meta.get('notional_target') or meta.get('candidate_qty_by_notional')} "
             f"bind={meta.get('binding')} "
             f"final={meta.get('final_qty')}"
             + (f" err={meta.get('error')}" if meta.get("error") else ""),
@@ -2991,8 +2983,12 @@ class PositionSupervisor(
         seed_stop = float(getattr(self, "_sizing_initial_stop", 0) or 0)
         self._init_breathing_on_open(
             entry_price,
-            atr=float(getattr(self, "initial_atr", 0) or getattr(self, "current_atr", 0) or 0),
-            adx=float(getattr(self, "current_adx", 0) or 0) or None,
+            atr=float(
+                getattr(self, "_tv_atr_ref", 0)
+                or getattr(self, "initial_atr", 0)
+                or getattr(self, "current_atr", 0)
+                or 0
+            ),
         )
         # Prefer sizing-time initialStop if ATR refresh drifted slightly
         if seed_stop > 0 and float(getattr(self, "initial_stop", 0) or 0) > 0:

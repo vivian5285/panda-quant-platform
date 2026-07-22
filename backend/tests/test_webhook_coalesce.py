@@ -29,13 +29,13 @@ def _msg(action: str, symbol: str = "ETHUSDT", price: float = 3300.0, **extra):
     return d, compute_fingerprint(d)
 
 
-def test_coalesce_window_hard_capped_at_1s(monkeypatch):
+def test_coalesce_window_hard_capped_at_2_5s(monkeypatch):
     monkeypatch.setattr(
         "app.services.webhook_symbol_coalesce.get_settings",
-        lambda: MagicMock(WEBHOOK_COALESCE_SEC=2.0),
+        lambda: MagicMock(WEBHOOK_COALESCE_SEC=9.0),
     )
     c = WebhookSymbolCoalesce()
-    assert c.window_sec() == 1.0
+    assert c.window_sec() == 2.5
 
 
 def test_coalesce_window_default_clamped(monkeypatch):

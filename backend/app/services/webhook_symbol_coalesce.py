@@ -1,6 +1,6 @@
 """Per-symbol TV webhook coalesce — checklist §消息顺序处理.
 
-Cache ≤1s per symbol (default 1.0s), then execute:
+Cache ≤2.5s per symbol (default 2.5s), then execute:
   1. At most one CLOSE_* (idempotent flat)
   2. Latest LONG/SHORT (open path still force-flats)
 
@@ -25,8 +25,8 @@ DispatchFn = Callable[[dict, str], None]
 
 CLOSE_ACTIONS = frozenset({"CLOSE_QUICK_EXIT", "CLOSE_RSI_EXIT"})
 ENTRY_ACTIONS = frozenset({"LONG", "SHORT"})
-# Spec §13.6 / §1.5: hard-cap at 1.0s — never wait longer for a late sibling msg.
-COALESCE_WINDOW_MAX_SEC = 1.0
+# Spec: cache window up to 2.5s so CLOSE/OPEN arriving with 1–2s skew still pair.
+COALESCE_WINDOW_MAX_SEC = 2.5
 COALESCE_WINDOW_MIN_SEC = 0.5
 
 

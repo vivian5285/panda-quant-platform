@@ -58,6 +58,7 @@ from app.core.startup_reconcile import (
     prepare_manual_adopt,
     recovery_section,
     should_ignore_bare_close_after_open,
+    should_ignore_late_close_after_open,
     should_skip_tv_close_for_manual,
 )
 from app.config import get_settings
@@ -659,6 +660,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "initial_atr": float(getattr(self, "initial_atr", 0) or 0),
                     "initial_stop": float(getattr(self, "initial_stop", 0) or 0),
                     "breakeven_phase": bool(getattr(self, "breakeven_phase", False)),
+                    "breathing_coefficient": float(getattr(self, "breathing_coefficient", 1.0) or 1.0),
+                    "breath_ratio_history": list(getattr(self, "breath_ratio_history", None) or []),
+                    "atr_1h": float(getattr(self, "atr_1h", 0) or 0),
+                    "breath_smooth_ratio": float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
+                    "tv_atr_ref": float(getattr(self, "_tv_atr_ref", 0) or 0),
                     "current_adx": float(getattr(self, "current_adx", 25) or 25),
                     "remaining_qty_pct": float(getattr(self, "remaining_qty_pct", 1.0) or 1.0),
                     "tv_tps": self.tv_tps,
@@ -2562,14 +2568,24 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self._signal_prev_tv_tps = prev_tv_tps
         self.regime = clamp_regime(self._safe_int(payload.get("regime"), 3))
 
-        # ATR/ADX from VPS market engine only — ignore webhook atr/adx
+        # Prefer TV webhook atr as frozen initial_atr; VPS 90m only as fallback
         self.risk_multiplier = float(payload.get("risk_multiplier", 1.0))
         position_open = bool(
             getattr(self, "monitoring", False)
             or float(getattr(self, "watched_qty", 0) or 0) > 0
         )
+        tv_atr_raw = payload.get("atr")
+        try:
+            tv_atr = float(tv_atr_raw) if tv_atr_raw is not None and tv_atr_raw != "" else 0.0
+        except (TypeError, ValueError):
+            tv_atr = 0.0
+        if tv_atr > 0:
+            self._tv_atr_ref = tv_atr
+            if not position_open:
+                self.current_atr = tv_atr
         if not position_open and hasattr(self, "_pull_vps_market_indicators"):
-            self._pull_vps_market_indicators(force=True)
+            if float(getattr(self, "_tv_atr_ref", 0) or 0) <= 0:
+                self._pull_vps_market_indicators(force=True)
         self._apply_tv_entry_context(payload)
         self._apply_tv_sl_from_payload(payload)
         self.tv_price = self._safe_float(payload.get("price"), 0.0)
@@ -2619,6 +2635,17 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         "CLOSE_DEFER",
                         "开仓保护期 · 忽略裸 CLOSE",
                         ignore_reason,
+                        {"action": raw_action, "tv_reason": tv_reason, "regime": self.regime},
+                    )
+                    return
+                late, late_reason = should_ignore_late_close_after_open(self, raw_action)
+                if late:
+                    logger.info("⏭️ %s", late_reason)
+                    self._alert(
+                        "info",
+                        "CLOSE_DEFER",
+                        "开仓保护期 · 忽略迟到平仓",
+                        late_reason,
                         {"action": raw_action, "tv_reason": tv_reason, "regime": self.regime},
                     )
                     return
@@ -2830,13 +2857,20 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             side = str(getattr(self, "last_tv_side", None) or "").upper()
 
         snap = {}
+        tv_atr = float(getattr(self, "_tv_atr_ref", 0) or 0)
+        if tv_atr <= 0:
+            try:
+                tv_atr = float((getattr(self, "_tv_entry_fields", None) or {}).get("atr") or 0)
+            except (TypeError, ValueError):
+                tv_atr = 0.0
         if hasattr(self, "_pull_vps_market_indicators"):
             try:
-                snap = self._pull_vps_market_indicators(force=True) or {}
+                snap = self._pull_vps_market_indicators(force=(tv_atr <= 0)) or {}
             except Exception:
                 snap = {}
-        atr = float(snap.get("atr") or getattr(self, "current_atr", 0) or 0)
+        atr = float(tv_atr or snap.get("atr") or getattr(self, "current_atr", 0) or 0)
         atr_series = list(snap.get("atr_series") or [])
+        atr_source = "tv_webhook" if tv_atr > 0 else "vps"
         tv_sl_ref = self._pine_stop_loss_ref() if hasattr(self, "_pine_stop_loss_ref") else float(
             getattr(self, "_tv_stop_loss_ref", 0)
             or getattr(self, "_pending_open_tv_sl", 0)
@@ -2856,9 +2890,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             mismatch_streak=int(getattr(self, "atr_mismatch_streak", 0) or 0),
         )
         self.atr_mismatch_streak = int(fb.get("mismatch_streak_next") or 0)
-        atr_source = "vps"
         self._atr_fallback_pending_pause = False
-        if fb.get("need_fallback"):
+        if atr_source != "tv_webhook" and fb.get("need_fallback"):
             fb_atr = apply_fallback_atr(fb)
             if fb_atr > 0:
                 atr = fb_atr
@@ -2894,6 +2927,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 if not atr_ok:
                     atr_meta["atr_fallback"] = fb
                     return 0, atr_meta
+        elif atr_source == "tv_webhook":
+            self.atr_fallback_active = False
+            self.current_atr = atr
+            if float(getattr(self, "initial_atr", 0) or 0) <= 0:
+                self.initial_atr = atr
         else:
             atr_ok, atr_meta = check_open_atr_or_reject(
                 self,
@@ -3235,8 +3273,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self._reset_adverse_radar(keep_tv_sl=False)
         self._init_breathing_on_open(
             entry_price,
-            atr=float(getattr(self, "current_atr", 0) or getattr(self, "initial_atr", 0) or 0),
-            adx=float(getattr(self, "current_adx", 0) or 0) or None,
+            atr=float(
+                getattr(self, "_tv_atr_ref", 0)
+                or getattr(self, "initial_atr", 0)
+                or getattr(self, "current_atr", 0)
+                or 0
+            ),
         )
         tp_pxs = self.tv_tps
         self.best_price = entry_price
@@ -3959,6 +4001,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.initial_atr = float(s.get("initial_atr", 0) or 0)
                     self.initial_stop = float(s.get("initial_stop", 0) or 0)
                     self.breakeven_phase = bool(s.get("breakeven_phase", False))
+                    self.breathing_coefficient = float(s.get("breathing_coefficient", 1.0) or 1.0)
+                    self.breath_ratio_history = [
+                        float(x) for x in (s.get("breath_ratio_history") or [])
+                    ]
+                    self.atr_1h = float(s.get("atr_1h", 0) or 0)
+                    self.breath_smooth_ratio = float(s.get("breath_smooth_ratio", 1.0) or 1.0)
+                    self._tv_atr_ref = float(s.get("tv_atr_ref", 0) or 0)
                     self.current_adx = float(s.get("current_adx", 25) or 25)
                     self.remaining_qty_pct = float(s.get("remaining_qty_pct", 1.0) or 1.0)
                     # Old radar schema detection (activated/stepCount without breathing fields)

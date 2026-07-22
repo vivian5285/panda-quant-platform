@@ -14,8 +14,8 @@ class Settings(BaseSettings):
     WEBHOOK_SEQ_IDEMPOTENCY_TTL_SEC: int = 86400
     # 同 bar 缺前置 seq 时暂存等待秒数，超时报警后按已有顺序释放
     WEBHOOK_SEQ_WAIT_SEC: float = 3.0
-    # TV 同 K 线多消息缓存窗口（硬封顶 1.0s）：到期后先平仓一次再开最新仓
-    WEBHOOK_COALESCE_SEC: float = 1.0
+    # TV 同 K 线多消息缓存窗口（硬封顶 2.5s）：到期后先平仓一次再开最新仓
+    WEBHOOK_COALESCE_SEC: float = 2.5
     # DB / webhook 日志保留天数（checklist §12.4）
     LOG_RETENTION_DAYS: int = 30
     LOG_RETENTION_INTERVAL_SEC: int = 86400

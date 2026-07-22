@@ -5,13 +5,16 @@ import logging
 import time
 from typing import Any
 
+from app.core.atr_1h_breathing import refresh_supervisor_breath
 from app.core.breathing_stop import (
     INITIAL_SL_ATR,
     apply_breathing_tick,
+    apply_stop_order_buffer,
     compute_initial_stop,
     init_breathing_state,
     resolve_adx,
     resolve_atr,
+    resolve_breathing_coef,
     stop_hit,
 )
 from app.core.market_engine import (
@@ -305,6 +308,16 @@ class AdverseRadarMixin:
             self.initial_stop = 0.0
         if not hasattr(self, "breakeven_phase"):
             self.breakeven_phase = False
+        if not hasattr(self, "breathing_coefficient"):
+            self.breathing_coefficient = 1.0
+        if not hasattr(self, "breath_ratio_history"):
+            self.breath_ratio_history = []
+        if not hasattr(self, "atr_1h"):
+            self.atr_1h = 0.0
+        if not hasattr(self, "breath_smooth_ratio"):
+            self.breath_smooth_ratio = 1.0
+        if not hasattr(self, "_tv_atr_ref"):
+            self._tv_atr_ref = 0.0
         if not hasattr(self, "current_adx"):
             self.current_adx = resolve_adx(None)
         if not hasattr(self, "remaining_qty_pct"):
@@ -313,13 +326,21 @@ class AdverseRadarMixin:
             self._last_breath_trail_alert_sl = 0.0
 
     def _exchange_stop_px(self) -> float:
-        """VPS hang / breathing stop price (never Pine stop_loss)."""
+        """Logical VPS hang / breathing stop (never Pine stop_loss)."""
         return float(
             getattr(self, "current_sl", 0)
             or getattr(self, "initial_stop", 0)
             or getattr(self, "_tv_hard_sl_price", 0)
             or 0
         )
+
+    def _exchange_hang_stop_px(self, logical_sl: float | None = None) -> float:
+        """Exchange order price = logical stop ± 0.3 USDT execution buffer."""
+        side = getattr(self, "current_side", None)
+        logical = float(logical_sl if logical_sl is not None else self._exchange_stop_px() or 0)
+        if logical <= 0:
+            return 0.0
+        return round_price(apply_stop_order_buffer(side, logical))
 
     def _pine_stop_loss_ref(self) -> float:
         """TradingView stop_loss only (sizing adjust_coef + ATR compare)."""
@@ -572,6 +593,10 @@ class AdverseRadarMixin:
         self.breakeven_phase = False
         self.remaining_qty_pct = 1.0
         self._last_breath_trail_alert_sl = 0.0
+        self.breathing_coefficient = 1.0
+        self.breath_ratio_history = []
+        self.atr_1h = 0.0
+        self.breath_smooth_ratio = 1.0
         self.tv_sl = preserved
         self._tv_hard_sl_price = preserved_tv
         self.initial_stop = preserved_initial_stop
@@ -581,6 +606,7 @@ class AdverseRadarMixin:
             self.initial_stop = 0.0
             self.initial_atr = 0.0
             self.current_sl = 0.0
+            self._tv_atr_ref = 0.0
 
     def _clear_position_local_state(self) -> None:
         """Immediately wipe all breathing/position book fields after confirmed flat.
@@ -603,6 +629,11 @@ class AdverseRadarMixin:
         self.initial_atr = 0.0
         self.breakeven_phase = False
         self.remaining_qty_pct = 1.0
+        self.breathing_coefficient = 1.0
+        self.breath_ratio_history = []
+        self.atr_1h = 0.0
+        self.breath_smooth_ratio = 1.0
+        self._tv_atr_ref = 0.0
         self.tv_sl = 0.0
         self._tv_hard_sl_price = 0.0
         self.consumed_tp_levels = []
@@ -678,7 +709,11 @@ class AdverseRadarMixin:
         payload: dict | None = None,
         side: str | None = None,
     ) -> dict:
-        """Authoritative hard SL = breathing initial stop (entry ± 1.5×ATR). TV tv_sl ignored."""
+        """Authoritative hard SL = breathing initial stop (entry ± 1.5×ATR).
+
+        initial_atr prefers TV webhook ``atr`` (frozen at open). VPS 90m is
+        fallback only when TV atr is missing. TV stop_loss never hung as stop.
+        """
         self._init_adverse_radar_fields()
         entry = float(
             entry_px
@@ -688,11 +723,36 @@ class AdverseRadarMixin:
         )
         if payload:
             entry = float(payload.get("price") or entry or 0)
-        # ATR/ADX from VPS market engine only — never webhook
-        snap = self._pull_vps_market_indicators(force=True)
-        atr = float(snap.get("atr") or 0) or float(getattr(self, "current_atr", 0) or 0)
-        atr = resolve_atr(atr)
-        self.current_atr = atr
+
+        # Prefer TV atr → frozen initial_atr
+        atr = 0.0
+        atr_source = "none"
+        if payload:
+            try:
+                atr = float(payload.get("atr") or 0)
+            except (TypeError, ValueError):
+                atr = 0.0
+            if atr > 0:
+                atr_source = "tv_webhook"
+                self._tv_atr_ref = atr
+        if atr <= 0:
+            atr = float(getattr(self, "_tv_atr_ref", 0) or 0)
+            if atr > 0:
+                atr_source = "tv_atr_ref"
+        if atr <= 0:
+            atr = float(getattr(self, "initial_atr", 0) or 0)
+            if atr > 0:
+                atr_source = "initial_atr"
+        snap: dict[str, Any] = {}
+        if atr <= 0:
+            # Fallback: VPS 90m market engine
+            snap = self._pull_vps_market_indicators(force=True)
+            atr = float(snap.get("atr") or 0) or float(getattr(self, "current_atr", 0) or 0)
+            if atr > 0:
+                atr_source = "vps_90m_fallback"
+        atr = resolve_atr(atr) if atr > 0 else 0.0
+        if atr > 0:
+            self.current_atr = atr
         if float(snap.get("adx") or 0) > 0:
             self.current_adx = resolve_adx(snap.get("adx"))
         side_u = side or getattr(self, "current_side", None)
@@ -705,20 +765,23 @@ class AdverseRadarMixin:
             elif payload.get("side"):
                 side_u = str(payload.get("side")).upper()
 
-        stop = compute_initial_stop(entry, str(side_u or ""), atr)
+        stop = compute_initial_stop(entry, str(side_u or ""), atr) if atr > 0 else 0.0
+        hang = apply_stop_order_buffer(side_u, stop) if stop > 0 else 0.0
         meta = {
             "source": "breathing_initial",
             "stop_price": float(stop or 0),
+            "hang_stop": float(hang or 0),
             "entry": entry,
             "side": side_u,
             "atr": atr,
-            "adx": float(getattr(self, "current_adx", 0) or 0),
+            "atr_source": atr_source,
+            "breathing_coefficient": float(getattr(self, "breathing_coefficient", 1.0) or 1.0),
             "initial_sl_atr": 1.5,
-            "market_source": snap.get("source"),
-            "bars_90": snap.get("bars_90"),
+            "market_source": snap.get("source") if snap else atr_source,
+            "bars_90": snap.get("bars_90") if snap else None,
         }
         if stop > 0:
-            # Exchange hang price ONLY — never write VPS stop into self.tv_sl.
+            # Logical stop in state; exchange hang uses ±0.3 buffer at place time.
             self.initial_stop = float(stop)
             self.current_sl = float(stop)
             self._tv_hard_sl_price = float(stop)
@@ -737,7 +800,6 @@ class AdverseRadarMixin:
                 self._pending_open_tv_sl = float(tv_sl_ref)
             if float(getattr(self, "initial_atr", 0) or 0) <= 0:
                 self.initial_atr = atr
-            # Before open freeze: keep current_atr in sync with VPS
             if float(getattr(self, "initial_atr", 0) or 0) <= 0 or not (
                 bool(getattr(self, "monitoring", False))
                 or float(getattr(self, "watched_qty", 0) or 0) > 0
@@ -745,14 +807,12 @@ class AdverseRadarMixin:
                 self.current_atr = atr
             self._vps_hard_sl_meta = meta
             logger.info(
-                "呼吸止损: entry=%.2f side=%s atr=%.4f → stop=%.2f | %s",
-                entry, side_u, atr, stop, meta,
+                "呼吸止损: entry=%.2f side=%s atr=%.4f (%s) → stop=%.2f hang=%.2f | %s",
+                entry, side_u, atr, atr_source, stop, hang, meta,
             )
             self._maybe_alert_atr_mismatch(entry, tv_sl_ref, atr)
         else:
             self._vps_hard_sl_meta = meta
-            # Flat / transitional wipe often has side=None + stale entry — do not
-            # critical-alert as if a live position is missing its stop.
             live_open = (
                 bool(getattr(self, "monitoring", False))
                 or float(getattr(self, "watched_qty", 0) or 0) > 0
@@ -851,15 +911,19 @@ class AdverseRadarMixin:
         return self._exchange_stop_px()
 
     def _merged_stop_price(self, radar_sl: float | None = None) -> float:
-        """Single breathing stop — no max/min with a separate radar track."""
+        """Single breathing stop hang price (logical ± 0.3 USDT buffer)."""
         if radar_sl is not None and float(radar_sl or 0) > 0:
-            return round_price(float(radar_sl))
-        return round_price(float(
-            getattr(self, "current_sl", 0)
-            or getattr(self, "initial_stop", 0)
-            or getattr(self, "_tv_hard_sl_price", 0)
-            or 0
-        ))
+            logical = float(radar_sl)
+        else:
+            logical = float(
+                getattr(self, "current_sl", 0)
+                or getattr(self, "initial_stop", 0)
+                or getattr(self, "_tv_hard_sl_price", 0)
+                or 0
+            )
+        if logical <= 0:
+            return 0.0
+        return self._exchange_hang_stop_px(logical)
 
     def _shield_tier_prices(self) -> set[float]:
         """All stop trigger prices used to identify TV/legacy hard stops on the book."""
@@ -1424,18 +1488,41 @@ class AdverseRadarMixin:
         entry: float,
         atr: float | None = None,
         adx: float | None = None,
+        breathing_coefficient: float | None = None,
     ) -> dict:
-        """Initialize breathing-stop state at position open (VPS ATR/ADX only)."""
+        """Initialize breathing-stop state at position open.
+
+        ``atr`` must be TV webhook atr (or emergency fallback). Never overwrite
+        with VPS 90m after freeze. Breathing coefficient seeded from Binance 1h ATR.
+        """
         self._init_adverse_radar_fields()
         side = getattr(self, "current_side", None) or ""
-        snap = self._pull_vps_market_indicators(force=True)
-        atr_v = float(snap.get("atr") or 0) or (
-            atr if atr is not None else getattr(self, "current_atr", None)
+        atr_v = float(atr or 0) or float(getattr(self, "_tv_atr_ref", 0) or 0)
+        if atr_v <= 0:
+            atr_v = float(getattr(self, "initial_atr", 0) or getattr(self, "current_atr", 0) or 0)
+        if atr_v <= 0:
+            # Last resort fallback — VPS 90m (should be rare when TV sends atr)
+            snap = self._pull_vps_market_indicators(force=True)
+            atr_v = float(snap.get("atr") or 0)
+        atr_v = resolve_atr(atr_v) if atr_v > 0 else resolve_atr(None)
+
+        self.initial_atr = atr_v
+        self.current_atr = atr_v
+        # Seed 1h breathing coefficient
+        try:
+            refresh_supervisor_breath(self, force=True)
+        except Exception as exc:
+            logger.warning("1h breath seed failed: %s", exc)
+        coef = resolve_breathing_coef(
+            breathing_coefficient
+            if breathing_coefficient is not None
+            else getattr(self, "breathing_coefficient", 1.0)
         )
-        adx_v = float(snap.get("adx") or 0) or (
-            adx if adx is not None else getattr(self, "current_adx", None)
+        self.breathing_coefficient = coef
+
+        st = init_breathing_state(
+            float(entry or 0), str(side), atr=atr_v, breathing_coefficient=coef,
         )
-        st = init_breathing_state(float(entry or 0), str(side), atr=atr_v, adx=adx_v)
         self.initial_atr = float(st["initial_atr"])
         self.initial_stop = float(st["initial_stop"])
         self.current_sl = float(st["current_sl"])
@@ -1443,18 +1530,21 @@ class AdverseRadarMixin:
         self._tv_hard_sl_price = float(st["current_sl"])
         self.best_price = float(st["best_price"])
         self.breakeven_phase = bool(st["breakeven_phase"])
-        self.current_adx = float(st["current_adx"])
+        self.radar_step_count = int(st.get("step_count") or 0)
         self.remaining_qty_pct = float(st["remaining_qty_pct"])
         self.current_atr = float(st["initial_atr"])
+        if adx is not None:
+            self.current_adx = resolve_adx(adx)
+        hang = apply_stop_order_buffer(side, float(st["initial_stop"]))
         self._vps_hard_sl_meta = {
             "source": "breathing_initial",
             "stop_price": float(st["initial_stop"]),
+            "hang_stop": float(hang or 0),
             "entry": float(st["entry_price"]),
             "side": side,
             "atr": float(st["initial_atr"]),
-            "adx": float(st["current_adx"]),
-            "market_source": snap.get("source"),
-            "bars_90": snap.get("bars_90"),
+            "atr_source": "tv_webhook" if float(getattr(self, "_tv_atr_ref", 0) or 0) > 0 else "fallback",
+            "breathing_coefficient": coef,
         }
         self._last_breath_trail_alert_sl = 0.0
         return st
@@ -1465,8 +1555,11 @@ class AdverseRadarMixin:
         if pause_until and time.time() < pause_until:
             return False
         self._init_adverse_radar_fields()
-        # Soft-refresh ADX when a new 90m bar closes (never mutates initial_atr)
-        self._pull_vps_market_indicators(force=False)
+        # Soft-refresh 1h ATR → breathing coefficient (never mutates initial_atr)
+        try:
+            refresh_supervisor_breath(self, force=False)
+        except Exception:
+            pass
         entry = float(getattr(self, "watched_entry", 0) or 0)
         side = getattr(self, "current_side", None)
         atr = float(
@@ -1478,7 +1571,7 @@ class AdverseRadarMixin:
         current_sl = float(getattr(self, "current_sl", 0) or 0)
         best = float(getattr(self, "best_price", 0) or entry or 0)
         phase = bool(getattr(self, "breakeven_phase", False))
-        adx = float(getattr(self, "current_adx", 0) or 0)
+        coef = resolve_breathing_coef(getattr(self, "breathing_coefficient", 1.0))
         px = float(curr_px or 0)
         if entry <= 0 or atr <= 0 or side not in ("LONG", "SHORT") or px <= 0:
             return False
@@ -1501,23 +1594,27 @@ class AdverseRadarMixin:
             current_stop=current_sl,
             best_price=best,
             breakeven_phase=phase,
-            adx_val=adx,
+            breathing_coefficient=coef,
         )
         new_sl = float(tick.get("current_sl") or 0)
         new_best = float(tick.get("best_price") or best)
         new_phase = bool(tick.get("breakeven_phase"))
         improved = bool(tick.get("improved"))
         event = str(tick.get("event") or "none")
+        step_count = int(tick.get("step_count") or 0)
 
         self.best_price = new_best
         self.breakeven_phase = new_phase
+        self.breathing_coefficient = float(tick.get("breathing_coefficient") or coef)
+        if step_count > int(getattr(self, "radar_step_count", 0) or 0):
+            self.radar_step_count = step_count
         if improved and new_sl > 0:
             self.current_sl = new_sl
             self._tv_hard_sl_price = new_sl
 
         if stop_hit(side, px, float(getattr(self, "current_sl", 0) or 0)):
             phase_label = (
-                "止损平仓(阶段二/趋势追踪)"
+                "止损平仓(阶段二/自适应追踪)"
                 if bool(getattr(self, "breakeven_phase", False)) or was_phase
                 else "止损平仓(阶段一)"
             )
@@ -1541,15 +1638,15 @@ class AdverseRadarMixin:
             return False
 
         sl_px = float(self.current_sl)
+        hang_px = self._exchange_hang_stop_px(sl_px)
         placed = False
         # Heartbeat: only touch the exchange when price improved OR stop is missing.
-        # Never cancel/replace a live stop that already matches the target.
         need_sync = bool(improved)
         if not need_sync:
             near = False
             if hasattr(self, "_has_stop_sl_near"):
                 try:
-                    near = bool(self._has_stop_sl_near(sl_px))
+                    near = bool(self._has_stop_sl_near(hang_px))
                 except Exception:
                     near = False
             need_sync = not near
@@ -1564,9 +1661,9 @@ class AdverseRadarMixin:
                 placed = bool(merged.get("placed") or 0)
             elif hasattr(self, "_ensure_radar_sl"):
                 if getattr(self, "exchange_id", "") == "deepcoin":
-                    placed = bool(self._ensure_radar_sl(live_qty, sl_px))
+                    placed = bool(self._ensure_radar_sl(live_qty, hang_px))
                 else:
-                    placed = bool(self._ensure_radar_sl(sl_px, live_qty))
+                    placed = bool(self._ensure_radar_sl(hang_px, live_qty))
 
         meta = dict(tick.get("meta") or {})
         trail_dist_atr = meta.get("trail_dist_atr")
@@ -1575,7 +1672,7 @@ class AdverseRadarMixin:
             "floor_tp1": ("BREATH_FLOOR", "呼吸止损·TP1底限"),
             "floor_tp2": ("BREATH_FLOOR", "呼吸止损·TP2底限"),
             "phase2_enter": ("BREATH_PHASE2", "呼吸止损·阶段切换"),
-            "trail": ("BREATH_TRAIL", "呼吸止损·ADX追踪"),
+            "trail": ("BREATH_TRAIL", "呼吸止损·自适应追踪"),
         }
         should_alert = event in alert_map and (
             event != "trail" or (improved and abs(sl_px - float(getattr(self, "_last_breath_trail_alert_sl", 0) or 0)) > 1e-9)
@@ -1585,10 +1682,13 @@ class AdverseRadarMixin:
             detail = {
                 "event": event,
                 "current_sl": sl_px,
+                "hang_sl": hang_px,
                 "new_sl": sl_px,
                 "initial_stop": initial_stop,
                 "initial_atr": atr,
-                "adx": adx,
+                "breathing_coefficient": coef,
+                "atr_1h": float(getattr(self, "atr_1h", 0) or 0),
+                "smooth_ratio": float(getattr(self, "breath_smooth_ratio", 0) or 0),
                 "breakeven_phase": new_phase,
                 "best_price": new_best,
                 "curr_px": px,
@@ -1597,7 +1697,7 @@ class AdverseRadarMixin:
                 "trail_dist_atr": trail_dist_atr,
                 "trail_distance": (
                     float(trail_dist_atr) * atr
-                    if trail_dist_atr is not None else None
+                    if trail_dist_atr is not None else meta.get("trail_distance")
                 ),
                 "improved": improved,
                 "placed": placed,
@@ -1608,12 +1708,15 @@ class AdverseRadarMixin:
             if hasattr(self, "_alert"):
                 if event == "phase2_enter":
                     msg = (
-                        f"切换价{px:.2f} | ADX={adx:.1f} | "
-                        f"追踪距离={float(trail_dist_atr or 0):.2f}×ATR"
-                        f"({float(detail.get('trail_distance') or 0):.2f}) | SL@{sl_px:.2f}"
+                        f"切换价{px:.2f} | 呼吸系数={coef:.2f} | "
+                        f"追踪距离={float(detail.get('trail_distance') or 0):.2f} "
+                        f"| SL@{sl_px:.2f} (挂{hang_px:.2f})"
                     )
                 else:
-                    msg = f"SL@{sl_px:.2f} | 现价{px:.2f} | ADX={adx:.1f} | phase={'2' if new_phase else '1'}"
+                    msg = (
+                        f"SL@{sl_px:.2f} (挂{hang_px:.2f}) | 现价{px:.2f} | "
+                        f"呼吸系数={coef:.2f} | phase={'2' if new_phase else '1'}"
+                    )
                 self._alert("info", atype, title, msg, detail)
             if event == "trail":
                 self._last_breath_trail_alert_sl = sl_px
@@ -1623,22 +1726,18 @@ class AdverseRadarMixin:
             self.radar_activated = True
             if hasattr(self, "_save_state"):
                 self._save_state()
-        # CRITICAL: only report True when stop PRICE improved.
-        # Returning True on mere "aligned/placed" made the 5s sentinel treat every
-        # heartbeat as moved → force_replace cancel/rehang (risk window).
         return bool(improved)
 
     def _refresh_breathing_state_on_recover(self, curr_px: float, entry: float) -> None:
         """Restart: restore breathing SL from persisted state + one tick at mark.
 
-        Replaces legacy compute_vps_radar_sl ladder. Never retreats stop.
+        Never retreats stop. initial_atr stays frozen; 1h ATR refreshes coefficient.
         """
         if curr_px <= 0 or not entry:
             return
         self._init_adverse_radar_fields()
-        # Soft-refresh ADX from VPS; never rewrite frozen initial_atr
         try:
-            self._pull_vps_market_indicators(force=False)
+            refresh_supervisor_breath(self, force=False)
         except Exception:
             pass
         side = getattr(self, "current_side", None)
@@ -1674,6 +1773,7 @@ class AdverseRadarMixin:
         if side not in ("LONG", "SHORT") or initial_stop <= 0:
             return
 
+        coef = resolve_breathing_coef(getattr(self, "breathing_coefficient", 1.0))
         tick = apply_breathing_tick(
             side=side,
             price=float(curr_px),
@@ -1683,11 +1783,12 @@ class AdverseRadarMixin:
             current_stop=current_sl,
             best_price=float(self.best_price),
             breakeven_phase=bool(getattr(self, "breakeven_phase", False)),
-            adx_val=float(getattr(self, "current_adx", 0) or 0),
+            breathing_coefficient=coef,
         )
         new_sl = float(tick.get("current_sl") or current_sl)
         self.best_price = float(tick.get("best_price") or self.best_price)
         self.breakeven_phase = bool(tick.get("breakeven_phase"))
+        self.breathing_coefficient = float(tick.get("breathing_coefficient") or coef)
         if new_sl > 0:
             # Only improve (never retreat) relative to persisted current_sl
             if side == "LONG":
@@ -1701,13 +1802,13 @@ class AdverseRadarMixin:
             getattr(self, "consumed_tp_levels", None)
         )
         logger.info(
-            "[User %s] 呼吸止损重启恢复: phase=%s best=%.2f SL=%.2f atr=%.4f adx=%.1f",
+            "[User %s] 呼吸止损重启恢复: phase=%s best=%.2f SL=%.2f atr=%.4f coef=%.2f",
             getattr(self, "user_id", "?"),
             "2" if self.breakeven_phase else "1",
             float(self.best_price),
             float(self.current_sl or 0),
             atr,
-            float(getattr(self, "current_adx", 0) or 0),
+            float(getattr(self, "breathing_coefficient", 1.0) or 1.0),
         )
 
     def _tp1_limit_still_live_on_book(self) -> bool:
