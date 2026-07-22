@@ -2975,11 +2975,15 @@ class PositionSupervisor(
             ):
                 self._log(
                     "DEFENSE",
-                    f"开仓TP未齐 {result.get('matched')}/{result.get('expected')} → 再核武一轮",
+                    f"开仓TP未齐 {result.get('matched')}/{result.get('expected')} → 再补挂一轮",
                 )
-                audit = self._nuclear_realign_tp(
-                    pos["size"], pos["entry_price"], dynamic_sl=None, rounds=2,
-                )
+                self._defense_open_init_logs = True
+                try:
+                    audit = self._nuclear_realign_tp(
+                        pos["size"], pos["entry_price"], dynamic_sl=None, rounds=2,
+                    )
+                finally:
+                    self._defense_open_init_logs = False
                 result = {
                     **result,
                     "matched": audit.get("matched_full", result.get("matched")),

@@ -6,35 +6,48 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-07-22 · 唯一权威规格）**  
-> 凡与本文冲突的旧描述（含「妈妈版」权益×1 算仓、挂 TP123、原生 4H、旧雷达 0.5/0.3/2.0ATR）**一律作废**。  
-> 完整行为规格见 **[`docs/VPS_LIVE_CHECKLIST.md`](docs/VPS_LIVE_CHECKLIST.md)**（与代码同步）。  
-> 币安执行层验收进度：[docs/BINANCE_EXECUTION_ACCEPTANCE.md](docs/BINANCE_EXECUTION_ACCEPTANCE.md)（B1–B3 仍待实盘自然触发）。  
-> 多所 TP 重复排查：[docs/TP_MULTI_EXCHANGE_AUDIT.md](docs/TP_MULTI_EXCHANGE_AUDIT.md)。
+> **文档同步（2026-07-22 · 币安执行层验收通过）**  
+> 凡与本文冲突的旧描述（含「妈妈版」权益×1 算仓、挂 TP123、原生 4H、旧雷达 0.5/0.3/2.0ATR、钉钉独立 25× 杠杆源）**一律作废**。  
+> **最终状态清单：** [docs/GEMINI_FINAL_STATUS_20260722.md](docs/GEMINI_FINAL_STATUS_20260722.md)  
+> 行为规格权威：[docs/VPS_LIVE_CHECKLIST.md](docs/VPS_LIVE_CHECKLIST.md)  
+> 旧逻辑清除清单：[docs/LEGACY_PURGE_LIST_20260722.md](docs/LEGACY_PURGE_LIST_20260722.md)  
+> 币安执行层验收：[docs/BINANCE_EXECUTION_ACCEPTANCE.md](docs/BINANCE_EXECUTION_ACCEPTANCE.md)（**已通过**）  
+> E2E 时间线 / 异常说明：[docs/E2E_WEBHOOK_TIMELINE_20260722.md](docs/E2E_WEBHOOK_TIMELINE_20260722.md) · [docs/E2E_ANOMALY_ANALYSIS_20260722.md](docs/E2E_ANOMALY_ANALYSIS_20260722.md)
 
 ### 当前实盘一句话
 
-**VPS = 先平后开开仓 + RISK20 独立算仓 + 呼吸止损引擎（唯一止损写入方）+ 仅挂 TP1/TP2 + 90m 行情 ATR/ADX + 反转保护执行。**  
-除 TV 的 3 类信号与引擎自身止损触发外，不存在第三方平仓判断路径。
+**VPS = 先平后开开仓 + RISK20 独立算仓 + 呼吸止损引擎（唯一止损写入方）+ 仅挂 TP1/TP2 + 90m 行情 ATR/ADX + 反转保护执行 + 钉钉字段取自本笔执行快照。**  
+除 TV 的 4 类信号与引擎自身止损触发外，不存在第三方平仓判断路径。
 
-**近期修复（已入库）：** 止损撤挂抖动；TP 5 分钟超时误撤 → `consumed` 清空 → 核武重挂导致 **TP 重复**（见 [docs/TP_DUPLICATE_INCIDENT_20260722.md](docs/TP_DUPLICATE_INCIDENT_20260722.md)）。
+### 生产代码锚点
+
+| 项 | 值 |
+|----|-----|
+| 代码提交（执行层） | **`77d171b`** — 杠杆根治 + 未登记仓位市价接管 |
+| 观察窗文档 | `48ed021`（仅文档，无需 rebuild） |
+| VPS 路径 | `/home/panda/panda-quant-platform` |
+| Webhook | `https://twinstar.pro/gemini/webhook` → `:6010` |
+| 默认交易对 | **ETH + XAU**（`TRADING_SYMBOLS=ETHUSDT,XAUUSDT`） |
+
+**近期已入库修复：** 止损撤挂抖动；TP 超时误撤→重复挂单；仓位查询失败≠空仓；平仓归因证据门；钉钉杠杆双源根治；未登记仓位 ATR 接管。详见下方[更新记录](#技术栈与更新记录)。
 
 | 项 | 现行值 |
 |----|--------|
 | TV 消息 | 仅 `LONG` / `SHORT` / `CLOSE_QUICK_EXIT` / `CLOSE_RSI_EXIT` |
-| 算仓 | `min(权益×20%/VPS止损距, 权益×5/价, TV.qty×(TV止损距/VPS止损距))`；挂止损仍用 VPS `initialStop` |
+| 算仓 | `min(权益×20%/VPS止损距, 权益×5/价, TV.qty×(TV止损距/VPS止损距))`；挂止损用 VPS `initialStop` |
 | 止盈 | **只挂 TP1+TP2**（优先 TV `qty1`/`qty2`；否则约 30%/30%；余仓交阶段二） |
 | 止损 | 呼吸引擎两阶段：阶梯 0.75/0.4 + TP 底线 0.5/1.5ATR → ADX 追踪 1.2–2.5×ATR |
+| 杠杆 | 执行/钉钉/API 校验/client 初始化 **一律 `FIXED_LEVERAGE=5`** |
 | 行情 | 交易所 30m → **合成 90m** → ATR(14)/ADX(14) |
 | 加仓 | **禁用**；同向亦先平后开 |
 | CAP_ALIGN | **仅检测告警，不下单减仓** |
-| 保留兜底 | `HARD_SL_FAIL_ABORT`、`FLIP_CLEAN_ABORT`（先平后开失败暂停）、重启 `FORCE_ALIGN` |
+| 未登记仓位 | 市价 ATR 接管呼吸止损 + 推导 TP；钉钉「来源待核实」 |
+| 保留兜底 | `HARD_SL_FAIL_ABORT`、`FLIP_CLEAN_ABORT`、`FORCE_ALIGN`、`EXCHANGE_QUERY_FAIL` |
 
 | 生产域名 | [https://twinstar.pro](https://twinstar.pro) |
 |----------|---------------------------------------------|
 | **TV Webhook（Gemini）** | `https://twinstar.pro/gemini/webhook` |
 | 仓库 | [github.com/vivian5285/panda-quant-platform](https://github.com/vivian5285/panda-quant-platform) |
-| 默认交易对 | **ETH + XAU** 永续（`TRADING_SYMBOLS=ETHUSDT,XAUUSDT`） |
 
 > Gemini 多用户：Binance / OKX / Gate.io U 本位 + DeepCoin SWAP。  
 > 同机可共存 legacy 单账户：币安大脑 `:5003`、深币 `:5004`，与 Gemini `:6010` 互不冲突。
@@ -47,8 +60,10 @@
 project: panda-quant-platform
 product: GEMINI AI / 双子星AI量化
 domain: twinstar.pro
-repo_path_on_vps: ~/panda-quant-platform
-authority: docs/VPS_LIVE_CHECKLIST.md   # 行为唯一权威
+repo_path_on_vps: /home/panda/panda-quant-platform
+authority: docs/VPS_LIVE_CHECKLIST.md
+legacy_purge: docs/LEGACY_PURGE_LIST_20260722.md
+code_anchor: 77d171b
 
 services:
   frontend:6080    # React + nginx /api/
@@ -63,10 +78,11 @@ TradingView POST → nginx /gemini/webhook → :6010/webhook
 
 # 四条硬性原则
 rules:
-  - 开仓永远先平后开（不问同向/反向）
+  - 开仓永远先平后开（不问同向/反向；外部仓亦同）
   - 单仓不加仓（无 PYRAMID / PROFIT_ADD 生效路径）
   - 仓位无状态纯函数（不读 add_count / 历史仓）
   - 止损单唯一写入方 = 呼吸止损引擎（adverse_radar_guard + breathing_stop）
+  - 钉钉杠杆/关键字段 = 本笔执行快照（_resolve_entry_leverage → FIXED_LEVERAGE）
 
 # 开仓流水线
 open_flow: |
@@ -74,21 +90,30 @@ open_flow: |
   → 拉 VPS ATR → initialStop=entry±1.5×ATR
   → qty=min(风险/VPS距, 名义/价, TV.qty×TV距/VPS距)   # TV.stop_loss 只调系数
   → LIMIT@TV price（不足市价补）→ 挂 TP1/TP2 → 呼吸引擎挂止损(带qty)
-  → 行情引擎持续供 ATR/ADX → 钉钉开仓
+  → 行情引擎持续供 ATR/ADX → 钉钉开仓（leverage=5 写入 detail）
 
 # 平仓
 close_tv: CLOSE_QUICK_EXIT | CLOSE_RSI_EXIT → 市价全平+撤单+重置+钉钉反转保护
 close_breath: 价格触及 currentStop → 引擎全平+重置+钉钉阶段一/二
 tp_fill: 订单监控只通知 → 引擎暂停tick → 撤旧止损 → 按70%/40%重挂 → 恢复tick
 
+# 未登记 / 外部仓
+manual_adopt: |
+  重启或空仓巡检发现无 trade_id 的实盘仓
+  → prepare_manual_adopt：VPS ATR → initialStop；缺 TP 则 1.35/2.5/4.0×ATR 推导
+  → 钉钉「未登记来源仓位·系统接管（来源待核实）」
+  → 后续任意 LONG/SHORT 仍先平后开（无同向续用特例）
+
 # 关键模块
-sizing: backend/app/core/tv_entry_sizing.py          # RISK20 + TV.qty×(TV距/VPS距)
-breath: backend/app/core/breathing_stop.py           # 阶段一/二纯函数
+sizing: backend/app/core/tv_entry_sizing.py          # RISK20 + FIXED_LEVERAGE=5
+breath: backend/app/core/breathing_stop.py           # 阶段一/二 + compute_tp_ladder_from_atr
 engine: backend/app/core/adverse_radar_guard.py      # 挂/改/触发止损唯一路径
 market: backend/app/core/market_engine.py            # 30m→90m ATR/ADX
-market_ind: backend/app/core/market_indicators.py
 tp: backend/app/core/tp_regime_targets.py            # PLACEABLE={1,2}
 webhook: backend/app/services/webhook_guard.py       # VALID_ACTIONS 仅4个
+alerts: backend/app/services/trading_alerts.py       # theme 杠杆=FIXED
+attribution: backend/app/core/close_attribution.py   # 证据不足不硬判
+errors: backend/app/core/exchange_errors.py          # ExchangeTransientError
 supervisor: backend/app/core/position_supervisor.py
 deepcoin: backend/app/core/position_supervisor_deepcoin.py
 ```
@@ -107,15 +132,16 @@ deepcoin: backend/app/core/position_supervisor_deepcoin.py
 8. [呼吸止损引擎详解](#呼吸止损引擎详解)
 9. [VPS 行情引擎](#vps-行情引擎)
 10. [钉钉通知策略](#钉钉通知策略)
-11. [重启恢复与兜底机制](#重启恢复与兜底机制)
-12. [实盘核实交易日志](#实盘核实交易日志)
-13. [绩效结算 · 充值 · 门禁](#绩效结算--充值监控--交易门禁)
-14. [推广分润与管理后台](#推广分润与管理后台)
-15. [安全 · API · 环境变量](#安全--api--环境变量)
-16. [本地开发 · 部署 · HTTPS](#本地开发--部署--https)
-17. [运维自检与故障排查](#运维自检与故障排查)
-18. [生产就绪与验收](#生产就绪与验收)
-19. [技术栈与更新记录](#技术栈与更新记录)
+11. [未登记 / 外部仓位接管](#未登记--外部仓位接管)
+12. [重启恢复与兜底机制](#重启恢复与兜底机制)
+13. [实盘核实交易日志](#实盘核实交易日志)
+14. [绩效结算 · 充值 · 门禁](#绩效结算--充值监控--交易门禁)
+15. [推广分润与管理后台](#推广分润与管理后台)
+16. [安全 · API · 环境变量](#安全--api--环境变量)
+17. [本地开发 · 部署 · HTTPS](#本地开发--部署--https)
+18. [运维自检与故障排查](#运维自检与故障排查)
+19. [生产就绪与验收](#生产就绪与验收)
+20. [技术栈与更新记录](#技术栈与更新记录)
 
 ---
 
@@ -169,14 +195,15 @@ TradingView Pine（方向 / TP1·TP2 价 / qty / qty1·qty2）
 nginx → Flask :6010（secret · action 白名单 · 幂等 · 立即 200）
         │ 后台线程
         ▼
-SignalDispatcher → 每用户 PositionSupervisor
+SignalDispatcher → 每用户×每 symbol PositionSupervisor
         │
         ├─ LONG/SHORT → 先平后开 → RISK20 算仓 → 开仓 → TP12 + 呼吸止损
         ├─ CLOSE_QUICK/RSI → 反转保护全平
-        └─ 引擎 tick → 90m ATR/ADX → 呼吸改止损价 / 触及全平
+        ├─ 引擎 tick → 90m ATR/ADX → 呼吸改止损价 / 触及全平
+        └─ 未登记实盘仓 → 市价 ATR 接管（不编造 TV 历史）
         │
         ▼
-trade_logs + 钉钉关键摘要（按交易所主题）
+trade_logs + 钉钉关键摘要（执行快照杠杆 5× · 按交易所主题）
 ```
 
 ### Docker 拓扑
@@ -193,7 +220,7 @@ trade_logs + 钉钉关键摘要（按交易所主题）
 | 路径 | 内容 |
 |------|------|
 | `backend/data/` | SQLite、`platform_runtime.json` |
-| `backend/state/` | `user_{id}.json`（呼吸状态：`initial_atr`/`initial_stop`/`breakeven_phase`/…） |
+| `backend/state/` / `backend/data/supervisor/` | 呼吸状态：`initial_atr`/`initial_stop`/`breakeven_phase`/… |
 | `backend/logs/` | 应用日志 |
 | `backend/.env` | 环境变量（只读挂载） |
 
@@ -212,6 +239,8 @@ trade_logs + 钉钉关键摘要（按交易所主题）
 | 开放交易所 | 系统 | `platform.enabled_exchanges` |
 | 全局暂停 | 风控 | Redis `platform:trading_paused` |
 
+> **杠杆：** 实盘开仓与钉钉展示不读独立 `LEVERAGE=25` 类 env 作为权威源；一律 `FIXED_LEVERAGE=5`（`tv_entry_sizing` / `exchange_leverage()` / `_alert` 注入）。
+
 ---
 
 ## 项目目录详解
@@ -224,31 +253,38 @@ panda-quant-platform/
 │   │   ├── position_supervisor.py           # Binance/OKX/Gate 执行大脑
 │   │   ├── position_supervisor_deepcoin.py
 │   │   ├── exchange_factory.py
-│   │   ├── tv_entry_sizing.py               # ★ RISK20 无状态算仓
-│   │   ├── breathing_stop.py                # ★ 呼吸止损纯函数
+│   │   ├── tv_entry_sizing.py               # ★ RISK20 + FIXED_LEVERAGE=5
+│   │   ├── breathing_stop.py                # ★ 呼吸止损 + 市价 TP 阶梯
 │   │   ├── adverse_radar_guard.py           # ★ 止损挂/改/触发 + TP后数量收缩
-│   │   ├── market_engine.py                 # ★ 30m→90m ATR/ADX
-│   │   ├── market_indicators.py
+│   │   ├── market_engine.py / market_indicators.py
 │   │   ├── tp_regime_targets.py             # PLACEABLE_TP_LEVELS={1,2}
 │   │   ├── tp_slice_guard.py / binance_smart_defense.py
-│   │   ├── startup_reconcile.py             # FORCE_ALIGN · 旧 schema 暂停
+│   │   ├── startup_reconcile.py             # FORCE_ALIGN · 未登记接管 · 旧 schema
 │   │   ├── position_cap_guard.py            # 仅检测，不 trim
-│   │   └── *_client.py
+│   │   ├── close_attribution.py            # 平仓归因证据门
+│   │   ├── exchange_errors.py               # ExchangeTransientError
+│   │   └── *_client.py                      # trading_leverage=FIXED_LEVERAGE
 │   ├── services/
 │   │   ├── dispatcher.py / webhook_guard.py / webhook_payload.py
-│   │   ├── trading_alerts.py / close_alert_utils.py
+│   │   ├── trading_alerts.py                # theme 杠杆=FIXED；执行快照优先
 │   │   └── dingtalk_* / settlement / deposit_monitor …
 │   └── tests/
 ├── docs/VPS_LIVE_CHECKLIST.md               # ★ 行为规格摘要
-├── docs/BINANCE_EXECUTION_ACCEPTANCE.md     # 币安执行层验收跟踪（B1–B3）
-├── docs/TP_DUPLICATE_INCIDENT_20260722.md   # TP 重复挂单事故与修复
-├── docs/DEEPCOIN_BINANCE_PARITY.md          # DeepCoin ↔ Binance 语义对齐
+├── docs/LEGACY_PURGE_LIST_20260722.md       # ★ 已删除/废止清单
+├── docs/GEMINI_FINAL_STATUS_20260722.md     # ★ 最终状态清单（验收通过）
+├── docs/BINANCE_EXECUTION_ACCEPTANCE.md     # 币安执行层验收（已关闭）
+├── docs/E2E_WEBHOOK_TIMELINE_20260722.md    # webhook 全链路时间线
+├── docs/E2E_ANOMALY_ANALYSIS_20260722.md    # ATR/开仓补挂两处异常说明
+├── docs/OBSERVATION_WINDOW_20260722.md      # 观察窗起止与纪律
+├── docs/TP_DUPLICATE_INCIDENT_20260722.md   # TP 重复挂单事故
+├── docs/TP_MULTI_EXCHANGE_AUDIT.md
+├── docs/DEEPCOIN_BINANCE_PARITY.md
 ├── docs/KNOWN_ISSUES.md
 ├── frontend/  deploy/  docker-compose.yml  deploy.sh
 └── production_check.sh
 ```
 
-> 遗留文件 `radar_trail.py` / `vps_radar_stages.py` 仍在仓库中，**live 路径已切到 `breathing_stop`**，勿再按旧雷达文档改参数。
+> 遗留文件 `radar_trail.py` / `vps_radar_stages.py` 仍在仓库中，**live 止损路径已切到 `breathing_stop`**，勿再按旧雷达文档改参数。详见清除清单。
 
 ---
 
@@ -265,7 +301,7 @@ exchange_factory.create_supervisor(user, client)
 
 ### 一、四条硬性原则（不可动摇）
 
-1. **开仓永远先平后开** — 不判断新旧方向是否相同  
+1. **开仓永远先平后开** — 不判断新旧方向是否相同；外部/人工仓亦同  
 2. **单仓不加仓** — 任意时刻一 symbol 一笔仓；无加权均价合并  
 3. **下单数量每次独立计算** — 余额、开仓价、VPS `initialStop`、TV.qty、TV `stop_loss`（仅调整系数）  
 4. **止损单全局唯一写入方** — 仅呼吸引擎可下/改/触发止损；订单监控只发事件  
@@ -274,7 +310,7 @@ exchange_factory.create_supervisor(user, client)
 
 ```
 POST /gemini/webhook
-  → VALID_ACTIONS 校验（其余拒绝+日志）
+  → VALID_ACTIONS 校验（其余拒绝+日志；旧 CLOSE_TP/TRAIL/SL_* soft-ignore）
   → HTTP 200
   → handle_signal
        ├─ LONG / SHORT → _handle_tv_entry → _force_flat_before_open → _open_position
@@ -309,9 +345,9 @@ TV隐含止损距离 = |开仓价 − TV.stop_loss|
 | TV `stop_loss` | **只参与调整系数**；真实挂止损价仍是 VPS `initialStop` |
 | 调整时机 | **仅开仓算一次**；后续 tick 不重算 |
 | 缺 `TV.qty` | **拒开仓** |
-| ATR 异常且可从 `TV.stop_loss` 反推 | **应急降级开仓**（见「VPS 行情引擎 · ATR 容错」），非静默拒单 |
+| ATR 异常且可从 `TV.stop_loss` 反推 | **应急降级开仓** + `ATR_FALLBACK`，随后暂停该 symbol 自动开仓 |
 | ATR 异常且无可用 `TV.stop_loss` | **拒开仓** + `ATR_INVALID`/`ATR_ANOMALY` |
-| 杠杆 | 交易所统一设 **5×**（`FIXED_LEVERAGE`） |
+| 杠杆 | **`FIXED_LEVERAGE=5`**（client / bind / 钉钉 / API 校验同源） |
 | 加仓路径 | 返回 `add_disabled` / qty=0 |
 | 开仓日志 | 记录 `adjust_coef`、三候选 qty、`binding`、`atr_source` |
 
@@ -321,8 +357,8 @@ TV隐含止损距离 = |开仓价 − TV.stop_loss|
 |------|------|
 | TP1 | 限价；数量优先 TV `qty1`，否则约总仓 30%；价格=`tp1` |
 | TP2 | 限价；数量优先 TV `qty2`，否则约总仓 30%；价格=`tp2` |
-| TP3 | **不挂** |
-| 止损 | 呼吸引擎按 **当前仓位 qty** 挂 reduceOnly STOP（禁止仅靠无量 closePosition 作为主路径） |
+| TP3 | **不挂**（40% 余仓交呼吸阶段二） |
+| 止损 | 呼吸引擎按 **当前仓位 qty** 挂 reduceOnly STOP |
 
 开仓单：优先 **LIMIT @ TV `price`**，不足额市价补（`_place_tv_entry_order`）。
 
@@ -330,19 +366,22 @@ TV隐含止损距离 = |开仓价 − TV.stop_loss|
 
 1. 确认成交，更新 `remainingQtyPct`（TP1→70%，TP2→40%）  
 2. **通知**呼吸引擎：暂停 tick → 撤旧止损 → 按剩余数量 + 当前 `currentStop` 重挂 → 恢复 tick  
-3. **不**单独强制把止损改到 entry+1tick / entry+1.5ATR（价格由阶段一底线公式自动覆盖）  
+3. **不**因 5 分钟超时误撤「现价未到」的健康 TP；满仓时保留 `consumed`；rebuild 前检查盘口是否已有匹配单  
 4. 钉钉：成交价、剩余比例、当前止损  
 
 ### 六、已删除 / 禁止的行为
 
+完整清单见 [docs/LEGACY_PURGE_LIST_20260722.md](docs/LEGACY_PURGE_LIST_20260722.md)。
+
 | 类别 | 删除项 |
 |------|--------|
 | 算仓 | `(equity×0.20×5)/price` 忽略止损距与 TV.qty |
-| 止盈 | TP3 限价、TP3 成交钉钉主路径 |
-| 旧雷达 | `activated`、0.85×TP1 激活、0.5/0.3 步进、固定 2.0×ATR |
+| 止盈 | TP3 限价主路径 |
+| 旧雷达 | `activated`、0.85×TP1 激活、0.5/0.3 步进、固定 2.0×ATR 作为挂单价 |
 | 加仓 | PYRAMID / PROFIT_ADD / 加权均价重挂 |
-| 自主平仓 | 保护性全平本地判断、`CAP_ALIGN` 市价减仓 |
+| 自主平仓 | `CAP_ALIGN` 市价减仓（detect-only） |
 | Webhook | `CLOSE_TP` / `CLOSE_TRAIL` / `CLOSE_SL_*` / `CLOSE_PROTECT` / `leg` |
+| 钉钉杠杆 | 独立于执行层的第二配置源（曾显示 25×） |
 
 ---
 
@@ -365,7 +404,7 @@ https://twinstar.pro/gemini/webhook
 | `CLOSE_QUICK_EXIT` | 反转保护全平 |
 | `CLOSE_RSI_EXIT` | 反转保护全平 |
 
-其余 action → **拒绝并记日志**，不做交易。
+其余 action → **拒绝并记日志**，不做交易。旧 `CLOSE_TP`/`CLOSE_TRAIL`/`CLOSE_SL_*` → `legacy_ignored`。
 
 ### 开仓 JSON 示例
 
@@ -398,6 +437,7 @@ https://twinstar.pro/gemini/webhook
 | `stop_loss` | **只**反推 TV 隐含止损距 → 修正 qty；**绝不当**挂单价 | **否** |
 | `tp1` / `tp2` | TP1/TP2 限价挂单价格 | **否** |
 | `tp3` | **不用** | — |
+| `leverage` | **忽略**；实盘固定 5× | — |
 | `atr` / `adx` | **不读**；行情引擎自算 | — |
 | `symbol` | 必填（支持 `.P`）；ETH/XAU 独立 supervisor | — |
 
@@ -470,9 +510,11 @@ trail_dist = trail_distance(adx) × initialAtr   # ADX 15→1.2 … 35→2.5
 currentStop = max/min(currentStop, extreme ∓ trail_dist)
 ```
 
+新止损价必须**严格优于**当前止损才改单，避免无意义频繁撤挂。
+
 ### 触发与失败兜底
 
-- 价格触及 `currentStop` → 市价全平 → 重置 → 钉钉（标明阶段一/二）  
+- 价格触及 `currentStop` → 市价全平 → 统一状态清零 → 钉钉（标明阶段一/二）  
 - TP1/TP2 成交 → 通知引擎按 70%/40% **重挂数量**（价格仍用当前 `currentStop`）  
 - 改单/下单失败 → **`HARD_SL_FAIL_ABORT`**
 
@@ -483,14 +525,13 @@ currentStop = max/min(currentStop, extreme ∓ trail_dist)
 | 项 | 值 |
 |----|-----|
 | 源 | 各所 `fetch_klines`；失败可回落 Binance 公共 |
-| 合成 | 每 3 根 **30m** → 1 根 **90m**；锚点 `bucket=(t_ms//5400000)*5400000`（UTC epoch，非进程启动） |
+| 合成 | 每 3 根 **30m** → 1 根 **90m**；锚点 `bucket=(t_ms//5400000)*5400000`（UTC epoch） |
 | 指标 | 闭合 90m 后 Wilder **ATR(14)** / **ADX(14)** |
-| ATR 容错 | **现行两级（见 `atr_emergency_fallback`）**：① VPS ATR 不可用/低于近50根中位数×0.3、或与 TV 隐含 ATR 连续偏离达阈值，**且**能从 `TV.stop_loss` 反推隐含 ATR → **本笔降级用 TV 隐含 ATR 开仓**（`atr_source=tv_emergency_fallback`）+ 钉钉 `ATR_FALLBACK`，随后**暂停该 symbol 自动开仓**直至人工恢复；② 无法反推（无可用 TV stop）→ **拒本次开仓**+钉钉 `ATR_INVALID`/`ATR_ANOMALY`（不永久暂停全局）。呼吸倍数不变，只换 ATR 数值来源。 |
-| 消费方 | 开仓算 `initialStop`、呼吸 tick、阶段二 trail |
+| ATR 容错 | ① 可从 `TV.stop_loss` 反推 → 本笔降级开仓 + `ATR_FALLBACK` + 暂停该 symbol 自动开仓；② 无法反推 → 拒开仓 + `ATR_INVALID`/`ATR_ANOMALY` |
+| 消费方 | 开仓算 `initialStop`、呼吸 tick、阶段二 trail、未登记仓位接管 |
 | Webhook | **禁止**用 `msg.atr` / `msg.adx` 驱动决策；可选 `bar_time` 防 OPEN 乱序 |
 
-配置：`STRATEGY_BAR_MINUTES=90`，`KLINE_BASE_INTERVAL=30m`，`KLINE_FETCH_LIMIT=250`。  
-上线前核对：TV 90m vs VPS `bar_open_ms`（见 `docs/VPS_LIVE_CHECKLIST.md` 附件）。
+配置：`STRATEGY_BAR_MINUTES=90`，`KLINE_BASE_INTERVAL=30m`，`KLINE_FETCH_LIMIT=250`。
 
 ---
 
@@ -498,36 +539,64 @@ currentStop = max/min(currentStop, extreme ∓ trail_dist)
 
 配置：管理后台钉钉 或 `.env` `DINGTALK_*`。动作级去重 + 攒批，避免刷屏。
 
+### 执行快照原则（本轮根治）
+
+| 字段 | 来源 |
+|------|------|
+| 杠杆 | `_alert` **强制**写入 `_resolve_entry_leverage()` → `FIXED_LEVERAGE=5`；theme 种子亦为 5 |
+| 方向 / 数量 / 入场 / 止损 | supervisor 本笔状态（缺省时由 `_alert` 注入） |
+| 平仓归因 | `close_attribution`：证据不足就承认不足；maker≠TP 价不判止盈；查询失败不报「已空仓」 |
+
 ### 事件清单（现行）
 
 | 事件 | 内容要点 |
 |------|----------|
-| 开仓 | 方向、价格、数量、`initialStop`、权益 |
-| 先平后开 | `先平后开：检测到已有持仓，已市价全平并撤单，准备执行新开仓` |
+| 开仓 | 方向、价格、数量、`initialStop`、权益、**5×** |
+| 先平后开 | 检测到已有持仓，已市价全平并撤单，准备执行新开仓 |
+| 未登记接管 | **「未登记来源仓位·系统接管（来源待核实）」** — 不编造 TV 关联 |
 | 阶段切换 | 进入阶段二、ADX、追踪距离×ATR |
-| 止损移动 | 新止损、极值、浮盈%、阶段 |
+| 止损移动 | 新止损、极值、浮盈%、阶段（`BREATH_*`） |
 | TP1/TP2 成交 | 成交价、剩余 70%/40%、当前止损 |
 | 止损触发 | 触发价、阶段一/二、盈亏 |
-| 反转保护 | `reason`、平仓价 |
+| 反转保护 | `CLOSE_QUICK_EXIT` / `CLOSE_RSI_EXIT` |
+| 查询失败 | `EXCHANGE_QUERY_FAIL` / 恢复后 `EXCHANGE_QUERY_OK` |
 | 重启 / FORCE_ALIGN | 恢复详情或方向不一致已全平 |
-| 异常 | 改单失败、对账不一致、挂单超时等 |
+| 异常 | 改单失败、对账不一致、挂单超时、`CAP_ALIGN` 仅告警等 |
 
 ### 已删除文案
 
-「雷达激活」「雷达止损」「保护性全平」「风控拦截」「TP3止盈成交」「加仓成交」「首仓」等。
+「雷达激活」「雷达止损」「保护性全平」「风控拦截」「TP3止盈成交」「加仓成交」「首仓」「中势推升」等。
 
-主题标签仍按交易所区分（`#币安…` / `#OKX…` / `#Gate…` / `#深币…`）；展示杠杆以本笔 5× 实盘为准。
+主题标签仍按交易所区分（`#币安5x·ETH` / `#OKX5x·ETH` / `#Gate5x·ETH` / `#深币5x·ETH`）。
+
+---
+
+## 未登记 / 外部仓位接管
+
+真实场景：交易所已有仓位，但 VPS 无对应 `trade_id` / 开仓日志（人工下单、他处开仓、状态丢失等）。
+
+| 步骤 | 行为 |
+|------|------|
+| 检测 | 启动对账或空仓巡检发现实盘仓且无工厂开仓记录 |
+| 接管 | `prepare_manual_adopt`：锚定 `initial_qty`；**拉当前市价 ATR** → `initialStop`；缺 TP1/TP2 时用 `compute_tp_ladder_from_atr`（1.35 / 2.5 / 4.0×ATR） |
+| 钉钉 | 「未登记来源仓位·系统接管（来源待核实）」——**不**关联无关历史 TV |
+| 保护 | 立即纳入呼吸引擎；禁止裸奔 |
+| 后续 TV OPEN | **一律先平后开**（同向也不「续用」外部仓） |
+| 后续硬平 | 仅 `CLOSE_QUICK_EXIT` / `CLOSE_RSI_EXIT` 强制全平；裸 `CLOSE` 对同向外部仓可跳过 |
+
+实现：`startup_reconcile.prepare_manual_adopt` · `breathing_stop.compute_tp_ladder_from_atr`。
 
 ---
 
 ## 重启恢复与兜底机制
 
-1. 查交易所持仓与挂单  
-2. 读持久化呼吸状态；**旧 schema**（`activated`/`stepCount` 且无 `initialAtr`）→ 钉钉告警 + **暂停**该 symbol，不强行转换  
-3. **FORCE_ALIGN**：持仓方向与记录不一致 → 市价全平 + 撤单 + 重置 + 告警  
-4. 按 `currentStop` 重挂止损；恢复未成交且仍有利的 TP1/TP2  
-5. 重启行情引擎 + 呼吸 tick  
-6. 无持仓 → 清状态等待信号  
+1. 查交易所持仓与挂单（**查询失败 ≠ 空仓**：抛 `ExchangeTransientError`，保留账本 + `EXCHANGE_QUERY_FAIL`）  
+2. 读持久化呼吸状态；**旧 schema**（`activated`/`stepCount` 且无 `initialAtr`）→ 钉钉告警 + **暂停**该 symbol  
+3. 无 `trade_id` → [未登记接管](#未登记--外部仓位接管)  
+4. **FORCE_ALIGN**：持仓方向与记录不一致 → 市价全平 + 撤单 + 重置 + 告警  
+5. 按 `currentStop` 重挂止损；恢复未成交且仍有利的 TP1/TP2  
+6. 重启行情引擎 + 呼吸 tick  
+7. 无持仓 → 清状态等待信号  
 
 **CAP_ALIGN**：可检测超标并告警，**禁止**市价减仓。
 
@@ -535,17 +604,18 @@ currentStop = max/min(currentStop, extreme ∓ trail_dist)
 
 | 机制 | 行为 |
 |------|------|
-| 仓位一致性 | 以交易所为准修正本地 |
+| 仓位一致性 | 以交易所为准修正本地；REST 失败不误判 flat |
 | 重复消息 | ~60s 同 action+symbol 忽略 |
-| API 断线 | 指数退避重连（1s,2s,4s…） |
+| API 断线 | 指数退避重连 |
 | 硬止损挂失败 | 开仓后失败可撤仓禁裸奔 |
+| Binance `-1003` | 多为 rebuild 启动 REST 风暴；自动约 5min 解封；**避免无必要 rebuild** |
 
 ---
 
 ## 实盘核实交易日志
 
 1. 用户可见动作入库 `trade_logs`  
-2. `detail_json` 含 `live_verified`、sizing meta、`initial_stop`、shield 等  
+2. `detail_json` 含 `live_verified`、sizing meta、`initial_stop`、`leverage`、shield 等  
 3. 前端 `TradeLogDetailPanel`；**钉钉不替代日志**  
 
 查看：用户 `/trades` · 管理端系统全域日志 · 推广者下级日志（权限校验）。
@@ -587,7 +657,7 @@ currentStop = max/min(currentStop, extreme ∓ trail_dist)
 | `STRATEGY_BAR_MINUTES` | **90** |
 | `KLINE_BASE_INTERVAL` | **30m** |
 | `SIZING_MARGIN_LEVERAGE` | 5（与名义上限一致） |
-| `LEVERAGE` 等 | 仅缺省回退展示；实盘开仓绑定 **5×** |
+| `LEVERAGE` / `*_LEVERAGE` | **仅兼容旧 .env**；执行与钉钉权威源为 **`FIXED_LEVERAGE=5`** |
 | `MAX_ADD_TIMES*` / `ADD_RATIO*` | 已废弃（加仓禁用），保留避免旧 .env 报错 |
 | `MAX_COMBINED_NOTIONAL_MULT` | ETH+XAU 合计名义闸（默认 13×） |
 | `WEBHOOK_IDEMPOTENCY_TTL_SEC` | 默认 60 |
@@ -614,25 +684,32 @@ uvicorn app.main:app --reload --port 8000   # Webhook 同进程 :6010
 # 前端
 cd frontend && npm install && npm run dev
 
-# 测试（Windows 用 py）
+# 测试（Windows 用 py -3）
 cd backend
-py -m pytest tests/test_breathing_stop.py tests/test_tv_v6985_sizing.py \
+py -3 -m pytest tests/test_breathing_stop.py tests/test_tv_v6985_sizing.py \
   tests/test_vps_entry_routing.py tests/test_pine_tp_regime_ratios.py \
   tests/test_market_indicators.py tests/test_close_alert_utils.py \
-  tests/test_position_cap_guard.py -q
+  tests/test_position_cap_guard.py tests/test_manual_adopt.py \
+  tests/test_trading_alerts.py tests/test_attribution_evidence_gates.py \
+  tests/test_position_query_fail_safe.py tests/test_tp_rebuild_no_duplicate.py -q
 ```
 
 ### VPS 部署
 
 ```bash
-cd ~/panda-quant-platform
+cd /home/panda/panda-quant-platform
 git pull origin main
 docker compose up -d --build backend frontend
 bash production_check.sh
+curl -sS http://127.0.0.1:6010/health
+# 核对：docker compose exec -T backend python -c \
+#   "from app.core.tv_entry_sizing import FIXED_LEVERAGE; print(FIXED_LEVERAGE)"
 ```
 
 HTTPS：`sudo CERTBOT_EMAIL=admin@twinstar.pro bash deploy/setup-https-twinstar.sh`  
 Nginx：`/gemini/webhook` → `127.0.0.1:6010`；`/` → `6080`。仅开放 80/443。
+
+> **生产已验收通过后**：避免无必要 rebuild 即可（`-1003` 风险仍在）。见 [docs/OBSERVATION_WINDOW_20260722.md](docs/OBSERVATION_WINDOW_20260722.md)。
 
 ---
 
@@ -640,49 +717,52 @@ Nginx：`/gemini/webhook` → `127.0.0.1:6010`；`/` → `6080`。仅开放 80/4
 
 ```bash
 curl -s http://127.0.0.1:6010/health
-docker compose logs -f backend | grep -E "先平后开|BREATH|FORCE_ALIGN|CAP_ALIGN|Webhook|initial_stop|missing_stop"
+docker compose logs -f backend | grep -E \
+  "先平后开|BREATH|FORCE_ALIGN|CAP_ALIGN|Webhook|initial_stop|未登记|EXCHANGE_QUERY|-1003|核武"
 ```
 
 | 现象 | 排查 |
 |------|------|
 | HTTP 200 无成交 | `api_status`、绩效门禁、全局暂停、`enabled_exchanges` |
-| `missing_stop` / `missing_tv_qty` / `missing_tv_stop_loss` / `atr_invalid` | 行情 ATR；TV 是否带 `qty`+`stop_loss` |
+| `missing_stop` / `missing_tv_qty` / `atr_invalid` | 行情 ATR；TV 是否带 `qty`+`stop_loss` |
 | 开仓无止损 | 查呼吸挂单；失败应 `HARD_SL_FAIL_ABORT` / 撤仓 |
+| 钉钉显示 25× | 应为 5×；确认部署 ≥ `77d171b`，`_alert` 注入 FIXED |
 | 重启被暂停 | 旧 schema 或缺 `initial_atr`/`initial_stop`/`tp1·tp2` |
+| 未登记仓裸奔 | 应有接管钉钉 + `initial_stop`；查 `prepare_manual_adopt` |
 | CAP_ALIGN 钉钉 | 仅告警属预期；不应出现市价减仓 |
+| `-1003` / IP ban | 暂停观察计时；约 5min 自解；勿连续 rebuild |
+| 查询失败误报空仓 | 应 `EXCHANGE_QUERY_FAIL`，账本保留 |
 | 同 bar 先开后平 | 查 `webhook_seq_gate` 版本与日志顺序 |
 
 ---
 
 ## 生产就绪与验收
 
-**状态跟踪（权威）：** [docs/BINANCE_EXECUTION_ACCEPTANCE.md](docs/BINANCE_EXECUTION_ACCEPTANCE.md)  
-判定口令：仅当 **B1+B2+B3** 均有真实交易所证据后，方可宣布「Gemini 币安执行层验收通过」。
+**状态跟踪（权威）：** [docs/GEMINI_FINAL_STATUS_20260722.md](docs/GEMINI_FINAL_STATUS_20260722.md)  
+**判定：Gemini 币安执行层验收通过**（2026-07-22）。明细见 [docs/BINANCE_EXECUTION_ACCEPTANCE.md](docs/BINANCE_EXECUTION_ACCEPTANCE.md)。
 
-### 上线前
+### 上线前 / 回归核对
 
-- [ ] Webhook Secret 与 TV JSON 一致；`curl` POST 四 action 行为正确  
-- [ ] 模拟：开仓 → 阶段一阶梯 → TP1 止损数量收缩 → TP2 再收缩 → 阶段二 → 止损/反转平仓  
-- [ ] 重启：有效状态恢复；旧 schema 告警暂停  
-- [ ] ATR/ADX 与 TV 90m 图核对  
-- [ ] 先平后开：确认完成前不提前算仓开仓  
-- [ ] `docs/VPS_LIVE_CHECKLIST.md` 与 README 一致  
-- [ ] **B1** TP 重复修复后 30–60min 无核武重挂复发  
-- [ ] **B2** 真实 TP 成交 → 止损 qty 收缩  
-- [ ] **B3** 真实全平 → supervisor 状态清零  
+- [x] Webhook Secret 与 TV JSON 一致；四 action 行为正确  
+- [x] 开仓 → TP1/TP2 → 呼吸跟踪 → 反转/止损平仓路径（E2E webhook 实锤）  
+- [x] 钉钉杠杆恒为 **5×**；未登记仓位文案诚实  
+- [x] `docs/VPS_LIVE_CHECKLIST.md` / `LEGACY_PURGE_LIST` / 最终状态清单一致  
+- [x] B1 观察无 TP 重复抖动；B3 全平清零；B2 qty 收缩代码模拟  
 
 ### 自动化验收
 
 ```bash
 cd backend
-py -m pytest tests/test_breathing_stop.py tests/test_tv_v6985_sizing.py \
+py -3 -m pytest tests/test_breathing_stop.py tests/test_tv_v6985_sizing.py \
   tests/test_vps_entry_routing.py tests/test_pine_tp_regime_ratios.py \
   tests/test_market_indicators.py tests/test_market_engine_wire.py \
   tests/test_close_alert_utils.py tests/test_position_cap_guard.py \
   tests/test_vps_dev_checklist.py tests/test_v656_core.py \
   tests/test_tp_rebuild_no_duplicate.py tests/test_tp_timeout_no_thrash.py \
   tests/test_tp_fill_stop_qty_resize.py tests/test_tp3_phase2_flat_clear.py \
-  tests/test_user_symbol_isolation.py tests/test_deepcoin_binance_parity.py -q
+  tests/test_user_symbol_isolation.py tests/test_deepcoin_binance_parity.py \
+  tests/test_manual_adopt.py tests/test_trading_alerts.py \
+  tests/test_attribution_evidence_gates.py tests/test_position_query_fail_safe.py -q
 ```
 
 ---
@@ -697,18 +777,25 @@ py -m pytest tests/test_breathing_stop.py tests/test_tv_v6985_sizing.py \
 | 前端 | React 18, Vite, TypeScript |
 | 部署 | Docker Compose, Nginx, Certbot |
 
-### 2026-07-22 · 最终权威规格落地
+### 2026-07-22 · 生产级最终落地
 
-| Commit | 内容 |
+| Commit / 证据 | 内容 |
 |--------|------|
-| `8623f0b` | RISK20 算仓；TP12；90m；止损带 qty + TP 后收缩；CAP detect-only；钉钉清理 |
-| `3b61a3e` | 开仓用 **VPS initialStop** 算仓；止损写入收拢呼吸引擎；旧 schema 暂停；checklist 同步 |
-| `ba76f31` / `3524ac6` | 90m 锚点；ATR 两级兜底；止损撤挂抖动与空仓清零；钉钉送达；TV.qty×止损距系数 |
-| （本节） | **防 TP 重复**：超时勿误撤有效 TP；盘口已有匹配 TP 则跳过 rebuild；DeepCoin 对齐；验收/事故文档 |
+| **最终状态** | [GEMINI_FINAL_STATUS_20260722.md](docs/GEMINI_FINAL_STATUS_20260722.md) — **币安执行层验收通过** |
+| E2E webhook | LONG 0.029→TP/呼吸→CLOSE_QUICK_EXIT；两处过程异常已闭环说明 |
+| 开仓日志措辞 | 空盘口补挂改称「开仓初始化补挂」，避免与旧核武事故混淆 |
+| **`77d171b`** | 杠杆根治；未登记仓市价 ATR 接管；CAP trim stub；清除清单 |
+| `48ed021` | 观察窗文档 |
+| `78ad0d8` | 仓位查询失败≠空仓；平仓归因证据门 |
+| `2a64d61` | 防 TP 重复；DeepCoin 对齐 |
+| `3524ac6` / `ba76f31` | 止损撤挂抖动；90m 锚点；ATR 两级兜底 |
+| `8623f0b` / `3b61a3e` | RISK20；TP12；呼吸引擎收拢止损写入 |
 
 ### 历史说明（勿再当现行）
 
-此前 README 中的「路径比例雷达 50/60/70/80」「TP123 基础单×3」「PYRAMID 加仓」「TV `risk_pct`/`tv_sl` 权威算仓与挂止损」「妈妈版权益×1」等，均已被本节与 `docs/VPS_LIVE_CHECKLIST.md` **取代**。事故档案中的修复思路（先平后开、TP 不重挂已成交档、硬止损禁普通限价秒平等）仍有运维参考价值，但参数与模块名请以**呼吸止损 + RISK20**为准。
+此前 README 中的「路径比例雷达 50/60/70/80」「TP123 基础单×3」「PYRAMID 加仓」「TV `risk_pct`/`tv_sl` 权威算仓与挂止损」「妈妈版权益×1」「钉钉主题可回落 env 25×」等，均已被本节与 `docs/VPS_LIVE_CHECKLIST.md` / `docs/LEGACY_PURGE_LIST_20260722.md` **取代**。
+
+事故档案中的修复思路（先平后开、TP 不重挂已成交档、硬止损禁普通限价秒平等）仍有运维参考价值，但参数与模块名请以**呼吸止损 + RISK20 + FIXED_LEVERAGE**为准。
 
 ---
 

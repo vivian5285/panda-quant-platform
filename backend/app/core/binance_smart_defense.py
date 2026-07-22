@@ -1096,30 +1096,33 @@ class BinanceSmartDefenseMixin:
         return placed
 
     def _nuclear_realign_tp(self, live_qty: float, entry: float, dynamic_sl=None, rounds: int = 3) -> dict:
-        """核武重挂：只撤 TP 限价，绝不 cancel_all（避免误撤呼吸止损条件槽）。"""
+        """清场重挂 TP 限价（只动 TP，绝不 cancel_all 误撤呼吸止损）。"""
+        open_init = bool(getattr(self, "_defense_open_init_logs", False))
+        tag = "开仓初始化补挂" if open_init else "核武级止盈清场重挂"
+        mark = "📋" if open_init else "☢️"
         last_audit = self._audit_tp_levels(live_qty)
         for r in range(rounds):
             self._def_log(
-                f"☢️ 核武级止盈清场重挂 {r + 1}/{rounds} | 持仓 {live_qty} {getattr(self, 'qty_unit', '')} | "
+                f"{mark} {tag} {r + 1}/{rounds} | 持仓 {live_qty} {getattr(self, 'qty_unit', '')} | "
                 f"当前 {last_audit['matched_full']}/{last_audit['expected']} | "
                 f"{self._format_audit_summary(last_audit)}",
-                logging.WARNING,
+                logging.INFO if open_init else logging.WARNING,
             )
             # Route A：TP123 ‖ 硬止损 ‖ 雷达 分槽；核武只动 TP 限价
             self._cancel_all_tp_limit_orders()
             time.sleep(1.0)
             placed = self._rebuild_tp_limit_orders(live_qty, entry, dynamic_sl=None)
-            self._def_log(f"☢️ 核武轮 {r + 1} 新挂 {placed} 笔限价止盈")
+            self._def_log(f"{mark} {tag}轮 {r + 1} 新挂 {placed} 笔限价止盈")
             if dynamic_sl:
                 time.sleep(0.6)
                 self._ensure_radar_sl(dynamic_sl, live_qty)
             time.sleep(1.0)
             last_audit = self._audit_tp_levels(live_qty)
             if self._defenses_fully_ok(live_qty, dynamic_sl, require_sl=bool(dynamic_sl)):
-                self._def_log(f"☢️ 核武重挂成功: {self._format_audit_summary(last_audit)}")
+                self._def_log(f"{mark} {tag}成功: {self._format_audit_summary(last_audit)}")
                 return last_audit
             self._def_log(
-                f"☢️ 核武轮 {r + 1} 仍未对齐: {self._format_audit_summary(last_audit)}",
+                f"{mark} {tag}轮 {r + 1} 仍未对齐: {self._format_audit_summary(last_audit)}",
                 logging.WARNING,
             )
             time.sleep(1.5)
@@ -1159,11 +1162,18 @@ class BinanceSmartDefenseMixin:
             pending_prices = audit["pending_prices"]
 
         if self._audit_requires_nuclear(audit):
-            self._def_log(
-                f"☢️ 审计触发核武级重挂: {len(self._collect_tp_limit_orders())} 张止盈 | "
-                f"{self._format_audit_summary(audit)}",
-                logging.WARNING,
-            )
+            open_init = bool(getattr(self, "_defense_open_init_logs", False))
+            if open_init:
+                self._def_log(
+                    f"📋 开仓初始化补挂: 盘口 {len(self._collect_tp_limit_orders())} 张止盈 | "
+                    f"{self._format_audit_summary(audit)}"
+                )
+            else:
+                self._def_log(
+                    f"☢️ 审计触发核武级重挂: {len(self._collect_tp_limit_orders())} 张止盈 | "
+                    f"{self._format_audit_summary(audit)}",
+                    logging.WARNING,
+                )
             audit = self._nuclear_realign_tp(live_qty, entry, dynamic_sl=dynamic_sl, rounds=3)
             return audit["matched_full"], audit["pending_prices"], audit["expected"], True
 
@@ -1350,46 +1360,61 @@ class BinanceSmartDefenseMixin:
             ):
                 return self._defense_result_from_audit(initial, skipped=True)
 
-        if self._audit_requires_nuclear(initial):
-            self._def_log("🧹 检测到严重错位，清场后重挂", logging.WARNING)
-            self._cancel_all_tp_limit_orders()
-            time.sleep(0.5)
-            initial = self._audit_tp_levels(live_qty)
+        open_init = "开仓" in str(reason or "")
+        self._defense_open_init_logs = open_init
+        try:
+            if self._audit_requires_nuclear(initial):
+                if open_init and int(initial.get("matched_full") or 0) == 0:
+                    # Fresh open + empty book: expected init path, not thrash/incident language.
+                    self._def_log("📋 开仓初始化：盘口尚无止盈限价，开始补挂")
+                else:
+                    self._def_log("🧹 检测到严重错位，清场后重挂", logging.WARNING)
+                self._cancel_all_tp_limit_orders()
+                time.sleep(0.5)
+                initial = self._audit_tp_levels(live_qty)
 
-        self._cancel_orphan_tp_orders(live_qty)
-        matched, pending_prices, expected, rebuilt = self._ensure_defenses_on_recover(
-            live_qty, entry, dynamic_sl=None,
-        )
-        audit = self._audit_tp_levels(live_qty)
-        nuclear = False
-
-        if expected > 0 and audit["matched_full"] < expected:
-            self._def_log(
-                f"⚠️ 常规对齐未达标 ({audit['matched_full']}/{expected})，升级核武级清场重挂",
-                logging.WARNING,
+            self._cancel_orphan_tp_orders(live_qty)
+            matched, pending_prices, expected, rebuilt = self._ensure_defenses_on_recover(
+                live_qty, entry, dynamic_sl=None,
             )
-            # 核武只动 TP；雷达另槽事后补挂，禁止与硬止损抢份额
-            audit = self._nuclear_realign_tp(live_qty, entry, dynamic_sl=None, rounds=3)
-            matched = audit["matched_full"]
-            pending_prices = audit["pending_prices"]
-            rebuilt = nuclear = True
-            if dynamic_sl and hasattr(self, "_ensure_radar_sl"):
-                self._ensure_radar_sl(dynamic_sl, live_qty)
+            audit = self._audit_tp_levels(live_qty)
+            nuclear = False
 
-        summary = self._format_audit_summary(audit)
-        return {
-            "matched": matched,
-            "expected": expected,
-            "pending_prices": pending_prices,
-            "rebuilt": rebuilt,
-            "audit": audit,
-            "nuclear": nuclear,
-            "skipped": False,
-            "aligned": audit["matched_full"] >= expected and expected > 0,
-            "healed": rebuilt or nuclear,
-            "summary": summary,
-            "after_summary": summary,
-        }
+            if expected > 0 and audit["matched_full"] < expected:
+                if open_init:
+                    self._def_log(
+                        f"📋 开仓初始化补挂未齐 ({audit['matched_full']}/{expected})，继续清场补挂",
+                        logging.INFO,
+                    )
+                else:
+                    self._def_log(
+                        f"⚠️ 常规对齐未达标 ({audit['matched_full']}/{expected})，升级核武级清场重挂",
+                        logging.WARNING,
+                    )
+                # 核武只动 TP；雷达另槽事后补挂，禁止与硬止损抢份额
+                audit = self._nuclear_realign_tp(live_qty, entry, dynamic_sl=None, rounds=3)
+                matched = audit["matched_full"]
+                pending_prices = audit["pending_prices"]
+                rebuilt = nuclear = True
+                if dynamic_sl and hasattr(self, "_ensure_radar_sl"):
+                    self._ensure_radar_sl(dynamic_sl, live_qty)
+
+            summary = self._format_audit_summary(audit)
+            return {
+                "matched": matched,
+                "expected": expected,
+                "pending_prices": pending_prices,
+                "rebuilt": rebuilt,
+                "audit": audit,
+                "nuclear": nuclear,
+                "skipped": False,
+                "aligned": audit["matched_full"] >= expected and expected > 0,
+                "healed": rebuilt or nuclear,
+                "summary": summary,
+                "after_summary": summary,
+            }
+        finally:
+            self._defense_open_init_logs = False
 
     def _realign_radar_defenses(self, live_qty: float, entry: float, new_sl: float) -> bool:
         """雷达推升：Route A 不撤 TV 底线；Binance 合并，Deepcoin 双轨。"""
