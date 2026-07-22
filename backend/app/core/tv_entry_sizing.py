@@ -53,6 +53,7 @@ def floor_qty(qty: float, step: float = 0.001) -> float:
 def parse_tv_entry_fields(payload: dict | None) -> dict[str, Any]:
     data = dict(payload or {})
     tv_qty = _parse_float(data.get("qty"))
+    atr = _parse_float(data.get("atr"))
     return {
         "entry_type": "OPEN",
         "regime": None,
@@ -62,6 +63,7 @@ def parse_tv_entry_fields(payload: dict | None) -> dict[str, Any]:
         "tv_qty1": _parse_float(data.get("qty1")),
         "tv_qty2": _parse_float(data.get("qty2")),
         "tv_qty3": _parse_float(data.get("qty3")),
+        "atr": atr,
         "margin_pct": RISK_PCT,
         "leverage": MAX_LEVERAGE,
         "tv_leverage": float(MAX_LEVERAGE),

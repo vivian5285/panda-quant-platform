@@ -1244,9 +1244,31 @@ class PositionSupervisor(
             or 0
         )
         pending_hard = float(getattr(self, "_tv_hard_sl_price", 0) or 0)
+        # Preserve TV webhook atr — flat wipe must not kill open sizing
+        pending_tv_atr = float(getattr(self, "_tv_atr_ref", 0) or 0)
+        if pending_tv_atr <= 0:
+            try:
+                pending_tv_atr = float(
+                    (getattr(self, "_tv_entry_fields", None) or {}).get("atr") or 0
+                )
+            except (TypeError, ValueError):
+                pending_tv_atr = 0.0
         if pending_tv_sl > 0:
             self._tv_stop_loss_ref = pending_tv_sl
             self._pending_open_tv_sl = pending_tv_sl
+
+        def _restore_pending_open_refs() -> None:
+            if pending_tv_sl > 0:
+                self._tv_stop_loss_ref = pending_tv_sl
+                self._pending_open_tv_sl = pending_tv_sl
+                if pending_hard > 0:
+                    self._tv_hard_sl_price = pending_hard
+            if pending_tv_atr > 0:
+                self._tv_atr_ref = pending_tv_atr
+                self.current_atr = pending_tv_atr
+                fields = getattr(self, "_tv_entry_fields", None)
+                if isinstance(fields, dict):
+                    fields["atr"] = pending_tv_atr
 
         live = self._get_active_position() if hasattr(self, "_get_active_position") else None
         if live is None and hasattr(self, "position_manager"):
@@ -1270,12 +1292,8 @@ class PositionSupervisor(
                 self.consumed_tp_levels = []
                 self._tp_fill_dingtalk_levels = set()
                 self.current_side = None
-            # Preserve pending TV Pine stop_loss for sizing/ATR (after wipe)
-            if pending_tv_sl > 0:
-                self._tv_stop_loss_ref = pending_tv_sl
-                self._pending_open_tv_sl = pending_tv_sl
-                if pending_hard > 0:
-                    self._tv_hard_sl_price = pending_hard
+            # Preserve pending TV Pine stop_loss + atr for sizing (after wipe)
+            _restore_pending_open_refs()
             if hasattr(self, "radar_latched"):
                 self.radar_latched = False
             if hasattr(self, "_save_state"):
@@ -1355,11 +1373,8 @@ class PositionSupervisor(
             self.consumed_tp_levels = []
             self._tp_fill_dingtalk_levels = set()
             self.current_side = None
-        if pending_tv_sl > 0:
-            self._tv_stop_loss_ref = pending_tv_sl
-            self._pending_open_tv_sl = pending_tv_sl
-            if pending_hard > 0:
-                self._tv_hard_sl_price = pending_hard
+        if pending_tv_sl > 0 or pending_tv_atr > 0:
+            _restore_pending_open_refs()
         recon = self._reconcile_live_vs_book(
             expect_flat=True, context="force_flat", notify_ok=False,
         )
