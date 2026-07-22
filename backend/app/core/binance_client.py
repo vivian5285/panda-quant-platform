@@ -423,11 +423,14 @@ class BinanceClient:
     def place_market_order(self, side, quantity, symbol=None, reduce_only=False):
         symbol = self._sym(symbol)
         can = self._can_sym()
+        self._last_market_order_error = ""
+        self._last_market_order_params = None
         try:
             binance_side = "BUY" if side.upper() in ["BUY", "LONG"] else "SELL"
             qty_str = format_quantity(quantity, can)
             if float(qty_str) <= 0:
                 logger.error(f"[User {self.user_id}] market order qty invalid: {quantity}")
+                self._last_market_order_error = f"invalid_qty:{quantity}"
                 return None
             params = {
                 "symbol": symbol,
@@ -437,13 +440,19 @@ class BinanceClient:
             }
             if reduce_only:
                 params["reduceOnly"] = "true"
+            self._last_market_order_params = dict(params)
             order = self.client.futures_create_order(**params)
             logger.info(
-                f"[User {self.user_id}] market {side} {qty_str} {symbol} reduce={reduce_only}"
+                f"[User {self.user_id}] market {side} {qty_str} {symbol} reduce={reduce_only} "
+                f"params={params} resp_id={order.get('orderId') if isinstance(order, dict) else order}"
             )
             return order
         except Exception as e:
-            logger.error(f"[User {self.user_id}] market order failed: {e}")
+            self._last_market_order_error = str(e)
+            logger.error(
+                f"[User {self.user_id}] market order failed: {e} "
+                f"params={getattr(self, '_last_market_order_params', None)}"
+            )
             return None
 
     def place_limit_order(

@@ -29,6 +29,12 @@ MAX_LEVERAGE = 5
 FIXED_MARGIN_PCT = RISK_PCT
 FIXED_LEVERAGE = MAX_LEVERAGE
 SIZING_MODE = "risk20_cap5x_tv_qty_cap"
+# When TV.qty is strategy.equity-inflated (e.g. 8.6e8), adjusted_tv_qty must not
+# silently disappear from the min() as a useful cap — we still require tv_qty>0 as
+# signal presence, but ignore absurd caps so risk∩notional bind. Haircut leaves
+# margin headroom so Binance -2019 is less likely at full 5× notional.
+ABSURD_TV_QTY_VS_CAPS = 50.0
+NOTIONAL_MARGIN_HAIRCUT = 0.85
 
 ENTRY_TYPES = frozenset({"OPEN"})
 ENTRY_TYPES_ADD = frozenset()  # pyramiding disabled
@@ -179,14 +185,25 @@ def compute_tv_entry_qty(
     adjusted_tv_qty = tv_qty_f * adjust_coef
 
     risk_capital = sizing_base * risk_frac
-    notional_cap = sizing_base * lev
+    notional_cap = sizing_base * lev * NOTIONAL_MARGIN_HAIRCUT
     qty_by_risk = risk_capital / vps_dist
     qty_by_notional = notional_cap / price_f
-    theoretical = min(qty_by_risk, qty_by_notional, adjusted_tv_qty)
+    tv_qty_ignored_absurd = False
+    cap_ref = max(qty_by_risk, qty_by_notional)
+    if (
+        cap_ref > 0
+        and adjusted_tv_qty > cap_ref * ABSURD_TV_QTY_VS_CAPS
+    ):
+        # Pine strategy.equity inflation: TV.qty is not a meaningful cap.
+        theoretical = min(qty_by_risk, qty_by_notional)
+        tv_qty_ignored_absurd = True
+    else:
+        theoretical = min(qty_by_risk, qty_by_notional, adjusted_tv_qty)
 
     meta["risk_capital"] = round(risk_capital, 4)
     meta["notional_cap"] = round(notional_cap, 4)
     meta["nominal_value"] = round(notional_cap, 4)
+    meta["notional_margin_haircut"] = NOTIONAL_MARGIN_HAIRCUT
     meta["sl_distance"] = round(vps_dist, 6)
     meta["stop_distance"] = meta["sl_distance"]
     meta["vps_stop_distance"] = round(vps_dist, 6)
@@ -194,6 +211,7 @@ def compute_tv_entry_qty(
     meta["adjust_coef"] = round(adjust_coef, 8)
     meta["tv_qty_cap"] = round(adjusted_tv_qty, 6)
     meta["adjusted_tv_qty_cap"] = round(adjusted_tv_qty, 6)
+    meta["tv_qty_ignored_absurd"] = tv_qty_ignored_absurd
     meta["qty_by_risk"] = round(qty_by_risk, 6)
     meta["qty_by_notional"] = round(qty_by_notional, 6)
     meta["theoretical_qty"] = round(theoretical, 6)
@@ -202,7 +220,12 @@ def compute_tv_entry_qty(
     meta["candidate_qty_by_notional"] = meta["qty_by_notional"]
     meta["candidate_qty_by_tv_adj"] = meta["adjusted_tv_qty_cap"]
 
-    if qty_by_risk <= qty_by_notional + 1e-12 and qty_by_risk <= adjusted_tv_qty + 1e-12:
+    if tv_qty_ignored_absurd:
+        if qty_by_risk <= qty_by_notional + 1e-12:
+            meta["binding"] = "stop_risk"
+        else:
+            meta["binding"] = "notional_cap"
+    elif qty_by_risk <= qty_by_notional + 1e-12 and qty_by_risk <= adjusted_tv_qty + 1e-12:
         meta["binding"] = "stop_risk"
     elif qty_by_notional <= adjusted_tv_qty + 1e-12:
         meta["binding"] = "notional_cap"

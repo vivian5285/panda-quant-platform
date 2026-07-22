@@ -257,6 +257,8 @@ class AdverseRadarMixin:
     def _init_adverse_radar_fields(self) -> None:
         if not hasattr(self, "tv_sl"):
             self.tv_sl = 0.0
+        if not hasattr(self, "_tv_stop_loss_ref"):
+            self._tv_stop_loss_ref = 0.0
         if not hasattr(self, "adverse_sl_armed"):
             self.adverse_sl_armed = False
         if not hasattr(self, "adverse_sl_prices"):
@@ -309,6 +311,23 @@ class AdverseRadarMixin:
             self.remaining_qty_pct = 1.0
         if not hasattr(self, "_last_breath_trail_alert_sl"):
             self._last_breath_trail_alert_sl = 0.0
+
+    def _exchange_stop_px(self) -> float:
+        """VPS hang / breathing stop price (never Pine stop_loss)."""
+        return float(
+            getattr(self, "current_sl", 0)
+            or getattr(self, "initial_stop", 0)
+            or getattr(self, "_tv_hard_sl_price", 0)
+            or 0
+        )
+
+    def _pine_stop_loss_ref(self) -> float:
+        """TradingView stop_loss only (sizing adjust_coef + ATR compare)."""
+        return float(
+            getattr(self, "_tv_stop_loss_ref", 0)
+            or getattr(self, "_pending_open_tv_sl", 0)
+            or 0
+        )
 
     def _pull_vps_market_indicators(self, *, force: bool = False) -> dict[str, Any]:
         """Refresh ATR/ADX from VPS market engine. Never uses TV webhook values.
@@ -699,10 +718,23 @@ class AdverseRadarMixin:
             "bars_90": snap.get("bars_90"),
         }
         if stop > 0:
-            self.tv_sl = float(stop)
+            # Exchange hang price ONLY — never write VPS stop into self.tv_sl.
             self.initial_stop = float(stop)
             self.current_sl = float(stop)
             self._tv_hard_sl_price = float(stop)
+            tv_sl_ref = None
+            if payload:
+                try:
+                    tv_sl_ref = float(
+                        payload.get("stop_loss") or payload.get("tv_sl") or 0
+                    ) or None
+                except (TypeError, ValueError):
+                    tv_sl_ref = None
+            if tv_sl_ref and tv_sl_ref > 0:
+                # tv_sl / _tv_stop_loss_ref: Pine stop_loss ONLY (sizing + ATR compare).
+                self.tv_sl = float(tv_sl_ref)
+                self._tv_stop_loss_ref = float(tv_sl_ref)
+                self._pending_open_tv_sl = float(tv_sl_ref)
             if float(getattr(self, "initial_atr", 0) or 0) <= 0:
                 self.initial_atr = atr
             # Before open freeze: keep current_atr in sync with VPS
@@ -716,14 +748,6 @@ class AdverseRadarMixin:
                 "呼吸止损: entry=%.2f side=%s atr=%.4f → stop=%.2f | %s",
                 entry, side_u, atr, stop, meta,
             )
-            tv_sl_ref = None
-            if payload:
-                try:
-                    tv_sl_ref = float(
-                        payload.get("stop_loss") or payload.get("tv_sl") or 0
-                    ) or None
-                except (TypeError, ValueError):
-                    tv_sl_ref = None
             self._maybe_alert_atr_mismatch(entry, tv_sl_ref, atr)
         else:
             self._vps_hard_sl_meta = meta
@@ -824,7 +848,7 @@ class AdverseRadarMixin:
         sl = float(getattr(self, "current_sl", 0) or 0)
         if sl > 0:
             return sl
-        return float(getattr(self, "initial_stop", 0) or getattr(self, "tv_sl", 0) or 0)
+        return self._exchange_stop_px()
 
     def _merged_stop_price(self, radar_sl: float | None = None) -> float:
         """Single breathing stop — no max/min with a separate radar track."""
@@ -833,7 +857,7 @@ class AdverseRadarMixin:
         return round_price(float(
             getattr(self, "current_sl", 0)
             or getattr(self, "initial_stop", 0)
-            or getattr(self, "tv_sl", 0)
+            or getattr(self, "_tv_hard_sl_price", 0)
             or 0
         ))
 
@@ -1182,7 +1206,7 @@ class AdverseRadarMixin:
             "exchange": getattr(self, "exchange_id", None),
             "hard_sl_untouched": True,
             "radar_untouched": True,
-            "vps_sl": float(getattr(self, "tv_sl", 0) or 0),
+            "vps_sl": self._exchange_stop_px(),
             "radar_sl": float(getattr(self, "current_sl", 0) or 0),
         }
 
@@ -1415,7 +1439,7 @@ class AdverseRadarMixin:
         self.initial_atr = float(st["initial_atr"])
         self.initial_stop = float(st["initial_stop"])
         self.current_sl = float(st["current_sl"])
-        self.tv_sl = float(st["current_sl"])
+        # Do NOT mirror VPS hang into tv_sl (Pine stop_loss only).
         self._tv_hard_sl_price = float(st["current_sl"])
         self.best_price = float(st["best_price"])
         self.breakeven_phase = bool(st["breakeven_phase"])
@@ -1465,7 +1489,7 @@ class AdverseRadarMixin:
         if current_sl <= 0:
             current_sl = initial_stop
             self.current_sl = current_sl
-            self.tv_sl = current_sl
+            self._tv_hard_sl_price = current_sl
 
         was_phase = phase
         tick = apply_breathing_tick(
@@ -1489,7 +1513,7 @@ class AdverseRadarMixin:
         self.breakeven_phase = new_phase
         if improved and new_sl > 0:
             self.current_sl = new_sl
-            self.tv_sl = new_sl
+            self._tv_hard_sl_price = new_sl
 
         if stop_hit(side, px, float(getattr(self, "current_sl", 0) or 0)):
             phase_label = (
@@ -1670,7 +1694,6 @@ class AdverseRadarMixin:
                 self.current_sl = max(current_sl, new_sl) if current_sl > 0 else new_sl
             else:
                 self.current_sl = min(current_sl, new_sl) if current_sl > 0 else new_sl
-            self.tv_sl = float(self.current_sl)
             self._tv_hard_sl_price = float(self.current_sl)
         self.radar_latched = True
         self.radar_activated = True
@@ -1853,7 +1876,7 @@ class AdverseRadarMixin:
             return False
         tiers = self._shield_tier_prices()
         if not tiers:
-            hard = float(getattr(self, "tv_sl", 0) or 0)
+            hard = self._exchange_stop_px()
             if hard <= 0:
                 return False
             tiers = {round(hard, 2)}
@@ -2419,7 +2442,7 @@ class AdverseRadarMixin:
         flat_reset = live_qty <= 0 or reason in ("flat_reset", "close_all")
         if notify and (n > 0 or open_before) and not flat_reset:
             entry = float(self.watched_entry or 0)
-            stop_px = float(getattr(self, "tv_sl", 0) or 0)
+            stop_px = self._exchange_stop_px()
             label = self._hard_stop_label()
             msg = (
                 f"雷达接管 · {reason} | 已撤 {label} {n} 笔"
@@ -2553,7 +2576,7 @@ class AdverseRadarMixin:
             "open_adverse_stops": open_count,
             "purged_duplicates": purged,
             "consumed_tiers": list(self.adverse_consumed_tiers),
-            "stop_price": plan[0]["stop_price"] if plan else float(getattr(self, "tv_sl", 0) or 0),
+            "stop_price": plan[0]["stop_price"] if plan else self._exchange_stop_px(),
             "repair": repair,
             "at_open": at_open,
             "synced_from_exchange": True,

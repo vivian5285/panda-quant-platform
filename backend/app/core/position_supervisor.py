@@ -285,9 +285,10 @@ class PositionSupervisor(
                     "adverse_arm_dingtalk_sent": bool(getattr(self, "adverse_arm_dingtalk_sent", False)),
                     "adverse_last_repair_ts": float(getattr(self, "_adverse_last_repair_ts", 0) or 0),
                     "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
+                    "tv_stop_loss_ref": float(getattr(self, "_tv_stop_loss_ref", 0) or 0),
                     "tv_hard_sl_price": float(
                         getattr(self, "_tv_hard_sl_price", 0)
-                        or getattr(self, "tv_sl", 0)
+                        or getattr(self, "current_sl", 0)
                         or 0
                     ),
                     "leverage": int(getattr(self, "leverage", 0) or 0),
@@ -350,11 +351,16 @@ class PositionSupervisor(
                     self._adverse_last_repair_ts = float(s.get("adverse_last_repair_ts", 0) or 0)
                     self.adverse_arm_dingtalk_sent = bool(s.get("adverse_arm_dingtalk_sent", False))
                     self.tv_sl = float(s.get("tv_sl", 0) or 0)
-                    self._tv_hard_sl_price = float(
-                        s.get("tv_hard_sl_price") or s.get("tv_sl", 0) or 0
+                    self._tv_stop_loss_ref = float(
+                        s.get("tv_stop_loss_ref") or s.get("tv_sl", 0) or 0
                     )
-                    if self._tv_hard_sl_price <= 0 and self.tv_sl > 0:
-                        self._tv_hard_sl_price = self.tv_sl
+                    self._tv_hard_sl_price = float(
+                        s.get("tv_hard_sl_price")
+                        or s.get("current_sl", 0)
+                        or 0
+                    )
+                    if self._tv_hard_sl_price <= 0 and float(s.get("initial_stop", 0) or 0) > 0:
+                        self._tv_hard_sl_price = float(s.get("initial_stop") or 0)
                     lev = int(s.get("leverage", 0) or 0)
                     if lev > 0:
                         self.leverage = lev
@@ -805,10 +811,9 @@ class PositionSupervisor(
                 snap = {}
         atr = float(snap.get("atr") or getattr(self, "current_atr", 0) or 0)
         atr_series = list(snap.get("atr_series") or [])
-        tv_sl_ref = float(
-            getattr(self, "_pending_open_tv_sl", 0)
-            or getattr(self, "_tv_hard_sl_price", 0)
-            or getattr(self, "tv_sl", 0)
+        tv_sl_ref = self._pine_stop_loss_ref() if hasattr(self, "_pine_stop_loss_ref") else float(
+            getattr(self, "_tv_stop_loss_ref", 0)
+            or getattr(self, "_pending_open_tv_sl", 0)
             or 0
         )
         from app.core.atr_emergency_fallback import (
@@ -1209,12 +1214,15 @@ class PositionSupervisor(
         注意：清场不得抹掉本笔 TV 已下发的 tv_sl（否则开仓算仓会 missing_tv_sl）。
         平仓失败：按 1s/3s/6s 重试；仍失败则中止开仓并暂停（严禁仓位不明时开新仓）。
         """
-        # 本笔 OPEN 的 tv_sl 在 handle_signal 已写入；close_all 默认会 wipe，需保留并恢复
-        pending_tv_sl = float(getattr(self, "tv_sl", 0) or 0)
+        # Preserve TV Pine stop_loss ref (not VPS hang price in self.tv_sl).
+        pending_tv_sl = float(
+            getattr(self, "_tv_stop_loss_ref", 0)
+            or getattr(self, "_pending_open_tv_sl", 0)
+            or 0
+        )
         pending_hard = float(getattr(self, "_tv_hard_sl_price", 0) or 0)
-        if pending_hard <= 0:
-            pending_hard = pending_tv_sl
         if pending_tv_sl > 0:
+            self._tv_stop_loss_ref = pending_tv_sl
             self._pending_open_tv_sl = pending_tv_sl
 
         live = self._get_active_position() if hasattr(self, "_get_active_position") else None
@@ -1239,11 +1247,12 @@ class PositionSupervisor(
                 self.consumed_tp_levels = []
                 self._tp_fill_dingtalk_levels = set()
                 self.current_side = None
-            # Preserve pending TV stop for the imminent OPEN (after wipe)
+            # Preserve pending TV Pine stop_loss for sizing/ATR (after wipe)
             if pending_tv_sl > 0:
-                self.tv_sl = pending_tv_sl
-                self._tv_hard_sl_price = pending_hard or pending_tv_sl
+                self._tv_stop_loss_ref = pending_tv_sl
                 self._pending_open_tv_sl = pending_tv_sl
+                if pending_hard > 0:
+                    self._tv_hard_sl_price = pending_hard
             if hasattr(self, "radar_latched"):
                 self.radar_latched = False
             if hasattr(self, "_save_state"):
@@ -1324,9 +1333,10 @@ class PositionSupervisor(
             self._tp_fill_dingtalk_levels = set()
             self.current_side = None
         if pending_tv_sl > 0:
-            self.tv_sl = pending_tv_sl
-            self._tv_hard_sl_price = pending_hard or pending_tv_sl
+            self._tv_stop_loss_ref = pending_tv_sl
             self._pending_open_tv_sl = pending_tv_sl
+            if pending_hard > 0:
+                self._tv_hard_sl_price = pending_hard
         recon = self._reconcile_live_vs_book(
             expect_flat=True, context="force_flat", notify_ok=False,
         )
@@ -1520,16 +1530,18 @@ class PositionSupervisor(
                 self._log("SIGNAL", f"🧹 开仓前清残留硬止损/条件单 ×{purged}")
         time.sleep(0.4)
         # 双保险：先平后开清场若仍抹掉 tv_sl，从硬止损缓存/本笔字段恢复后再算仓
+        # Restore Pine stop_loss ref only (never VPS hang price into tv_sl).
         if float(getattr(self, "tv_sl", 0) or 0) <= 0:
             recovered = float(
-                getattr(self, "_tv_hard_sl_price", 0)
+                getattr(self, "_tv_stop_loss_ref", 0)
                 or getattr(self, "_pending_open_tv_sl", 0)
                 or 0
             )
             if recovered > 0:
                 self.tv_sl = recovered
-                self._tv_hard_sl_price = recovered
-                self._log("SIGNAL", f"开仓前恢复 tv_sl@{recovered:.4f}（清场曾被抹掉）")
+                self._tv_stop_loss_ref = recovered
+                self._pending_open_tv_sl = recovered
+                self._log("SIGNAL", f"开仓前恢复 TV stop_loss ref@{recovered:.4f}")
         qty, sizing_meta = self._resolve_entry_qty(curr_px)
         if qty <= 0:
             err = sizing_meta.get("error", "insufficient_balance")
@@ -1577,6 +1589,7 @@ class PositionSupervisor(
         )
         entry_meta = self._place_tv_entry_order(action, qty, limit_px)
         sizing_meta["entry_order"] = entry_meta
+        sizing_meta["order_qty"] = float(qty)
         time.sleep(1.2)
 
         pos = self.position_manager.get_position(self.symbol)
@@ -1754,7 +1767,43 @@ class PositionSupervisor(
                     "ATR应急降级后开仓未成交·已暂停待人工确认",
                     {"atr_fallback_detail": sizing_meta.get("atr_fallback_detail")},
                 )
-        return {"status": "error", "reason": "open_failed", "message": "下单后未检测到持仓"}
+        last_err = ""
+        if hasattr(self, "client"):
+            last_err = str(getattr(self.client, "_last_market_order_error", "") or "")
+        msg = "下单后未检测到持仓"
+        if last_err:
+            msg = f"市价开仓失败: {last_err}"
+        elif float(qty or 0) > 0:
+            msg = f"下单后未检测到持仓（已请求 qty={qty}）"
+        self._log("ERROR", msg, {"order_qty": qty, "sizing": sizing_meta, "exchange_error": last_err})
+        self._alert(
+            "warning",
+            "OPEN_FAILED",
+            "开仓失败",
+            msg,
+            {
+                "order_qty": float(qty or 0),
+                "binding": sizing_meta.get("binding"),
+                "final_qty": sizing_meta.get("final_qty"),
+                "tv_qty_ignored_absurd": sizing_meta.get("tv_qty_ignored_absurd"),
+                "exchange_error": last_err or None,
+                "params": getattr(self.client, "_last_market_order_params", None)
+                if hasattr(self, "client")
+                else None,
+            },
+        )
+        return {
+            "status": "error",
+            "reason": "open_failed",
+            "message": msg,
+            "order_qty": float(qty or 0),
+            "sizing": {
+                "binding": sizing_meta.get("binding"),
+                "final_qty": sizing_meta.get("final_qty"),
+                "tv_qty_ignored_absurd": sizing_meta.get("tv_qty_ignored_absurd"),
+            },
+            "exchange_error": last_err or None,
+        }
 
     def _close_order_side(self) -> str:
         """Binance order side to flatten current position."""
