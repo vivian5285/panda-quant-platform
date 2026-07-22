@@ -336,12 +336,25 @@ class OkxClient:
                 attempt += 1
 
     def get_position(self, symbol: str | None = None) -> dict | None:
+        """Binance-shaped position; None only for confirmed flat. Failures raise."""
+        from app.core.exchange_errors import ExchangeTransientError, raise_exchange_transient
+
         inst = symbol or self.trading_symbol
-        rows = self._data_list(
-            self._request("GET", "/account/positions", {"instType": "SWAP", "instId": inst})
-        )
+        res = self._request("GET", "/account/positions", {"instType": "SWAP", "instId": inst})
+        if res is None:
+            raise ExchangeTransientError(
+                f"okx get_position network/empty response ({inst})",
+                exchange="okx",
+            )
+        if isinstance(res, dict) and str(res.get("code", "0")) != "0":
+            raise_exchange_transient(
+                RuntimeError(f"code={res.get('code')} msg={res.get('msg')}"),
+                exchange="okx",
+                op="get_position",
+            )
+        rows = self._data_list(res)
         if not rows:
-            return None
+            return {"positionAmt": "0", "entryPrice": "0", "markPrice": "0", "unRealizedProfit": "0"}
         row = rows[0]
         try:
             pos = float(row.get("pos") or 0)

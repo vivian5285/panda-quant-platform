@@ -261,13 +261,20 @@ class BinanceClient:
         }
 
     def get_position(self, symbol=None):
+        """Return Binance position row, or None only when exchange reports flat.
+
+        API/network failures raise ExchangeTransientError — never return None on
+        failure (None previously meant flat and could wipe live books).
+        """
+        from app.core.exchange_errors import raise_exchange_transient
+
         symbol = self._sym(symbol)
         try:
             positions = self.client.futures_position_information(symbol=symbol)
             return positions[0] if positions else None
         except Exception as e:
             logger.error(f"[User {self.user_id}] get position failed: {e}")
-            return None
+            raise_exchange_transient(e, exchange="binance", op="get_position")
 
     def fetch_klines(
         self,

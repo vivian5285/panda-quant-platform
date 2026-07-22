@@ -461,7 +461,23 @@ class DeepcoinClient:
         return variants
 
     def get_position_info(self, symbol="ETH-USDT-SWAP"):
-        return self._request("GET", "/account/positions", {"instType": "SWAP", "instId": symbol})
+        """Raw DeepCoin positions payload. Network/API hard failures raise."""
+        from app.core.exchange_errors import ExchangeTransientError
+
+        res = self._request("GET", "/account/positions", {"instType": "SWAP", "instId": symbol})
+        if res is None:
+            raise ExchangeTransientError(
+                f"deepcoin get_position_info network/empty response ({symbol})",
+                exchange="deepcoin",
+            )
+        if isinstance(res, dict) and str(res.get("code", "0")) not in ("0", ""):
+            from app.core.exchange_errors import raise_exchange_transient
+            raise_exchange_transient(
+                RuntimeError(f"code={res.get('code')} msg={res.get('msg')}"),
+                exchange="deepcoin",
+                op="get_position_info",
+            )
+        return res
 
     def set_leverage(self, symbol=None, leverage=None, mgn_mode="cross", mrg_position="merge"):
         """POST /deepcoin/account/set-leverage"""

@@ -68,7 +68,7 @@ def _verify_response(result: dict) -> ApiVerifyResponse:
         enable_futures=result.get("enable_futures"),
         symbol=result.get("symbol", "ETHUSDT"),
         symbol_price=float(result.get("symbol_price", 0)),
-        leverage=int(result.get("leverage", 25)),
+        leverage=int(result.get("leverage", 5)),
         initial_principal=equity if result.get("valid") else 0,
         detail=localized.get("detail"),
         checks=checks,

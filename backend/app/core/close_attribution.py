@@ -275,9 +275,21 @@ def diagnose_flat_close(
     actor = "unknown"
     human_reason = CLOSE_TRIGGERS.get(trigger_key, trigger_key)
     close_action_hint = None
+    confidence = "insufficient"
 
-    # Checklist 9.6: TP3 radar trail exit → dedicated DingTalk title
-    if peak_hit_tp3 and radar_active:
+    # Checklist 9.6: TP3 radar trail — only when peak AND exit evidence supports it
+    tp3_exit_confirmed = bool(
+        peak_hit_tp3
+        and radar_active
+        and (
+            _reached_tp3(avg_px)
+            or near_stop
+            or (leg_fills and _near_stop_price(avg_px, float(current_sl or 0), pct=0.015))
+        )
+    )
+    evidence["tp3_exit_confirmed"] = tp3_exit_confirmed
+
+    if tp3_exit_confirmed:
         origin = "radar_tp3_trail"
         actor = "exchange_order" if not platform_initiated_market else "platform_code"
         human_reason = (
@@ -286,19 +298,31 @@ def diagnose_flat_close(
             else f"TP3平仓（雷达追踪）·极值@{peak:.2f}≤TP3@{tp3:.2f}"
         )
         close_action_hint = "CLOSE_TP3"
+        confidence = "confirmed" if _reached_tp3(avg_px) else "inferred"
+    elif peak_hit_tp3 and radar_active and not tp3_exit_confirmed:
+        # Peak touched TP3 but exit evidence weak — do not assert TP3 title
+        origin = "unknown"
+        actor = "unknown"
+        human_reason = (
+            f"峰值曾过TP3@{tp3:.2f}，但平仓成交证据不足（均价 {avg_px:.2f}），原因待核实"
+        )
+        confidence = "insufficient"
     elif platform_initiated_market:
         origin = "platform_market"
         actor = "platform_code"
         human_reason = f"平台代码主动市价全平（{CLOSE_TRIGGERS.get(trigger_key, trigger_key)}）"
+        confidence = "confirmed"
     elif tv_recent and trigger_key in ("tv_signal", "code_close_all"):
         origin = "tv_forced"
         actor = "tv_signal"
         human_reason = "TV 平仓信号触发平台全平"
+        confidence = "confirmed"
     elif not had_position_before_close:
         if tv_recent:
             origin = "tv_forced"
             actor = "tv_signal"
             human_reason = "盘口已平：近期有 TV 平仓信号，疑为 TV 驱动或跟随成交"
+            confidence = "inferred"
         # Prefer stop/radar when exit hugs entry+radar SL (avoid false TP1 from loose tol)
         elif (radar_active or near_stop) and near_stop and (near_entry or loss_side):
             origin = "exchange_stop"
@@ -309,10 +333,12 @@ def diagnose_flat_close(
             else:
                 human_reason = f"止损平仓（保本/移动）{sl_note}（均价 {avg_px:.2f}）"
             close_action_hint = sl_kind
+            confidence = "confirmed"
         elif tp_matched:
             origin = "exchange_limit_tp"
             actor = "exchange_order"
             human_reason = f"盘口已平：交易所限价止盈成交（TP{tp_matched}）"
+            confidence = "confirmed"
         elif (radar_active or near_stop) and (loss_side or near_stop):
             origin = "exchange_stop"
             actor = "exchange_order"
@@ -322,6 +348,7 @@ def diagnose_flat_close(
             else:
                 human_reason = f"止损平仓（保本/移动）{sl_note}（均价 {avg_px:.2f}）"
             close_action_hint = sl_kind
+            confidence = "inferred"
         elif near_entry and not radar_active:
             origin = "manual_exchange"
             actor = "human"
@@ -329,14 +356,22 @@ def diagnose_flat_close(
                 "盘口已平：成交价接近开仓价且雷达未激活，"
                 "疑为交易所端人工平仓或手动市价/限价平仓"
             )
+            confidence = "inferred"
         elif leg_fills and any(not f["maker"] for f in leg_fills):
-            origin = "manual_exchange"
-            actor = "human"
-            human_reason = "盘口已平：检测到市价吃单成交，疑为人工或外部市价平仓"
+            origin = "unknown"
+            actor = "unknown"
+            human_reason = (
+                "盘口已平：检测到市价吃单成交，但缺少止损/TP/TV 证据，原因待核实"
+            )
+            confidence = "insufficient"
         elif leg_fills and all(f["maker"] for f in leg_fills):
-            origin = "exchange_limit_tp"
-            actor = "exchange_order"
-            human_reason = "盘口已平：检测到限价挂单成交"
+            # Maker-only is NOT enough to claim TP — require price match (handled above)
+            origin = "unknown"
+            actor = "unknown"
+            human_reason = (
+                "盘口已平：检测到限价挂单成交，但未匹配到 TP 价位，原因待核实"
+            )
+            confidence = "insufficient"
         else:
             origin = "exchange_already_flat"
             actor = "unknown"
@@ -344,20 +379,35 @@ def diagnose_flat_close(
                 "哨兵检测盘口归零，但平台未发平仓单；"
                 "未能从成交记录判定原因（可能 API 延迟或成交窗口外）"
             )
+            confidence = "insufficient"
     else:
-        origin = "platform_market"
-        actor = "platform_code"
-        human_reason = f"平台下发市价单全平（{CLOSE_TRIGGERS.get(trigger_key, trigger_key)}）"
-        if peak_hit_tp3 and radar_active:
-            origin = "radar_tp3_trail"
-            close_action_hint = "CLOSE_TP3"
-            human_reason = "TP3平仓（雷达追踪）·平台市价收网"
+        # had_position_before_close=True: only assert platform_market when we truly initiated
+        if platform_initiated_market:
+            origin = "platform_market"
+            actor = "platform_code"
+            human_reason = f"平台下发市价单全平（{CLOSE_TRIGGERS.get(trigger_key, trigger_key)}）"
+            confidence = "confirmed"
+            if tp3_exit_confirmed:
+                origin = "radar_tp3_trail"
+                close_action_hint = "CLOSE_TP3"
+                human_reason = "TP3平仓（雷达追踪）·平台市价收网"
+                confidence = "inferred"
+        else:
+            origin = "unknown"
+            actor = "unknown"
+            human_reason = (
+                f"平台检测到仓位关闭（触发={CLOSE_TRIGGERS.get(trigger_key, trigger_key)}），"
+                "但未确认主动市价单，原因待核实"
+            )
+            confidence = "insufficient"
 
-    if origin == "unknown":
-        if near_entry and not radar_active:
-            origin = "manual_exchange"
-            actor = "human"
-            human_reason = "成交价接近开仓价，疑为人工平仓（雷达未启动）"
+    if origin == "unknown" and confidence == "confirmed":
+        confidence = "insufficient"
+    if origin == "unknown" and near_entry and not radar_active and confidence != "insufficient":
+        origin = "manual_exchange"
+        actor = "human"
+        human_reason = "成交价接近开仓价，疑为人工平仓（雷达未启动）"
+        confidence = "inferred"
 
     if close_action_hint is None and origin == "exchange_stop":
         close_action_hint = sl_kind
@@ -375,9 +425,13 @@ def diagnose_flat_close(
         "actor_label": CLOSE_ACTORS.get(actor, actor),
         "sl_kind": sl_kind if origin == "exchange_stop" else None,
         "close_action_hint": close_action_hint,
+        "confidence": confidence,
         "evidence": evidence,
         "matched_tps": tp_matched if origin == "exchange_limit_tp" else [],
-        "anomaly": origin in ("unknown", "exchange_already_flat") and not had_position_before_close,
+        "anomaly": (
+            origin in ("unknown", "exchange_already_flat")
+            or confidence == "insufficient"
+        ) and not had_position_before_close,
     }
 
 

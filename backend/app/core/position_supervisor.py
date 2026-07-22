@@ -731,7 +731,7 @@ class PositionSupervisor(
             self._tv_entry_fields["regime"] = fields["regime"]
         elif getattr(self, "regime", None):
             self._tv_entry_fields["regime"] = self.regime
-        # Persist TV leverage on supervisor immediately (config 25× is fallback only)
+        # Persist leverage on supervisor immediately (live OPEN binds FIXED_LEVERAGE=5)
         if fields.get("leverage") is not None and int(fields["leverage"]) > 0:
             self.leverage = int(fields["leverage"])
 
@@ -3135,8 +3135,86 @@ class PositionSupervisor(
         if hasattr(self, "_orchestrate_defense_monitoring"):
             self._orchestrate_defense_monitoring(live_qty, curr_px)
 
+    def _handle_position_query_failure(self, err: Exception) -> None:
+        """API failure: keep book, pause flat/auto judgment for this symbol."""
+        from datetime import datetime, timezone
+        from app.core.exchange_errors import ExchangeTransientError
+
+        already = bool(getattr(self, "_position_query_degraded", False))
+        self._position_query_degraded = True
+        self._position_query_error = str(err)[:500]
+        ban_ms = getattr(err, "banned_until_ms", None) if isinstance(err, ExchangeTransientError) else None
+        if ban_ms:
+            self._position_query_ban_until_ms = int(ban_ms)
+        detail = {
+            "exchange": getattr(self, "exchange_id", None),
+            "symbol": getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None),
+            "error": str(err)[:400],
+            "watched_qty": float(getattr(self, "watched_qty", 0) or 0),
+            "current_side": getattr(self, "current_side", None),
+            "kept_last_known": True,
+            "auto_flat_judgment_paused": True,
+        }
+        if ban_ms:
+            try:
+                detail["banned_until_utc"] = datetime.fromtimestamp(
+                    ban_ms / 1000.0, tz=timezone.utc,
+                ).isoformat()
+            except (OSError, OverflowError, ValueError):
+                detail["banned_until_ms"] = ban_ms
+        logger.error(
+            "[User %s] position query failed — keep book qty=%s side=%s | %s",
+            self.user_id,
+            detail["watched_qty"],
+            detail["current_side"],
+            err,
+        )
+        if already:
+            return
+        if hasattr(self, "_alert"):
+            self._alert(
+                "critical",
+                "EXCHANGE_QUERY_FAIL",
+                "交易所仓位查询失败·已暂停自动空仓判断",
+                "API 失败不得当作空仓；保留上次已知持仓，待查询恢复后再判断",
+                detail,
+            )
+
+    def _clear_position_query_degraded(self) -> None:
+        if not getattr(self, "_position_query_degraded", False):
+            return
+        self._position_query_degraded = False
+        self._position_query_error = ""
+        self._position_query_ban_until_ms = None
+        logger.info(
+            "[User %s] position query recovered — auto flat judgment resumed",
+            self.user_id,
+        )
+        if hasattr(self, "_alert"):
+            self._alert(
+                "info",
+                "EXCHANGE_QUERY_OK",
+                "交易所仓位查询已恢复",
+                "自动空仓/对账判断已恢复",
+                {
+                    "exchange": getattr(self, "exchange_id", None),
+                    "symbol": getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None),
+                },
+            )
+
     def _get_active_position(self) -> dict | None:
-        pos = self.position_manager.get_position(self.symbol)
+        """Confirmed live position, or None if exchange reports flat.
+
+        Raises ExchangeTransientError on API failure — never invents flat.
+        """
+        from app.core.exchange_errors import ExchangeTransientError
+
+        try:
+            pos = self.position_manager.get_position(self.symbol)
+        except ExchangeTransientError as e:
+            self._handle_position_query_failure(e)
+            raise
+        self._clear_position_query_degraded()
         if not pos or float(pos.get("positionAmt", 0)) == 0:
             return None
         amt = float(pos["positionAmt"])
@@ -3147,14 +3225,23 @@ class PositionSupervisor(
         }
 
     def _wait_until_flat(self, timeout: float = FLAT_WAIT_TIMEOUT, poll: float = FLAT_WAIT_POLL) -> bool:
-        """确认交易所持仓归零后再新开，避免残仓叠加。"""
+        """确认交易所持仓归零后再新开，避免残仓叠加。查询失败视为未确认空仓。"""
+        from app.core.exchange_errors import ExchangeTransientError
+
         deadline = time.time() + timeout
         while time.time() < deadline:
-            pos = self._get_active_position()
+            try:
+                pos = self._get_active_position()
+            except ExchangeTransientError:
+                time.sleep(poll)
+                continue
             if not pos or pos["size"] <= 0:
                 return True
             time.sleep(poll)
-        pos = self._get_active_position()
+        try:
+            pos = self._get_active_position()
+        except ExchangeTransientError:
+            return False
         return not pos or pos["size"] <= 0
 
     def _is_dust_qty(self, qty: float) -> bool:
@@ -3462,7 +3549,17 @@ class PositionSupervisor(
         return True
 
     def _recover_missed_flat_on_startup(self, was_monitoring: bool = False) -> bool:
-        pos = self._get_active_position()
+        from app.core.exchange_errors import ExchangeTransientError
+
+        try:
+            pos = self._get_active_position()
+        except ExchangeTransientError:
+            logger.error(
+                "[User %s] skip flat reconcile on startup — position query unavailable "
+                "(keeping last-known book)",
+                self.user_id,
+            )
+            return False
         if pos and pos["size"] > 0:
             return False
         prev_watched = float(self.watched_qty or 0)
@@ -3724,6 +3821,8 @@ class PositionSupervisor(
         return False
 
     def _sentinel_loop(self):
+        from app.core.exchange_errors import ExchangeTransientError
+
         last_px = 0.0
         while self.monitoring:
             try:
@@ -3731,7 +3830,13 @@ class PositionSupervisor(
                 if not self._lock.acquire(timeout=2.0):
                     continue
                 try:
-                    pos = self.position_manager.get_position(self.symbol)
+                    try:
+                        pos = self.position_manager.get_position(self.symbol)
+                    except ExchangeTransientError as e:
+                        self._handle_position_query_failure(e)
+                        # Do NOT treat as flat — skip this tick
+                        continue
+                    self._clear_position_query_degraded()
                     real_amt = float(pos.get("positionAmt", 0)) if pos else 0.0
                     actual_side = "LONG" if real_amt > 0 else "SHORT"
                     actual_qty = abs(real_amt)

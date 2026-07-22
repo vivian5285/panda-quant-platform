@@ -346,10 +346,24 @@ class GateClient:
                 attempt += 1
 
     def get_position(self, symbol: str | None = None) -> dict | None:
+        """Binance-shaped position; None only for confirmed flat. Failures raise."""
+        from app.core.exchange_errors import ExchangeTransientError
+
         contract = symbol or self.trading_symbol
-        row = self._request("GET", f"/futures/usdt/positions/{contract}")
+        try:
+            row = self._request("GET", f"/futures/usdt/positions/{contract}")
+        except Exception as e:
+            from app.core.exchange_errors import raise_exchange_transient
+            raise_exchange_transient(e, exchange="gate", op="get_position")
+            return None  # unreachable
+        if row is None:
+            raise ExchangeTransientError(
+                f"gate get_position network/empty response ({contract})",
+                exchange="gate",
+            )
         if not isinstance(row, dict):
-            return None
+            # Gate may 404 empty — treat as confirmed flat only if empty dict-like
+            return {"positionAmt": "0", "entryPrice": "0", "markPrice": "0", "unRealizedProfit": "0"}
         try:
             size = int(row.get("size") or 0)
         except (TypeError, ValueError):

@@ -40,19 +40,20 @@ class Settings(BaseSettings):
     # Dual-symbol: comma-separated canonical IDs (ETHUSDT,XAUUSDT)
     TRADING_SYMBOLS: str = "ETHUSDT,XAUUSDT"
     XAU_SYMBOL: str = "XAUUSDT"
-    LEVERAGE: int = 25  # fallback ONLY if TV omits leverage (webhook normally requires TV leverage)
+    # Display/fallback only — live OPEN always binds FIXED_LEVERAGE=5 (tv_entry_sizing).
+    LEVERAGE: int = 5
     DEEPCOIN_SYMBOL: str = "ETH-USDT-SWAP"
     DEEPCOIN_XAU_SYMBOL: str = "XAU-USDT-SWAP"
-    DEEPCOIN_LEVERAGE: int = 25  # fallback only
+    DEEPCOIN_LEVERAGE: int = 5
     OKX_SYMBOL: str = "ETH-USDT-SWAP"
     OKX_XAU_SYMBOL: str = "XAU-USDT-SWAP"
-    OKX_LEVERAGE: int = 25  # fallback only
+    OKX_LEVERAGE: int = 5
     OKX_CONTRACT_VALUE: float = 0.1
     OKX_LOT_SIZE: float = 0.01
     GATE_SYMBOL: str = "ETH_USDT"
     GATE_XAU_SYMBOL: str = "XAU_USDT"
-    GATE_LEVERAGE: int = 25  # fallback only
-    # DEPRECATED — not used for live OPEN (TV risk_pct formula)
+    GATE_LEVERAGE: int = 5
+    # DEPRECATED — not used for live OPEN (RISK20 / FIXED_LEVERAGE)
     SIZING_MARGIN_LEVERAGE: int = 5
     GATE_QUANTO_MULTIPLIER: float = 0.01
 
@@ -191,14 +192,10 @@ def get_settings() -> Settings:
 
 
 def exchange_leverage(exchange: str | None) -> int:
-    """Per-exchange trading leverage from env (factory / DingTalk / sizing)."""
-    s = get_settings()
-    key = (exchange or "binance").strip().lower()
-    if key == "gateio":
-        key = "gate"
-    return {
-        "binance": s.LEVERAGE,
-        "deepcoin": s.DEEPCOIN_LEVERAGE,
-        "okx": s.OKX_LEVERAGE,
-        "gate": s.GATE_LEVERAGE,
-    }.get(key, s.LEVERAGE)
+    """DingTalk/theme leverage — always FIXED_LEVERAGE (live OPEN is 5x).
+
+    Env LEVERAGE_* kept for backward compatibility / docs; display must not
+    resurrect stale 25x when VPS .env was never updated.
+    """
+    from app.core.tv_entry_sizing import FIXED_LEVERAGE
+    return int(FIXED_LEVERAGE)

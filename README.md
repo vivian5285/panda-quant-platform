@@ -9,7 +9,8 @@
 > **文档同步（2026-07-22 · 唯一权威规格）**  
 > 凡与本文冲突的旧描述（含「妈妈版」权益×1 算仓、挂 TP123、原生 4H、旧雷达 0.5/0.3/2.0ATR）**一律作废**。  
 > 完整行为规格见 **[`docs/VPS_LIVE_CHECKLIST.md`](docs/VPS_LIVE_CHECKLIST.md)**（与代码同步）。  
-> 币安执行层验收进度：[docs/BINANCE_EXECUTION_ACCEPTANCE.md](docs/BINANCE_EXECUTION_ACCEPTANCE.md)（B1–B3 仍待实盘自然触发）。
+> 币安执行层验收进度：[docs/BINANCE_EXECUTION_ACCEPTANCE.md](docs/BINANCE_EXECUTION_ACCEPTANCE.md)（B1–B3 仍待实盘自然触发）。  
+> 多所 TP 重复排查：[docs/TP_MULTI_EXCHANGE_AUDIT.md](docs/TP_MULTI_EXCHANGE_AUDIT.md)。
 
 ### 当前实盘一句话
 

@@ -70,7 +70,7 @@ def test_checklist_tv_fields_parsed():
 @pytest.mark.parametrize("exchange", ["binance", "okx", "gate", "deepcoin"])
 def test_trading_factory_all_exchanges_supervisor(exchange):
     settings = get_settings()
-    assert exchange_leverage(exchange) == 25
+    assert exchange_leverage(exchange) == 5
 
     user = User(id=1, exchange=exchange)
     client = MagicMock()
@@ -126,10 +126,11 @@ def test_dingtalk_push_checklist_events():
 def test_config_leverage_and_webhook_defaults():
     s = get_settings()
     assert s.WEBHOOK_SECRET == "528586" or len(str(s.WEBHOOK_SECRET)) > 0
-    assert s.LEVERAGE == 25
-    assert s.DEEPCOIN_LEVERAGE == 25
-    assert s.OKX_LEVERAGE == 25
-    assert s.GATE_LEVERAGE == 25
+    assert s.LEVERAGE == 5
+    assert s.DEEPCOIN_LEVERAGE == 5
+    assert s.OKX_LEVERAGE == 5
+    assert s.GATE_LEVERAGE == 5
+    assert exchange_leverage("binance") == 5
 
 
 def test_ws_reconnect_exponential_all_exchanges():

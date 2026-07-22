@@ -174,6 +174,8 @@ ADMIN_DINGTALK_KEY_TYPES = frozenset({
     "TP_RETRY_FAIL",
     "SL_RETRY_FAIL",
     "API_OFFLINE",
+    "EXCHANGE_QUERY_FAIL",
+    "EXCHANGE_QUERY_OK",
     "CAP_ALIGN",
     "CAP_ALIGN_BLOCKED",
     "CAP_ALIGN_FAIL",
@@ -419,6 +421,12 @@ def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
     pnl = detail.get("live_pnl_pct") or detail.get("pnl_pct") or detail.get("tv_pnl_pct")
     phase2 = bool(detail.get("breakeven_phase") or detail.get("breakeven_active"))
     action = str(detail.get("close_action") or detail.get("action") or "").upper()
+    origin = str(detail.get("close_origin") or (detail.get("attribution") or {}).get("close_origin") or "")
+    confidence = str(
+        detail.get("attribution_confidence")
+        or (detail.get("attribution") or {}).get("confidence")
+        or ""
+    ).lower()
     pnl_txt = f"{float(pnl):+.2f}" if pnl is not None else "—"
 
     if "BREATH" in action or detail.get("close_trigger") == "breathing_stop_hit":
@@ -427,17 +435,30 @@ def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
             f"止损触发：价格 {float(price):.2f} 触及止损 {float(stop):.2f}，"
             f"阶段 {phase}，盈亏 {pnl_txt}%"
         )
-    if "QUICK" in action or "RSI" in action or reason:
+    # Only explicit TV reverse-protect actions — never promote arbitrary reason text
+    if "QUICK" in action or "RSI" in action:
         return f"反转保护平仓，原因：{reason or action}，价格 {float(price):.2f}"
-    if detail.get("matched_tps") or "TP" in action:
+    if detail.get("matched_tps") or "TP" in action or origin in ("exchange_limit_tp", "radar_tp3_trail"):
         levels = detail.get("matched_tps") or []
-        if 3 in levels or action == "CLOSE_TP3":
-            return f"TP3 止盈成交，全部平仓，盈亏 {pnl_txt}%"
+        if not levels and isinstance(detail.get("attribution"), dict):
+            levels = detail["attribution"].get("matched_tps") or []
+        if 3 in levels or action == "CLOSE_TP3" or origin == "radar_tp3_trail":
+            prefix = "（推断）" if confidence in ("inferred", "low") else ""
+            return f"{prefix}TP3 止盈成交，全部平仓，盈亏 {pnl_txt}%"
         if 2 in levels:
             return f"TP2 止盈成交，剩余仓位 40%，当前止损 {float(stop):.2f}"
         if 1 in levels:
             return f"TP1 止盈成交，剩余仓位 70%，当前止损 {float(stop):.2f}"
-    return f"反转保护平仓，原因：{reason or '全平'}，价格 {float(price):.2f}"
+        if origin == "exchange_limit_tp":
+            return f"止盈限价成交，盈亏 {pnl_txt}%"
+    if confidence in ("insufficient", "low") or origin in ("unknown", "exchange_already_flat"):
+        return (
+            f"仓位已平（证据不足，原因待核实）：{reason or origin or '未知'}，"
+            f"价格 {float(price):.2f}"
+        )
+    if reason:
+        return f"全平完成，说明：{reason}，价格 {float(price):.2f}"
+    return f"全平完成，价格 {float(price):.2f}"
 
 
 def format_tp_fill_detail_cn(detail: dict, alert_type: str = "") -> str:

@@ -687,10 +687,71 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         except (TypeError, ValueError):
             return default
 
+    def _handle_position_query_failure(self, err):
+        from datetime import datetime, timezone
+        from app.core.exchange_errors import ExchangeTransientError
+
+        already = bool(getattr(self, "_position_query_degraded", False))
+        self._position_query_degraded = True
+        self._position_query_error = str(err)[:500]
+        ban_ms = getattr(err, "banned_until_ms", None) if isinstance(err, ExchangeTransientError) else None
+        detail = {
+            "exchange": "deepcoin",
+            "symbol": getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None),
+            "error": str(err)[:400],
+            "watched_qty": self._safe_qty(getattr(self, "watched_qty", 0)),
+            "current_side": getattr(self, "current_side", None),
+            "kept_last_known": True,
+            "auto_flat_judgment_paused": True,
+        }
+        if ban_ms:
+            try:
+                detail["banned_until_utc"] = datetime.fromtimestamp(
+                    ban_ms / 1000.0, tz=timezone.utc,
+                ).isoformat()
+            except (OSError, OverflowError, ValueError):
+                detail["banned_until_ms"] = ban_ms
+        logger.error(
+            "position query failed — keep book qty=%s side=%s | %s",
+            detail["watched_qty"], detail["current_side"], err,
+        )
+        if already:
+            return
+        if hasattr(self, "_alert"):
+            self._alert(
+                "critical",
+                "EXCHANGE_QUERY_FAIL",
+                "交易所仓位查询失败·已暂停自动空仓判断",
+                "API 失败不得当作空仓；保留上次已知持仓，待查询恢复后再判断",
+                detail,
+            )
+
+    def _clear_position_query_degraded(self):
+        if not getattr(self, "_position_query_degraded", False):
+            return
+        self._position_query_degraded = False
+        self._position_query_error = ""
+        logger.info("position query recovered — auto flat judgment resumed")
+        if hasattr(self, "_alert"):
+            self._alert(
+                "info",
+                "EXCHANGE_QUERY_OK",
+                "交易所仓位查询已恢复",
+                "自动空仓/对账判断已恢复",
+                {"exchange": "deepcoin", "symbol": getattr(self, "symbol", None)},
+            )
+
     def _get_active_position(self):
-        res = self.client.get_position_info(self.symbol)
-        if res and 'data' in res:
-            for p in res['data']:
+        from app.core.exchange_errors import ExchangeTransientError
+
+        try:
+            res = self.client.get_position_info(self.symbol)
+        except ExchangeTransientError as e:
+            self._handle_position_query_failure(e)
+            raise
+        self._clear_position_query_degraded()
+        if res and "data" in res:
+            for p in res["data"]:
                 if self._safe_qty(p.get("pos")) > 0:
                     return {
                         "size": self._safe_qty(p.get("pos")),
@@ -700,7 +761,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return None
 
     def _verify_flat(self):
-        pos = self._get_active_position()
+        from app.core.exchange_errors import ExchangeTransientError
+
+        try:
+            pos = self._get_active_position()
+        except ExchangeTransientError:
+            return False
         return pos is None or self._safe_qty(pos.get("size")) == 0
 
     def _wait_until_flat(self, timeout: float = FLAT_WAIT_TIMEOUT, poll: float = FLAT_WAIT_POLL) -> bool:
@@ -891,7 +957,15 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
     def _recover_missed_flat_on_startup(self, was_monitoring=False):
         """重启对账：服务宕机期间已全平，但账本仍有仓 → 补发收网钉钉"""
-        pos = self._get_active_position()
+        from app.core.exchange_errors import ExchangeTransientError
+
+        try:
+            pos = self._get_active_position()
+        except ExchangeTransientError:
+            logger.error(
+                "skip flat reconcile on startup — position query unavailable (keeping book)"
+            )
+            return False
         if pos and self._safe_qty(pos.get("size")) > 0:
             return False
 
@@ -3451,7 +3525,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 if not self._lock.acquire(timeout=2.0):
                     continue
                 try:
-                    pos = self._get_active_position()
+                    from app.core.exchange_errors import ExchangeTransientError
+                    try:
+                        pos = self._get_active_position()
+                    except ExchangeTransientError:
+                        continue
                     real_amt = self._safe_qty(pos.get("size")) if pos else 0
                     actual_side = "LONG" if pos and pos.get('posSide') == "long" else "SHORT"
 
@@ -3641,6 +3719,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 curr_px = 0.0
         self._sync_consumed_tp_levels(live_qty, curr_px)
         self._cancel_tp_orders_for_consumed_levels()
+        # Dedupe first — never stack another layer on existing duplicates
+        if self._has_duplicate_tp_orders():
+            purged = self._purge_duplicate_tp_orders(live_qty)
+            if purged:
+                logger.warning(f"🧹 重建前去重撤销 {purged} 张多余止盈")
+                time.sleep(0.35)
         levels = self._expected_tp_levels(live_qty, curr_px)
         placed = 0
         consumed = sorted(self._consumed_tp_level_set())
@@ -3686,6 +3770,24 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     if hasattr(self, "_save_state"):
                         self._save_state()
                 continue
+            # Same existence check as _patch_missing_tp_levels / Binance _rebuild_tp_limit_orders
+            orders = self._collect_tp_limit_orders()
+            at_px = [o for o in orders if tp_price_matches(o["price"], px)]
+            if len(at_px) == 1 and tp_qty_matches(q, at_px[0]["qty"], live_qty, is_contracts=True):
+                logger.info(f"  ✓ TP{level} @ {px:.2f} 已存在 {at_px[0]['qty']}张，跳过（防重复挂单）")
+                if hasattr(self, "_mark_tp_placed"):
+                    self._mark_tp_placed(level, order_id=at_px[0].get("orderId"))
+                continue
+            if len(at_px) > 1:
+                self._purge_duplicate_tp_orders(live_qty)
+                orders = self._collect_tp_limit_orders()
+                at_px = [o for o in orders if tp_price_matches(o["price"], px)]
+                if len(at_px) == 1 and tp_qty_matches(q, at_px[0]["qty"], live_qty, is_contracts=True):
+                    continue
+            for o in at_px:
+                if o.get("orderId"):
+                    self.client.cancel_order(self.symbol, ord_id=o["orderId"])
+                    time.sleep(0.25)
             placed_res = self._place_limit_with_retry(
                 close_side, pos_side, q, px, label=f"TP{level}"
             )

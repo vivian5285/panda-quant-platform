@@ -11,18 +11,18 @@ from app.services.trading_alerts import (
 )
 
 
-def test_binance_theme_25x():
+def test_binance_theme_5x():
     theme = resolve_exchange_theme("binance")
-    assert theme["leverage"] == 25
-    assert theme["tag"].startswith("#币安25x")
+    assert theme["leverage"] == 5
+    assert theme["tag"].startswith("#币安5x")
     assert "ETH" in theme["tag"]
     assert "GEMINI量化" in theme["brand"]
     assert "黄金" not in theme["brand"]
 
 
-def test_all_exchanges_25x_leverage():
+def test_all_exchanges_5x_leverage():
     for key in ("binance", "deepcoin", "okx", "gate"):
-        assert resolve_exchange_theme(key)["leverage"] == 25
+        assert resolve_exchange_theme(key)["leverage"] == 5
 
 
 def test_exchange_themes_distinct_palettes():
@@ -32,7 +32,7 @@ def test_exchange_themes_distinct_palettes():
 
 def test_resolve_gateio_alias():
     tag = resolve_exchange_theme("gateio")["tag"]
-    assert tag.startswith("#Gate25x")
+    assert tag.startswith("#Gate5x")
     assert "ETH" in tag
 
 
@@ -49,8 +49,8 @@ def test_alert_body_includes_gemini_header_and_exchange_accent():
         display="test@example.com",
     )
     assert "GEMINI量化 · OKX" in body
-    assert "#OKX25x" in body
-    assert "25×" in body
+    assert "#OKX5x" in body
+    assert "5×" in body
     assert "ETH-USDT-SWAP" in body
 
 
@@ -109,7 +109,7 @@ def test_cap_align_detail_chinese_readable_no_json():
 
 
 def test_all_gemini_exchanges_share_principal_cap_guard():
-    """币安/OKX/Gate/深币 CAP 共用 TV risk 公式（非 REGIME_MARGIN×25×）."""
+    """币安/OKX/Gate/深币 CAP 共用 TV risk 公式（非 REGIME_MARGIN×5×）."""
     from unittest.mock import MagicMock
 
     from app.core.exchange_factory import create_supervisor
