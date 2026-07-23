@@ -1640,10 +1640,12 @@ class PositionSupervisor(
 
         dynamic_sl = self._radar_sl_to_pass()
         heal = self._rebuild_defenses(real_qty, entry_price, dynamic_sl=dynamic_sl)
-        if float(getattr(self, "tv_sl", 0) or 0) > 0:
-            shield = self._sync_tv_hard_stop(real_qty, force_replace=True)
+        # Hard price immutable — only verify/repair presence (qty), never force-reprice.
+        if float(getattr(self, "_frozen_hard_stop_px", 0) or getattr(self, "tv_sl", 0) or 0) > 0:
+            shield = self._sync_tv_hard_stop(real_qty, force_replace=False)
             detail["tv_sl"] = self.tv_sl
             detail["shield"] = shield
+            detail["frozen_hard"] = float(getattr(self, "_frozen_hard_stop_px", 0) or 0)
         self._save_state()
         return {
             "status": "ok",
@@ -2654,7 +2656,21 @@ class PositionSupervisor(
                 live_qty = float(self._resolve_adverse_live_qty(0) or 0)
             except Exception:
                 live_qty = 0.0
+        # Dual track: this path only updates radar seed — never force-replace hard price.
         self.current_sl = float(stop_price)
+        if (
+            hasattr(self, "_uses_dual_stop_track")
+            and self._uses_dual_stop_track()
+            and hasattr(self, "_ensure_radar_sl")
+            and live_qty > 0
+        ):
+            ok = bool(self._ensure_radar_sl(stop_price, live_qty))
+            return {
+                "ok": ok,
+                "label": "SL",
+                "stop_price": stop_price,
+                "via": "radar_only",
+            }
         if hasattr(self, "_sync_tv_hard_stop") and live_qty > 0:
             shield = self._sync_tv_hard_stop(live_qty, force_replace=True) or {}
             ok = bool(shield.get("aligned") or shield.get("armed") or shield.get("ok"))
@@ -3415,56 +3431,68 @@ class PositionSupervisor(
                 self._last_protect_result = out
                 return out
 
-            # ② 仅挂 TP1/TP2（场景判定前不挂 TP3）
-            result = self._smart_realign_defenses(
-                pos["size"],
-                pos["entry_price"],
-                dynamic_sl=None,
-                reason="开仓后智能防线对齐·TP1/TP2",
+            # ②+③ 白皮书：硬止损已挂后，TP1/TP2 与 VPS 1h ATR 拉取同步推进（重叠执行）
+            from concurrent.futures import ThreadPoolExecutor
+
+            atr_ex = ThreadPoolExecutor(max_workers=1)
+            atr_fut = atr_ex.submit(
+                self._resolve_and_apply_open_atr_scenario, pos["entry_price"]
             )
-            if (
-                result.get("expected", 0) > 0
-                and result.get("matched", 0) < result.get("expected", 0)
-                and hasattr(self, "_nuclear_realign_tp")
-            ):
+            try:
+                result = self._smart_realign_defenses(
+                    pos["size"],
+                    pos["entry_price"],
+                    dynamic_sl=None,
+                    reason="开仓后智能防线对齐·TP1/TP2",
+                )
+                if (
+                    result.get("expected", 0) > 0
+                    and result.get("matched", 0) < result.get("expected", 0)
+                    and hasattr(self, "_nuclear_realign_tp")
+                ):
+                    self._log(
+                        "DEFENSE",
+                        f"开仓TP未齐 {result.get('matched')}/{result.get('expected')} → 再补挂一轮",
+                    )
+                    self._defense_open_init_logs = True
+                    try:
+                        audit = self._nuclear_realign_tp(
+                            pos["size"], pos["entry_price"], dynamic_sl=None, rounds=2,
+                        )
+                    finally:
+                        self._defense_open_init_logs = False
+                    result = {
+                        **result,
+                        "matched": audit.get("matched_full", result.get("matched")),
+                        "expected": audit.get("expected", result.get("expected")),
+                        "audit": audit,
+                        "nuclear_retry": True,
+                        "summary": self._format_audit_summary(audit),
+                    }
+                self._last_defense_result = result
+                summary = self._format_audit_summary(result.get("audit") or {})
                 self._log(
                     "DEFENSE",
-                    f"开仓TP未齐 {result.get('matched')}/{result.get('expected')} → 再补挂一轮",
-                )
-                self._defense_open_init_logs = True
-                try:
-                    audit = self._nuclear_realign_tp(
-                        pos["size"], pos["entry_price"], dynamic_sl=None, rounds=2,
-                    )
-                finally:
-                    self._defense_open_init_logs = False
-                result = {
-                    **result,
-                    "matched": audit.get("matched_full", result.get("matched")),
-                    "expected": audit.get("expected", result.get("expected")),
-                    "audit": audit,
-                    "nuclear_retry": True,
-                    "summary": self._format_audit_summary(audit),
-                }
-            self._last_defense_result = result
-            summary = self._format_audit_summary(result.get("audit") or {})
-            self._log(
-                "DEFENSE",
-                f"🛡️ 开仓防线核查 {result.get('matched')}/{result.get('expected')} | {summary}",
-                result,
-            )
-            if result.get("expected", 0) > 0 and result.get("matched", 0) < result.get("expected", 0):
-                self._alert(
-                    "warning",
-                    "DEFENSE",
-                    "开仓后限价止盈未全部挂上",
-                    f"{self.current_side} {pos['size']} {getattr(self, 'qty_unit', 'ETH')} | "
-                    f"仅 {result.get('matched')}/{result.get('expected')} 档 | {summary}",
+                    f"🛡️ 开仓防线核查 {result.get('matched')}/{result.get('expected')} | {summary}",
                     result,
                 )
+                if result.get("expected", 0) > 0 and result.get("matched", 0) < result.get("expected", 0):
+                    self._alert(
+                        "warning",
+                        "DEFENSE",
+                        "开仓后限价止盈未全部挂上",
+                        f"{self.current_side} {pos['size']} {getattr(self, 'qty_unit', 'ETH')} | "
+                        f"仅 {result.get('matched')}/{result.get('expected')} 档 | {summary}",
+                        result,
+                    )
+            finally:
+                try:
+                    scenario_detail = atr_fut.result(timeout=60) or {}
+                except Exception as atr_exc:
+                    scenario_detail = {"ok": False, "error": str(atr_exc)[:200]}
+                atr_ex.shutdown(wait=False)
 
-            # ③ VPS 1h ATR 场景判定 → 精确止损
-            scenario_detail = self._resolve_and_apply_open_atr_scenario(pos["entry_price"])
+            # ③ ATR 场景结果（与 TP 重叠拉取后在此汇合）
             if not scenario_detail.get("ok"):
                 self._alert(
                     "critical",
@@ -4592,10 +4620,7 @@ class PositionSupervisor(
                             )
                             if sl_to_pass and hasattr(self, "_ensure_radar_sl"):
                                 self._ensure_radar_sl(sl_to_pass, actual_qty)
-                            elif sl_to_pass and hasattr(self, "_sync_binance_merged_stop"):
-                                self._sync_binance_merged_stop(
-                                    actual_qty, radar_sl=sl_to_pass, force_replace=True,
-                                )
+                            # Dual-track: never fall through to merged cancel-all
 
                     if curr_px > 0:
                         self._orchestrate_defense_monitoring(actual_qty, curr_px)

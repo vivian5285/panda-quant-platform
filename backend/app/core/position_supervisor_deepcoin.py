@@ -2328,7 +2328,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         shield: dict = {}
         if float(getattr(self, "tv_sl", 0) or 0) > 0 and hasattr(self, "_sync_tv_hard_stop"):
-            shield = self._sync_tv_hard_stop(live_qty, force_replace=True) or {}
+            shield = self._sync_tv_hard_stop(live_qty, force_replace=False) or {}
 
         tp_result: dict = {}
         expected_slices: list = []
@@ -3155,17 +3155,28 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             )
 
         dynamic_sl = self._radar_sl_to_pass()
-        self._rebuild_defenses(real_qty, entry_price, dynamic_sl=dynamic_sl)
-        if float(getattr(self, "tv_sl", 0) or 0) > 0:
-            shield = self._sync_tv_hard_stop(real_qty, force_replace=True)
+        heal = self._rebuild_defenses(real_qty, entry_price, dynamic_sl=dynamic_sl)
+        # Hard price immutable — verify presence only (no force cancel/replace).
+        if float(getattr(self, "_frozen_hard_stop_px", 0) or getattr(self, "tv_sl", 0) or 0) > 0:
+            shield = self._sync_tv_hard_stop(real_qty, force_replace=False)
             detail["tv_sl"] = self.tv_sl
             detail["shield"] = shield
+            detail["frozen_hard"] = float(getattr(self, "_frozen_hard_stop_px", 0) or 0)
             vps_meta = getattr(self, "_vps_hard_sl_meta", None) or {}
             if vps_meta.get("hard_sl_pct_display"):
                 detail["hard_sl_pct_display"] = vps_meta["hard_sl_pct_display"]
             if vps_meta.get("tv_sl_reference"):
                 detail["tv_sl_reference"] = vps_meta["tv_sl_reference"]
         self._save_state()
+        return {
+            "status": "ok",
+            "action": action,
+            "detail": {
+                "type": "same_dir_tp_refresh",
+                "heal": heal,
+                **detail,
+            },
+        }
 
     def _place_tv_entry_order(self, action: str, qty: float, limit_px: float) -> dict:
         """Checklist §2A: 市价开仓."""

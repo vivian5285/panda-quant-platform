@@ -553,12 +553,12 @@ class AdverseRadarMixin:
             self._remember_defense_order_id(str(lvl), order_id)
 
     def _remember_defense_order_id(self, key: str, order_id) -> None:
-        """Persist defense order id for TP1/TP2/TP3/SL (checklist 4.3 / 11.3)."""
+        """Persist defense order id for TP1/TP2/TP3/SL/hard/radar (checklist 4.3 / 11.3)."""
         self._init_adverse_radar_fields()
         k = str(key or "").strip().lower()
         if k.startswith("tp"):
             k = k[2:]
-        if k not in ("1", "2", "3", "sl"):
+        if k not in ("1", "2", "3", "sl", "hard", "radar"):
             return
         try:
             oid = int(order_id) if order_id is not None and str(order_id).strip() != "" else None
@@ -762,10 +762,11 @@ class AdverseRadarMixin:
         payload: dict | None = None,
         side: str | None = None,
     ) -> dict:
-        """Authoritative hard SL = breathing initial stop (entry ± 1.5×ATR).
+        """Seed radar initial stop from ATR; never rewrite frozen hard in dual-track.
 
-        initial_atr prefers TV webhook ``atr`` (frozen at open). VPS 90m is
-        fallback only when TV atr is missing. TV stop_loss never hung as stop.
+        Whitepaper: hard = TV stop_loss×1.2 frozen at open. ATR breathing only
+        arms/updates radar ``initial_stop`` / ``current_sl``. Legacy single-track
+        still mirrors stop into ``_tv_hard_sl_price``.
         """
         self._init_adverse_radar_fields()
         entry = float(
@@ -824,8 +825,38 @@ class AdverseRadarMixin:
             if atr > 0 else 0.0
         )
         hang = apply_stop_order_buffer(side_u, stop, sym) if stop > 0 else 0.0
+        tv_sl_ref = None
+        if payload:
+            try:
+                tv_sl_ref = float(
+                    payload.get("stop_loss") or payload.get("tv_sl") or 0
+                ) or None
+            except (TypeError, ValueError):
+                tv_sl_ref = None
+        if tv_sl_ref and tv_sl_ref > 0:
+            # Pine stop_loss reference only (sizing / ATR compare) — not hang price.
+            self.tv_sl = float(tv_sl_ref)
+            self._tv_stop_loss_ref = float(tv_sl_ref)
+            self._pending_open_tv_sl = float(tv_sl_ref)
+
+        dual = bool(self._uses_dual_stop_track())
+        frozen_before = float(self._frozen_hard_px() or 0)
+        # Dual: if hard not yet frozen and we have TV stop_loss, arm once (never ATR).
+        if dual and frozen_before <= 0 and entry > 0 and side_u in ("LONG", "SHORT"):
+            pine = float(tv_sl_ref or 0) or float(
+                getattr(self, "_tv_stop_loss_ref", 0)
+                or getattr(self, "_pending_open_tv_sl", 0)
+                or 0
+            )
+            if pine > 0:
+                hard = float(compute_temp_tv_stop(entry, side_u, pine) or 0)
+                if hard > 0:
+                    self._frozen_hard_stop_px = hard
+                    self._tv_hard_sl_price = hard
+                    frozen_before = hard
+
         meta = {
-            "source": "breathing_initial",
+            "source": "radar_initial" if dual else "breathing_initial",
             "stop_price": float(stop or 0),
             "hang_stop": float(hang or 0),
             "entry": entry,
@@ -839,25 +870,15 @@ class AdverseRadarMixin:
             "symbol": sym,
             "market_source": snap.get("source") if snap else atr_source,
             "bars_90": snap.get("bars_90") if snap else None,
+            "frozen_hard": float(self._frozen_hard_px() or 0),
+            "dual_track": dual,
         }
         if stop > 0:
-            # Logical stop in state; exchange hang uses ±0.3 buffer at place time.
+            # Radar track only in dual mode; legacy single-track still mirrors hard field.
             self.initial_stop = float(stop)
             self.current_sl = float(stop)
-            self._tv_hard_sl_price = float(stop)
-            tv_sl_ref = None
-            if payload:
-                try:
-                    tv_sl_ref = float(
-                        payload.get("stop_loss") or payload.get("tv_sl") or 0
-                    ) or None
-                except (TypeError, ValueError):
-                    tv_sl_ref = None
-            if tv_sl_ref and tv_sl_ref > 0:
-                # tv_sl / _tv_stop_loss_ref: Pine stop_loss ONLY (sizing + ATR compare).
-                self.tv_sl = float(tv_sl_ref)
-                self._tv_stop_loss_ref = float(tv_sl_ref)
-                self._pending_open_tv_sl = float(tv_sl_ref)
+            if not dual:
+                self._tv_hard_sl_price = float(stop)
             if float(getattr(self, "initial_atr", 0) or 0) <= 0:
                 self.initial_atr = atr
             if float(getattr(self, "initial_atr", 0) or 0) <= 0 or not (
@@ -865,10 +886,16 @@ class AdverseRadarMixin:
                 or float(getattr(self, "watched_qty", 0) or 0) > 0
             ):
                 self.current_atr = atr
+            # Dual permanence: never let ATR overwrite a frozen hard identity.
+            if dual and frozen_before > 0:
+                self._frozen_hard_stop_px = frozen_before
+                self._tv_hard_sl_price = frozen_before
             self._vps_hard_sl_meta = meta
             logger.info(
-                "呼吸止损: entry=%.2f side=%s atr=%.4f (%s) → stop=%.2f hang=%.2f | %s",
-                entry, side_u, atr, atr_source, stop, hang, meta,
+                "%s: entry=%.2f side=%s atr=%.4f (%s) → radar=%.2f hang=%.2f frozen=%.2f | %s",
+                "雷达初始止损" if dual else "呼吸止损",
+                entry, side_u, atr, atr_source, stop, hang,
+                float(self._frozen_hard_px() or 0), meta,
             )
             self._maybe_alert_atr_mismatch(entry, tv_sl_ref, atr)
         else:
@@ -878,7 +905,7 @@ class AdverseRadarMixin:
                 or float(getattr(self, "watched_qty", 0) or 0) > 0
             ) and side_u in ("LONG", "SHORT") and entry > 0
             logger.error(
-                "呼吸止损缺失: entry=%.2f side=%s atr=%.4f — 无法计算初始止损 | %s",
+                "雷达/呼吸初始止损缺失: entry=%.2f side=%s atr=%.4f | %s",
                 entry, side_u, atr, meta,
             )
             if live_open and hasattr(self, "_alert"):
@@ -925,18 +952,16 @@ class AdverseRadarMixin:
         return px if px > 0 else None
 
     def _clamp_radar_sl_to_tv_floor(self, sl: float) -> float:
-        """Radar may tighten only; never looser than frozen hard stop."""
-        hard = self._frozen_hard_px()
-        side = str(getattr(self, "current_side", "") or "").upper()
+        """Radar is an independent track — do not force it toward hard stop.
+
+        Whitepaper: hard and radar coexist; radar may be tighter or looser than
+        hard depending on ATR. Never mutate hard from this helper.
+        """
         try:
             px = float(sl or 0)
         except (TypeError, ValueError):
             return sl
-        if hard <= 0 or px <= 0 or side not in ("LONG", "SHORT"):
-            return px if px > 0 else sl
-        if side == "LONG":
-            return max(px, hard)
-        return min(px, hard)
+        return px if px > 0 else sl
 
     def _defense_mark_price(self) -> float:
         if hasattr(self, "_current_tp_price"):
@@ -1495,6 +1520,134 @@ class AdverseRadarMixin:
             pass
         return False
 
+    def _hard_stop_live_qty(self, hard_px: float) -> float:
+        """Qty of the stop sitting at frozen hard (0 if missing)."""
+        if hard_px <= 0:
+            return 0.0
+        hang = float(self._exchange_hang_stop_px(hard_px) or hard_px)
+        try:
+            orders = list(self._collect_all_stop_like_orders() or [])
+        except Exception:
+            try:
+                orders = list(self._collect_adverse_stop_orders() or [])
+            except Exception:
+                return 0.0
+        # Prefer remembered hard oid
+        ids = dict(getattr(self, "_defense_order_ids", None) or {})
+        hard_oid = ids.get("hard")
+        for o in orders:
+            oid = o.get("algoId") or o.get("orderId") or o.get("ordId")
+            if hard_oid is not None and oid is not None and str(oid) == str(hard_oid):
+                try:
+                    return float(o.get("quantity") or o.get("origQty") or o.get("qty") or 0)
+                except (TypeError, ValueError):
+                    return 0.0
+        for o in orders:
+            try:
+                px = float(_adverse_defense_price(o) or 0)
+            except (TypeError, ValueError):
+                px = 0.0
+            if px <= 0:
+                continue
+            if abs(px - hang) <= ADVERSE_STOP_TOLERANCE or abs(px - hard_px) <= ADVERSE_STOP_TOLERANCE:
+                try:
+                    return float(o.get("quantity") or o.get("origQty") or o.get("qty") or 0)
+                except (TypeError, ValueError):
+                    return 0.0
+        return 0.0
+
+    def _cancel_hard_tier_stop_orders_only(self) -> int:
+        """Cancel frozen hard stop only — never radar (whitepaper permanence).
+
+        Prefer remembered hard order/algo id. When hard≈radar within tolerance,
+        price-proximity cancel is FORBIDDEN (would kill both) — id-only or skip.
+        """
+        hard = float(self._frozen_hard_px() or 0)
+        if hard <= 0:
+            return 0
+        hang = float(self._exchange_hang_stop_px(hard) or hard)
+        radar = float(getattr(self, "current_sl", 0) or getattr(self, "initial_stop", 0) or 0)
+        radar_hang = (
+            float(self._exchange_hang_stop_px(radar) or radar) if radar > 0 else 0.0
+        )
+        hard_radar_cluster = (
+            radar_hang > 0 and abs(hang - radar_hang) <= ADVERSE_STOP_TOLERANCE
+        )
+        symbol = getattr(self, "symbol", None)
+        client = getattr(self, "client", None)
+        if not symbol or not client:
+            return 0
+        cancelled = 0
+        ids = dict(getattr(self, "_defense_order_ids", None) or {})
+        hard_oid = ids.get("hard")
+        radar_oid = ids.get("radar") or ids.get("sl")
+
+        def _cancel_one(oid) -> bool:
+            if not oid:
+                return False
+            try:
+                if getattr(self, "exchange_id", "") == "deepcoin":
+                    client.cancel_trigger_order(symbol, oid)
+                else:
+                    client.cancel_order(symbol, int(oid))
+                time.sleep(0.15)
+                return True
+            except Exception as exc:
+                logger.warning(
+                    "[User %s] hard-tier cancel failed oid=%s: %s",
+                    getattr(self, "user_id", "?"),
+                    oid,
+                    exc,
+                )
+                return False
+
+        # 1) Id-first: cancel remembered hard only
+        if hard_oid is not None:
+            if _cancel_one(hard_oid):
+                cancelled += 1
+                self._clear_defense_order_ids("hard")
+            return cancelled
+
+        # 2) Cluster danger: no id → refuse price-based cancel (would wipe radar too)
+        if hard_radar_cluster:
+            logger.warning(
+                "[User %s] hard≈radar (≤%.1f) 且无 hard oid → 拒按价撤硬止损（白皮书永冻）",
+                getattr(self, "user_id", "?"),
+                ADVERSE_STOP_TOLERANCE,
+            )
+            return 0
+
+        try:
+            orders = list(self._collect_all_stop_like_orders() or [])
+        except Exception:
+            orders = list(self._collect_adverse_stop_orders() or [])
+        for o in orders:
+            try:
+                px = float(_adverse_defense_price(o) or 0)
+            except (TypeError, ValueError):
+                px = 0.0
+            if px <= 0:
+                continue
+            near_hard = abs(px - hang) <= ADVERSE_STOP_TOLERANCE or abs(px - hard) <= ADVERSE_STOP_TOLERANCE
+            if not near_hard:
+                continue
+            oid = o.get("algoId") or o.get("orderId") or o.get("ordId")
+            if not oid:
+                continue
+            # Never cancel remembered radar oid
+            if radar_oid is not None and str(oid) == str(radar_oid):
+                continue
+            # Distinct radar at a different price — never cancel it as "hard".
+            if (
+                radar_hang > 0
+                and abs(hang - radar_hang) > ADVERSE_STOP_TOLERANCE
+                and abs(px - radar_hang) <= ADVERSE_STOP_TOLERANCE
+            ):
+                continue
+            if _cancel_one(oid):
+                cancelled += 1
+        return cancelled
+
     def _sync_hard_stop_only(
         self,
         live_qty: float,
@@ -1502,10 +1655,11 @@ class AdverseRadarMixin:
         at_open: bool = False,
         force_replace: bool = False,
     ) -> dict[str, Any]:
-        """Place/verify frozen hard stop only — never cancel/reprice while in position.
+        """Place/verify frozen hard stop only — never reprice while in position.
 
-        force_replace is ignored for price (whitepaper: hard price immutable).
-        Qty resize: cancel hard-tier only then re-place same price with new qty.
+        Whitepaper: hard price is immutable until flat. ``force_replace`` only
+        means qty resize at the same frozen price when book qty actually differs.
+        Recover/pyramid must NOT cancel-replace hard for no reason.
         """
         live_qty = self._resolve_adverse_live_qty(live_qty)
         hard = self._frozen_hard_px()
@@ -1527,16 +1681,41 @@ class AdverseRadarMixin:
                 "label": self._hard_stop_label(),
             }
 
-        # Qty resize or missing: cancel hard-tier orders only (never radar)
+        # Qty-aware: even force_replace skips cancel if qty already matches
         if on_book and force_replace:
+            book_qty = float(self._hard_stop_live_qty(hard) or 0)
+            tol = max(1e-8, abs(float(live_qty)) * 0.02)
+            if book_qty > 0 and abs(book_qty - float(live_qty)) <= tol:
+                return {
+                    "armed": True,
+                    "aligned": True,
+                    "skipped": "qty_already_matched",
+                    "stop_price": hang,
+                    "hard_price": hard,
+                    "book_qty": book_qty,
+                    "placed": 0,
+                    "label": self._hard_stop_label(),
+                }
             try:
-                self._cancel_adverse_stop_orders()
+                n_cancel = int(self._cancel_hard_tier_stop_orders_only() or 0)
             except Exception as exc:
+                n_cancel = 0
                 logger.warning(
                     "[User %s] hard qty resize cancel failed: %s",
                     getattr(self, "user_id", "?"),
                     exc,
                 )
+            if n_cancel <= 0 and self._hard_stop_on_book(hard):
+                # Cluster refuse left hard intact — do not place a second hard
+                return {
+                    "armed": True,
+                    "aligned": True,
+                    "skipped": "resize_refused_keep_hard",
+                    "stop_price": hang,
+                    "hard_price": hard,
+                    "placed": 0,
+                    "label": self._hard_stop_label(),
+                }
             time.sleep(0.2)
         elif not on_book:
             # Missing hard — place without wiping radar
@@ -1571,6 +1750,7 @@ class AdverseRadarMixin:
             "at_open": at_open,
             "label": self._hard_stop_label(),
             "order_style": getattr(self, "_last_hard_sl_order_style", None),
+            "price_immutable": True,
         }
 
     def _sync_tv_hard_stop(
@@ -1886,15 +2066,15 @@ class AdverseRadarMixin:
         tv_sl = float(self._pine_stop_loss_ref() or 0)
         temp = compute_temp_tv_stop(entry, side, tv_sl)
         source = "tv_hard_stop"
+        # Whitepaper: hard MUST be |entry−TV.stop_loss|×1.2 — no ATR fallback.
+        # Missing TV stop_loss → abort open (caller fail-closes), never invent a hard.
         if temp <= 0:
-            # Fallback: TV atr-based stop if stop_loss missing
-            tv_atr = float(getattr(self, "_tv_atr_ref", 0) or 0)
-            sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
-            if tv_atr > 0 and side in ("LONG", "SHORT"):
-                temp = compute_initial_stop(float(entry or 0), side, tv_atr, symbol=sym)
-                source = "tv_atr_hard_fallback"
-        if temp <= 0:
-            return {"ok": False, "reason": "hard_stop_unavailable", "stop_price": 0.0}
+            return {
+                "ok": False,
+                "reason": "hard_stop_unavailable_need_tv_stop_loss",
+                "stop_price": 0.0,
+                "tv_stop_loss": tv_sl,
+            }
         # Hard floor is frozen here — radar uses current_sl / initial_stop separately
         self._frozen_hard_stop_px = float(temp)
         self._tv_hard_sl_price = float(temp)
@@ -2046,7 +2226,7 @@ class AdverseRadarMixin:
             "tv_webhook" if float(getattr(self, "_tv_atr_ref", 0) or 0) > 0 else "fallback"
         )
         self._vps_hard_sl_meta = {
-            "source": "breathing_initial",
+            "source": "radar_initial",
             "stop_price": float(st["initial_stop"]),
             "hang_stop": float(hang or 0),
             "entry": float(st["entry_price"]),
@@ -2056,6 +2236,7 @@ class AdverseRadarMixin:
             "atr_scenario": str(getattr(self, "atr_scenario", "") or ""),
             "breathing_coefficient": coef,
             "symbol": sym,
+            "frozen_hard": float(self._frozen_hard_px() or 0),
         }
         self._last_breath_trail_alert_sl = 0.0
         return st
@@ -2361,14 +2542,16 @@ class AdverseRadarMixin:
                 self.current_sl = max(current_sl, new_sl) if current_sl > 0 else new_sl
             else:
                 self.current_sl = min(current_sl, new_sl) if current_sl > 0 else new_sl
-            self._tv_hard_sl_price = float(self.current_sl)
+            # Dual track: radar recover must never overwrite frozen hard identity.
+            if not self._uses_dual_stop_track():
+                self._tv_hard_sl_price = float(self.current_sl)
         self.radar_latched = True
         self.radar_activated = True
         self.remaining_qty_pct = self._remaining_qty_pct_from_consumed(
             getattr(self, "consumed_tp_levels", None)
         )
         logger.info(
-            "%s [User %s] 呼吸止损重启恢复: phase=%s best=%.2f SL=%.2f atr=%.4f coef=%.2f",
+            "%s [User %s] 呼吸止损重启恢复: phase=%s best=%.2f SL=%.2f atr=%.4f coef=%.2f frozen=%.2f",
             self._symbol_tag(),
             getattr(self, "user_id", "?"),
             "2" if self.breakeven_phase else "1",
@@ -2376,6 +2559,7 @@ class AdverseRadarMixin:
             float(self.current_sl or 0),
             atr,
             resolve_breathing_coef(getattr(self, "breathing_coefficient", None), sym),
+            float(self._frozen_hard_px() or 0),
         )
 
     def _tp1_limit_still_live_on_book(self) -> bool:
@@ -2635,6 +2819,9 @@ class AdverseRadarMixin:
             if order:
                 if not self._last_hard_sl_order_style:
                     self._last_hard_sl_order_style = "deepcoin_trigger_limit"
+                oid = order.get("ordId") or order.get("algoId") or order.get("orderId")
+                if oid is not None and hasattr(self, "_remember_defense_order_id"):
+                    self._remember_defense_order_id("hard", oid)
                 return True
             return False
 
@@ -2652,6 +2839,8 @@ class AdverseRadarMixin:
             if aid_int not in pending:
                 pending.append(aid_int)
             self._pending_adverse_algo_ids = pending[-8:]
+            if hasattr(self, "_remember_defense_order_id"):
+                self._remember_defense_order_id("hard", aid)
 
         # 架构对齐：止损单必须带 quantity，以便 TP1/TP2 后收缩至 70%/40%
         if hasattr(client, "place_stop_market_order") and qty_f > 0:
@@ -3421,41 +3610,75 @@ class AdverseRadarMixin:
             resize_qty = init_q * float(self.remaining_qty_pct or 0)
 
         stop_px = float(getattr(self, "current_sl", 0) or 0)
-        if resize_qty > 0 and stop_px > 0 and hasattr(self, "_sync_binance_merged_stop"):
+        if resize_qty > 0 and stop_px > 0:
             try:
-                # Prefer soft sync first — only force_replace when book stop qty/price wrong.
-                already_ok = False
-                if hasattr(self, "_has_stop_sl_near"):
-                    try:
+                if self._uses_dual_stop_track():
+                    # Whitepaper §5: hard + radar qty shrink independently; prices untouched.
+                    hard_px = float(self._frozen_hard_px() or 0)
+                    if hard_px > 0 and hasattr(self, "_sync_hard_stop_only"):
+                        self._sync_hard_stop_only(resize_qty, force_replace=True)
+                    if hasattr(self, "_ensure_radar_sl"):
                         hang = (
                             self._exchange_hang_stop_px(stop_px)
                             if hasattr(self, "_exchange_hang_stop_px")
                             else stop_px
                         )
-                        already_ok = bool(self._has_stop_sl_near(hang)) and (
-                            self._count_live_stop_orders() <= ADVERSE_MAX_STOP_ORDERS
-                        )
-                    except Exception:
-                        already_ok = False
-                if already_ok:
+                        # TP fill implies radar track is live — allow qty rehang.
+                        self.radar_latched = True
+                        self.radar_activated = True
+                        if hasattr(self, "_cancel_radar_stop_orders"):
+                            try:
+                                self._cancel_radar_stop_orders()
+                                time.sleep(0.2)
+                            except Exception:
+                                pass
+                        if getattr(self, "exchange_id", "") == "deepcoin":
+                            self._ensure_radar_sl(resize_qty, hang)
+                        else:
+                            self._ensure_radar_sl(hang, resize_qty)
                     logger.info(
-                        "[User %s] TP后止损已在簿，跳过撤挂 remaining=%.0f%% | %s",
-                        getattr(self, "user_id", "?"),
-                        float(self.remaining_qty_pct) * 100.0,
-                        change_type,
-                    )
-                else:
-                    self._sync_binance_merged_stop(
-                        resize_qty, radar_sl=stop_px, force_replace=True, at_open=False,
-                    )
-                    logger.info(
-                        "[User %s] TP后止损数量收缩 remaining=%.0f%% qty=%.4f @%.2f | %s",
+                        "[User %s] TP后双轨止损数量收缩 remaining=%.0f%% qty=%.4f "
+                        "hard=%.2f radar=%.2f | %s",
                         getattr(self, "user_id", "?"),
                         float(self.remaining_qty_pct) * 100.0,
                         resize_qty,
+                        hard_px,
                         stop_px,
                         change_type,
                     )
+                elif hasattr(self, "_sync_binance_merged_stop"):
+                    already_ok = False
+                    if hasattr(self, "_has_stop_sl_near"):
+                        try:
+                            hang = (
+                                self._exchange_hang_stop_px(stop_px)
+                                if hasattr(self, "_exchange_hang_stop_px")
+                                else stop_px
+                            )
+                            already_ok = bool(self._has_stop_sl_near(hang)) and (
+                                self._count_live_stop_orders() <= ADVERSE_MAX_STOP_ORDERS
+                            )
+                        except Exception:
+                            already_ok = False
+                    if already_ok:
+                        logger.info(
+                            "[User %s] TP后止损已在簿，跳过撤挂 remaining=%.0f%% | %s",
+                            getattr(self, "user_id", "?"),
+                            float(self.remaining_qty_pct) * 100.0,
+                            change_type,
+                        )
+                    else:
+                        self._sync_binance_merged_stop(
+                            resize_qty, radar_sl=stop_px, force_replace=True, at_open=False,
+                        )
+                        logger.info(
+                            "[User %s] TP后止损数量收缩 remaining=%.0f%% qty=%.4f @%.2f | %s",
+                            getattr(self, "user_id", "?"),
+                            float(self.remaining_qty_pct) * 100.0,
+                            resize_qty,
+                            stop_px,
+                            change_type,
+                        )
                 if level:
                     done.add(int(level))
                     if hasattr(self, "_save_state"):

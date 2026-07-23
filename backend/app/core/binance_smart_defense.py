@@ -1084,7 +1084,27 @@ class BinanceSmartDefenseMixin:
                 result = self._sync_binance_merged_stop(qty, radar_sl=sl, force_replace=False)
                 return bool(result.get("aligned") or result.get("armed"))
         if self._has_stop_sl_near(sl):
-            return True
+            # Dual track: hard may sit near radar — do not treat hard as radar present.
+            if (
+                hasattr(self, "_uses_dual_stop_track")
+                and self._uses_dual_stop_track()
+                and hasattr(self, "_frozen_hard_px")
+            ):
+                hard = float(self._frozen_hard_px() or 0)
+                if hard > 0 and abs(float(sl) - hard) <= 2.0:
+                    # Ambiguous price cluster — only skip if ≥2 stops live (hard+radar).
+                    try:
+                        n = int(self._count_live_stop_orders()) if hasattr(self, "_count_live_stop_orders") else -1
+                    except Exception:
+                        n = -1
+                    if n < 2:
+                        pass  # fall through to place radar
+                    else:
+                        return True
+                else:
+                    return True
+            else:
+                return True
         # Dual-track hard cap: never exceed 2 STOPs (hard×1.2 + radar). Not raw TV+×1.2.
         try:
             live_stops = int(self._count_live_stop_orders()) if hasattr(self, "_count_live_stop_orders") else -1
@@ -1134,6 +1154,13 @@ class BinanceSmartDefenseMixin:
                 logging.WARNING,
             )
             return False
+        # Remember radar oid so hard qty-resize never cancels it by price proximity
+        try:
+            rid = res.get("algoId") or res.get("orderId")
+            if rid is not None and hasattr(self, "_remember_defense_order_id"):
+                self._remember_defense_order_id("radar", rid)
+        except Exception:
+            pass
         time.sleep(0.35)
         on_book = self._has_stop_sl_near(sl)
         if not on_book:
@@ -1462,7 +1489,8 @@ class BinanceSmartDefenseMixin:
 
         shield: dict = {}
         if float(getattr(self, "tv_sl", 0) or 0) > 0 and hasattr(self, "_sync_tv_hard_stop"):
-            shield = self._sync_tv_hard_stop(live_qty, force_replace=True) or {}
+            # Whitepaper: never cancel-replace hard on recover — verify/place-missing only
+            shield = self._sync_tv_hard_stop(live_qty, force_replace=False) or {}
 
         tp_result: dict = {}
         expected_slices: list = []
