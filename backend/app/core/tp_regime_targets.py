@@ -1,6 +1,7 @@
-"""TP slice ratios — fixed 30/30/40; only TP1+TP2 hung as limits.
+"""TP slice ratios — fixed 30/30/40; TP3 limit only in ATR scenario 2.
 
-TP3 remainder (40%) is managed by breathing-stop phase-2 — no TP3 limit order.
+Scenario 1 (VPS real ATR): place TP1+TP2 only; TP3 remainder via breath trail.
+Scenario 2 (TV atr fallback): also hang TP3 limit at TV price (40%).
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from app.core.radar_trail import merge_regime_radar
 
 FIXED_TP_QTY_PERCENT: tuple[int, int, int] = (30, 30, 40)
 PLACEABLE_TP_LEVELS: frozenset[int] = frozenset({1, 2})
+PLACEABLE_TP_LEVELS_WITH_TP3: frozenset[int] = frozenset({1, 2, 3})
 
 PINE_TP_QTY_PERCENT: dict[int, tuple[int, int, int]] = {
     1: FIXED_TP_QTY_PERCENT,
@@ -20,6 +22,10 @@ PINE_TP_QTY_PERCENT: dict[int, tuple[int, int, int]] = {
 }
 
 REGIME_MARGIN_PCT: dict[int, float] = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
+
+
+def placeable_tp_levels(*, tp3_limit_active: bool = False) -> frozenset[int]:
+    return PLACEABLE_TP_LEVELS_WITH_TP3 if tp3_limit_active else PLACEABLE_TP_LEVELS
 
 
 def clamp_regime(regime: int) -> int:
@@ -45,13 +51,19 @@ def build_regime_settings() -> dict[int, dict[str, Any]]:
     return merge_regime_radar(base)
 
 
-def enrich_tp_alert_detail(detail: dict | None, *, regime: int = 3) -> dict:
+def enrich_tp_alert_detail(
+    detail: dict | None,
+    *,
+    regime: int = 3,
+    tp3_limit_placed: bool | None = None,
+) -> dict:
     out = dict(detail or {})
     out["regime"] = clamp_regime(regime)
     out["tp_ratios_pct"] = format_tp_ratio_pct()
     out["tp_ratios"] = pine_tp_ratios_frac()
-    out["tp3_limit_placed"] = False
-    out["tp_placeable_levels"] = sorted(PLACEABLE_TP_LEVELS)
+    placed = bool(tp3_limit_placed) if tp3_limit_placed is not None else False
+    out["tp3_limit_placed"] = placed
+    out["tp_placeable_levels"] = sorted(placeable_tp_levels(tp3_limit_active=placed))
     return out
 
 

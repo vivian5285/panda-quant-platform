@@ -2,7 +2,8 @@
 
 Phase 1: early BE + ATR step ladder × locked initial_atr (no breath coef)
 Phase 2: trail = initial_atr × trailDistanceMultiplier(smoothedRatio)
-initial_atr from TV webhook atr (locked); coef from continuous interpolation.
+initial_atr = VPS native 1h ATR when available, else TV atr (scenario 2);
+coef from continuous interpolation of atr_1h / initial_atr.
 """
 
 from __future__ import annotations
@@ -101,6 +102,9 @@ def _price_tick(symbol: str | None) -> float:
         return 0.01
 
 
+TEMP_TV_STOP_BUFFER = 1.2  # |entry − TV.stop_loss| × 1.2 before VPS ATR takeover
+
+
 def compute_initial_stop(
     entry: float,
     side: str,
@@ -118,6 +122,29 @@ def compute_initial_stop(
     if side == "SHORT":
         return entry + p.initial_sl_atr * atr
     return 0.0
+
+
+def compute_temp_tv_stop(
+    entry: float,
+    side: str,
+    tv_stop_loss: float,
+) -> float:
+    """Immediate post-fill hard stop from TV stop_loss with 20% distance buffer.
+
+    distance = |entry − TV.stop_loss| × 1.2
+    LONG → entry − distance; SHORT → entry + distance.
+    """
+    entry_v = float(entry or 0)
+    tv_sl = float(tv_stop_loss or 0)
+    side_u = str(side or "").upper()
+    if entry_v <= 0 or tv_sl <= 0 or side_u not in ("LONG", "SHORT"):
+        return 0.0
+    dist = abs(entry_v - tv_sl) * TEMP_TV_STOP_BUFFER
+    if dist <= 0:
+        return 0.0
+    if side_u == "LONG":
+        return entry_v - dist
+    return entry_v + dist
 
 
 def apply_stop_order_buffer(

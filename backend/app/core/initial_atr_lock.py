@@ -1,7 +1,7 @@
-"""initial_atr open-lock — write-guard for breathing engine (spec §五).
+"""initial_atr open-lock — write-guard for breathing engine.
 
-After open lock, only flat-clear (→0) or identical restore is accepted.
-Non-open overwrite attempts are blocked, counted, and logged.
+After open lock, only flat-clear (→0), identical restore, or authorized
+VPS 1h ATR upgrade (scenario 2→1) is accepted. Other overwrites are blocked.
 """
 
 from __future__ import annotations
@@ -55,6 +55,30 @@ def is_initial_atr_locked(obj: Any) -> bool:
 
 def blocked_initial_atr_writes(obj: Any) -> int:
     return int(getattr(obj, "_initial_atr_blocked_writes", 0) or 0)
+
+
+def rewrite_initial_atr_for_vps_upgrade(
+    obj: Any,
+    value: float,
+    *,
+    reason: str = "vps_1h_atr",
+) -> bool:
+    """Authorized unlock+rewrite when VPS real 1h ATR replaces TV fallback."""
+    v = float(value or 0)
+    if v <= 0:
+        return False
+    prev = float(getattr(obj, "_initial_atr_value", 0.0) or 0.0)
+    obj._initial_atr_locked = False
+    obj._initial_atr_value = v
+    obj._initial_atr_locked = True
+    logger.info(
+        "[User %s] initial_atr VPS upgrade %.6f → %.6f (%s)",
+        getattr(obj, "user_id", "?"),
+        prev,
+        v,
+        reason,
+    )
+    return True
 
 
 def force_set_initial_atr_for_tests(obj: Any, value: float, *, lock: bool = True) -> None:

@@ -685,6 +685,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "breath_ratio_history": list(getattr(self, "breath_ratio_history", None) or []),
                     "atr_1h": float(getattr(self, "atr_1h", 0) or 0),
                     "breath_smooth_ratio": float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
+                    "atr_scenario": str(getattr(self, "atr_scenario", "") or ""),
+                    "tp3_limit_active": bool(getattr(self, "tp3_limit_active", False)),
                     "tv_atr_ref": float(getattr(self, "_tv_atr_ref", 0) or 0),
                     "current_adx": float(getattr(self, "current_adx", 25) or 25),
                     "remaining_qty_pct": float(getattr(self, "remaining_qty_pct", 1.0) or 1.0),
@@ -1158,24 +1160,31 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return dedupe_orders_by_id(orders)
 
     def _compute_tp_slices(self, qty, exclude_levels=None):
-        """Fixed 30/30/40 slices; only TP1+TP2 placeable (ignore TV qty*)."""
+        """Fixed 30/30/40; TP3 placeable only in atr scenario 2."""
+        from app.core.open_atr_scenario import supervisor_placeable_levels
         from app.core.tp_regime_targets import pine_tp_ratios_frac
 
+        placeable = supervisor_placeable_levels(self)
+        exclude = set(exclude_levels or set())
+        for lv in (1, 2, 3):
+            if lv not in placeable:
+                exclude.add(lv)
         ratios = pine_tp_ratios_frac()
         settings = dict(self.regime_settings)
         r = int(self.regime or 3)
         row = dict(settings.get(r) or settings.get(3) or {})
         row["ratios"] = ratios
         settings[r] = row
-        return compute_tp_slices(
+        slices = compute_tp_slices(
             float(qty),
             r,
             self.tv_tps,
             settings,
-            exclude_levels=exclude_levels or set(),
+            exclude_levels=exclude,
             round_qty_fn=lambda x: float(max(self._safe_qty(x), 1)),
             min_qty=1.0,
         )
+        return [(lv, q, px) for lv, q, px in slices if lv in placeable]
 
     def _sync_consumed_tp_levels(self, live_qty, curr_px):
         from app.core.tp_slice_guard import compute_tp_slices, levels_past_by_mark
@@ -1475,13 +1484,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return set(filled) | set(past)
 
     def _active_tp_exclude_levels(self, qty: float, curr_px: float) -> set[int]:
-        """Exclude filled + mark-past levels; only PLACEABLE_TP_LEVELS hung."""
+        """Exclude filled + mark-past levels; placeable depends on atr scenario."""
         from app.core.tp_slice_guard import should_skip_rehang_tp_level, SKIP_REHANG_HARD
-        from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
+        from app.core.open_atr_scenario import supervisor_placeable_levels
 
+        placeable = supervisor_placeable_levels(self)
         exclude = self._infer_filled_tp_levels(qty, curr_px)
         for lvl in (1, 2, 3):
-            if lvl not in PLACEABLE_TP_LEVELS:
+            if lvl not in placeable:
                 exclude.add(lvl)
         open_prices = [float(o.get("price", 0) or 0) for o in self._collect_tp_limit_orders()]
         for i, tp_px in enumerate(list(self.tv_tps or [])[:3]):
@@ -3286,37 +3296,67 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
     def _protect_and_monitor(self, qty, entry_price):
         """
-        开仓后一次性挂好 TP123 + 呼吸止损；实盘核实后才推钉钉。
+        开仓后：临时TV止损 → TP1/TP2 → VPS 1h ATR场景判定 → 精确止损（场景二再挂TP3）。
         返回 {ok, aborted, defense, shield}。
         """
         self._reset_adverse_radar(keep_tv_sl=False)
-        self._init_breathing_on_open(
-            entry_price,
-            atr=float(
-                getattr(self, "_tv_atr_ref", 0)
-                or getattr(self, "initial_atr", 0)
-                or getattr(self, "current_atr", 0)
-                or 0
-            ),
-        )
+        self.tp3_limit_active = False
+        self.atr_scenario = "pending"
         tp_pxs = self.tv_tps
         self.best_price = entry_price
         self.watched_qty, self.watched_entry, self.monitoring = qty, entry_price, True
         self._save_state()
-
         self._ensure_price_ws()
 
         result: dict = {}
         shield: dict = {}
+        scenario_detail: dict = {}
         verified = self._wait_verify(lambda: self._verify_position(self.current_side))
         if verified:
             live_qty = self._safe_qty(verified["size"])
             entry = verified["entry_price"]
-            # ① 只挂 TP123
+            # ① 临时硬止损
+            temp = self._arm_temp_tv_stop_on_open(entry)
+            shield_temp = self._sync_tv_hard_stop(live_qty, at_open=True, force_replace=True)
+            self._last_shield_result = shield_temp
+            temp_ok = bool(
+                temp.get("ok")
+                and (
+                    shield_temp.get("placed", 0) > 0
+                    or shield_temp.get("armed")
+                    or shield_temp.get("aligned")
+                    or shield_temp.get("skipped") == "live_already_aligned"
+                )
+            )
+            if not temp_ok:
+                self._dt.report_system_alert(
+                    "开仓后临时硬止损未挂上·立即撤仓",
+                    f"{self.current_side} {verified['size']}张 | temp={temp} | {shield_temp}",
+                )
+                try:
+                    self._close_all(
+                        "临时硬止损挂单失败·禁止裸奔",
+                        close_action="HARD_SL_FAIL_ABORT",
+                        close_trigger="temp_hard_sl_place_failed",
+                    )
+                except Exception as e:
+                    logger.error(f"temp hard-SL fail abort close error: {e}")
+                self.monitoring = False
+                out = {
+                    "ok": False,
+                    "aborted": True,
+                    "reason": "temp_hard_sl_fail_abort",
+                    "defense": result,
+                    "shield": shield_temp,
+                }
+                self._last_protect_result = out
+                return out
+
+            # ② TP1/TP2
             result = self._smart_realign_defenses(
                 live_qty, entry,
                 dynamic_sl=None,
-                reason="开仓后智能防线对齐·仅TP123",
+                reason="开仓后智能防线对齐·TP1/TP2",
             )
             if (
                 result.get("expected", 0) > 0
@@ -3342,7 +3382,45 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     f"{self.current_side} {verified['size']}张 | 仅 {matched}/{expected} 档 | "
                     f"{self._format_audit_summary(audit)}",
                 )
-            # ② 呼吸止损只挂一次
+
+            # ③ ATR 场景
+            scenario_detail = self._resolve_and_apply_open_atr_scenario(entry)
+            if not scenario_detail.get("ok"):
+                self._dt.report_system_alert(
+                    "开仓ATR场景失败·立即撤仓",
+                    f"{scenario_detail}",
+                )
+                try:
+                    self._close_all(
+                        "开仓ATR不可用·禁止裸奔",
+                        close_action="HARD_SL_FAIL_ABORT",
+                        close_trigger="open_atr_scenario_failed",
+                    )
+                except Exception as e:
+                    logger.error(f"atr scenario fail abort: {e}")
+                self.monitoring = False
+                out = {
+                    "ok": False,
+                    "aborted": True,
+                    "reason": "open_atr_scenario_failed",
+                    "defense": result,
+                    "shield": shield_temp,
+                    "scenario": scenario_detail,
+                }
+                self._last_protect_result = out
+                return out
+
+            if bool(getattr(self, "tp3_limit_active", False)):
+                result = self._smart_realign_defenses(
+                    live_qty, entry,
+                    dynamic_sl=None,
+                    reason="场景二·补挂TP3兜底",
+                )
+                self._last_defense_result = result
+                matched, expected = result.get("matched", 0), result.get("expected", 0)
+                audit = result.get("audit") or {}
+
+            # ④ 精确止损替换临时止损
             shield = self._sync_tv_hard_stop(live_qty, at_open=True, force_replace=True)
             self._last_shield_result = shield
             armed = bool(
@@ -3355,13 +3433,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             breath_sl = float(
                 getattr(self, "current_sl", 0)
                 or getattr(self, "initial_stop", 0)
-                or getattr(self, "tv_sl", 0)
                 or 0
             )
             if armed:
                 logger.info(
                     f"🛡️ 开仓 {sl_label}已挂 @{shield.get('stop_price', 0):.2f} | "
-                    f"{verified['size']}张"
+                    f"{verified['size']}张 | scenario={scenario_detail.get('scenario')}"
                 )
             elif breath_sl > 0:
                 self._dt.report_system_alert(
@@ -3384,14 +3461,15 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "reason": "hard_sl_fail_abort",
                     "defense": result,
                     "shield": shield,
+                    "scenario": scenario_detail,
                 }
                 self._last_protect_result = out
                 return out
 
-            # ③ 实盘核实（TP + 呼吸止损）后才推 OPEN 钉钉一次
             verify_note = (
                 f"持仓 {verified['size']}张 @ {verified['entry_price']:.2f} | "
-                f"限价止盈 {matched}/{expected} 档 | {self._format_audit_summary(audit)}"
+                f"限价止盈 {matched}/{expected} 档 | {self._format_audit_summary(audit)} | "
+                f"ATR场景={scenario_detail.get('scenario')}"
             )
             if armed:
                 verify_note += f" | {sl_label}已核实 @{shield.get('stop_price', 0):.2f}"
@@ -3419,8 +3497,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "radar": "✅",
                 },
                 leverage=int(getattr(self, "leverage", 0) or 0),
+                atr_scenario=str(getattr(self, "atr_scenario", "") or ""),
+                tp3_limit_active=bool(getattr(self, "tp3_limit_active", False)),
                 **(getattr(self, "_last_open_sizing_meta", None) or {}),
-                **enrich_tp_alert_detail({}, regime=self.regime),
+                **enrich_tp_alert_detail(
+                    {},
+                    regime=self.regime,
+                    tp3_limit_placed=bool(getattr(self, "tp3_limit_active", False)),
+                ),
             )
         else:
             logger.warning("开仓钉钉跳过：实盘持仓核查未通过")
@@ -3435,14 +3519,18 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             threading.Thread(target=self._sentinel_loop, daemon=True).start()
             return out
 
+        self._save_state()
         threading.Thread(target=self._sentinel_loop, daemon=True).start()
         out = {
             "ok": True,
             "aborted": False,
             "defense": result,
             "shield": shield,
+            "scenario": scenario_detail,
             "radar_standby": False,
             "breathing_active": True,
+            "atr_scenario": str(getattr(self, "atr_scenario", "") or ""),
+            "tp3_limit_active": bool(getattr(self, "tp3_limit_active", False)),
         }
         self._last_protect_result = out
         return out
@@ -4041,6 +4129,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     ]
                     self.atr_1h = float(s.get("atr_1h", 0) or 0)
                     self.breath_smooth_ratio = float(s.get("breath_smooth_ratio", 1.0) or 1.0)
+                    self.atr_scenario = str(s.get("atr_scenario") or "pending")
+                    self.tp3_limit_active = bool(s.get("tp3_limit_active", False))
                     self._tv_atr_ref = float(s.get("tv_atr_ref", 0) or 0)
                     self.current_adx = float(s.get("current_adx", 25) or 25)
                     self.remaining_qty_pct = float(s.get("remaining_qty_pct", 1.0) or 1.0)

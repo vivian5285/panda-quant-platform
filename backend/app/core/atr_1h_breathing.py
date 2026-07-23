@@ -1,6 +1,7 @@
 """Binance native 1h ATR + breathing coefficient (radar upgrade).
 
-initial_atr = TV webhook atr (fixed at open).
+initial_atr = VPS 1h ATR when open fetch succeeds (scenario 1), else TV atr
+(scenario 2); may upgrade mid-trade when fetch recovers.
 current_atr_1h = Binance GET /fapi/v1/klines interval=1h ATR(14).
 breathing_coefficient = f(sma(current_atr_1h / initial_atr, 3)).
 

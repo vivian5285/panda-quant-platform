@@ -300,6 +300,8 @@ class PositionSupervisor(
                     "breath_ratio_history": list(getattr(self, "breath_ratio_history", None) or []),
                     "atr_1h": float(getattr(self, "atr_1h", 0) or 0),
                     "breath_smooth_ratio": float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
+                    "atr_scenario": str(getattr(self, "atr_scenario", "") or ""),
+                    "tp3_limit_active": bool(getattr(self, "tp3_limit_active", False)),
                     "tv_atr_ref": float(getattr(self, "_tv_atr_ref", 0) or 0),
                     "current_adx": float(getattr(self, "current_adx", 25) or 25),
                     "remaining_qty_pct": float(getattr(self, "remaining_qty_pct", 1.0) or 1.0),
@@ -368,6 +370,8 @@ class PositionSupervisor(
                     ]
                     self.atr_1h = float(s.get("atr_1h", 0) or 0)
                     self.breath_smooth_ratio = float(s.get("breath_smooth_ratio", 1.0) or 1.0)
+                    self.atr_scenario = str(s.get("atr_scenario") or "pending")
+                    self.tp3_limit_active = bool(s.get("tp3_limit_active", False))
                     self._tv_atr_ref = float(s.get("tv_atr_ref", 0) or 0)
                     self.current_adx = float(s.get("current_adx", 25) or 25)
                     self.remaining_qty_pct = float(s.get("remaining_qty_pct", 1.0) or 1.0)
@@ -570,7 +574,7 @@ class PositionSupervisor(
         self.regime = int(payload.get("regime", 3))
         self.regime = clamp_regime(self.regime)
 
-        # Open path: freeze initial_atr from TV webhook atr only (no VPS invent on open)
+        # Open path: stash TV atr ref; open protect resolves VPS 1h vs TV fallback
         position_open = bool(
             getattr(self, "monitoring", False)
             or float(getattr(self, "watched_qty", 0) or 0) > 0
@@ -2017,10 +2021,15 @@ class PositionSupervisor(
     def _compute_tp_slices(
         self, qty: float, exclude_levels: set[int] | None = None
     ) -> list[tuple[int, float, float]]:
-        """TP1/TP2 only — always 30%/30% of live qty (ignore TV qty1/qty2 absolute)."""
-        from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
+        """TP1/TP2 always; TP3 only when atr scenario 2 (TV atr fallback)."""
+        from app.core.open_atr_scenario import supervisor_placeable_levels
 
+        placeable = supervisor_placeable_levels(self)
         exclude = set(exclude_levels or set())
+        # Exclude non-placeable levels (TP3 off in scenario 1)
+        for lv in (1, 2, 3):
+            if lv not in placeable:
+                exclude.add(lv)
         qty_f = float(qty or 0)
         settings = dict(self.regime_settings)
         r = int(self.regime or 3)
@@ -2032,11 +2041,11 @@ class PositionSupervisor(
             r,
             self.tv_tps,
             settings,
-            exclude_levels=exclude | {3},
+            exclude_levels=exclude,
             round_qty_fn=self._round_qty,
             min_qty=float(getattr(self, "min_order_qty", 0) or 0),
         )
-        return [(lv, q, px) for lv, q, px in slices if lv in PLACEABLE_TP_LEVELS]
+        return [(lv, q, px) for lv, q, px in slices if lv in placeable]
 
     def _open_tp_prices_on_book(self) -> list[float]:
         prices: list[float] = []
@@ -3233,24 +3242,12 @@ class PositionSupervisor(
 
     def _protect_and_monitor(self, qty: float, entry_price: float) -> dict:
         """
-        开仓后一次性挂好 TP1+TP2 + 呼吸止损；实盘核实后由 _open_position 推钉钉。
+        开仓后：临时TV止损 → TP1/TP2 → VPS 1h ATR场景判定 → 精确止损（场景二再挂TP3）。
         返回 {ok, aborted, defense, shield}；硬止损挂失败则撤仓并 aborted=True（禁止裸奔）。
         """
         self._reset_adverse_radar(keep_tv_sl=False)
-        seed_stop = float(getattr(self, "_sizing_initial_stop", 0) or 0)
-        self._init_breathing_on_open(
-            entry_price,
-            atr=float(
-                getattr(self, "_tv_atr_ref", 0)
-                or getattr(self, "initial_atr", 0)
-                or getattr(self, "current_atr", 0)
-                or 0
-            ),
-        )
-        # Prefer sizing-time initialStop if ATR refresh drifted slightly
-        if seed_stop > 0 and float(getattr(self, "initial_stop", 0) or 0) > 0:
-            # Keep engine stop from init; sizing already used same ATR formula
-            pass
+        self.tp3_limit_active = False
+        self.atr_scenario = "pending"
         self.best_price = entry_price
         self.watched_qty = qty
         self.watched_entry = entry_price
@@ -3258,18 +3255,62 @@ class PositionSupervisor(
         self._ensure_price_ws()
         result: dict = {}
         shield: dict = {}
+        scenario_detail: dict = {}
         pos = self._get_active_position()
         if pos:
             if hasattr(self, "_cancel_binance_all_close_stops"):
                 self._cancel_binance_all_close_stops()
-            # ① 只挂 TP123 限价（不碰硬止损/雷达槽）
+            # ① 临时硬止损（TV stop_loss × 1.2）— 先于一切，禁止裸奔
+            temp = self._arm_temp_tv_stop_on_open(pos["entry_price"])
+            shield_temp = self._sync_tv_hard_stop(pos["size"], at_open=True, force_replace=True)
+            self._last_shield_result = shield_temp
+            temp_ok = bool(
+                temp.get("ok")
+                and (
+                    shield_temp.get("placed", 0) > 0
+                    or shield_temp.get("armed")
+                    or shield_temp.get("aligned")
+                    or shield_temp.get("skipped") == "live_already_aligned"
+                )
+            )
+            if not temp_ok:
+                self._alert(
+                    "critical",
+                    "ADVERSE_SL",
+                    "开仓后临时硬止损未挂上·立即撤仓",
+                    f"{self.current_side} {pos['size']} | temp={temp} | {shield_temp}",
+                    {"temp": temp, "shield": shield_temp},
+                )
+                try:
+                    self._close_all(
+                        "临时硬止损挂单失败·禁止裸奔",
+                        close_action="HARD_SL_FAIL_ABORT",
+                        close_trigger="temp_hard_sl_place_failed",
+                    )
+                except Exception as e:
+                    logger.error(
+                        "[User %s] temp hard-SL fail abort close error: %s",
+                        getattr(self, "user_id", "?"),
+                        e,
+                    )
+                self.monitoring = False
+                out = {
+                    "ok": False,
+                    "aborted": True,
+                    "reason": "temp_hard_sl_fail_abort",
+                    "defense": result,
+                    "shield": shield_temp,
+                }
+                self._last_protect_result = out
+                return out
+
+            # ② 仅挂 TP1/TP2（场景判定前不挂 TP3）
             result = self._smart_realign_defenses(
                 pos["size"],
                 pos["entry_price"],
                 dynamic_sl=None,
-                reason="开仓后智能防线对齐·仅TP123",
+                reason="开仓后智能防线对齐·TP1/TP2",
             )
-            # 一次补挂：若未齐再核武一轮（仍只动 TP）
             if (
                 result.get("expected", 0) > 0
                 and result.get("matched", 0) < result.get("expected", 0)
@@ -3310,7 +3351,52 @@ class PositionSupervisor(
                     f"仅 {result.get('matched')}/{result.get('expected')} 档 | {summary}",
                     result,
                 )
-            # ② 呼吸止损挂一次
+
+            # ③ VPS 1h ATR 场景判定 → 精确止损
+            scenario_detail = self._resolve_and_apply_open_atr_scenario(pos["entry_price"])
+            if not scenario_detail.get("ok"):
+                self._alert(
+                    "critical",
+                    "ATR_SCENARIO",
+                    "开仓ATR场景失败·立即撤仓",
+                    f"{scenario_detail}",
+                    scenario_detail,
+                )
+                try:
+                    self._close_all(
+                        "开仓ATR不可用·禁止裸奔",
+                        close_action="HARD_SL_FAIL_ABORT",
+                        close_trigger="open_atr_scenario_failed",
+                    )
+                except Exception as e:
+                    logger.error(
+                        "[User %s] atr scenario fail abort: %s",
+                        getattr(self, "user_id", "?"),
+                        e,
+                    )
+                self.monitoring = False
+                out = {
+                    "ok": False,
+                    "aborted": True,
+                    "reason": "open_atr_scenario_failed",
+                    "defense": result,
+                    "shield": shield_temp,
+                    "scenario": scenario_detail,
+                }
+                self._last_protect_result = out
+                return out
+
+            # 场景二：补挂 TP3
+            if bool(getattr(self, "tp3_limit_active", False)):
+                result = self._smart_realign_defenses(
+                    pos["size"],
+                    pos["entry_price"],
+                    dynamic_sl=None,
+                    reason="场景二·补挂TP3兜底",
+                )
+                self._last_defense_result = result
+
+            # ④ 用精确止损替换临时止损
             shield = self._sync_tv_hard_stop(pos["size"], at_open=True, force_replace=True)
             self._last_shield_result = shield
             sl_label = shield.get("label") or self._hard_stop_label()
@@ -3322,20 +3408,19 @@ class PositionSupervisor(
             breath_sl = float(
                 getattr(self, "current_sl", 0)
                 or getattr(self, "initial_stop", 0)
-                or getattr(self, "tv_sl", 0)
                 or 0
             )
             if shield.get("placed", 0) > 0:
                 self._log(
                     "BREATH_STEP",
                     f"🛡️ 开仓 {sl_label}已挂 @{shield.get('stop_price', 0):.2f}{shield_note}",
-                    shield,
+                    {**shield, "scenario": scenario_detail},
                 )
             elif shield.get("aligned") or shield.get("skipped") == "live_already_aligned":
                 self._log(
                     "BREATH_STEP",
                     f"🛡️ 开仓 {sl_label}实盘已存在 @{shield.get('stop_price', 0):.2f}",
-                    shield,
+                    {**shield, "scenario": scenario_detail},
                 )
             elif breath_sl > 0:
                 self._alert(
@@ -3345,7 +3430,6 @@ class PositionSupervisor(
                     f"{self.current_side} {pos['size']} | {sl_label} @{breath_sl:.2f} | {shield}",
                     shield,
                 )
-                # 硬止损挂单失败 → 立即平仓，禁止裸奔
                 try:
                     self._close_all(
                         "硬止损挂单失败·禁止裸奔",
@@ -3365,6 +3449,7 @@ class PositionSupervisor(
                     "reason": "hard_sl_fail_abort",
                     "defense": result,
                     "shield": shield,
+                    "scenario": scenario_detail,
                 }
                 self._last_protect_result = out
                 return out
@@ -3375,8 +3460,11 @@ class PositionSupervisor(
             "aborted": False,
             "defense": result,
             "shield": shield,
+            "scenario": scenario_detail,
             "radar_standby": False,
             "breathing_active": True,
+            "atr_scenario": str(getattr(self, "atr_scenario", "") or ""),
+            "tp3_limit_active": bool(getattr(self, "tp3_limit_active", False)),
         }
         self._last_protect_result = out
         return out
