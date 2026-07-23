@@ -312,8 +312,14 @@ class BinanceClient:
                 fetch_all=lambda: self.client.futures_position_information() or [],
             )
         except Exception as e:
+            from app.core.exchange_errors import ExchangeTransientError
+
+            if isinstance(e, ExchangeTransientError):
+                raise
             logger.error(f"[User {self.user_id}] get position failed: {e}")
-            raise_exchange_transient(e, exchange="binance", op="get_position")
+            raise_exchange_transient(
+                e, exchange="binance", op="get_position", user_id=self.user_id,
+            )
 
     def fetch_klines(
         self,

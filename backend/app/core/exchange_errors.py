@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 
@@ -55,10 +56,27 @@ def raise_exchange_transient(
     *,
     exchange: str,
     op: str,
+    user_id: int | str | None = None,
 ) -> None:
     meta = parse_binance_error(exc)
     code = meta.get("code")
     ban_ms = meta.get("banned_until_ms")
+    # -1003 often has no "banned until" stamp — impose shared cool-down
+    if code in (-1003, "-1003", 1003, "1003") or "Too many requests" in str(exc):
+        try:
+            from app.core.ip_rest_cooldown import note_rate_limit
+
+            until = note_rate_limit(
+                exchange=exchange,
+                user_id=user_id,
+                cool_sec=90.0,
+                banned_until_ms=int(ban_ms) if ban_ms else None,
+            )
+            if not ban_ms:
+                ban_ms = int(until * 1000)
+        except Exception:
+            if not ban_ms:
+                ban_ms = int((time.time() + 90.0) * 1000)
     msg = f"{exchange} {op} failed: {exc}"
     raise ExchangeTransientError(
         msg,

@@ -18,9 +18,9 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-POS_TTL_SEC = 1.0
-ORDER_TTL_SEC = 2.0
-ALGO_TTL_SEC = 2.0
+POS_TTL_SEC = 3.0
+ORDER_TTL_SEC = 5.0
+ALGO_TTL_SEC = 5.0
 
 _lock = threading.RLock()
 # key = f"{exchange}:{user_id}"
@@ -59,7 +59,18 @@ def get_cached_position(
     ttl: float = POS_TTL_SEC,
 ) -> dict | None:
     """Return one symbol row from a shared all-position snapshot."""
+    from app.core.ip_rest_cooldown import raise_if_cooling, remaining_sec
+
     k = _key(exchange, user_id)
+    left = remaining_sec(exchange=exchange, user_id=user_id)
+    if left > 0:
+        with _lock:
+            hit = _pos.get(k) or {}
+            cached = (hit.get("by_symbol") or {}).get(symbol)
+        if cached is not None:
+            return cached
+        raise_if_cooling(exchange=exchange, user_id=user_id, op="get_position")
+
     now = time.time()
     with _lock:
         hit = _pos.get(k) or {}
@@ -68,7 +79,21 @@ def get_cached_position(
 
     try:
         rows = list(fetch_all() or [])
-    except Exception:
+    except Exception as e:
+        try:
+            from app.core.exchange_errors import parse_binance_error
+            from app.core.ip_rest_cooldown import note_rate_limit
+
+            meta = parse_binance_error(e)
+            if meta.get("code") in (-1003, "-1003", 1003, "1003") or "Too many requests" in str(e):
+                note_rate_limit(
+                    exchange=exchange,
+                    user_id=user_id,
+                    cool_sec=90.0,
+                    banned_until_ms=meta.get("banned_until_ms"),
+                )
+        except Exception:
+            pass
         raise
 
     by_sym: dict[str, dict] = {}

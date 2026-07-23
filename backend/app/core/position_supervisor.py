@@ -76,16 +76,16 @@ CANCEL_VERIFY_ROUNDS = 5
 HEAL_PLACE_ROUNDS = 2
 SIGNAL_QUEUE_TTL = 120.0
 SIGNAL_LOCK_SLICE = 5.0
-SENTINEL_POLL_NORMAL = 5.0
+SENTINEL_POLL_NORMAL = 8.0
 # Near TP1 / TP fill monitor (REST book) — dual-symbol rate-limit safe
-SENTINEL_POLL_ARMING = 1.0
-# Radar engaged: trail on markPrice WS; REST sentinel at 1s + jitter
-SENTINEL_POLL_RADAR = 1.0
+SENTINEL_POLL_ARMING = 2.5
+# Radar engaged: trail on markPrice WS; REST sentinel slower under IP budget
+SENTINEL_POLL_RADAR = 2.5
 # Order-book / TP audit REST cadence (fills prefer user-data WS invalidate)
-SENTINEL_ORDER_AUDIT_SEC = 2.0
+SENTINEL_ORDER_AUDIT_SEC = 4.0
 # WS tick → radar evaluate throttle (avoid place/cancel thrash)
 RADAR_WS_TICK_MIN_SEC = 0.45
-SENTINEL_POLL_JITTER_SEC = 0.2
+SENTINEL_POLL_JITTER_SEC = 0.5
 DUST_QTY_ETH = 0.004
 TP_COMPLETE_RESIDUAL_RATIO = 0.12
 RADAR_SL_MIN_MOVE = 1.0
@@ -3779,14 +3779,24 @@ class PositionSupervisor(
             self._orchestrate_defense_monitoring(live_qty, curr_px)
 
     def _position_query_ban_remaining_sec(self) -> float:
-        """Seconds left on exchange IP ban; 0 if none."""
+        """Seconds left on exchange IP ban / shared cool-down; 0 if none."""
         ban_ms = getattr(self, "_position_query_ban_until_ms", None)
-        if not ban_ms:
-            return 0.0
+        left = 0.0
+        if ban_ms:
+            try:
+                left = float(ban_ms) / 1000.0 - time.time()
+            except (TypeError, ValueError):
+                left = 0.0
         try:
-            left = float(ban_ms) / 1000.0 - time.time()
-        except (TypeError, ValueError):
-            return 0.0
+            from app.core.ip_rest_cooldown import remaining_sec
+
+            shared = remaining_sec(
+                exchange=getattr(self, "exchange_id", None) or "binance",
+                user_id=getattr(self, "user_id", None),
+            )
+            left = max(left, shared)
+        except Exception:
+            pass
         return left if left > 0 else 0.0
 
     def _handle_position_query_failure(self, err: Exception) -> None:
@@ -3800,6 +3810,21 @@ class PositionSupervisor(
         ban_ms = getattr(err, "banned_until_ms", None) if isinstance(err, ExchangeTransientError) else None
         if ban_ms:
             self._position_query_ban_until_ms = int(ban_ms)
+        elif isinstance(err, ExchangeTransientError) and getattr(err, "is_ip_ban", False):
+            # -1003 without stamp: shared 90s cool-down
+            try:
+                from app.core.ip_rest_cooldown import note_rate_limit
+
+                until = note_rate_limit(
+                    exchange=getattr(self, "exchange_id", None) or "binance",
+                    user_id=getattr(self, "user_id", None),
+                    cool_sec=90.0,
+                )
+                self._position_query_ban_until_ms = int(until * 1000)
+                ban_ms = self._position_query_ban_until_ms
+            except Exception:
+                self._position_query_ban_until_ms = int((time.time() + 90.0) * 1000)
+                ban_ms = self._position_query_ban_until_ms
         detail = {
             "exchange": getattr(self, "exchange_id", None),
             "symbol": getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None),

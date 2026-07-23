@@ -102,9 +102,9 @@ class Settings(BaseSettings):
     # 空仓待命时仍巡检交易所（秒）— 发现同向持仓则接管补挂 TP123/雷达
     IDLE_PATROL_INTERVAL_SEC: float = 45.0
     IDLE_PATROL_FAIL_BACKOFF_SEC: float = 120.0
-    SENTINEL_QUERY_FAIL_SLEEP_SEC: float = 15.0
-    SENTINEL_ERROR_SLEEP_SEC: float = 30.0
-    IDLE_ADOPT_RETRY_COOLDOWN_SEC: float = 45.0
+    SENTINEL_QUERY_FAIL_SLEEP_SEC: float = 60.0
+    SENTINEL_ERROR_SLEEP_SEC: float = 45.0
+    IDLE_ADOPT_RETRY_COOLDOWN_SEC: float = 60.0
 
     # VPS 行情引擎：30m → 合成 90m（UTC epoch 90m 桶对齐）→ ATR/ADX(14)
     # 桶公式：bucket = (open_time_ms // 5_400_000) * 5_400_000；1440÷90=16 → UTC 日界自然对齐
