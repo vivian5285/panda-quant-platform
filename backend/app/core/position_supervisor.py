@@ -3665,6 +3665,17 @@ class PositionSupervisor(
         if hasattr(self, "_orchestrate_defense_monitoring"):
             self._orchestrate_defense_monitoring(live_qty, curr_px)
 
+    def _position_query_ban_remaining_sec(self) -> float:
+        """Seconds left on exchange IP ban; 0 if none."""
+        ban_ms = getattr(self, "_position_query_ban_until_ms", None)
+        if not ban_ms:
+            return 0.0
+        try:
+            left = float(ban_ms) / 1000.0 - time.time()
+        except (TypeError, ValueError):
+            return 0.0
+        return left if left > 0 else 0.0
+
     def _handle_position_query_failure(self, err: Exception) -> None:
         """API failure: keep book, pause flat/auto judgment for this symbol."""
         from datetime import datetime, timezone
@@ -3713,6 +3724,9 @@ class PositionSupervisor(
     def _clear_position_query_degraded(self) -> None:
         if not getattr(self, "_position_query_degraded", False):
             return
+        # Still under IP ban — ignore flaky success; do not DingTalk OK
+        if self._position_query_ban_remaining_sec() > 0:
+            return
         self._position_query_degraded = False
         self._position_query_error = ""
         self._position_query_ban_until_ms = None
@@ -3720,17 +3734,7 @@ class PositionSupervisor(
             "[User %s] position query recovered — auto flat judgment resumed",
             self.user_id,
         )
-        if hasattr(self, "_alert"):
-            self._alert(
-                "info",
-                "EXCHANGE_QUERY_OK",
-                "交易所仓位查询已恢复",
-                "自动空仓/对账判断已恢复",
-                {
-                    "exchange": getattr(self, "exchange_id", None),
-                    "symbol": getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None),
-                },
-            )
+        # No DingTalk on recover — FAIL already notified; OK was flapping under -1003
 
     def _get_active_position(self) -> dict | None:
         """Confirmed live position, or None if exchange reports flat.
@@ -4373,6 +4377,11 @@ class PositionSupervisor(
         last_px = 0.0
         while self.monitoring:
             try:
+                ban_left = self._position_query_ban_remaining_sec()
+                if ban_left > 0:
+                    # Do not hammer REST during -1003 IP ban
+                    time.sleep(min(max(ban_left, 5.0), 60.0))
+                    continue
                 self._ensure_price_ws()
                 if not self._lock.acquire(timeout=2.0):
                     continue
@@ -4381,7 +4390,9 @@ class PositionSupervisor(
                         pos = self.position_manager.get_position(self.symbol)
                     except ExchangeTransientError as e:
                         self._handle_position_query_failure(e)
-                        # Do NOT treat as flat — skip this tick
+                        # Do NOT treat as flat — back off hard under ban/rate-limit
+                        ban_left = self._position_query_ban_remaining_sec()
+                        time.sleep(min(max(ban_left, 15.0), 60.0) if ban_left > 0 else 15.0)
                         continue
                     self._clear_position_query_degraded()
                     real_amt = float(pos.get("positionAmt", 0)) if pos else 0.0

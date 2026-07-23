@@ -39,6 +39,9 @@ COOLDOWN_SEC: dict[str, float] = {
     "TP_ORPHAN_PURGE": 90.0,
     "MANUAL_FLAT_TP_PURGE": 90.0,
     "DEFENSE": 60.0,
+    # Rate-limit / -1003 flaps must not DingTalk-spam
+    "EXCHANGE_QUERY_FAIL": 900.0,
+    "EXCHANGE_QUERY_OK": 900.0,
 }
 
 # Always once-per-fingerprint (no re-push until TTL)
@@ -121,8 +124,10 @@ def build_alert_fingerprint(
         parts.append(f"entry={_round_num(d.get('entry'), 2)}")
     if d.get("qty") is not None and at in ("OPEN", "PYRAMID", "PROFIT_ADD"):
         parts.append(f"qty={_round_num(d.get('qty'))}")
-    msg_bit = hashlib.sha1(str(message or "").encode("utf-8", errors="ignore")).hexdigest()[:10]
-    parts.append(msg_bit)
+    # Ban/error text changes every tick — do not fingerprint it for query flaps
+    if at not in ("EXCHANGE_QUERY_FAIL", "EXCHANGE_QUERY_OK"):
+        msg_bit = hashlib.sha1(str(message or "").encode("utf-8", errors="ignore")).hexdigest()[:10]
+        parts.append(msg_bit)
     raw = "|".join(parts)
     return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()
 
