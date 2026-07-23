@@ -24,6 +24,7 @@ from app.core.open_atr_scenario import (
     ATR_SCENARIO_PENDING,
     ATR_SCENARIO_TV,
     ATR_SCENARIO_VPS,
+    fetch_vps_1h_atr_fresh,
     maybe_retry_vps_atr_on_tick,
     resolve_open_atr,
 )
@@ -480,7 +481,7 @@ class AdverseRadarMixin:
                     "ATR_MISMATCH",
                     "ATR双边核对偏差",
                     f"VPS ATR={vps:.4f} vs TV隐含={implied:.4f} "
-                    f"(stop÷{tv_mult:g}·Δ{ratio*100:.0f}%) · 请核对90m周期",
+                    f"(stop÷{tv_mult:g}·Δ{ratio*100:.0f}%) · 请核对1h ATR",
                     detail,
                 )
             except Exception:
@@ -778,17 +779,31 @@ class AdverseRadarMixin:
         if payload:
             entry = float(payload.get("price") or entry or 0)
 
-        # Prefer TV atr → frozen initial_atr
+        # Prefer VPS native 1h ATR; TV atr only as scenario-2 fallback (never 90m).
         atr = 0.0
         atr_source = "none"
+        tv_atr_payload = 0.0
         if payload:
             try:
-                atr = float(payload.get("atr") or 0)
+                tv_atr_payload = float(payload.get("atr") or 0)
             except (TypeError, ValueError):
-                atr = 0.0
-            if atr > 0:
-                atr_source = "tv_webhook"
-                self._tv_atr_ref = atr
+                tv_atr_payload = 0.0
+            if tv_atr_payload > 0:
+                self._tv_atr_ref = tv_atr_payload
+        try:
+            atr_1h, ok_1h = fetch_vps_1h_atr_fresh(
+                client=getattr(self, "client", None),
+                symbol=getattr(self, "canonical_symbol", None)
+                or getattr(self, "symbol", None),
+            )
+            if ok_1h and atr_1h > 0:
+                atr = float(atr_1h)
+                atr_source = "vps_1h"
+        except Exception:
+            atr = 0.0
+        if atr <= 0 and tv_atr_payload > 0:
+            atr = tv_atr_payload
+            atr_source = "tv_webhook"
         if atr <= 0:
             atr = float(getattr(self, "_tv_atr_ref", 0) or 0)
             if atr > 0:
@@ -797,18 +812,9 @@ class AdverseRadarMixin:
             atr = float(getattr(self, "initial_atr", 0) or 0)
             if atr > 0:
                 atr_source = "initial_atr"
-        snap: dict[str, Any] = {}
-        if atr <= 0:
-            # Fallback: VPS 90m market engine
-            snap = self._pull_vps_market_indicators(force=True)
-            atr = float(snap.get("atr") or 0) or float(getattr(self, "current_atr", 0) or 0)
-            if atr > 0:
-                atr_source = "vps_90m_fallback"
         atr = resolve_atr(atr) if atr > 0 else 0.0
         if atr > 0:
             self.current_atr = atr
-        if float(snap.get("adx") or 0) > 0:
-            self.current_adx = resolve_adx(snap.get("adx"))
         side_u = side or getattr(self, "current_side", None)
         if not side_u and payload:
             act = str(payload.get("action") or "").upper()
@@ -868,8 +874,7 @@ class AdverseRadarMixin:
             ),
             "initial_sl_atr": 1.5,
             "symbol": sym,
-            "market_source": snap.get("source") if snap else atr_source,
-            "bars_90": snap.get("bars_90") if snap else None,
+            "market_source": atr_source,
             "frozen_hard": float(self._frozen_hard_px() or 0),
             "dual_track": dual,
         }

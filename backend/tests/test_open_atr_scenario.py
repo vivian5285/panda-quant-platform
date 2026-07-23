@@ -142,5 +142,6 @@ def test_dual_stop_track_enabled():
     assert ADVERSE_MAX_STOP_ORDERS == 2
     h._frozen_hard_stop_px = 1900.0
     h.current_side = "LONG"
-    assert h._clamp_radar_sl_to_tv_floor(1890.0) == 1900.0
+    # Whitepaper: radar is independent — clamp must not force radar onto hard.
+    assert h._clamp_radar_sl_to_tv_floor(1890.0) == 1890.0
     assert h._clamp_radar_sl_to_tv_floor(1910.0) == 1910.0

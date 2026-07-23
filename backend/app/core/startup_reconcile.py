@@ -62,7 +62,7 @@ def recompute_vps_hard_sl_on_recovery(
     side: str | None = None,
     tv_sl_reference: float | None = None,
 ) -> dict:
-    """Recovery hard SL = breathing initial stop from VPS ATR (TV stop is reference only)."""
+    """Recovery: preserve frozen hard; reseed radar from ATR only (whitepaper dual-track)."""
     if not hasattr(supervisor, "_recompute_vps_hard_sl"):
         return {}
     entry = float(
@@ -80,6 +80,11 @@ def recompute_vps_hard_sl_on_recovery(
         return {"error": "missing_entry_or_side", "entry": entry, "side": side_u}
 
     prev_sl = float(getattr(supervisor, "tv_sl", 0) or 0)
+    frozen_before = float(
+        getattr(supervisor, "_frozen_hard_stop_px", 0)
+        or getattr(supervisor, "_tv_hard_sl_price", 0)
+        or 0
+    )
     # Manual/unregistered: never seed TV stop_loss into recovery payload
     adopted = bool(getattr(supervisor, "adopted_manual", False))
     ref = 0.0 if adopted else float(tv_sl_reference or 0)
@@ -97,9 +102,21 @@ def recompute_vps_hard_sl_on_recovery(
     }
     if ref > 0:
         payload["tv_sl"] = ref
-        if hasattr(supervisor, "_tv_hard_sl_price"):
-            supervisor._tv_hard_sl_price = ref
+        payload["stop_loss"] = ref
+        # Dual: keep Pine ref only; frozen hard restored below (never ATR as hard).
+        if hasattr(supervisor, "tv_sl") and float(getattr(supervisor, "tv_sl", 0) or 0) <= 0:
+            supervisor.tv_sl = ref
     meta = supervisor._recompute_vps_hard_sl(entry_px=entry, side=side_u, payload=payload)
+    # Permanence: restore pre-recovery frozen hard if recompute tried to drift identity.
+    dual = bool(
+        hasattr(supervisor, "_uses_dual_stop_track") and supervisor._uses_dual_stop_track()
+    )
+    if dual and frozen_before > 0:
+        supervisor._frozen_hard_stop_px = frozen_before
+        supervisor._tv_hard_sl_price = frozen_before
+        if isinstance(meta, dict):
+            meta["frozen_hard"] = frozen_before
+            meta["hard_restored_on_recovery"] = True
     new_sl = float(meta.get("stop_price") or 0)
     if prev_sl > 0 and new_sl > 0:
         meta["prev_sl"] = prev_sl

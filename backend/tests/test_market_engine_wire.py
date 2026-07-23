@@ -67,28 +67,38 @@ def test_enrich_does_not_invent_atr():
     assert out["tv_sl"] == 1740
 
 
-def test_recompute_uses_market_engine_not_payload_atr():
+def test_recompute_prefers_vps_1h_not_payload_or_90m():
     clear_cache()
     stub = _Stub()
-    fake = {
-        "atr": 40.0,
-        "adx": 28.0,
-        "bar_open_ms": 1.0,
-        "bars_90": 50,
-        "source": "test",
-    }
     with patch(
-        "app.core.adverse_radar_guard.force_refresh",
-        return_value=fake,
+        "app.core.adverse_radar_guard.fetch_vps_1h_atr_fresh",
+        return_value=(40.0, True),
     ):
         meta = stub._recompute_vps_hard_sl(
             payload={"action": "LONG", "price": 1800, "atr": 999, "adx": 5, "stop_loss": 1740},
             side="LONG",
         )
     assert abs(meta["atr"] - 40.0) < 1e-9
+    assert meta["atr_source"] == "vps_1h"
     assert abs(stub.current_atr - 40.0) < 1e-9
-    assert abs(stub.current_adx - 28.0) < 1e-9
     assert abs(meta["stop_price"] - (1800 - INITIAL_SL_ATR * 40)) < 1e-6
+    # TV atr stored as ref only
+    assert abs(float(stub._tv_atr_ref) - 999) < 1e-9
+
+
+def test_recompute_falls_back_to_tv_atr_when_1h_fails():
+    clear_cache()
+    stub = _Stub()
+    with patch(
+        "app.core.adverse_radar_guard.fetch_vps_1h_atr_fresh",
+        return_value=(0.0, False),
+    ):
+        meta = stub._recompute_vps_hard_sl(
+            payload={"action": "LONG", "price": 1800, "atr": 50, "stop_loss": 1740},
+            side="LONG",
+        )
+    assert abs(meta["atr"] - 50.0) < 1e-9
+    assert meta["atr_source"] == "tv_webhook"
 
 
 def test_atr_mismatch_alerts_when_over_threshold():

@@ -197,7 +197,9 @@ class WebhookSymbolCoalesce:
         if exits and entries:
             first_exit = min(exits, key=lambda m: m.enqueued_at)
             first_entry = min(entries, key=lambda m: m.enqueued_at)
-            if first_entry.enqueued_at <= first_exit.enqueued_at:
+            # Strict <: equal timestamps (=「同时到达」) → 先平后开 (Windows clock
+            # resolution can make sequential submits share the same float time).
+            if first_entry.enqueued_at < first_exit.enqueued_at:
                 # OPEN arrived first in window → discard CLOSE, keep latest OPEN
                 plan.append(entries[-1])
                 logger.info(
@@ -205,7 +207,7 @@ class WebhookSymbolCoalesce:
                     symbol,
                 )
             else:
-                # CLOSE first → flatten then open
+                # CLOSE first or simultaneous → flatten then open
                 plan.append(exits[0])
                 plan.append(entries[-1])
         elif exits:

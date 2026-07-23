@@ -711,70 +711,25 @@ class PositionSupervisor(
         except Exception:
             pass
         detail = {
-            "type": "reconcile_only",
+            "type": "ignored_legacy",
             "action": action,
             "leg": leg,
             "tv_qty": qty,
             "tv_price": price,
             "live_qty": live_qty,
             "tv_reason": tv_reason,
-            "note": "TV对账信号·不下单（挂单/雷达已自行执行）",
+            "note": "白皮书仅接受 LONG/SHORT/CLOSE_QUICK/CLOSE_RSI；旧 CLOSE_TP/TRAIL/SL_* 一律忽略",
         }
-        if action == "CLOSE_TP" and leg in ("1", "2", "3"):
-            try:
-                lvl = int(leg)
-                consumed = set(getattr(self, "consumed_tp_levels", None) or [])
-                consumed.add(lvl)
-                self.consumed_tp_levels = sorted(consumed)
-            except (TypeError, ValueError):
-                pass
-            # §4: raise remaining SL after TP fills
-            if live_qty > 0 and hasattr(self, "_bump_sl_after_tp_reconcile"):
-                try:
-                    bump = self._bump_sl_after_tp_reconcile(leg)
-                    detail["sl_bump"] = bump
-                except Exception as exc:
-                    detail["sl_bump_error"] = str(exc)
-            if hasattr(self, "_save_state"):
-                self._save_state()
-        # CLOSE_TRAIL leg=2 same as CLOSE_TP leg=2 (§三 B)
-        if action == "CLOSE_TRAIL" and leg == "2":
-            try:
-                consumed = set(getattr(self, "consumed_tp_levels", None) or [])
-                consumed.add(2)
-                self.consumed_tp_levels = sorted(consumed)
-            except Exception:
-                pass
-            if live_qty > 0 and hasattr(self, "_bump_sl_after_tp_reconcile"):
-                try:
-                    detail["sl_bump"] = self._bump_sl_after_tp_reconcile("2")
-                except Exception as exc:
-                    detail["sl_bump_error"] = str(exc)
-            if hasattr(self, "_save_state"):
-                self._save_state()
-        if action in ("CLOSE_TRAIL", "CLOSE_SL_INITIAL", "CLOSE_SL_BREAKEVEN") or (
-            action == "CLOSE_TP" and leg == "3"
+        # Part 16: webhook_guard already rejects these; hard no-op if reached
+        if action in (
+            "CLOSE_TP",
+            "CLOSE_TRAIL",
+            "CLOSE_SL_INITIAL",
+            "CLOSE_SL_BREAKEVEN",
         ):
-            if live_qty <= 0:
-                if hasattr(self, "_purge_defense_orders_on_flat"):
-                    try:
-                        self._purge_defense_orders_on_flat(f"reconcile_{action}")
-                    except Exception:
-                        pass
-                if hasattr(self, "_clear_position_local_state"):
-                    try:
-                        self._clear_position_local_state()
-                    except Exception:
-                        pass
-                elif hasattr(self, "_reset_adverse_radar"):
-                    try:
-                        self._reset_adverse_radar(keep_tv_sl=False)
-                    except Exception:
-                        pass
-                detail["flat_confirmed"] = True
-                detail["radar_reset"] = True
-                detail["local_state_cleared"] = True
-        elif live_qty <= 0:
+            self._log("WEBHOOK", f"忽略旧 action={action} leg={leg}", detail)
+            return {"status": "ignored", "reason": "legacy_action_purged", "detail": detail}
+        if live_qty <= 0:
             if hasattr(self, "_purge_defense_orders_on_flat"):
                 try:
                     self._purge_defense_orders_on_flat(f"reconcile_{action}")

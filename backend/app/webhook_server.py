@@ -351,7 +351,7 @@ def webhook():
             reason, data.get("regime"), data.get("side"), bar_index, seq,
         )
 
-    # 1~2s per-symbol coalesce: CLOSE once → latest LONG/SHORT（四所统一入口）
+    # 15s per-symbol coalesce: 先平后开；OPEN 后 CLOSE 丢弃（白皮书时序铁律）
     coalesce = get_coalesce()
     coalesce.set_dispatch(_spawn_dispatch)
     disposition = coalesce.submit(data, fingerprint, dispatch=_spawn_dispatch)
