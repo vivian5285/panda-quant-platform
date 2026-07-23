@@ -46,7 +46,7 @@
 | `price` | 开仓参考价 | **否**（算仓用） |
 | `atr` | 开仓硬门（须>0）；场景一仅日志参考；**场景二**作为 `initial_atr` | 场景二：**是** |
 | `qty` / `qty1` / `qty2` / `qty3` | **完全忽略**（可缺省） | **否** |
-| `stop_loss` | 开仓后**临时硬止损**：距离=`|entry−SL|×1.2` | **是**（仅临时阶段） |
+| `stop_loss` | 开仓硬止损：`base=max(\|TV.entry−SL\|×1.2, 1.5×ATR×1.05)+slip`，挂单自 **fill** | **是**（永冻至 flat） |
 | `tp1` / `tp2` | 始终挂限价，数量固定 30%/30% | **否** |
 | `tp3` | **仅场景二**挂限价 40%；场景一不挂（雷达追踪） | 场景二挂单价 |
 
@@ -58,7 +58,7 @@
 
 ### 共同第一步（成交后立即）
 
-1. 用 TV `stop_loss` 放宽 20% 挂**临时硬止损**（禁止裸奔）
+1. 用 fill + TV 缓冲地板 + 滑点挂**硬止损**（禁止裸奔；ATR 可加宽一次后永冻）
 2. 挂 TP1/TP2（TV 价 · 30%/30%）；**此时不挂 TP3**
 3. 立即拉交易所原生 **1h** K 线算真实 ATR(14)
 
@@ -99,7 +99,7 @@
 |------|-----|-----|
 | 挂单缓冲 | 0.3 | 0.5 |
 | 早保本 | 0.5×ATR | 0.3×ATR |
-| 阶梯步长/跟进（阶段一，**无 coef**） | 0.75 / 0.4 ×ATR | 0.4 / 0.35 ×ATR |
+| 雷达首动 / 阶梯跟进（阶段一，**无 coef**） | TP1×50%~85% 动态 / 0.4×ATR | 同动态首动 / 0.35×ATR |
 | 阶段二触发 | 3.0×ATR | 3.0×ATR |
 | 呼吸系数区间 (minMult~maxMult) | **1.2 ~ 2.5** | **0.5 ~ 1.2** |
 | 冷启动（ratio=1.0） | **1.525** | **0.675** |
@@ -123,7 +123,9 @@ trailDistanceMultiplier =
 
 ```
 早保本: 浮盈 ≥ early_be×ATR → 止损锁到 entry±1 tick
-step_trigger / step_advance = profile 值 × initialAtr   # 不含 coef
+radar_arm = TP1_dist(1.35×initialAtr) × start_ratio(50%~85%)  # 动态首动；已删除 step_trigger
+step_advance = profile.step_advance_atr × initialAtr   # 不含 coef
+# 考核收紧：ETH 18 / XAU 12 次 5min 采样未达 arm → 雷达收至 TV 原始距（硬止损不动）
 TP1 路径底线 entry±0.5×ATR；TP2 路径底线 entry±1.5×ATR
 浮盈 ≥ 3.0×initialAtr → 进入阶段二
 ```

@@ -31,6 +31,8 @@ class BreathingProfile:
     initial_sl_atr: float = 1.5
     stop_order_buffer: float = 0.3
     early_breakeven_atr: float = 0.5
+    # Deprecated: live first-move uses radar_arm_distance (TP1×50%~85%).
+    # Kept only so historical backtest scripts can rebuild the old 0.75 gate.
     step_trigger_atr: float = 0.75
     step_advance_atr: float = 0.4
     phase2_trigger_atr: float = 3.0
@@ -44,6 +46,10 @@ class BreathingProfile:
     coef_max: float = 2.5  # maxMult
     ratio_floor: float = RATIO_FLOOR
     ratio_ceiling: float = RATIO_CEILING
+    # TV chart period (minutes) — signal rhythm for this symbol
+    chart_tf_min: float = 90.0
+    # Stagnant-radar review window (minutes); ETH=chart, XAU=45×~1.33≈60
+    stagnant_window_min: float = 90.0
 
 
 ETH_PROFILE = BreathingProfile(
@@ -56,6 +62,8 @@ ETH_PROFILE = BreathingProfile(
     phase2_trigger_atr=3.0,
     coef_min=1.2,
     coef_max=2.5,
+    chart_tf_min=90.0,
+    stagnant_window_min=90.0,
 )
 
 XAU_PROFILE = BreathingProfile(
@@ -71,6 +79,8 @@ XAU_PROFILE = BreathingProfile(
     # smoothness while matching discrete PnL/PF on 1h history.
     coef_min=0.5,
     coef_max=1.2,
+    chart_tf_min=45.0,  # actual TV chart (docs previously said 1h — wrong)
+    stagnant_window_min=60.0,  # 45×~1.33 buffer ≈ one bar + slack
 )
 
 _PROFILES: dict[str, BreathingProfile] = {
@@ -110,6 +120,58 @@ def trail_distance_multiplier(ratio: float, profile: BreathingProfile | None = N
     if span <= 0:
         return mn
     return mn + (mx - mn) * (r - lo) / span
+
+
+# Radar first-move arm ratio (replaces fixed 0.75×ATR). Same input as trailDistanceMultiplier.
+RADAR_ARM_RATIO_MIN = 0.50  # weak trend / high vol → early arm
+RADAR_ARM_RATIO_MAX = 0.85  # strong trend / calm → late arm
+
+
+def radar_start_ratio(smooth_ratio: float, profile: BreathingProfile | None = None) -> float:
+    """Dynamic radar first-move fraction of TP1 distance (1.35×ATR).
+
+    Shares ``smoothed(realtime_atr/initial_atr)`` with trailDistanceMultiplier,
+    but **inverse** maps: high vol (weak) → 50%, low vol (strong) → 85%.
+    Replaces deleted fixed ``step_trigger_atr`` (0.75) first-move gate.
+    """
+    p = profile or ETH_PROFILE
+    try:
+        r = float(smooth_ratio)
+    except (TypeError, ValueError):
+        r = COLD_START_RATIO
+    if r != r or r <= 0:
+        r = COLD_START_RATIO
+    lo, hi = float(p.ratio_floor), float(p.ratio_ceiling)
+    if r <= lo:
+        return float(RADAR_ARM_RATIO_MAX)
+    if r >= hi:
+        return float(RADAR_ARM_RATIO_MIN)
+    span = hi - lo
+    if span <= 0:
+        return float(RADAR_ARM_RATIO_MAX)
+    t = (r - lo) / span  # 0 at calm → 1 at volatile
+    return float(RADAR_ARM_RATIO_MAX) - t * (
+        float(RADAR_ARM_RATIO_MAX) - float(RADAR_ARM_RATIO_MIN)
+    )
+
+
+def radar_arm_distance(initial_atr: float, smooth_ratio: float, profile: BreathingProfile | None = None) -> float:
+    """Favorable move needed before first radar step: TP1_dist × start_ratio."""
+    p = profile or ETH_PROFILE
+    atr = float(initial_atr or 0)
+    if atr <= 0:
+        return 0.0
+    tp1_dist = float(p.tp1_atr) * atr
+    return tp1_dist * radar_start_ratio(smooth_ratio, p)
+
+
+def stagnant_breath_samples(profile: BreathingProfile | None = None) -> int:
+    """5-min breath samples needed for stagnant-radar review (ETH≈18 / XAU≈12)."""
+    p = profile or ETH_PROFILE
+    window = float(p.stagnant_window_min or 0)
+    if window <= 0:
+        return 1
+    return max(1, int(round(window / 5.0)))
 
 
 def cold_start_multiplier(profile: BreathingProfile | None = None) -> float:
@@ -154,12 +216,18 @@ def profile_as_dict(profile: BreathingProfile) -> dict[str, Any]:
         "initial_sl_atr": profile.initial_sl_atr,
         "stop_order_buffer": profile.stop_order_buffer,
         "early_breakeven_atr": profile.early_breakeven_atr,
-        "step_trigger_atr": profile.step_trigger_atr,
         "step_advance_atr": profile.step_advance_atr,
         "phase2_trigger_atr": profile.phase2_trigger_atr,
+        "tp1_atr": profile.tp1_atr,
         "coef_min": profile.coef_min,
         "coef_max": profile.coef_max,
         "ratio_floor": profile.ratio_floor,
         "ratio_ceiling": profile.ratio_ceiling,
+        "chart_tf_min": profile.chart_tf_min,
+        "stagnant_window_min": profile.stagnant_window_min,
+        "stagnant_breath_samples": stagnant_breath_samples(profile),
+        "radar_arm": "TP1×50%~85% (dynamic; replaces step_trigger)",
         "trail_tighten": 1.0,  # removed — always 1.0 (tightness in min/max)
+        # legacy field retained for backtest rebuilds only
+        "step_trigger_atr_legacy": profile.step_trigger_atr,
     }

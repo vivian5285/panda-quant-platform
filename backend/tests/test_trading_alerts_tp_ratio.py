@@ -19,7 +19,8 @@ FORBIDDEN_KEYWORDS = (
 def test_format_regime_radar_activation_legend():
     legend = format_regime_radar_activation_legend()
     assert "初始1.5ATR" in legend
-    assert "步进0.75/0.4ATR" in legend
+    assert "50%~85%" in legend
+    assert "步进0.4" in legend
 
 
 def test_tv_open_dingtalk_shows_tv_leverage_not_config_25():

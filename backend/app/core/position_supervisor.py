@@ -338,6 +338,13 @@ class PositionSupervisor(
                     "radar_latched": bool(getattr(self, "radar_latched", False)),
                     "radar_activated": bool(getattr(self, "radar_activated", False)),
                     "radar_step_count": int(getattr(self, "radar_step_count", 0) or 0),
+                    "breath_samples_since_open": int(
+                        getattr(self, "_breath_samples_since_open", 0) or 0
+                    ),
+                    "stagnant_tighten_done": bool(
+                        getattr(self, "_stagnant_tighten_done", False)
+                    ),
+                    "radar_opened_at": float(getattr(self, "_radar_opened_at", 0) or 0),
                     "tp_placed_at": dict(getattr(self, "_tp_placed_at", None) or {}),
                     "defense_order_ids": dict(getattr(self, "_defense_order_ids", None) or {}),
                     "trading_paused": bool(getattr(self, "trading_paused", False)),
@@ -435,6 +442,11 @@ class PositionSupervisor(
                     self.radar_latched = bool(s.get("radar_latched", False))
                     self.radar_activated = bool(s.get("radar_activated", False) or s.get("radar_latched", False))
                     self.radar_step_count = max(int(s.get("radar_step_count", 0) or 0), 0)
+                    self._breath_samples_since_open = max(
+                        int(s.get("breath_samples_since_open", 0) or 0), 0
+                    )
+                    self._stagnant_tighten_done = bool(s.get("stagnant_tighten_done", False))
+                    self._radar_opened_at = float(s.get("radar_opened_at", 0) or 0)
                     raw_tp_at = s.get("tp_placed_at") or {}
                     self._tp_placed_at = (
                         {int(k): float(v) for k, v in dict(raw_tp_at).items()}
@@ -3411,7 +3423,7 @@ class PositionSupervisor(
 
     def _protect_and_monitor(self, qty: float, entry_price: float) -> dict:
         """
-        开仓后：硬止损(TV×1.2永冻) → TP1/TP2 → VPS 1h ATR场景判定武装雷达 → 场景二再挂TP3。
+        开仓后：硬止损(fill+TV缓冲/雷达地板+滑点) → TP1/TP2 → VPS 1h ATR场景判定武装雷达 → 场景二再挂TP3。
         返回 {ok, aborted, defense, shield}；硬止损挂失败则撤仓并 aborted=True（禁止裸奔）。
         """
         self._reset_adverse_radar(keep_tv_sl=False)
@@ -3429,7 +3441,7 @@ class PositionSupervisor(
         if pos:
             if hasattr(self, "_cancel_binance_all_close_stops"):
                 self._cancel_binance_all_close_stops()
-            # ① 临时硬止损（TV stop_loss × 1.2）— 先于一切，禁止裸奔
+            # ① 硬止损（fill+缓冲地板+滑点）— 先于一切，禁止裸奔
             temp = self._arm_temp_tv_stop_on_open(pos["entry_price"])
             shield_temp = self._sync_tv_hard_stop(pos["size"], at_open=True, force_replace=True)
             self._last_shield_result = shield_temp
@@ -3586,7 +3598,13 @@ class PositionSupervisor(
                 self._last_defense_result = result
 
             # ④ 确认硬止损仍在（永冻价）+ 独立挂雷达止损
-            shield = self._sync_tv_hard_stop(pos["size"], at_open=False, force_replace=False)
+            # ATR 场景若 widen 了硬止损，必须 force_replace 把新价写到交易所
+            hard_widened = bool((scenario_detail.get("hard_widen") or {}).get("widened"))
+            shield = self._sync_tv_hard_stop(
+                pos["size"],
+                at_open=False,
+                force_replace=hard_widened,
+            )
             self._last_shield_result = shield
             radar_sl = float(
                 getattr(self, "current_sl", 0)

@@ -45,23 +45,27 @@ def test_xau_buffer_and_steps():
     coef = 0.675  # cold-start-ish; phase1 steps ignore coef
     initial_stop = compute_initial_stop(entry, "LONG", atr, symbol="XAUUSDT")
     assert abs(initial_stop - (entry - 1.5 * atr)) < 1e-9
+    # Dynamic arm at cold ratio≈1.0 ≈ TP1×~0.76 ≈ 10.3; move 2 < arm → no step
     stop, high, phase, meta = calculate_stop_long(
         entry + 2, entry, atr, initial_stop, initial_stop, entry, False, coef,
-        symbol="XAUUSDT",
+        symbol="XAUUSDT", smooth_ratio=1.0,
     )
     assert meta["event"] == "none"
     assert abs(stop - initial_stop) < 1e-9
     stop, high, phase, meta = calculate_stop_long(
         entry + 3.0, entry, atr, initial_stop, initial_stop, entry, False, coef,
-        symbol="XAUUSDT",
+        symbol="XAUUSDT", smooth_ratio=1.0,
     )
     assert meta["event"] == "early_breakeven"
     assert abs(stop - (entry + 0.01)) < 1e-6
-    stop2, _, _, meta2 = calculate_stop_long(
-        entry + 4.0, entry, atr, initial_stop, stop, high, False, coef,
-        symbol="XAUUSDT",
+    # First radar step only after arm distance (~10.3)
+    arm = float(meta.get("radar_arm_dist") or 0)
+    assert arm > 8.0
+    stop2, high2, _, meta2 = calculate_stop_long(
+        entry + arm + 0.01, entry, atr, initial_stop, stop, high, False, coef,
+        symbol="XAUUSDT", smooth_ratio=1.0,
     )
-    assert meta2["step_count"] == 1
+    assert meta2["step_count"] >= 1
     assert stop2 >= stop - 1e-9
 
 

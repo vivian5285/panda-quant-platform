@@ -721,6 +721,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "radar_latched": bool(getattr(self, "radar_latched", False)),
                     "radar_activated": bool(getattr(self, "radar_activated", False)),
                     "radar_step_count": int(getattr(self, "radar_step_count", 0) or 0),
+                    "breath_samples_since_open": int(
+                        getattr(self, "_breath_samples_since_open", 0) or 0
+                    ),
+                    "stagnant_tighten_done": bool(
+                        getattr(self, "_stagnant_tighten_done", False)
+                    ),
+                    "radar_opened_at": float(getattr(self, "_radar_opened_at", 0) or 0),
                     "tp_placed_at": dict(getattr(self, "_tp_placed_at", None) or {}),
                     "defense_order_ids": dict(getattr(self, "_defense_order_ids", None) or {}),
                     "trading_paused": bool(getattr(self, "trading_paused", False)),
@@ -3449,7 +3456,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 audit = result.get("audit") or {}
 
             # ④ 确认硬止损仍在（永冻价）+ 独立挂雷达止损
-            shield = self._sync_tv_hard_stop(live_qty, at_open=False, force_replace=False)
+            shield = self._sync_tv_hard_stop(
+                live_qty,
+                at_open=False,
+                force_replace=bool((scenario_detail.get("hard_widen") or {}).get("widened")),
+            )
             self._last_shield_result = shield
             radar_sl = float(
                 getattr(self, "current_sl", 0)
@@ -4232,6 +4243,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.radar_latched = bool(s.get("radar_latched", False))
                     self.radar_activated = bool(s.get("radar_activated", False) or s.get("radar_latched", False))
                     self.radar_step_count = max(int(s.get("radar_step_count", 0) or 0), 0)
+                    self._breath_samples_since_open = max(
+                        int(s.get("breath_samples_since_open", 0) or 0), 0
+                    )
+                    self._stagnant_tighten_done = bool(s.get("stagnant_tighten_done", False))
+                    self._radar_opened_at = float(s.get("radar_opened_at", 0) or 0)
                     raw_tp_at = s.get("tp_placed_at") or {}
                     self._tp_placed_at = (
                         {int(k): float(v) for k, v in dict(raw_tp_at).items()}

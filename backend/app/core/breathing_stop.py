@@ -16,13 +16,16 @@ from app.core.breathing_profile import (
     cold_start_multiplier,
     get_breathing_coefficient_for_profile,
     profile_for_symbol,
+    radar_arm_distance,
+    radar_start_ratio,
     resolve_coef,
+    COLD_START_RATIO,
 )
 from app.core.symbol_registry import symbol_meta
 
 # Module-level defaults = ETH (back-compat for imports/tests)
 INITIAL_SL_ATR = ETH_PROFILE.initial_sl_atr
-STEP_TRIGGER_ATR = ETH_PROFILE.step_trigger_atr
+STEP_TRIGGER_ATR = ETH_PROFILE.step_trigger_atr  # legacy alias — live path unused
 STEP_ADVANCE_ATR = ETH_PROFILE.step_advance_atr
 BREAKEVEN_TRIGGER_ATR = ETH_PROFILE.phase2_trigger_atr
 TP1_ATR = ETH_PROFILE.tp1_atr
@@ -102,7 +105,9 @@ def _price_tick(symbol: str | None) -> float:
         return 0.01
 
 
-TEMP_TV_STOP_BUFFER = 1.2  # |entry − TV.stop_loss| × 1.2 permanent hard stop
+TEMP_TV_STOP_BUFFER = 1.2  # TV implied distance × 1.2 (floor component)
+HARD_VS_RADAR_FLOOR = 1.05  # hard base ≥ radar_initial (1.5×ATR) × 1.05
+HARD_SLIP_MULT = 2.0  # |fill − TV.entry| × 2 slippage pad
 
 
 def compute_initial_stop(
@@ -124,27 +129,163 @@ def compute_initial_stop(
     return 0.0
 
 
+def compute_hard_stop_distance(
+    *,
+    fill_entry: float,
+    tv_stop_loss: float,
+    tv_entry: float | None = None,
+    initial_atr: float | None = None,
+    symbol: str | None = None,
+    slip_mult: float = HARD_SLIP_MULT,
+) -> dict[str, float]:
+    """Merged hard-stop distance (buffer pad + radar floor + slippage).
+
+    base = max(|TV.entry − TV.SL| × 1.2, 1.5 × ATR × 1.05)
+    slip = |fill − TV.entry| × slip_mult
+    final = base + slip
+    Hang price uses **fill** ± final (not TV theoretical entry).
+    """
+    fill = float(fill_entry or 0)
+    tv_sl = float(tv_stop_loss or 0)
+    tv_e = float(tv_entry or 0) or fill
+    out = {
+        "tv_implied_dist": 0.0,
+        "radar_floor_dist": 0.0,
+        "base_dist": 0.0,
+        "slip_dist": 0.0,
+        "final_dist": 0.0,
+        "fill_entry": fill,
+        "tv_entry": tv_e,
+    }
+    if fill <= 0 or tv_sl <= 0:
+        return out
+    tv_implied = abs(tv_e - tv_sl) * float(TEMP_TV_STOP_BUFFER)
+    out["tv_implied_dist"] = tv_implied
+    radar_floor = 0.0
+    atr = float(initial_atr or 0)
+    if atr > 0:
+        p = profile_for_symbol(symbol)
+        radar_floor = float(p.initial_sl_atr) * atr * float(HARD_VS_RADAR_FLOOR)
+    out["radar_floor_dist"] = radar_floor
+    base = max(tv_implied, radar_floor)
+    out["base_dist"] = base
+    slip = abs(fill - tv_e) * float(slip_mult if slip_mult is not None else HARD_SLIP_MULT)
+    out["slip_dist"] = slip
+    out["final_dist"] = base + slip
+    return out
+
+
 def compute_temp_tv_stop(
     entry: float,
     side: str,
     tv_stop_loss: float,
+    *,
+    tv_entry: float | None = None,
+    initial_atr: float | None = None,
+    symbol: str | None = None,
+    slip_mult: float = HARD_SLIP_MULT,
 ) -> float:
-    """Immediate post-fill hard stop from TV stop_loss with 20% distance buffer.
+    """Permanent hard stop from fill price.
 
-    distance = |entry − TV.stop_loss| × 1.2
-    LONG → entry − distance; SHORT → entry + distance.
+    ``entry`` MUST be exchange fill. Optional ``tv_entry`` / ``initial_atr``
+    widen vs radar initial and pad slippage (see compute_hard_stop_distance).
+    Missing TV stop_loss → 0 (caller fail-closes).
     """
-    entry_v = float(entry or 0)
-    tv_sl = float(tv_stop_loss or 0)
+    fill = float(entry or 0)
     side_u = str(side or "").upper()
-    if entry_v <= 0 or tv_sl <= 0 or side_u not in ("LONG", "SHORT"):
+    if fill <= 0 or side_u not in ("LONG", "SHORT"):
         return 0.0
-    dist = abs(entry_v - tv_sl) * TEMP_TV_STOP_BUFFER
+    meta = compute_hard_stop_distance(
+        fill_entry=fill,
+        tv_stop_loss=tv_stop_loss,
+        tv_entry=tv_entry,
+        initial_atr=initial_atr,
+        symbol=symbol,
+        slip_mult=slip_mult,
+    )
+    dist = float(meta.get("final_dist") or 0)
     if dist <= 0:
         return 0.0
     if side_u == "LONG":
-        return entry_v - dist
-    return entry_v + dist
+        return fill - dist
+    return fill + dist
+
+
+def tv_raw_stop_distance(
+    *,
+    tv_stop_loss: float,
+    tv_entry: float | None = None,
+    fill_entry: float | None = None,
+    initial_atr: float | None = None,
+) -> float:
+    """TV original stop distance (no 1.2 buffer). Fallback ≈1×ATR."""
+    tv_sl = float(tv_stop_loss or 0)
+    tv_e = float(tv_entry or 0) or float(fill_entry or 0)
+    if tv_sl > 0 and tv_e > 0:
+        return abs(tv_e - tv_sl)
+    atr = float(initial_atr or 0)
+    return atr if atr > 0 else 0.0
+
+
+def compute_radar_stagnant_tighten_stop(
+    fill_entry: float,
+    side: str,
+    tv_stop_loss: float,
+    *,
+    tv_entry: float | None = None,
+    initial_atr: float | None = None,
+) -> float:
+    """One-shot stagnant tighten target: fill ± TV raw distance (Option A).
+
+    Does **not** touch hard stop. Used when chart-window expires without
+    reaching the dynamic radar arm threshold.
+    """
+    fill = float(fill_entry or 0)
+    side_u = str(side or "").upper()
+    if fill <= 0 or side_u not in ("LONG", "SHORT"):
+        return 0.0
+    dist = tv_raw_stop_distance(
+        tv_stop_loss=tv_stop_loss,
+        tv_entry=tv_entry,
+        fill_entry=fill,
+        initial_atr=initial_atr,
+    )
+    if dist <= 0:
+        return 0.0
+    if side_u == "LONG":
+        return fill - dist
+    return fill + dist
+
+
+def favorable_move(side: str | None, entry: float, price: float) -> float:
+    side_u = str(side or "").upper()
+    e = float(entry or 0)
+    px = float(price or 0)
+    if e <= 0 or px <= 0:
+        return 0.0
+    if side_u == "LONG":
+        return max(0.0, px - e)
+    if side_u == "SHORT":
+        return max(0.0, e - px)
+    return 0.0
+
+
+def radar_arm_reached(
+    side: str | None,
+    entry: float,
+    price: float,
+    initial_atr: float,
+    smooth_ratio: float | None = None,
+    symbol: str | None = None,
+) -> bool:
+    """True when favorable move has reached dynamic first-move arm."""
+    p = profile_for_symbol(symbol)
+    atr = resolve_atr(initial_atr)
+    sr = float(smooth_ratio if smooth_ratio is not None else COLD_START_RATIO)
+    arm = radar_arm_distance(atr, sr, p)
+    if arm <= 0:
+        return False
+    return favorable_move(side, entry, price) + 1e-12 >= arm
 
 
 def apply_stop_order_buffer(
@@ -224,6 +365,7 @@ def calculate_stop_long(
     breakeven_phase: bool,
     breathing_coefficient: float = DEFAULT_BREATHING_COEF,
     symbol: str | None = None,
+    smooth_ratio: float | None = None,
     **_legacy: Any,
 ) -> tuple[float, float, bool, dict[str, Any]]:
     p = profile_for_symbol(symbol)
@@ -235,6 +377,7 @@ def calculate_stop_long(
     highest_price = float(highest_price or entry_price or 0)
     coef = resolve_coef(breathing_coefficient, p)
     tick = _price_tick(symbol)
+    sr = float(smooth_ratio if smooth_ratio is not None else COLD_START_RATIO)
 
     new_highest = max(highest_price, price) if price > 0 else highest_price
     new_stop = current_stop
@@ -246,22 +389,32 @@ def calculate_stop_long(
         "symbol_tag": p.symbol_tag,
     }
 
-    # Phase-1 ladders / floors / BE / phase2 gate: locked initial_atr only (no coef)
-    step_trigger = p.step_trigger_atr * initial_atr
+    # Dynamic first-move arm (replaces fixed 0.75×ATR). Then step by 0.4×ATR.
     step_advance = p.step_advance_atr * initial_atr
+    arm_dist = radar_arm_distance(initial_atr, sr, p)
+    arm_ratio = radar_start_ratio(sr, p)
+    meta["radar_arm_ratio"] = arm_ratio
+    meta["radar_arm_dist"] = arm_dist
     # Phase-2 trail: initial_atr × trailDistanceMultiplier (coef)
     trail_dist = initial_atr * coef
 
     if not new_phase:
-        step_count = (
-            max(0, int(math.floor((price - entry_price) / step_trigger)))
-            if step_trigger > 0 and price > 0
-            else 0
-        )
-        step_stop = initial_stop + step_count * step_advance
-        candidate = max(current_stop, step_stop)
-        if step_count > 0 and candidate > current_stop + 1e-12:
-            event = "step"
+        move = max(0.0, price - entry_price) if price > 0 else 0.0
+        if arm_dist <= 0 or move + 1e-12 < arm_dist:
+            step_count = 0
+            candidate = current_stop if current_stop > 0 else initial_stop
+        else:
+            extra = max(0.0, move - arm_dist)
+            steps_after = (
+                max(0, int(math.floor(extra / step_advance)))
+                if step_advance > 0
+                else 0
+            )
+            step_count = 1 + steps_after
+            step_stop = initial_stop + step_count * step_advance
+            candidate = max(current_stop, step_stop)
+            if step_count > 0 and candidate > current_stop + 1e-12:
+                event = "step"
         meta["step_count"] = step_count
 
         # Early breakeven → entry + 1 tick
@@ -316,6 +469,7 @@ def calculate_stop_short(
     breakeven_phase: bool,
     breathing_coefficient: float = DEFAULT_BREATHING_COEF,
     symbol: str | None = None,
+    smooth_ratio: float | None = None,
     **_legacy: Any,
 ) -> tuple[float, float, bool, dict[str, Any]]:
     p = profile_for_symbol(symbol)
@@ -327,6 +481,7 @@ def calculate_stop_short(
     lowest_price = float(lowest_price or entry_price or 0)
     coef = resolve_coef(breathing_coefficient, p)
     tick = _price_tick(symbol)
+    sr = float(smooth_ratio if smooth_ratio is not None else COLD_START_RATIO)
 
     new_lowest = min(lowest_price, price) if price > 0 else lowest_price
     if lowest_price <= 0 and price > 0:
@@ -340,22 +495,33 @@ def calculate_stop_short(
         "symbol_tag": p.symbol_tag,
     }
 
-    step_trigger = p.step_trigger_atr * initial_atr
+    # Dynamic first-move arm (replaces fixed step_trigger_atr). Then step by advance×ATR.
     step_advance = p.step_advance_atr * initial_atr
+    arm_dist = radar_arm_distance(initial_atr, sr, p)
+    arm_ratio = radar_start_ratio(sr, p)
+    meta["radar_arm_ratio"] = arm_ratio
+    meta["radar_arm_dist"] = arm_dist
     trail_dist = initial_atr * coef
 
     if not new_phase:
-        step_count = (
-            max(0, int(math.floor((entry_price - price) / step_trigger)))
-            if step_trigger > 0 and price > 0
-            else 0
-        )
-        step_stop = initial_stop - step_count * step_advance
-        candidate = min(current_stop, step_stop) if current_stop > 0 else step_stop
-        if current_stop <= 0:
-            candidate = step_stop
-        if step_count > 0 and (current_stop <= 0 or candidate < current_stop - 1e-12):
-            event = "step"
+        move = max(0.0, entry_price - price) if price > 0 else 0.0
+        if arm_dist <= 0 or move + 1e-12 < arm_dist:
+            step_count = 0
+            candidate = current_stop if current_stop > 0 else initial_stop
+        else:
+            extra = max(0.0, move - arm_dist)
+            steps_after = (
+                max(0, int(math.floor(extra / step_advance)))
+                if step_advance > 0
+                else 0
+            )
+            step_count = 1 + steps_after
+            step_stop = initial_stop - step_count * step_advance
+            candidate = min(current_stop, step_stop) if current_stop > 0 else step_stop
+            if current_stop <= 0:
+                candidate = step_stop
+            if step_count > 0 and (current_stop <= 0 or candidate < current_stop - 1e-12):
+                event = "step"
         meta["step_count"] = step_count
 
         if p.early_breakeven_atr > 0 and price <= entry_price - p.early_breakeven_atr * initial_atr:
@@ -412,18 +578,22 @@ def apply_breathing_tick(
     breathing_coefficient: float | None = None,
     adx_val: float | None = None,
     symbol: str | None = None,
+    smooth_ratio: float | None = None,
 ) -> dict[str, Any]:
     coef = resolve_breathing_coef(breathing_coefficient, symbol)
     side_u = str(side or "").upper()
+    sr = float(smooth_ratio if smooth_ratio is not None else COLD_START_RATIO)
     if side_u == "LONG":
         new_stop, peak, phase, meta = calculate_stop_long(
             price, entry_price, initial_atr, initial_stop,
-            current_stop, best_price, breakeven_phase, coef, symbol=symbol,
+            current_stop, best_price, breakeven_phase, coef,
+            symbol=symbol, smooth_ratio=sr,
         )
     elif side_u == "SHORT":
         new_stop, peak, phase, meta = calculate_stop_short(
             price, entry_price, initial_atr, initial_stop,
-            current_stop, best_price, breakeven_phase, coef, symbol=symbol,
+            current_stop, best_price, breakeven_phase, coef,
+            symbol=symbol, smooth_ratio=sr,
         )
     else:
         return {
@@ -476,7 +646,7 @@ def format_breathing_legend(symbol: str | None = None) -> str:
     p = profile_for_symbol(symbol)
     return (
         f"[{p.symbol_tag}] 初始{p.initial_sl_atr}ATR±{p.stop_order_buffer}"
-        f" · 步进{p.step_trigger_atr}/{p.step_advance_atr}×initial_atr"
+        f" · 雷达启动=TP1×50%~85%(动态)/步进{p.step_advance_atr}×ATR"
         f" · 早保本{p.early_breakeven_atr}ATR"
         f" · 阶段二={p.phase2_trigger_atr}ATR"
         f" · 追踪{p.coef_min}~{p.coef_max}×ATR(连续插值)"

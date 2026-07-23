@@ -23,14 +23,21 @@ from app.core.tp_regime_targets import (
 )
 
 
-def test_temp_tv_stop_buffer_20pct():
-    # LONG: entry 1930.49, SL 1916.75 → dist*1.2
+def test_temp_tv_stop_buffer_20pct_without_atr():
+    # Without atr: TV×1.2 only — LONG entry 1930.49, SL 1916.75
     entry, tv_sl = 1930.49, 1916.75
     dist = abs(entry - tv_sl) * TEMP_TV_STOP_BUFFER
     assert abs(compute_temp_tv_stop(entry, "LONG", tv_sl) - (entry - dist)) < 1e-9
     assert abs(compute_temp_tv_stop(entry, "SHORT", tv_sl) - (entry + dist)) < 1e-9
     assert compute_temp_tv_stop(0, "LONG", tv_sl) == 0.0
     assert compute_temp_tv_stop(entry, "LONG", 0) == 0.0
+
+
+def test_temp_tv_stop_widens_vs_radar_atr():
+    entry, tv_sl, atr = 1897.03, 1912.18, 15.21
+    hard = compute_temp_tv_stop(entry, "SHORT", tv_sl, initial_atr=atr, symbol="ETHUSDT")
+    radar = entry + 1.5 * atr
+    assert hard > radar + 1e-9
 
 
 def test_placeable_tp_levels_by_scenario():

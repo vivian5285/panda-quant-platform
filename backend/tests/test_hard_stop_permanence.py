@@ -63,9 +63,14 @@ def test_open_atr_scenario_restores_frozen_hard_after_radar_init():
         },
     ), patch("app.core.adverse_radar_guard.refresh_supervisor_breath", return_value={}):
         detail = h._resolve_and_apply_open_atr_scenario(1900.0)
-    assert abs(h._frozen_hard_stop_px - hard) < 1e-9
-    assert abs(h._tv_hard_sl_price - hard) < 1e-9
-    assert abs(detail["frozen_hard"] - hard) < 1e-9
+    # ATR floor may widen hard once (1.5*16*1.05=25.2 > TV×1.2=24 → 1874.8)
+    expected = compute_temp_tv_stop(
+        1900.0, "LONG", 1880.0, initial_atr=16.0, symbol="ETHUSDT",
+    )
+    assert abs(h._frozen_hard_stop_px - expected) < 1e-9
+    assert abs(h._tv_hard_sl_price - expected) < 1e-9
+    assert abs(detail["frozen_hard"] - expected) < 1e-9
+    assert bool((detail.get("hard_widen") or {}).get("widened")) is True
     assert float(h.current_sl or 0) > 0
 
 

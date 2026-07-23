@@ -43,8 +43,8 @@ curl -sS http://127.0.0.1:6010/health
 1. `curl http://127.0.0.1:6010/health` → `status=ok`
 2. `docker compose logs --since 5m backend` 无持续 Traceback
 3. 若有持仓：`state.json` 的 `monitoring/current_side/watched_entry/current_sl` 与交易所仓位一致
-4. 交易所条件单：应有 **2 笔止损**（硬止损 TV×1.2 永冻 + 雷达独立动态）以及 TP1/TP2 限价（场景二另有 TP3）；数量≈仓位
-5. **不应**出现固定 ~5s 的 `cancel algo order` ↔ `algo stop` 成对日志（硬止损禁止改价替换）
+4. 交易所条件单：应有 **2 笔止损**（硬止损永冻 + 雷达独立动态）以及 TP1/TP2 限价（场景二另有 TP3）；数量≈仓位
+5. **不应**出现固定 ~5s 的 `cancel algo order` ↔ `algo stop` 成对日志（硬止损禁止无故改价；ATR 加宽一次 / 雷达考核收紧除外）
 6. 发一条 `HARD_SL_MISSING` 或 `CLOSE` 测试告警，确认钉钉收到
 7. 若 `trading_paused=true`，人工确认原因后再恢复
 8. Webhook coalesce 窗口默认 **15s**；OPEN 后 15s 内 CLOSE 应被丢弃

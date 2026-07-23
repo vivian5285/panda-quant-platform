@@ -95,7 +95,9 @@ XAU: 0.5 + (1.2-0.5)×0.25 = 0.675
 | 出场评分 | 2分 | 1分 |
 | initial_atr来源 | TV webhook的atr字段，开仓锁定 | 同左 |
 | 实时ATR来源 | VPS独立从交易所1h K线计算，每5分钟更新 | 同左 |
-| 阶梯步长 | 0.75×initial_atr | 0.4×initial_atr |
+| 雷达首动（动态） | TP1×50%~85%（反向 smooth ATR 比） | 同左 |
+| 阶梯跟进 | 0.4×initial_atr | 0.35×initial_atr |
+| 图表周期 / 考核窗 | 90m / 90m（18×5min） | **45m** / 60m（12×5min） |
 | 阶梯跟进 | 0.4×initial_atr | 0.35×initial_atr |
 | 保本触发 | 0.5×initial_atr | 0.3×initial_atr |
 | 执行缓冲 | 0.3点 | 0.5点 |

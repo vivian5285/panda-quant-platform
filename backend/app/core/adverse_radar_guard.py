@@ -6,14 +6,20 @@ import time
 from typing import Any
 
 from app.core.atr_1h_breathing import refresh_supervisor_breath
-from app.core.breathing_profile import cold_start_multiplier, profile_for_symbol
+from app.core.breathing_profile import (
+    cold_start_multiplier,
+    profile_for_symbol,
+    stagnant_breath_samples,
+)
 from app.core.breathing_stop import (
     INITIAL_SL_ATR,
     apply_breathing_tick,
     apply_stop_order_buffer,
     compute_initial_stop,
+    compute_radar_stagnant_tighten_stop,
     compute_temp_tv_stop,
     init_breathing_state,
+    radar_arm_reached,
     resolve_adx,
     resolve_atr,
     resolve_breathing_coef,
@@ -353,6 +359,12 @@ class AdverseRadarMixin:
             self.tp3_limit_active = False
         if not hasattr(self, "_temp_tv_stop_active"):
             self._temp_tv_stop_active = False
+        if not hasattr(self, "_breath_samples_since_open"):
+            self._breath_samples_since_open = 0
+        if not hasattr(self, "_stagnant_tighten_done"):
+            self._stagnant_tighten_done = False
+        if not hasattr(self, "_radar_opened_at"):
+            self._radar_opened_at = 0.0
 
     def _exchange_stop_px(self) -> float:
         """Logical radar / breathing stop (hard floor is `_frozen_hard_stop_px`)."""
@@ -643,6 +655,9 @@ class AdverseRadarMixin:
         self.atr_scenario = ATR_SCENARIO_PENDING
         self.tp3_limit_active = False
         self._temp_tv_stop_active = False
+        self._breath_samples_since_open = 0
+        self._stagnant_tighten_done = False
+        self._radar_opened_at = 0.0
         self.tv_sl = preserved
         self._tv_hard_sl_price = preserved_tv
         self._frozen_hard_stop_px = preserved_frozen
@@ -763,11 +778,12 @@ class AdverseRadarMixin:
         payload: dict | None = None,
         side: str | None = None,
     ) -> dict:
-        """Seed radar initial stop from ATR; never rewrite frozen hard in dual-track.
+        """Seed radar initial stop from ATR; arm hard with fill+ATR floor+slip if unset.
 
-        Whitepaper: hard = TV stop_loss×1.2 frozen at open. ATR breathing only
-        arms/updates radar ``initial_stop`` / ``current_sl``. Legacy single-track
-        still mirrors stop into ``_tv_hard_sl_price``.
+        Whitepaper: hard = max(|TV.entry−TV.SL|×1.2, 1.5×ATR×1.05) + slip,
+        hung from fill; frozen after open (widen-only once ATR arrives).
+        ATR breathing only arms/updates radar ``initial_stop`` / ``current_sl``.
+        Legacy single-track still mirrors stop into ``_tv_hard_sl_price``.
         """
         self._init_adverse_radar_fields()
         entry = float(
@@ -847,7 +863,8 @@ class AdverseRadarMixin:
 
         dual = bool(self._uses_dual_stop_track())
         frozen_before = float(self._frozen_hard_px() or 0)
-        # Dual: if hard not yet frozen and we have TV stop_loss, arm once (never ATR).
+        # Dual: if hard not yet frozen and we have TV stop_loss, arm once
+        # (fill + TV entry slip + ATR radar floor).
         if dual and frozen_before <= 0 and entry > 0 and side_u in ("LONG", "SHORT"):
             pine = float(tv_sl_ref or 0) or float(
                 getattr(self, "_tv_stop_loss_ref", 0)
@@ -855,7 +872,23 @@ class AdverseRadarMixin:
                 or 0
             )
             if pine > 0:
-                hard = float(compute_temp_tv_stop(entry, side_u, pine) or 0)
+                tv_entry = float(getattr(self, "tv_price", 0) or 0) or None
+                if payload:
+                    try:
+                        tv_entry = float(payload.get("price") or 0) or tv_entry
+                    except (TypeError, ValueError):
+                        pass
+                hard = float(
+                    compute_temp_tv_stop(
+                        entry,
+                        side_u,
+                        pine,
+                        tv_entry=tv_entry,
+                        initial_atr=atr if atr > 0 else None,
+                        symbol=sym,
+                    )
+                    or 0
+                )
                 if hard > 0:
                     self._frozen_hard_stop_px = hard
                     self._tv_hard_sl_price = hard
@@ -2118,13 +2151,34 @@ class AdverseRadarMixin:
         return 1.0
 
     def _arm_temp_tv_stop_on_open(self, entry: float) -> dict[str, Any]:
-        """Hang immediate post-fill hard stop from TV stop_loss × 1.2 (permanent until flat)."""
+        """Hang immediate post-fill hard stop (buffer + radar floor + slip).
+
+        Uses exchange fill as hang origin; TV theoretical entry for implied
+        distance + slippage pad. ATR floor when available.
+        """
         self._init_adverse_radar_fields()
         side = str(getattr(self, "current_side", "") or "").upper()
         tv_sl = float(self._pine_stop_loss_ref() or 0)
-        temp = compute_temp_tv_stop(entry, side, tv_sl)
+        fill = float(entry or 0)
+        tv_entry = float(getattr(self, "tv_price", 0) or 0) or None
+        atr = float(
+            getattr(self, "initial_atr", 0)
+            or getattr(self, "_tv_atr_ref", 0)
+            or 0
+        ) or None
+        sym = (
+            getattr(self, "canonical_symbol", None)
+            or getattr(self, "symbol", None)
+        )
+        temp = compute_temp_tv_stop(
+            fill,
+            side,
+            tv_sl,
+            tv_entry=tv_entry,
+            initial_atr=atr,
+            symbol=sym,
+        )
         source = "tv_hard_stop"
-        # Whitepaper: hard MUST be |entry−TV.stop_loss|×1.2 — no ATR fallback.
         # Missing TV stop_loss → abort open (caller fail-closes), never invent a hard.
         if temp <= 0:
             return {
@@ -2140,16 +2194,240 @@ class AdverseRadarMixin:
         self._temp_tv_stop_active = True
         self.atr_scenario = ATR_SCENARIO_PENDING
         self.tp3_limit_active = False
+        self._stamp_radar_open_clock()
         self._vps_hard_sl_meta = {
             "source": source,
             "stop_price": float(temp),
-            "entry": float(entry or 0),
+            "entry": fill,
+            "tv_entry": float(tv_entry or 0),
             "side": side,
             "tv_stop_loss": tv_sl,
+            "initial_atr": float(atr or 0),
             "buffer": 1.2,
             "frozen": True,
         }
-        return {"ok": True, "stop_price": float(temp), "source": source, "tv_stop_loss": tv_sl}
+        return {
+            "ok": True,
+            "stop_price": float(temp),
+            "source": source,
+            "tv_stop_loss": tv_sl,
+            "tv_entry": float(tv_entry or 0),
+            "initial_atr": float(atr or 0),
+        }
+
+    def _stamp_radar_open_clock(self) -> None:
+        """Start stagnant-radar review clock (breath samples + wall time)."""
+        self._init_adverse_radar_fields()
+        self._radar_opened_at = time.time()
+        self._breath_samples_since_open = 0
+        self._stagnant_tighten_done = False
+
+    def _maybe_stagnant_radar_tighten(
+        self,
+        live_qty: float,
+        curr_px: float,
+        *,
+        breath_refreshed: bool = False,
+    ) -> dict[str, Any]:
+        """Option A: chart-window expired + no radar arm → tighten radar to TV raw.
+
+        Never touches frozen hard stop. One-shot per position.
+        """
+        self._init_adverse_radar_fields()
+        out: dict[str, Any] = {"applied": False, "reason": "noop"}
+        if bool(getattr(self, "_stagnant_tighten_done", False)):
+            out["reason"] = "already_done"
+            return out
+        side = str(getattr(self, "current_side", "") or "").upper()
+        entry = float(getattr(self, "watched_entry", 0) or 0)
+        atr = float(getattr(self, "initial_atr", 0) or 0)
+        sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
+        if entry <= 0 or atr <= 0 or side not in ("LONG", "SHORT"):
+            out["reason"] = "not_armed"
+            return out
+
+        if breath_refreshed:
+            self._breath_samples_since_open = int(
+                getattr(self, "_breath_samples_since_open", 0) or 0
+            ) + 1
+
+        p = profile_for_symbol(sym)
+        need = stagnant_breath_samples(p)
+        samples = int(getattr(self, "_breath_samples_since_open", 0) or 0)
+        opened = float(getattr(self, "_radar_opened_at", 0) or 0)
+        elapsed_min = (
+            (time.time() - opened) / 60.0 if opened > 0 else 0.0
+        )
+        window = float(p.stagnant_window_min or 0)
+        due = samples >= need or (opened > 0 and window > 0 and elapsed_min + 1e-9 >= window)
+        out.update(
+            {
+                "samples": samples,
+                "need": need,
+                "elapsed_min": elapsed_min,
+                "window_min": window,
+                "due": due,
+            }
+        )
+        if not due:
+            out["reason"] = "window_open"
+            return out
+
+        px = float(curr_px or 0) or entry
+        sr = float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0)
+        if radar_arm_reached(side, entry, px, atr, smooth_ratio=sr, symbol=sym):
+            self._stagnant_tighten_done = True
+            out["reason"] = "radar_already_armed"
+            out["applied"] = False
+            return out
+
+        tv_sl = float(self._pine_stop_loss_ref() or 0)
+        tv_entry = float(getattr(self, "tv_price", 0) or 0) or None
+        tight = compute_radar_stagnant_tighten_stop(
+            entry,
+            side,
+            tv_sl,
+            tv_entry=tv_entry,
+            initial_atr=atr,
+        )
+        if tight <= 0:
+            out["reason"] = "no_tight_target"
+            return out
+
+        cur = float(getattr(self, "current_sl", 0) or 0)
+        # Only tighten (LONG raise / SHORT lower); never loosen vs current radar
+        if side == "LONG":
+            if cur > 0 and tight <= cur + 1e-12:
+                self._stagnant_tighten_done = True
+                out["reason"] = "already_tighter"
+                return out
+            new_sl = tight if cur <= 0 else max(cur, tight)
+        else:
+            if cur > 0 and tight >= cur - 1e-12:
+                self._stagnant_tighten_done = True
+                out["reason"] = "already_tighter"
+                return out
+            new_sl = tight if cur <= 0 else min(cur, tight)
+
+        prev = cur
+        self.current_sl = float(new_sl)
+        # Re-base ladder so later steps advance from tightened stop
+        self.initial_stop = float(new_sl)
+        self._stagnant_tighten_done = True
+
+        hang = (
+            self._exchange_hang_stop_px(new_sl)
+            if hasattr(self, "_exchange_hang_stop_px")
+            else apply_stop_order_buffer(side, new_sl, sym)
+        )
+        placed = False
+        if float(live_qty or 0) > 0 and hasattr(self, "_ensure_radar_sl"):
+            try:
+                placed = bool(self._ensure_radar_sl(hang, float(live_qty)))
+            except Exception as exc:
+                logger.warning("stagnant radar tighten place failed: %s", exc)
+
+        frozen = float(self._frozen_hard_px() or 0)
+        detail = {
+            "prev_sl": prev,
+            "new_sl": new_sl,
+            "hang": hang,
+            "tv_stop_loss": tv_sl,
+            "tv_entry": float(tv_entry or 0),
+            "samples": samples,
+            "need": need,
+            "elapsed_min": elapsed_min,
+            "window_min": window,
+            "frozen_hard": frozen,
+            "placed": placed,
+            "symbol": sym,
+            "side": side,
+        }
+        if hasattr(self, "_log"):
+            self._log("RADAR_STAGNANT", "考核窗口未推进·雷达一次性收紧至TV原始距", detail)
+        if hasattr(self, "_alert"):
+            try:
+                self._alert(
+                    "info",
+                    "RADAR_STAGNANT",
+                    "雷达考核收紧",
+                    f"{side} 雷达止损 {prev:.2f}→{new_sl:.2f}（硬止损不动 @{frozen:.2f}）",
+                    detail,
+                )
+            except Exception:
+                pass
+        out.update({"applied": True, "reason": "tightened", **detail})
+        return out
+
+    def _widen_frozen_hard_with_atr(self, fill: float, atr: float) -> dict[str, Any]:
+        """One-shot widen of frozen hard once ATR is known (never tighten).
+
+        Open path may arm hard before VPS ATR; radar floor must still apply.
+        """
+        self._init_adverse_radar_fields()
+        side = str(getattr(self, "current_side", "") or "").upper()
+        tv_sl = float(self._pine_stop_loss_ref() or 0)
+        atr_v = float(atr or 0)
+        fill_v = float(fill or 0)
+        out = {"widened": False, "reason": "noop"}
+        if fill_v <= 0 or atr_v <= 0 or tv_sl <= 0 or side not in ("LONG", "SHORT"):
+            out["reason"] = "missing_inputs"
+            return out
+        prev = float(self._frozen_hard_px() or 0)
+        if prev <= 0:
+            out["reason"] = "no_frozen"
+            return out
+        tv_entry = float(getattr(self, "tv_price", 0) or 0) or None
+        sym = (
+            getattr(self, "canonical_symbol", None)
+            or getattr(self, "symbol", None)
+        )
+        new_hard = float(
+            compute_temp_tv_stop(
+                fill_v,
+                side,
+                tv_sl,
+                tv_entry=tv_entry,
+                initial_atr=atr_v,
+                symbol=sym,
+            )
+            or 0
+        )
+        if new_hard <= 0:
+            out["reason"] = "recompute_failed"
+            return out
+        # Wider = farther from fill (LONG lower, SHORT higher)
+        if side == "LONG":
+            wider = new_hard < prev - 1e-12
+        else:
+            wider = new_hard > prev + 1e-12
+        if not wider:
+            out["reason"] = "already_wide_enough"
+            out["prev"] = prev
+            out["candidate"] = new_hard
+            return out
+        self._frozen_hard_stop_px = new_hard
+        self._tv_hard_sl_price = new_hard
+        meta = dict(getattr(self, "_vps_hard_sl_meta", None) or {})
+        meta.update(
+            {
+                "stop_price": new_hard,
+                "widened_with_atr": atr_v,
+                "prev_hard": prev,
+                "initial_atr": atr_v,
+            }
+        )
+        self._vps_hard_sl_meta = meta
+        out.update(
+            {
+                "widened": True,
+                "reason": "atr_radar_floor",
+                "prev": prev,
+                "stop_price": new_hard,
+                "atr": atr_v,
+            }
+        )
+        return out
 
     def _resolve_and_apply_open_atr_scenario(self, entry: float) -> dict[str, Any]:
         """After hard stop + TP1/TP2: pick scenario 1 (VPS ATR) or 2 (TV atr + TP3).
@@ -2183,6 +2461,8 @@ class AdverseRadarMixin:
         if frozen > 0:
             self._frozen_hard_stop_px = frozen
             self._tv_hard_sl_price = frozen
+        # ATR now known: widen hard once if radar floor requires (never tighten)
+        widen = self._widen_frozen_hard_with_atr(float(entry or 0), atr_v)
         self.atr_scenario = scenario
         self.tp3_limit_active = bool(decision.get("tp3_limit_active"))
         self._temp_tv_stop_active = False
@@ -2192,6 +2472,7 @@ class AdverseRadarMixin:
         meta["atr_scenario"] = scenario
         meta["tp3_limit_active"] = self.tp3_limit_active
         meta["frozen_hard"] = float(self._frozen_hard_px() or 0)
+        meta["hard_widen"] = widen
         self._vps_hard_sl_meta = meta
 
         detail = {
@@ -2205,6 +2486,7 @@ class AdverseRadarMixin:
             "tv_atr": tv_atr,
             "tp3_limit_active": self.tp3_limit_active,
             "atr_source": atr_src,
+            "hard_widen": widen,
         }
         if hasattr(self, "_log"):
             self._log(
@@ -2310,11 +2592,21 @@ class AdverseRadarMixin:
             maybe_retry_vps_atr_on_tick(self, live_qty=float(live_qty or 0))
         except Exception:
             pass
-        # Soft-refresh 1h ATR → breathing coefficient
+        # Soft-refresh 1h ATR → breathing coefficient (+ stagnant sample clock)
+        breath_refreshed = False
         try:
-            refresh_supervisor_breath(self, force=False)
+            breath_meta = refresh_supervisor_breath(self, force=False) or {}
+            breath_refreshed = bool(breath_meta.get("refreshed"))
         except Exception:
-            pass
+            breath_meta = {}
+        try:
+            self._maybe_stagnant_radar_tighten(
+                float(live_qty or 0),
+                float(curr_px or 0),
+                breath_refreshed=breath_refreshed,
+            )
+        except Exception as exc:
+            logger.debug("stagnant radar tighten skipped: %s", exc)
         entry = float(getattr(self, "watched_entry", 0) or 0)
         side = getattr(self, "current_side", None)
         atr = float(
@@ -2352,6 +2644,7 @@ class AdverseRadarMixin:
             breakeven_phase=phase,
             breathing_coefficient=coef,
             symbol=sym,
+            smooth_ratio=float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
         )
         new_sl = float(tick.get("current_sl") or 0)
         new_best = float(tick.get("best_price") or best)
@@ -2365,6 +2658,12 @@ class AdverseRadarMixin:
         self.breathing_coefficient = float(tick.get("breathing_coefficient") or coef)
         if step_count > int(getattr(self, "radar_step_count", 0) or 0):
             self.radar_step_count = step_count
+        if step_count >= 1 or radar_arm_reached(
+            side, entry, px, atr,
+            smooth_ratio=float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
+            symbol=sym,
+        ):
+            self._stagnant_tighten_done = True
         if improved and new_sl > 0:
             self.current_sl = new_sl
             if not self._uses_dual_stop_track():
@@ -2592,6 +2891,7 @@ class AdverseRadarMixin:
             breakeven_phase=bool(getattr(self, "breakeven_phase", False)),
             breathing_coefficient=coef,
             symbol=sym,
+            smooth_ratio=float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
         )
         new_sl = float(tick.get("current_sl") or current_sl)
         self.best_price = float(tick.get("best_price") or self.best_price)

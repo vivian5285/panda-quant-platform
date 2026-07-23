@@ -6,11 +6,10 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-07-23 · 防「查不到就叠 50 张」加固）**  
-> 凡与本文冲突的旧描述（含「90m 合成行情作为开仓/雷达 ATR」「≤2.5s 同 symbol 缓存」「呼吸引擎为唯一止损写入方」「TV atr 为开仓 ATR 唯一来源」「离散呼吸档位」「先撤硬止损再挂雷达」「查不到 TP 就盲重试加挂」「挂单不可读仍 cancel_all」「不可读却谎称硬止损已有」）**一律作废**。  
-> 权威白皮书：桌面《Gemini终极生产级全功能白皮书.md》  
-> 呼吸锁定表：桌面《ETH_XAU呼吸雷达参数最终锁定表.md》  
-> 部署：`docs/VPS_DEPLOY.md` · 呼吸：`docs/CONTINUOUS_BREATH_FINAL_SPEC.md` · 旧逻辑清除：`docs/LEGACY_PURGE_LIST_20260722.md`
+> **文档同步（2026-07-23 · 硬止损缓冲垫 + 动态雷达启动 + 考核收紧）**  
+> 凡与本文冲突的旧描述（含「硬止损=|entry−TV.SL|×1.2 无地板/无滑点」「雷达首动=固定0.75×ATR」「XAU 图表=1小时」「90m 合成 ATR」「离散呼吸档位」「先撤硬止损再挂雷达」「查不到 TP 就盲重试加挂」）**一律作废**。  
+> 权威指令：桌面《Gemini硬止损修复与雷达启动阈值合并指令.md》  
+> 部署：`docs/VPS_DEPLOY.md` · 呼吸：`docs/CONTINUOUS_BREATH_FINAL_SPEC.md` · 速查：`backend/data/_readme_top.md`
 
 ### 当前实盘一句话
 
@@ -31,7 +30,7 @@
 
 **现象（交易所截图）**  
 - 持仓 ETH 多 + XAU 多时，基础单出现**成对 1 秒间隔**的同向限价止盈；ETH 甚至出现 **BUY 只减仓**限价（多仓正确平仓方向应为 SELL）。  
-- 条件单同时可见 **两笔接近但不等的 STOP**（正确双轨：硬止损×1.2 + 雷达；**不是**「TV 原价硬止损 + 再挂×1.2」——交易所只挂永冻×1.2，原价仅作计算锚点）。  
+- 条件单同时可见 **两笔接近但不等的 STOP**（正确双轨：硬止损=fill±(缓冲地板+滑点) + 雷达；**不是**「TV 原价硬止损 + 再挂×1.2」）。  
 - 仓位已归零仍残留限价/条件单 → **幽灵单**，下一笔 OPEN 前必须净场。  
 - 历史极端：同一价格限价止盈可叠到约 **50 笔** → 实盘击穿风险，**灾难级**。
 
@@ -49,7 +48,7 @@
 | LIMIT≥6 熔断 | 盘口 ≥6 张 reduce-only LIMIT → **仅轻量同价去重（每价留 1），禁止再挂/核武盲补** |
 | 方向 | 平仓方向优先读交易所 `positionAmt`；未知方向 → **拒挂**（永不默认 LONG→BUY） |
 | 无仓拒挂 | 交易所 qty=0 → **禁止任何 TP/雷达补挂**，只走净场 |
-| STOP 硬帽 | 双轨最多 **2** 笔 STOP（硬×1.2 + 雷达）；≥2 或簿记未知 → **拒挂雷达** |
+| STOP 硬帽 | 双轨最多 **2** 笔 STOP（硬 + 雷达）；≥2 或簿记未知 → **拒挂雷达** |
 | 硬止损确认 | 挂单不可读且无盘口实证 → **不得谎称已有**（本地 oid 不算证明）；开仓链路 fail-closed 撤仓 |
 | 撤 TP | 查单失败 → **禁止 cancel_all**（防误撤 STOP、加剧 -1003）；只按可读清单逐笔撤 |
 | 核武/重建 | 盘口不可读 → **中止撤挂与盲补**；可读时先 **轻量同价去重** 再核武 |
@@ -59,7 +58,7 @@
 
 ```
 TV 入队 → 解析 v6.5.6 → ATR 场景 → RISK20×5 算仓 → 市价开
-  → 永久硬止损(|entry−TV.SL|×1.2) + TP1/TP2 → 雷达/呼吸接管
+  → 永久硬止损(fill+缓冲地板+滑点) + TP1/TP2 → 雷达/呼吸接管
 ```
 
 不可读盘口时：**禁止再挂 TP/Stop、禁止 cancel_all、禁止把未知当已保护**。
@@ -74,15 +73,15 @@ TV 入队 → 解析 v6.5.6 → ATR 场景 → RISK20×5 算仓 → 市价开
 
 | 层 | 规则 |
 |----|------|
-| **① 硬止损（永久防线）** | 开仓即挂：`distance=\|entry−TV.stop_loss\|×1.2`；LONG=`entry−dist`，SHORT=`entry+dist`（例 1900/1880→**1876**）。至 flat 前：**禁止**撤销 / 改价 / 替换。ATR 升级、雷达上移**都不碰硬止损**。唯一撤销时机：仓位归零。**缺 TV.stop_loss 则拒开仓**，禁止用 ATR 伪造硬止损。 |
-| **② 雷达止损（独立动态）** | 呼吸引擎**额外**挂出的 STOP，**不是**硬止损升级版。与硬止损同时存在、各自改单、各自触发。雷达改单不影响硬止损。 |
+| **① 硬止损（永久防线）** | `base=max(\|TV.entry−TV.SL\|×1.2, 1.5×ATR×1.05)`，`slip=\|fill−TV.entry\|×2`，挂单=`fill±(base+slip)`。例无 ATR/无滑点：1900/1880→**1876**。ATR 到位后**仅允许加宽一次**；其后至 flat：**禁止**收紧/撤销。雷达不碰硬止损。**缺 TV.stop_loss 则拒开仓**。 |
+| **② 雷达止损（独立动态）** | 首动=`TP1×50%~85%`（动态，**已删除**固定 0.75×ATR）；步进 + TP 底线 + 阶段二。与硬止损并行。考核窗（ETH 90m / XAU 60m）未达首动 → **仅雷达**收至 TV 原始距（方案A）；硬不动。 |
 | **③ TP 限价** | TP1/TP2 **始终** TV 价各 **30%**。TP3：**仅场景二**（VPS 1h ATR 失败用 TV atr）挂 TV 价 **40%**；场景一不挂 TP3（剩余由雷达收网）。 |
 | 部分平仓 | TP 成交后仓位变 70%/40%：硬止损与雷达止损**数量同步收缩**，价格不变。硬止损按 remembered oid 撤挂；硬≈雷达时禁止按价误杀雷达。 |
 | 归零清理 | 任一止损触发或全部 TP 成交 → 立即撤销其余挂单，不留孤儿单。 |
 
 #### 开仓瞬间（白皮书详细解说对齐）
 
-1. **挂硬止损**（TV×1.2 永冻）— 先于一切，禁止裸奔  
+1. **挂硬止损**（fill + 缓冲地板 + 滑点；ATR 可加宽一次后永冻）— 先于一切，禁止裸奔  
 2. **挂 TP1+TP2** 与 **启动 VPS 原生 1h ATR 拉取** 重叠执行（不分先后）  
 3. ATR 结果汇合后：场景一武装雷达 / 场景二 +TP3；再确认硬止损仍在并**额外**挂雷达  
 
@@ -104,7 +103,8 @@ TV 入队 → 解析 v6.5.6 → ATR 场景 → RISK20×5 算仓 → 市价开
 | 15s 铁律 | OPEN 先到 → 15s 内 CLOSE **丢弃**；CLOSE 先到 → **先平后开**；>15s CLOSE 独立平仓 |
 | 净场 | 开仓前无仓无挂单；平仓后立即撤该 symbol 全部挂单；反手一律先平 |
 | ATR | **优先**交易所原生 1h；失败用 TV atr；雷达/开仓**不用** 90m 合成 |
-| 呼吸 | ETH 1.2~2.5 / XAU 0.5~1.2 连续插值；阶段一阶梯**不含** coef |
+| 呼吸 | ETH 1.2~2.5 / XAU 0.5~1.2；雷达启动=TP1×50%~85%；考核收紧 ETH18/XAU12 采样；阶段一推进不含 coef |
+| TV 图表 | ETH **90m** / XAU **45m**（VPS「1h ATR」仅为波动率 oracle） |
 | 杠杆 | 一律 `FIXED_LEVERAGE=5` |
 | 加仓 | **禁用**；同向亦先平后开 |
 
@@ -132,7 +132,10 @@ services:
   redis:6379
 
 rules:
-  - hard_stop frozen until flat (TV stop_loss x1.2); never replace with radar
+  - hard_stop = max(|TV.entry-TV.SL|*1.2, 1.5*ATR*1.05) + |fill-TV.entry|*2; hang from fill; widen-once then frozen
+  - radar first-move = TP1×50%~85% (inverse smooth ATR); NO fixed 0.75×ATR
+  - stagnant tighten Option A: ETH18/XAU12 breath samples → radar to TV raw; hard untouched
+  - chart TF: ETH 90m / XAU 45m
   - radar stop independent extra STOP; coexist with hard
   - sizing = equity * 0.20 * 5 / price; ignore TV qty
   - 15s coalesce: open-first discards late CLOSE; close-first → flatten then open
