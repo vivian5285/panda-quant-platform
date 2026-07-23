@@ -2033,7 +2033,7 @@ class AdverseRadarMixin:
         self.initial_atr = float(st["initial_atr"])
         self.initial_stop = float(st["initial_stop"])
         self.current_sl = float(st["current_sl"])
-        self._tv_hard_sl_price = float(st["current_sl"])
+        # Never overwrite frozen hard with radar initial_stop (whitepaper: hard is permanent/read-only).
         self.best_price = float(st["best_price"])
         self.breakeven_phase = bool(st["breakeven_phase"])
         self.radar_step_count = int(st.get("step_count") or 0)
