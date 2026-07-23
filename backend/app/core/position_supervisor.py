@@ -1299,7 +1299,10 @@ class PositionSupervisor(
         已空仓时仅清残留挂单/状态，不刷屏钉钉。
         注意：清场不得抹掉本笔 TV 已下发的 tv_sl（否则开仓算仓会 missing_tv_sl）。
         平仓失败：按 1s/3s/6s 重试；仍失败则中止开仓并暂停（严禁仓位不明时开新仓）。
+        查仓 QUERY_FAILED：fail-closed 拒开（绝不把未知仓位当空仓）。
         """
+        from app.core.exchange_errors import ExchangeTransientError
+
         # Preserve TV Pine stop_loss ref (not VPS hang price in self.tv_sl).
         pending_tv_sl = float(
             getattr(self, "_tv_stop_loss_ref", 0)
@@ -1333,12 +1336,20 @@ class PositionSupervisor(
                 if isinstance(fields, dict):
                     fields["atr"] = pending_tv_atr
 
-        live = self._get_active_position() if hasattr(self, "_get_active_position") else None
-        if live is None and hasattr(self, "position_manager"):
-            raw = self.position_manager.get_position(self.symbol)
-            if raw and float(raw.get("positionAmt", 0) or 0) != 0:
-                amt = float(raw["positionAmt"])
-                live = {"size": abs(amt), "side": "LONG" if amt > 0 else "SHORT"}
+        try:
+            live = self._get_active_position() if hasattr(self, "_get_active_position") else None
+            if live is None and hasattr(self, "position_manager"):
+                raw = self.position_manager.get_position(self.symbol)
+                if raw and float(raw.get("positionAmt", 0) or 0) != 0:
+                    amt = float(raw["positionAmt"])
+                    live = {"size": abs(amt), "side": "LONG" if amt > 0 else "SHORT"}
+        except ExchangeTransientError as e:
+            self._handle_position_query_failure(e)
+            return self._abort_force_flat(
+                reason,
+                fail_kind="QUERY_FAILED",
+                detail={"error": str(e)[:400], "refuse_open": True},
+            )
         already_flat = not live or float(live.get("size") or 0) <= 0
 
         if already_flat:
@@ -1393,8 +1404,25 @@ class PositionSupervisor(
                 )
             time.sleep(0.45)
             try:
-                self._close_all(
+                close_status = self._close_all(
                     reason if attempt == 1 else f"{reason}·残仓扫尾#{attempt}",
+                )
+                if isinstance(close_status, dict) and close_status.get("status") == "QUERY_FAILED":
+                    return self._abort_force_flat(
+                        reason,
+                        fail_kind="QUERY_FAILED",
+                        detail={
+                            "close_all": close_status,
+                            "attempt": attempt,
+                            "refuse_open": True,
+                        },
+                    )
+            except ExchangeTransientError as e:
+                self._handle_position_query_failure(e)
+                return self._abort_force_flat(
+                    reason,
+                    fail_kind="QUERY_FAILED",
+                    detail={"error": str(e)[:400], "attempt": attempt, "refuse_open": True},
                 )
             except Exception as e:
                 last_err = str(e)
@@ -4623,7 +4651,30 @@ class PositionSupervisor(
         attribution: dict | None = None,
         close_trigger: str | None = None,
     ):
-        pos_before = self.position_manager.get_position(self.symbol)
+        from app.core.exchange_errors import ExchangeTransientError
+
+        self._last_close_all_status = "ok"
+        try:
+            pos_before = self.position_manager.get_position(self.symbol)
+        except ExchangeTransientError as e:
+            self._handle_position_query_failure(e)
+            self._last_close_all_status = "QUERY_FAILED"
+            detail = {
+                "reason": reason,
+                "close_action": close_action,
+                "error": str(e)[:400],
+                "refuse_open": True,
+            }
+            self._log("CLOSE_FAIL", "❌ 清仓中止·查仓 QUERY_FAILED（fail-closed）", detail)
+            self._alert(
+                "critical",
+                "CLOSE_FAIL",
+                "清仓中止·查仓失败",
+                f"QUERY_FAILED · 拒开新仓 | {reason}",
+                detail,
+            )
+            return {"status": "QUERY_FAILED", "detail": detail}
+
         had_position = bool(
             pos_before and float(pos_before.get("positionAmt", 0) or 0) != 0
         )
@@ -4632,10 +4683,21 @@ class PositionSupervisor(
         )
         time.sleep(0.5)
         closed_successfully = False
-        exit_price = self.client.get_current_price(self.symbol)
+        try:
+            exit_price = self.client.get_current_price(self.symbol)
+        except Exception:
+            exit_price = 0.0
 
         for _ in range(5):
-            pos = self.position_manager.get_position(self.symbol)
+            try:
+                pos = self.position_manager.get_position(self.symbol)
+            except ExchangeTransientError as e:
+                self._handle_position_query_failure(e)
+                self._last_close_all_status = "QUERY_FAILED"
+                return {
+                    "status": "QUERY_FAILED",
+                    "detail": {"reason": reason, "error": str(e)[:400], "refuse_open": True},
+                }
             if not pos or float(pos.get("positionAmt", 0)) == 0:
                 closed_successfully = True
                 break
@@ -4703,7 +4765,15 @@ class PositionSupervisor(
             self._trigger_settlement_on_flat()
         elif had_position and not closed_successfully:
             residual_amt = 0.0
-            pos = self.position_manager.get_position(self.symbol)
+            try:
+                pos = self.position_manager.get_position(self.symbol)
+            except ExchangeTransientError as e:
+                self._handle_position_query_failure(e)
+                self._last_close_all_status = "QUERY_FAILED"
+                return {
+                    "status": "QUERY_FAILED",
+                    "detail": {"reason": reason, "error": str(e)[:400], "refuse_open": True},
+                }
             if pos:
                 residual_amt = abs(float(pos.get("positionAmt", 0) or 0))
             fail_detail = {
@@ -4714,7 +4784,7 @@ class PositionSupervisor(
             }
             self._log(
                 "CLOSE_FAIL",
-                f"❌ 清仓未完全归零，残仓 {residual_amt} ETH",
+                f"❌ 清仓未完全归零，残仓 {residual_amt}",
                 fail_detail,
             )
             self._alert(
@@ -4751,6 +4821,7 @@ class PositionSupervisor(
                 context=str(close_action or close_trigger or "close"),
                 notify_ok=False,
             )
+        return {"status": "ok" if closed_successfully else "CLOSE_FAIL"}
 
     def _trigger_settlement_on_flat(self) -> None:
         """Profitable cycle awaiting flat: bill immediately after position closes."""

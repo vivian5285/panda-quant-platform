@@ -481,7 +481,7 @@ class AdverseRadarMixin:
                     "ATR_MISMATCH",
                     "ATR双边核对偏差",
                     f"VPS ATR={vps:.4f} vs TV隐含={implied:.4f} "
-                    f"(stop÷{tv_mult:g}·Δ{ratio*100:.0f}%) · 请核对1h ATR",
+                    f"(stop÷{tv_mult:g}·Δ{ratio*100:.0f}%) · 请核对原生1h ATR（非90m合成）",
                     detail,
                 )
             except Exception:

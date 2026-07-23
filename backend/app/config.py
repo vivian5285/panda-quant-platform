@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     MAX_ADD_TIMES_REG4: int = 0
 
     # 空仓待命时仍巡检交易所（秒）— 发现同向持仓则接管补挂 TP123/雷达
-    IDLE_PATROL_INTERVAL_SEC: float = 10.0
+    IDLE_PATROL_INTERVAL_SEC: float = 120.0  # was 10s — too chatty under Binance REST weight
     IDLE_ADOPT_RETRY_COOLDOWN_SEC: float = 45.0
 
     # VPS 行情引擎：30m → 合成 90m（UTC epoch 90m 桶对齐）→ ATR/ADX(14)

@@ -107,18 +107,31 @@ class UserSupervisorPool:
                 user, api_key, api_secret, passphrase,
                 canonical_symbol=DEFAULT_CANONICAL,
             )
-            if not probe.test_connection():
-                logger.warning("User %s API connection failed", user.id)
+            probe_ok = False
+            try:
+                probe_ok = bool(probe.test_connection())
+            except Exception as e:
+                logger.warning("User %s API probe exception: %s", user.id, e)
+                probe_ok = False
+            degraded_startup = not probe_ok
+            if degraded_startup:
+                # Rate-limit / transient ban must NOT leave the pool empty → DISPATCH_EMPTY.
+                # Register supervisors in degraded mode; skip heavy recover REST until API recovers.
+                logger.warning(
+                    "User %s API probe failed — loading supervisors degraded (skip recover REST)",
+                    user.id,
+                )
                 TradeLogger(db).log_event(
-                    user.id, "ERROR", "API 连接失败，无法加载 Supervisor", {"uid": user.uid},
+                    user.id, "WARNING",
+                    "API 探测失败·降级加载 Supervisor（避免 DISPATCH_EMPTY）",
+                    {"uid": user.uid, "degraded_startup": True},
                 )
                 notify_admin(
                     user.id, "warning", "API_OFFLINE",
-                    "用户 API 不可用",
-                    "绑定 API 连接失败，无法加载 Supervisor",
-                    {"uid": user.uid},
+                    "用户 API 暂不可用·已降级加载",
+                    "探测失败仍注册 Supervisor；解禁后自动可接信号（开仓前仍 fail-closed 查仓）",
+                    {"uid": user.uid, "degraded_startup": True},
                 )
-                return None
 
             trade_logger = TradeLogger(db)
             user_events = _user_event_handler(db)
@@ -141,13 +154,21 @@ class UserSupervisorPool:
                     on_trade_update_targets=trade_logger.on_trade_update_targets,
                     on_alert=user_events,
                 )
-                recovery = build_radar_recovery_context(db, user.id, symbol=can)
-                trade = recovery.get("trade") or {}
-                open_trade_id = trade.get("id")
-                audit = supervisor.recover_on_startup(
-                    open_trade_id=open_trade_id,
-                    recovery_context=recovery,
-                )
+                if degraded_startup:
+                    audit = {
+                        "has_position": False,
+                        "degraded_startup": True,
+                        "recover_skipped": True,
+                        "error": None,
+                    }
+                else:
+                    recovery = build_radar_recovery_context(db, user.id, symbol=can)
+                    trade = recovery.get("trade") or {}
+                    open_trade_id = trade.get("id")
+                    audit = supervisor.recover_on_startup(
+                        open_trade_id=open_trade_id,
+                        recovery_context=recovery,
+                    )
                 audit["uid"] = user.uid
                 audit["exchange"] = user_exchange(user)
                 audit["symbol"] = can
@@ -158,11 +179,15 @@ class UserSupervisorPool:
 
                 with self._lock:
                     self._supervisors[_pool_key(user.id, can)] = supervisor
-                logger.info("Supervisor added for user %s symbol %s", user.id, can)
+                logger.info(
+                    "Supervisor added for user %s symbol %s%s",
+                    user.id, can, " (degraded)" if degraded_startup else "",
+                )
 
             try:
-                from app.services.profit_audit import run_startup_dual_audit
-                run_startup_dual_audit(db, user)
+                if not degraded_startup:
+                    from app.services.profit_audit import run_startup_dual_audit
+                    run_startup_dual_audit(db, user)
             except Exception as audit_err:
                 logger.warning("Dual profit audit failed user=%s: %s", user.id, audit_err)
 
