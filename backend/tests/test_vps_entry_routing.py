@@ -45,20 +45,29 @@ def _make_supervisor(**kwargs):
 
 
 def test_open_uses_risk20_formula():
+    """本金×20%×5/价；忽略 TV qty 与 stop 距离反推。"""
     sup, client = _make_supervisor()
+    # Open path requires TV atr>0
+    atr = 100.0
+    sup._tv_atr_ref = atr
     qty, meta = sup._resolve_entry_qty(3300.0)
     assert meta["sizing_mode"] == SIZING_MODE
-    assert meta["adjust_coef"] == pytest.approx(100.0 / 150.0)
-    assert qty == pytest.approx(0.666, abs=0.001)
-    assert meta["binding"] == "tv_qty_cap_adjusted"
+    assert meta.get("adjust_coef") is None
+    assert meta["binding"] == "margin20_lev5"
+    # 1000 equity → notional 1000 → qty ≈ 1000/3300
+    assert qty == pytest.approx(1000.0 / 3300.0, abs=0.002)
 
 
-def test_open_missing_tv_qty_refuses():
+def test_open_missing_tv_qty_still_sizes():
     sup, _ = _make_supervisor()
+    atr = 100.0
+    sup._tv_atr_ref = atr
     sup._tv_entry_fields = {}
     qty, meta = sup._resolve_entry_qty(3300.0)
-    assert qty == 0
-    assert meta.get("error") == "missing_tv_qty"
+    assert qty > 0
+    assert meta.get("error") is None
+    assert meta.get("binding") == "margin20_lev5"
+    assert meta.get("tv_qty_ignored") is True
 
 
 def test_pyramid_entry_type_disabled():

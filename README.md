@@ -347,18 +347,19 @@ initialStop = 开仓价 ± 1.5 × VPS_ATR         # 仅挂止损，不算仓
 | TV `stop_loss` | **不算仓**；真实挂止损价仍是 VPS `initialStop` |
 | 调整时机 | **仅开仓算一次**；后续 tick 不重算 |
 | 缺 `TV.qty` | **拒开仓** |
-| ATR 异常且可从 `TV.stop_loss` 反推 | **应急降级开仓** + `ATR_FALLBACK`，随后暂停该 symbol 自动开仓 |
-| ATR 异常且无可用 `TV.stop_loss` | **拒开仓** + `ATR_INVALID`/`ATR_ANOMALY` |
+| ATR 异常（缺失/≤0/中位数异常） | **拒开仓** + `ATR_INVALID`/`ATR_ANOMALY`（**禁止** VPS K 线回退发明 atr） |
+| ATR 应急降级 | **已废除** — `initial_atr` 唯一来源 = TV webhook `atr` |
 | 杠杆 | **`FIXED_LEVERAGE=5`**（client / bind / 钉钉 / API 校验同源） |
 | 加仓路径 | 返回 `add_disabled` / qty=0 |
-| 开仓日志 | 记录 `notional_target`、`binding=margin20_lev5`、`atr_source` |
+| 开仓日志 | 记录 `notional_target`、`binding=margin20_lev5`、`atr_source=tv_webhook` |
+| TV `qty`/`qty1-3` | **完全忽略**（可缺省；不参与算仓/TP 数量） |
 
 ### 四、开仓后挂单
 
 | 订单 | 行为 |
 |------|------|
-| TP1 | 限价；数量优先 TV `qty1`，否则约总仓 30%；价格=`tp1` |
-| TP2 | 限价；数量优先 TV `qty2`，否则约总仓 30%；价格=`tp2` |
+| TP1 | 限价；数量=实盘总仓 **固定 30%**（忽略 TV qty1）；价格=`tp1` |
+| TP2 | 限价；数量=实盘总仓 **固定 30%**（忽略 TV qty2）；价格=`tp2` |
 | TP3 | **不挂**（40% 余仓交呼吸阶段二） |
 | 止损 | 呼吸引擎按 **当前仓位 qty** 挂 reduceOnly STOP |
 

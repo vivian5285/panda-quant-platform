@@ -7,7 +7,7 @@ Authoritative formula (stateless pure function, computed once at open):
   qty          = floor(notional / price to exchange step)
 
 TV.qty / TV.stop_loss / VPS initialStop 不参与下单数量（止损价仍由呼吸引擎用 VPS ATR）。
-TV.qty 仅作信号存在性校验；荒谬天文数字不影响仓位。
+TV.qty/qty1-3 可缺省，完全忽略；荒谬天文数字不影响仓位。
 """
 
 from __future__ import annotations
@@ -105,7 +105,7 @@ def compute_tv_entry_qty(
     """Independent per-open sizing — always margin20 × lev5 (= 1× equity notional).
 
     ``tv_sl`` / ``tv_stop_loss`` are logged only; breathing engine places the real stop.
-    ``tv_qty`` must be present as a signal field but never sizes the order.
+    ``tv_qty`` / qty1-3 are ignored for order size (optional legacy fields if present).
     """
     from app.core.symbol_registry import normalize_canonical_symbol
 
@@ -124,6 +124,7 @@ def compute_tv_entry_qty(
     step = _qty_step_for_symbol(symbol)
     mn = float(min_qty if min_qty is not None else step)
     mx = float(max_qty if max_qty is not None else getattr(settings, "MAX_POSITION_QTY", 0) or 0)
+    # Optional legacy field — never gates or sizes the order
     tv_qty_f = float(tv_qty) if tv_qty is not None and float(tv_qty) > 0 else 0.0
 
     meta: dict[str, Any] = {
@@ -143,6 +144,7 @@ def compute_tv_entry_qty(
         "vps_initial_stop": round(vps_stop_f, 4) if vps_stop_f else None,
         "tv_stop_loss": round(tv_sl_f, 4) if tv_sl_f else None,
         "tv_qty_ref": tv_qty_f if tv_qty_f > 0 else None,
+        "tv_qty_ignored": True,
         "tv_qty_cap": None,
         "hard_notional_usd": None,
         "hard_cap_removed": True,
@@ -159,22 +161,14 @@ def compute_tv_entry_qty(
     if sizing_base <= 0:
         meta["error"] = "zero_equity"
         return 0.0, meta
-    if tv_qty_f <= 0:
-        meta["error"] = "missing_tv_qty"
-        return 0.0, meta
 
-    # 铁律：本金×20% 保证金 ×5 杠杆 = 名义 = 本金×1
+    # 铁律：本金×20% 保证金 ×5 杠杆 = 名义 = 本金×1（不读 TV qty / 不反推系数）
     margin_usd = sizing_base * risk_frac
     notional_target = margin_usd * lev
     theoretical = notional_target / price_f
 
     vps_dist = abs(price_f - vps_stop_f) if vps_stop_f > 0 else 0.0
     tv_dist = abs(price_f - tv_sl_f) if tv_sl_f > 0 else 0.0
-    adjust_coef = (tv_dist / vps_dist) if (tv_dist > 0 and vps_dist > 0) else None
-    adjusted_tv_qty = (tv_qty_f * adjust_coef) if adjust_coef is not None else None
-    tv_qty_ignored_absurd = bool(
-        adjusted_tv_qty is not None and adjusted_tv_qty > theoretical * ABSURD_TV_QTY_VS_CAPS
-    )
 
     meta["risk_capital"] = round(margin_usd, 4)
     meta["margin_usd_target"] = round(margin_usd, 4)
@@ -186,17 +180,17 @@ def compute_tv_entry_qty(
     meta["stop_distance"] = meta["sl_distance"]
     meta["vps_stop_distance"] = round(vps_dist, 6) if vps_dist else None
     meta["tv_implied_stop_distance"] = round(tv_dist, 6) if tv_dist else None
-    meta["adjust_coef"] = round(adjust_coef, 8) if adjust_coef is not None else None
-    meta["tv_qty_cap"] = round(adjusted_tv_qty, 6) if adjusted_tv_qty is not None else None
-    meta["adjusted_tv_qty_cap"] = meta["tv_qty_cap"]
-    meta["tv_qty_ignored_absurd"] = tv_qty_ignored_absurd
+    meta["adjust_coef"] = None
+    meta["tv_qty_cap"] = None
+    meta["adjusted_tv_qty_cap"] = None
+    meta["tv_qty_ignored_absurd"] = False
     meta["qty_by_risk"] = None
     meta["qty_by_notional"] = round(theoretical, 6)
     meta["theoretical_qty"] = round(theoretical, 6)
     meta["raw_qty"] = round(theoretical, 6)
     meta["candidate_qty_by_risk"] = None
     meta["candidate_qty_by_notional"] = meta["qty_by_notional"]
-    meta["candidate_qty_by_tv_adj"] = meta["adjusted_tv_qty_cap"]
+    meta["candidate_qty_by_tv_adj"] = None
     meta["binding"] = "margin20_lev5"
 
     floored = floor_qty(theoretical, step)

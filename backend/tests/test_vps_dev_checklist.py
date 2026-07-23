@@ -27,20 +27,21 @@ from unittest.mock import MagicMock, patch
 
 
 def test_checklist_risk20_sizing():
-    """RISK20: min(risk/vps_dist, notional/price, tv_qty×adj)."""
+    """铁律：本金×20%×5/价；忽略 TV qty。"""
     assert RISK_PCT == 0.20 and MAX_LEVERAGE == 5
     qty, meta = compute_tv_entry_qty(
         live_balance=1000, initial_principal=1000, price=3300, tv_sl=3200,
-        tv_stop_loss=3200, tv_qty=1.0,
+        tv_stop_loss=3200, tv_qty=1.0, symbol="ETHUSDT",
     )
-    assert qty == pytest.approx(1.0, abs=1e-9)
-    assert meta["sizing_mode"] == "risk20_cap5x_tv_qty_cap"
+    assert qty == pytest.approx(1000.0 / 3300.0, abs=1e-6)
+    assert meta["binding"] == "margin20_lev5"
     qty2, m2 = compute_tv_entry_qty(
         live_balance=1000, initial_principal=1000, price=3300, tv_sl=3200,
-        tv_stop_loss=3200, tv_qty=0.5,
+        tv_stop_loss=3200, tv_qty=None, symbol="ETHUSDT",
     )
-    assert qty2 == pytest.approx(0.5, abs=1e-9)
-    assert m2["binding"] == "tv_qty_cap_adjusted"
+    assert qty2 == pytest.approx(qty, abs=1e-9)
+    assert m2["binding"] == "margin20_lev5"
+    assert m2.get("tv_qty_ignored") is True
 
 
 def test_checklist_tv_fields_parsed():

@@ -19,16 +19,18 @@ def _base(**kw):
     return compute_tv_entry_qty(**defaults)
 
 
-def test_qty_zero_rejected():
+def test_qty_zero_still_sizes():
     q, m = _base(tv_qty=0)
-    assert q == 0
-    assert m.get("error") == "missing_tv_qty"
+    assert q > 0
+    assert m.get("error") is None
+    assert m.get("tv_qty_ignored") is True
 
 
-def test_qty_negative_rejected():
+def test_qty_negative_still_sizes():
     q, m = _base(tv_qty=-1)
-    assert q == 0
-    assert m.get("error") == "missing_tv_qty"
+    assert q > 0
+    assert m.get("error") is None
+    assert m.get("tv_qty_ignored") is True
 
 
 def test_price_zero_rejected():

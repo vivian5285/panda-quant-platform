@@ -66,13 +66,18 @@ def test_stop_distance_does_not_change_qty():
     assert meta["binding"] == "margin20_lev5"
 
 
-def test_missing_tv_qty_refuses():
+def test_missing_tv_qty_still_sizes_equity_x1():
+    """精简 webhook：无 qty 字段仍按本金×20%×5 算仓。"""
     qty, meta = compute_tv_entry_qty(
-        live_balance=1000, initial_principal=1000, price=3300, tv_sl=3200,
-        tv_stop_loss=3200, tv_qty=None, symbol="ETHUSDT",
+        live_balance=1000, initial_principal=1000, price=2000,
+        tv_sl=1970, tv_stop_loss=1970, exchange_leverage=5,
+        tv_qty=None, symbol="ETHUSDT",
     )
-    assert qty == 0
-    assert meta.get("error") == "missing_tv_qty"
+    assert qty > 0
+    assert meta.get("error") is None
+    assert meta.get("binding") == "margin20_lev5"
+    assert abs(qty * 2000 - 1000) < 2.0  # ≈本金×1 名义
+    assert meta.get("tv_qty_ignored") is True
 
 
 def test_add_disabled():
