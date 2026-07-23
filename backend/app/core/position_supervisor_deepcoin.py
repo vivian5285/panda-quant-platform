@@ -2741,7 +2741,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if live_qty <= 0:
             if hasattr(self, "_purge_defense_orders_on_flat"):
                 try:
-                    self._purge_defense_orders_on_flat(reason=f"reconcile_{action}")
+                    self._purge_defense_orders_on_flat(f"reconcile_{action}")
                 except Exception:
                     pass
             if hasattr(self, "_clear_position_local_state"):

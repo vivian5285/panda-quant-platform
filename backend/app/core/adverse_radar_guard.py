@@ -976,8 +976,96 @@ class AdverseRadarMixin:
             return {round_price(tv_sl)}
         return set()
 
+    def _count_live_stop_orders(self) -> int:
+        """How many conditional/hard SL orders are live (max must be 1).
+
+        Uses unfiltered STOP* collection — tier-price filter under-counts and was the
+        root of same-price STOP stacking (empty view → place again).
+
+        Returns -1 on fetch failure (fail-closed: callers must refuse place).
+        """
+        try:
+            return len(self._collect_all_stop_like_orders() or [])
+        except Exception:
+            return -1
+
+    def _collect_all_stop_like_orders(self) -> list[dict]:
+        """Every STOP/STOP_MARKET/algo stop (+ hard-SL LIMIT) on this symbol — no tier filter."""
+        symbol = getattr(self, "symbol", None)
+        client = getattr(self, "client", None)
+        if not symbol or not client:
+            return []
+        if getattr(self, "exchange_id", "") == "deepcoin":
+            return list(self._collect_adverse_stop_orders() or [])
+
+        if hasattr(client, "_invalidate_book_cache"):
+            try:
+                client._invalidate_book_cache("count_all_stops")
+            except Exception:
+                pass
+
+        orders: list[dict] = []
+        seen: set[str | int] = set()
+        try:
+            close_side = str(self._adverse_close_side() or "").upper()
+        except Exception:
+            side = str(getattr(self, "current_side", "") or "").upper()
+            close_side = "SELL" if side == "LONG" else ("BUY" if side == "SHORT" else "")
+
+        def _add(o: dict) -> None:
+            oid = o.get("algoId") or o.get("orderId") or o.get("ordId")
+            if oid is not None and oid in seen:
+                return
+            if oid is not None:
+                seen.add(oid)
+            orders.append(o)
+
+        for o in client.get_open_orders(symbol) or []:
+            if not isinstance(o, dict):
+                continue
+            if _is_stop_market_like(o):
+                order_side = str(o.get("side", "")).upper()
+                if close_side and order_side and order_side != close_side:
+                    continue
+                _add(o)
+                continue
+            if str(o.get("type") or "").upper() == "LIMIT" and self._is_hard_sl_limit_order(o):
+                _add(o)
+
+        # Pending algo ids — fetch by id without tier filter (lag cover)
+        for aid in list(getattr(self, "_pending_adverse_algo_ids", None) or []):
+            try:
+                aid_int = int(aid)
+            except (TypeError, ValueError):
+                continue
+            if aid_int in seen:
+                continue
+            try:
+                o = client.get_algo_order(symbol, aid_int) if hasattr(client, "get_algo_order") else None
+            except Exception:
+                o = None
+            if o and isinstance(o, dict) and _is_stop_market_like(o):
+                _add(o)
+
+        if hasattr(client, "get_open_algo_orders"):
+            try:
+                for o in client.get_open_algo_orders(symbol=symbol) or []:
+                    if isinstance(o, dict) and _is_stop_market_like(o):
+                        order_side = str(o.get("side", "")).upper()
+                        if close_side and order_side and order_side != close_side:
+                            continue
+                        _add(o)
+            except Exception as e:
+                # Partial regular + failed algo → unknown book (do not under-count)
+                raise RuntimeError(f"algo_book_unknown:{e}") from e
+        return orders
+
     def _cancel_binance_all_close_stops(self) -> int:
-        """Cancel hard-SL slot: conditional STOP* and resting reduce-only LIMIT at VPS SL."""
+        """Cancel hard-SL slot: conditional STOP* and resting reduce-only LIMIT at VPS SL.
+
+        Single-writer rule: wipe EVERY stop-like close for this symbol, invalidate
+        book cache, and retry once if anything remains. Never leave >1 stop behind.
+        """
         if self._uses_dual_stop_track():
             return 0
         symbol = getattr(self, "symbol", None)
@@ -986,30 +1074,58 @@ class AdverseRadarMixin:
             return 0
         cancelled = 0
         seen: set[str | int] = set()
+        cancelled_ids: set[str | int] = set()
         tier_prices = self._shield_tier_prices()
-        for o in client.get_open_orders(symbol) or []:
-            oid = o.get("algoId") or o.get("orderId")
+
+        def _cancel_one(o: dict) -> bool:
+            nonlocal cancelled
+            oid = o.get("algoId") or o.get("orderId") or o.get("ordId")
             if oid is None or oid in seen:
-                continue
-            hit = _is_stop_market_like(o)
-            if not hit and tier_prices:
-                hit = self._is_adverse_stop_order(o, tier_prices)
-            if not hit:
-                continue
+                return False
             seen.add(oid)
-            client.cancel_order(symbol, int(oid))
-            cancelled += 1
+            ok = bool(client.cancel_order(symbol, int(oid)))
+            if ok:
+                cancelled += 1
+                cancelled_ids.add(oid)
             time.sleep(0.2)
+            return ok
+
+        # Pass 1: unfiltered stop-like (prevents same-price stacks surviving tier filter)
+        for o in self._collect_all_stop_like_orders() or []:
+            _cancel_one(o)
+        # Pass 2: tier-aware adverse collector (hard-SL LIMIT at current_sl)
+        for o in self._collect_adverse_stop_orders() or []:
+            _cancel_one(o)
+        # Pass 3: pending algo ids
         for o in self._collect_pending_adverse_algo_orders(tier_prices or set()):
-            oid = o.get("algoId") or o.get("orderId")
-            if oid is None or oid in seen:
-                continue
-            seen.add(oid)
-            client.cancel_order(symbol, int(oid))
-            cancelled += 1
-            time.sleep(0.2)
-        if cancelled:
-            self._pending_adverse_algo_ids = []
+            _cancel_one(o)
+
+        if hasattr(client, "_invalidate_book_cache"):
+            try:
+                client._invalidate_book_cache("cancel_all_close_stops")
+            except Exception:
+                pass
+        time.sleep(0.25)
+        for o in self._collect_all_stop_like_orders() or []:
+            _cancel_one(o)
+
+        # Only drop pending ids we actually canceled (partial cancel must keep survivors)
+        if cancelled_ids and hasattr(self, "_pending_adverse_algo_ids"):
+            try:
+                self._pending_adverse_algo_ids = [
+                    x for x in (self._pending_adverse_algo_ids or [])
+                    if x not in cancelled_ids
+                ]
+            except Exception:
+                pass
+        remaining = self._count_live_stop_orders()
+        if remaining > 0:
+            logger.error(
+                "[User %s] %s cancel-all close stops left %s live — refuse silent place",
+                getattr(self, "user_id", "?"),
+                getattr(self, "canonical_symbol", symbol),
+                remaining,
+            )
         return cancelled
 
     def _sync_binance_merged_stop(
@@ -1103,6 +1219,28 @@ class AdverseRadarMixin:
                 time.sleep(0.35)
                 audit = self._audit_adverse_shield_live(plan)
         if audit.get("aligned") and not force_replace:
+            # Even when "aligned", hard-cap at 1 stop — purge extras without re-placing.
+            if int(audit.get("open_count") or 0) > ADVERSE_MAX_STOP_ORDERS:
+                purged = self._cancel_binance_all_close_stops()
+                time.sleep(0.35)
+                placed = 1 if self._place_adverse_stop_slice(effective, live_qty) else 0
+                audit = self._refresh_adverse_shield_audit(
+                    plan, retries=ADVERSE_VERIFY_RETRIES, delay=ADVERSE_VERIFY_RETRY_DELAY_SEC,
+                )
+                self.adverse_sl_armed = bool(audit.get("aligned") or placed)
+                self.adverse_sl_prices = [effective] if self.adverse_sl_armed else []
+                return {
+                    "armed": self.adverse_sl_armed,
+                    "aligned": audit.get("aligned", False),
+                    "merged": True,
+                    "stop_price": effective,
+                    "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
+                    "placed": placed,
+                    "cancelled": purged,
+                    "skipped": "purged_duplicate_then_rearm",
+                    "label": self._hard_stop_label(),
+                    **audit,
+                }
             self.adverse_sl_armed = True
             self.adverse_sl_prices = [effective]
             return {
@@ -1117,11 +1255,78 @@ class AdverseRadarMixin:
             }
 
         cancelled = self._cancel_binance_all_close_stops() if force_replace or not audit.get("aligned") else 0
+        # Verify-before-place: never hang a second stop on a failed/partial cancel.
+        time.sleep(0.3)
+        leftover = self._count_live_stop_orders()
+        if leftover < 0:
+            logger.error(
+                "[User %s] %s refuse place: stop book fetch failed after cancel",
+                getattr(self, "user_id", "?"),
+                getattr(self, "canonical_symbol", getattr(self, "symbol", "?")),
+            )
+            return {
+                "armed": False,
+                "aligned": False,
+                "merged": True,
+                "stop_price": effective,
+                "placed": 0,
+                "cancelled": cancelled,
+                "skipped": "refuse_place_book_unknown",
+                "label": self._hard_stop_label(),
+            }
+        if leftover > 0:
+            cancelled += self._cancel_binance_all_close_stops()
+            time.sleep(0.35)
+            leftover = self._count_live_stop_orders()
+        if leftover < 0 or leftover > 0:
+            logger.error(
+                "[User %s] %s refuse place: %s stop(s) still live after cancel",
+                getattr(self, "user_id", "?"),
+                getattr(self, "canonical_symbol", getattr(self, "symbol", "?")),
+                leftover,
+            )
+            self.adverse_sl_armed = leftover >= 1
+            self.adverse_sl_prices = [effective] if self.adverse_sl_armed else []
+            if hasattr(self, "_alert"):
+                try:
+                    self._alert(
+                        "critical",
+                        "SL_DUP_BLOCK",
+                        "止损重复·拒挂第二单",
+                        f"{getattr(self, 'canonical_symbol', '')} 撤单后仍有 {leftover} 笔条件止损，已禁止再挂",
+                        {"leftover": leftover, "stop_price": effective},
+                    )
+                except Exception:
+                    pass
+            return {
+                "armed": self.adverse_sl_armed,
+                "aligned": False,
+                "merged": True,
+                "stop_price": effective,
+                "placed": 0,
+                "cancelled": cancelled,
+                "skipped": "refuse_place_leftover_stops",
+                "leftover_stops": leftover,
+                "label": self._hard_stop_label(),
+            }
+
         placed = 1 if self._place_adverse_stop_slice(effective, live_qty) else 0
         if placed:
             audit = self._refresh_adverse_shield_audit(
                 plan, retries=ADVERSE_VERIFY_RETRIES, delay=ADVERSE_VERIFY_RETRY_DELAY_SEC,
             )
+            # Post-place hard cap: if book shows >1, wipe extras keep one.
+            if int(audit.get("open_count") or 0) > ADVERSE_MAX_STOP_ORDERS:
+                purged = self._purge_excess_adverse_stops(plan)
+                if purged == 0:
+                    # purge failed (e.g. algoId) — full cancel+rearm once
+                    self._cancel_binance_all_close_stops()
+                    time.sleep(0.35)
+                    if self._count_live_stop_orders() == 0:
+                        self._place_adverse_stop_slice(effective, live_qty)
+                audit = self._refresh_adverse_shield_audit(
+                    plan, retries=ADVERSE_VERIFY_RETRIES, delay=ADVERSE_VERIFY_RETRY_DELAY_SEC,
+                )
         self.adverse_sl_armed = bool(audit.get("aligned") or placed)
         self.adverse_sl_prices = [effective] if self.adverse_sl_armed else []
         return {
@@ -1673,20 +1878,43 @@ class AdverseRadarMixin:
         sl_px = float(self.current_sl)
         hang_px = self._exchange_hang_stop_px(sl_px)
         placed = False
-        # Heartbeat: only touch the exchange when price improved OR stop is missing.
+        # Heartbeat: touch exchange when price improved OR stop missing OR duplicates.
         need_sync = bool(improved)
+        live_stop_n = 0
+        if hasattr(self, "_count_live_stop_orders"):
+            try:
+                live_stop_n = int(self._count_live_stop_orders())
+            except Exception:
+                live_stop_n = -1
+        if live_stop_n < 0:
+            # Book unknown — do not place; attempt cancel-only sync refuse path
+            logger.warning(
+                "[User %s] breath tick: stop book unknown — skip place",
+                getattr(self, "user_id", "?"),
+            )
+            return False
+        if live_stop_n > ADVERSE_MAX_STOP_ORDERS:
+            need_sync = True  # purge duplicates even if one is "near"
         if not need_sync:
             near = False
             if hasattr(self, "_has_stop_sl_near"):
                 try:
-                    near = bool(self._has_stop_sl_near(hang_px))
+                    near = self._has_stop_sl_near(hang_px)
                 except Exception:
-                    near = False
+                    near = None
+            if near is None:
+                logger.warning(
+                    "[User %s] breath tick: stop-near unknown — skip place",
+                    getattr(self, "user_id", "?"),
+                )
+                return False
             need_sync = not near
         if need_sync:
             if hasattr(self, "_sync_binance_merged_stop"):
                 merged = self._sync_binance_merged_stop(
-                    live_qty, radar_sl=sl_px, force_replace=improved,
+                    live_qty,
+                    radar_sl=sl_px,
+                    force_replace=bool(improved or live_stop_n > ADVERSE_MAX_STOP_ORDERS),
                 ) or {}
                 placed = bool(merged.get("placed") or 0)
             elif hasattr(self, "_sync_tv_hard_stop"):
@@ -2024,15 +2252,40 @@ class AdverseRadarMixin:
         """
         Place VPS hard stop — must be conditional; never a plain LIMIT.
 
-        Share coexistence (all exchanges):
-        - TP123 = reduceOnly LIMIT（占用仓位减仓额度）
-        - Hard SL / Radar = 单条件槽 closePosition（不与 TP 抢 reduceOnly 份额）
-        Binance/OKX/Gate: Route A 合并槽；DeepCoin: 双轨条件单。
+        Single-writer / anti-duplicate:
+        - If a stop already exists near this trigger, do NOT place another.
+        - If >1 stops exist, cancel-all first; only place when book is empty.
         """
-        close_side = self._adverse_close_side()
         symbol = getattr(self, "symbol", None)
         client = self.client
         self._last_hard_sl_order_style = None
+
+        # --- hard anti-duplicate gate FIRST (fail-closed before any place path) ---
+        try:
+            live_n = self._count_live_stop_orders()
+        except Exception:
+            live_n = -1
+        if live_n < 0:
+            logger.error(
+                "[User %s] %s refuse place stop @%.2f — stop book fetch failed (fail-closed)",
+                getattr(self, "user_id", "?"),
+                getattr(self, "canonical_symbol", symbol),
+                float(stop_price or 0),
+            )
+            self._last_hard_sl_order_style = "refused_book_unknown"
+            return False
+        if live_n >= 1:
+            logger.info(
+                "[User %s] %s skip place stop @%.2f — already %s live (anti-dup)",
+                getattr(self, "user_id", "?"),
+                getattr(self, "canonical_symbol", symbol),
+                float(stop_price or 0),
+                live_n,
+            )
+            self._last_hard_sl_order_style = "skipped_already_live"
+            return True
+
+        close_side = self._adverse_close_side()
 
         if getattr(self, "exchange_id", "") == "deepcoin":
             pos_side = "long" if self.current_side == "LONG" else "short"
@@ -2273,7 +2526,7 @@ class AdverseRadarMixin:
                 key=lambda o: abs(_order_qty_value(o) - target_qty),
             )
             for extra in orders_at_px[1:]:
-                oid = extra.get("orderId") or extra.get("ordId")
+                oid = extra.get("algoId") or extra.get("orderId") or extra.get("ordId")
                 if not oid:
                     continue
                 if getattr(self, "exchange_id", "") == "deepcoin":
@@ -2805,7 +3058,11 @@ class AdverseRadarMixin:
         return 0.0
 
     def _boost_radar_after_tp_fill(self, change_type: str, curr_px: float, live_qty: float) -> None:
-        """TP1/TP2 fill: update remaining pct, then atomically resize stop qty (no price bump)."""
+        """TP1/TP2 fill: update remaining pct, then atomically resize stop qty (no price bump).
+
+        Idempotent: each TP level resizes the stop at most once. Re-entry (false
+        consumed clear/re-mark, duplicate notify) must NOT cancel↔rehang.
+        """
         if change_type not in ("tp1_filled", "tp2_filled", "tp3_filled"):
             return
         consumed = list(getattr(self, "consumed_tp_levels", None) or [])
@@ -2814,6 +3071,21 @@ class AdverseRadarMixin:
             consumed.append(level)
             self.consumed_tp_levels = consumed
         self.remaining_qty_pct = self._remaining_qty_pct_from_consumed(consumed)
+
+        done = getattr(self, "_stop_qty_resized_levels", None)
+        if done is None:
+            self._stop_qty_resized_levels = set()
+            done = self._stop_qty_resized_levels
+        if level and int(level) in done:
+            logger.info(
+                "[User %s] skip TP stop resize — already done for TP%s (anti-thrash)",
+                getattr(self, "user_id", "?"),
+                level,
+            )
+            if hasattr(self, "_save_state"):
+                self._save_state()
+            return
+
         if hasattr(self, "_save_state"):
             self._save_state()
 
@@ -2830,17 +3102,43 @@ class AdverseRadarMixin:
         stop_px = float(getattr(self, "current_sl", 0) or 0)
         if resize_qty > 0 and stop_px > 0 and hasattr(self, "_sync_binance_merged_stop"):
             try:
-                self._sync_binance_merged_stop(
-                    resize_qty, radar_sl=stop_px, force_replace=True, at_open=False,
-                )
-                logger.info(
-                    "[User %s] TP后止损数量收缩 remaining=%.0f%% qty=%.4f @%.2f | %s",
-                    getattr(self, "user_id", "?"),
-                    float(self.remaining_qty_pct) * 100.0,
-                    resize_qty,
-                    stop_px,
-                    change_type,
-                )
+                # Prefer soft sync first — only force_replace when book stop qty/price wrong.
+                already_ok = False
+                if hasattr(self, "_has_stop_sl_near"):
+                    try:
+                        hang = (
+                            self._exchange_hang_stop_px(stop_px)
+                            if hasattr(self, "_exchange_hang_stop_px")
+                            else stop_px
+                        )
+                        already_ok = bool(self._has_stop_sl_near(hang)) and (
+                            self._count_live_stop_orders() <= ADVERSE_MAX_STOP_ORDERS
+                        )
+                    except Exception:
+                        already_ok = False
+                if already_ok:
+                    logger.info(
+                        "[User %s] TP后止损已在簿，跳过撤挂 remaining=%.0f%% | %s",
+                        getattr(self, "user_id", "?"),
+                        float(self.remaining_qty_pct) * 100.0,
+                        change_type,
+                    )
+                else:
+                    self._sync_binance_merged_stop(
+                        resize_qty, radar_sl=stop_px, force_replace=True, at_open=False,
+                    )
+                    logger.info(
+                        "[User %s] TP后止损数量收缩 remaining=%.0f%% qty=%.4f @%.2f | %s",
+                        getattr(self, "user_id", "?"),
+                        float(self.remaining_qty_pct) * 100.0,
+                        resize_qty,
+                        stop_px,
+                        change_type,
+                    )
+                if level:
+                    done.add(int(level))
+                    if hasattr(self, "_save_state"):
+                        self._save_state()
             except Exception as exc:
                 logger.error(
                     "[User %s] TP后止损数量收缩失败: %s",
@@ -2848,6 +3146,8 @@ class AdverseRadarMixin:
                     exc,
                 )
         elif change_type == "tp3_filled":
+            if level:
+                done.add(int(level))
             logger.info(
                 "[User %s] TP3不挂限价；阶段二由呼吸引擎接管 | remaining=%.2f",
                 getattr(self, "user_id", "?"),

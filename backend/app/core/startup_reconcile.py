@@ -1006,8 +1006,34 @@ class StartupReconcileMixin:
             detail["cancelled_stops"] += detail["disarmed_stops"]
 
         if hasattr(self.client, "cancel_all_open_orders"):
-            self.client.cancel_all_open_orders(sym)
+            cancel_meta = self.client.cancel_all_open_orders(sym)
             detail["cancelled_all"] = True
+            if isinstance(cancel_meta, dict):
+                detail["cancel_all_leftover"] = int(cancel_meta.get("leftover") or 0)
+                detail["cancel_all_errors"] = list(cancel_meta.get("errors") or [])
+
+        # Hard verify: flat must leave zero working/conditional orders
+        leftover_n = 0
+        try:
+            if hasattr(self.client, "_mop_up_leftover_orders"):
+                leftover_n = int(self.client._mop_up_leftover_orders(sym, rounds=2))
+            elif hasattr(self.client, "get_open_orders"):
+                leftover_n = len(self.client.get_open_orders(sym) or [])
+        except Exception as e:
+            detail["leftover_verify_error"] = str(e)[:200]
+            leftover_n = -1
+        detail["leftover_orders"] = leftover_n
+        if leftover_n != 0 and leftover_n is not None and hasattr(self, "_alert"):
+            try:
+                self._alert(
+                    "critical",
+                    "FLAT_ORDERS_LEFT",
+                    "平仓后仍有挂单或簿记未知",
+                    f"{getattr(self, 'canonical_symbol', sym)} 平仓后 leftover={leftover_n}（-1=簿记未知），已二次清扫",
+                    detail,
+                )
+            except Exception:
+                pass
 
         if hasattr(self, "_flat_purge_side"):
             delattr(self, "_flat_purge_side")

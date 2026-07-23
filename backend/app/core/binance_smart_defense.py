@@ -314,7 +314,19 @@ class BinanceSmartDefenseMixin:
     ) -> dict:
         live_qty = self._resolve_live_qty(live_qty)
         price_tol = self._tp_price_tol() if tolerance is None else float(tolerance)
-        orders = self._collect_tp_limit_orders()
+        try:
+            orders = self._collect_tp_limit_orders()
+        except Exception as e:
+            return {
+                "expected": 0,
+                "matched_full": 0,
+                "pending_prices": [],
+                "issues": [f"book_unknown:{e}"],
+                "levels": [],
+                "orphans": [],
+                "live_qty": live_qty,
+                "book_unknown": True,
+            }
         levels = []
         matched_full = 0
         issues = []
@@ -449,9 +461,14 @@ class BinanceSmartDefenseMixin:
     def _radar_sl_to_pass(self):
         return self.current_sl if self._is_radar_active() else None
 
-    def _has_stop_sl_near(self, sl_price: float, tolerance: float = 2.0) -> bool:
+    def _has_stop_sl_near(self, sl_price: float, tolerance: float = 2.0) -> bool | None:
+        """True/False when book known; None when fetch failed (do not place)."""
+        try:
+            book = self.client.get_open_orders(self.symbol)
+        except Exception:
+            return None
         target = round(float(sl_price), 2)
-        for o in self.client.get_open_orders(self.symbol) or []:
+        for o in book or []:
             otype = str(o.get("type") or o.get("orderType") or "").upper()
             is_stop = otype in ("STOP_MARKET", "STOP") or (
                 o.get("isAlgoOrder") and self._order_stop_price(o) > 0
@@ -481,11 +498,14 @@ class BinanceSmartDefenseMixin:
                 except (TypeError, ValueError):
                     continue
         if hasattr(self, "_collect_adverse_stop_orders"):
-            from app.core.adverse_radar_guard import _adverse_defense_price
-            for o in self._collect_adverse_stop_orders() or []:
-                px = _adverse_defense_price(o)
-                if px > 0 and abs(px - target) <= tolerance:
-                    return True
+            try:
+                from app.core.adverse_radar_guard import _adverse_defense_price
+                for o in self._collect_adverse_stop_orders() or []:
+                    px = _adverse_defense_price(o)
+                    if px > 0 and abs(px - target) <= tolerance:
+                        return True
+            except Exception:
+                return None
         return False
 
     def _order_stop_price(self, o: dict) -> float:
@@ -745,6 +765,20 @@ class BinanceSmartDefenseMixin:
                 if oid:
                     self.client.cancel_order(self.symbol, int(oid))
                     time.sleep(0.25)
+            # Verify-before-place (same as rebuild — cancel lag must not stack LIMITs)
+            time.sleep(0.25)
+            try:
+                orders = self._collect_tp_limit_orders()
+            except Exception as e:
+                self._def_log(f"  ✗ TP补挂中止·簿记未知: {e}", logging.WARNING)
+                return placed
+            still = [o for o in orders if tp_price_matches(o["price"], px, price_tol)]
+            if still:
+                self._def_log(
+                    f"  ✗ TP @ {px:.2f} 撤后仍在簿 ({len(still)})，拒挂防风暴",
+                    logging.WARNING,
+                )
+                continue
             self._def_log(f"  + 补挂 TP @ {px:.2f} qty={q} ETH")
             res = self.client.place_limit_order(
                 close_side, q, px, symbol=self.symbol, reduce_only=True
@@ -763,6 +797,8 @@ class BinanceSmartDefenseMixin:
         return placed
 
     def _audit_requires_nuclear(self, audit: dict) -> bool:
+        if audit.get("book_unknown"):
+            return False
         expected = audit.get("expected", 0)
         if expected <= 0:
             return False
@@ -1077,6 +1113,16 @@ class BinanceSmartDefenseMixin:
                 if oid:
                     self.client.cancel_order(self.symbol, int(oid))
                     time.sleep(0.25)
+            # Verify-before-place: cancel lag must not create a second LIMIT @ same px
+            time.sleep(0.25)
+            orders = self._collect_tp_limit_orders()
+            still = [o for o in orders if tp_price_matches(o["price"], px, price_tol)]
+            if still:
+                self._def_log(
+                    f"  ✗ TP{level} @ {px:.2f} 撤后仍在簿 ({len(still)})，拒挂防风暴",
+                    logging.WARNING,
+                )
+                continue
             self._def_log(f"  + 重建挂 TP{level} @ {px:.2f} qty={q}")
             res = self.client.place_limit_order(
                 close_side, q, px, symbol=self.symbol, reduce_only=True
@@ -1111,6 +1157,30 @@ class BinanceSmartDefenseMixin:
             # Route A：TP123 ‖ 硬止损 ‖ 雷达 分槽；核武只动 TP 限价
             self._cancel_all_tp_limit_orders()
             time.sleep(1.0)
+            try:
+                left = len(self._collect_tp_limit_orders() or [])
+            except Exception as e:
+                self._def_log(
+                    f"{mark} {tag}轮 {r + 1} 簿记未知({e})，本轮跳过补挂",
+                    logging.WARNING,
+                )
+                continue
+            if left > 0:
+                # Cancel lag — mop individually, refuse rebuild place if still dirty
+                self._def_log(
+                    f"{mark} {tag}轮 {r + 1} 撤后仍有 {left} 笔TP，再清一次（拒在脏簿上补挂）",
+                    logging.WARNING,
+                )
+                self._cancel_all_tp_limit_orders()
+                time.sleep(0.8)
+                left = len(self._collect_tp_limit_orders() or [])
+            if left > 0:
+                self._def_log(
+                    f"{mark} {tag}轮 {r + 1} 盘口仍脏({left})，本轮跳过补挂",
+                    logging.WARNING,
+                )
+                last_audit = self._audit_tp_levels(live_qty)
+                continue
             placed = self._rebuild_tp_limit_orders(live_qty, entry, dynamic_sl=None)
             self._def_log(f"{mark} {tag}轮 {r + 1} 新挂 {placed} 笔限价止盈")
             if dynamic_sl:
@@ -1336,6 +1406,19 @@ class BinanceSmartDefenseMixin:
             self._sync_consumed_tp_levels(live_qty, curr_px)
         self._cancel_tp_orders_for_consumed_levels()
         initial = self._audit_tp_levels(live_qty, curr_px=curr_px)
+        if initial.get("book_unknown"):
+            self._def_log("⚠️ 盘口簿记未知，跳过防线对齐（拒乐观补挂）", logging.WARNING)
+            return {
+                "matched": 0,
+                "expected": initial.get("expected", 0),
+                "pending_prices": [],
+                "rebuilt": False,
+                "audit": initial,
+                "nuclear": False,
+                "skipped": True,
+                "aligned": False,
+                "summary": "book_unknown",
+            }
         if self._defenses_fully_ok(
             live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
         ):
@@ -1383,23 +1466,40 @@ class BinanceSmartDefenseMixin:
             nuclear = False
 
             if expected > 0 and audit["matched_full"] < expected:
-                if open_init:
+                # Duplicate LIMITs → purge only; never nuclear-place (XAU TP storm root).
+                if any(lv.get("status") == "duplicate" for lv in audit.get("levels", [])):
+                    self._def_log(
+                        "🧹 对齐未达标且仍有重复止盈 → 只去重，不核武补挂",
+                        logging.WARNING,
+                    )
+                    self._purge_duplicate_tp_orders(live_qty)
+                    time.sleep(0.4)
+                    audit = self._audit_tp_levels(live_qty)
+                    matched = audit["matched_full"]
+                    pending_prices = audit["pending_prices"]
+                elif open_init:
                     self._def_log(
                         f"📋 开仓初始化补挂未齐 ({audit['matched_full']}/{expected})，继续清场补挂",
                         logging.INFO,
                     )
+                    audit = self._nuclear_realign_tp(live_qty, entry, dynamic_sl=None, rounds=3)
+                    matched = audit["matched_full"]
+                    pending_prices = audit["pending_prices"]
+                    rebuilt = nuclear = True
+                    if dynamic_sl and hasattr(self, "_ensure_radar_sl"):
+                        self._ensure_radar_sl(dynamic_sl, live_qty)
                 else:
                     self._def_log(
                         f"⚠️ 常规对齐未达标 ({audit['matched_full']}/{expected})，升级核武级清场重挂",
                         logging.WARNING,
                     )
-                # 核武只动 TP；雷达另槽事后补挂，禁止与硬止损抢份额
-                audit = self._nuclear_realign_tp(live_qty, entry, dynamic_sl=None, rounds=3)
-                matched = audit["matched_full"]
-                pending_prices = audit["pending_prices"]
-                rebuilt = nuclear = True
-                if dynamic_sl and hasattr(self, "_ensure_radar_sl"):
-                    self._ensure_radar_sl(dynamic_sl, live_qty)
+                    # 核武只动 TP；雷达另槽事后补挂，禁止与硬止损抢份额
+                    audit = self._nuclear_realign_tp(live_qty, entry, dynamic_sl=None, rounds=3)
+                    matched = audit["matched_full"]
+                    pending_prices = audit["pending_prices"]
+                    rebuilt = nuclear = True
+                    if dynamic_sl and hasattr(self, "_ensure_radar_sl"):
+                        self._ensure_radar_sl(dynamic_sl, live_qty)
 
             summary = self._format_audit_summary(audit)
             return {

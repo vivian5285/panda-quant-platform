@@ -16,6 +16,8 @@ def _make_supervisor(**kwargs):
     }
     client.get_current_price.return_value = 3300.0
     client.place_market_order.return_value = {}
+    client.get_open_orders.return_value = []
+    client.cancel_all_open_orders.return_value = {"leftover": 0, "errors": []}
     client.trading_symbol = "ETHUSDT"
     client.exchange_id = "binance"
     client.trading_leverage = 5
@@ -105,6 +107,7 @@ def test_force_flat_before_open_still_sizes():
     sup.position_manager.get_position.return_value = None
     sup._get_active_position = MagicMock(return_value=None)
     sup._count_open_book_orders = MagicMock(return_value=0)
+    sup._count_raw_exchange_orders = MagicMock(return_value=0)
     sup._purge_defense_orders_on_flat = MagicMock()
     sup._cancel_all_verified = MagicMock()
     sup._disarm_adverse_staged_stops = MagicMock()

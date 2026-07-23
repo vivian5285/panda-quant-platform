@@ -19,13 +19,13 @@ def test_continuous_ends_and_midpoints():
     # Floor / ceiling
     assert abs(trail_distance_multiplier(0.5, ETH_PROFILE) - 1.2) < 1e-9
     assert abs(trail_distance_multiplier(2.5, ETH_PROFILE) - 2.5) < 1e-9
-    assert abs(trail_distance_multiplier(0.5, XAU_PROFILE) - 0.8) < 1e-9
-    assert abs(trail_distance_multiplier(2.5, XAU_PROFILE) - 1.8) < 1e-9
-    # Cold start ratio=1.0
+    assert abs(trail_distance_multiplier(0.5, XAU_PROFILE) - 0.5) < 1e-9
+    assert abs(trail_distance_multiplier(2.5, XAU_PROFILE) - 1.2) < 1e-9
+    # Cold start ratio=1.0 → min + (max-min)*0.25
     assert abs(cold_start_multiplier(ETH_PROFILE) - 1.525) < 1e-9
-    assert abs(cold_start_multiplier(XAU_PROFILE) - 1.05) < 1e-9
+    assert abs(cold_start_multiplier(XAU_PROFILE) - 0.675) < 1e-9
     assert abs(get_breathing_coefficient(1.0, "ETHUSDT") - 1.525) < 1e-9
-    assert abs(get_breathing_coefficient(1.0, "XAUUSDT") - 1.05) < 1e-9
+    assert abs(get_breathing_coefficient(1.0, "XAUUSDT") - 0.675) < 1e-9
     # Midpoints continuous (no discrete jump)
     eth_07 = get_breathing_coefficient(0.7, "ETHUSDT")
     eth_10 = get_breathing_coefficient(1.0, "ETHUSDT")

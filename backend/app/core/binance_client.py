@@ -14,6 +14,10 @@ WS_MARKET_BASE = "wss://fstream.binance.com/market/ws"
 CLIENT_VERSION = "v13.4.7-rest-cache"
 
 
+class BookFetchError(RuntimeError):
+    """Open-order / algo-book fetch failed — callers must FAIL CLOSED (never treat as empty)."""
+
+
 def _error_indicates_sub_account_only(err: str) -> bool:
     """True only when the exchange explicitly says this key is a sub-account key."""
     e = err.lower()
@@ -406,7 +410,11 @@ class BinanceClient:
             return None
 
     def get_open_algo_orders(self, symbol=None) -> list[dict]:
-        """Conditional STOP/TP orders live on the algo book after 2025-12 migration."""
+        """Conditional STOP/TP orders live on the algo book after 2025-12 migration.
+
+        Raises BookFetchError when the requested symbol's algo book cannot be fetched.
+        Never returns [] on fetch failure (that was the STOP-stack / dirty-open root).
+        """
         from app.core.rest_book_cache import get_cached_algo_orders
 
         symbol = self._sym(symbol)
@@ -431,7 +439,9 @@ class BinanceClient:
                     out[sym] = cleaned
                 except Exception as e:
                     logger.warning(f"[User {self.user_id}] get algo orders failed: {e}")
-                    out[sym] = []
+                    if sym == symbol:
+                        raise BookFetchError(f"algo_book:{sym}:{e}") from e
+                    # Other symbols: omit from cache warm (do not fake empty)
             return out
 
         try:
@@ -442,11 +452,14 @@ class BinanceClient:
                 fetch_for_symbols=_fetch,
                 symbols=symbols,
             )
+        except BookFetchError:
+            raise
         except Exception as e:
             logger.warning(f"[User {self.user_id}] get algo orders failed: {e}")
-            return []
+            raise BookFetchError(f"algo_book:{symbol}:{e}") from e
 
     def get_open_orders(self, symbol=None):
+        """Regular + algo open orders. Raises BookFetchError on fetch failure (fail-closed)."""
         from app.core.rest_book_cache import get_cached_open_orders
 
         symbol = self._sym(symbol)
@@ -459,12 +472,14 @@ class BinanceClient:
             )
         except Exception as e:
             logger.error(f"[User {self.user_id}] get orders failed: {e}")
-            regular = []
+            raise BookFetchError(f"regular_book:{symbol}:{e}") from e
         try:
             algo = self.get_open_algo_orders(symbol=symbol)
-        except Exception:
-            algo = []
-        return list(regular) + list(algo)
+        except BookFetchError:
+            raise
+        except Exception as e:
+            raise BookFetchError(f"algo_book:{symbol}:{e}") from e
+        return list(regular or []) + list(algo or [])
 
     def _place_algo_stop_market(self, params: dict) -> dict | None:
         try:
@@ -703,36 +718,121 @@ class BinanceClient:
 
     def cancel_order(self, symbol: str | None, order_id: int) -> bool:
         symbol = self._sym(symbol)
+        ok = False
         try:
             self.client.futures_cancel_order(symbol=symbol, orderId=int(order_id))
             logger.info(f"[User {self.user_id}] cancel order {order_id}")
-            return True
+            ok = True
         except Exception as e:
             logger.debug(f"[User {self.user_id}] regular cancel {order_id} failed: {e}")
-        try:
-            self.client._request_futures_api(
-                "delete", "algoOrder", signed=True,
-                data={"symbol": symbol, "algoId": int(order_id)},
-            )
-            logger.info(f"[User {self.user_id}] cancel algo order {order_id}")
-            return True
-        except Exception as e:
-            logger.warning(f"[User {self.user_id}] cancel order {order_id} failed: {e}")
-            return False
+        if not ok:
+            try:
+                self.client._request_futures_api(
+                    "delete", "algoOrder", signed=True,
+                    data={"symbol": symbol, "algoId": int(order_id)},
+                )
+                logger.info(f"[User {self.user_id}] cancel algo order {order_id}")
+                ok = True
+            except Exception as e:
+                logger.warning(f"[User {self.user_id}] cancel order {order_id} failed: {e}")
+                ok = False
+        # Always drop book cache after a cancel attempt so the next audit cannot
+        # place a second STOP on a stale empty/partial view (duplicate SL root cause).
+        self._invalidate_book_cache("cancel_order")
+        return ok
 
     def cancel_all_open_orders(self, symbol=None):
+        """Cancel regular + algo open orders, then verify and mop up leftovers.
+
+        Production rule: flat must leave ZERO working/conditional orders on the symbol.
+        Bulk cancel can fail partially (rate limit / algo book lag) — always verify.
+        """
         symbol = self._sym(symbol)
+        errors: list[str] = []
         try:
             self.client.futures_cancel_all_open_orders(symbol=symbol)
         except Exception as e:
             logger.error(f"[User {self.user_id}] cancel orders failed: {e}")
+            errors.append(f"regular:{e}")
         try:
             self.client._request_futures_api(
                 "delete", "algoOpenOrders", signed=True, data={"symbol": symbol},
             )
         except Exception as e:
-            logger.debug(f"[User {self.user_id}] cancel algo orders: {e}")
+            logger.warning(f"[User {self.user_id}] cancel algo orders: {e}")
+            errors.append(f"algo:{e}")
         self._invalidate_book_cache("cancel_all")
+
+        # Verify + individual mop-up (handles partial bulk failure / book lag)
+        leftover = self._mop_up_leftover_orders(symbol, rounds=3)
+        if leftover != 0:
+            logger.error(
+                "[User %s] %s still has leftover=%s open orders after cancel_all (errors=%s)",
+                self.user_id, symbol, leftover, errors,
+            )
+        return {"symbol": symbol, "leftover": leftover, "errors": errors}
+
+    def _mop_up_leftover_orders(self, symbol: str | None = None, *, rounds: int = 3) -> int:
+        """Cancel any remaining regular/algo orders one-by-one; return final leftover count.
+
+        Returns -1 when the book cannot be listed (FAIL CLOSED — never claim clean).
+        """
+        symbol = self._sym(symbol)
+        last = 0
+        list_failed = False
+        for _ in range(max(1, int(rounds))):
+            self._invalidate_book_cache("mop_up")
+            time.sleep(0.25)
+            rows: list[dict] = []
+            reg_ok = algo_ok = True
+            try:
+                rows.extend(self.client.futures_get_open_orders(symbol=symbol) or [])
+            except Exception as e:
+                logger.warning("[User %s] mop-up list regular failed: %s", self.user_id, e)
+                reg_ok = False
+            try:
+                rows.extend(self.get_open_algo_orders(symbol=symbol) or [])
+            except Exception as e:
+                logger.warning("[User %s] mop-up list algo failed: %s", self.user_id, e)
+                algo_ok = False
+            if not reg_ok or not algo_ok:
+                list_failed = True
+                # Do not return 0 — unknown book is dirty
+                continue
+            if not rows:
+                return 0
+            seen: set[int] = set()
+            for o in rows:
+                oid = o.get("algoId") or o.get("orderId")
+                if oid is None:
+                    continue
+                try:
+                    oid_i = int(oid)
+                except (TypeError, ValueError):
+                    continue
+                if oid_i in seen:
+                    continue
+                seen.add(oid_i)
+                self.cancel_order(symbol, oid_i)
+                time.sleep(0.15)
+            last = len(seen)
+        self._invalidate_book_cache("mop_up_done")
+        # Final count
+        try:
+            reg = self.client.futures_get_open_orders(symbol=symbol) or []
+            reg_ok = True
+        except Exception:
+            reg = []
+            reg_ok = False
+        try:
+            algo = self.get_open_algo_orders(symbol=symbol) or []
+            algo_ok = True
+        except Exception:
+            algo = []
+            algo_ok = False
+        if not reg_ok or not algo_ok or list_failed:
+            return -1
+        return len(reg) + len(algo)
 
     def test_connection(self) -> bool:
         try:

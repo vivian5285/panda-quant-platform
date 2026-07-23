@@ -2,6 +2,9 @@
 
 ETH/XAU share ratioFloor/ratioCeiling; only minMult/maxMult differ.
 XAU tightness is entirely in min/max — no extra trail_tighten layer.
+
+XAU min/max were retuned after production backtest (continuous 0.8~1.8
+underperformed old discrete×0.8); see backend/data/_xau_min_max_sensitivity.json.
 """
 
 from __future__ import annotations
@@ -63,8 +66,11 @@ XAU_PROFILE = BreathingProfile(
     step_trigger_atr=0.4,
     step_advance_atr=0.35,
     phase2_trigger_atr=3.0,
-    coef_min=0.8,
-    coef_max=1.8,
+    # Tuned after continuous-vs-discrete backtest: 0.8~1.8 was too loose
+    # vs old discrete×0.8 effective (~0.4~1.04). 0.5~1.2 keeps continuous
+    # smoothness while matching discrete PnL/PF on 1h history.
+    coef_min=0.5,
+    coef_max=1.2,
 )
 
 _PROFILES: dict[str, BreathingProfile] = {

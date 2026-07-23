@@ -305,6 +305,10 @@ class PositionSupervisor(
                     "base_qty": float(getattr(self, "base_qty", 0) or 0),
                     "add_count": 0,
                     "consumed_tp_levels": self.consumed_tp_levels,
+                    "stop_qty_resized_levels": sorted(
+                        int(x) for x in (getattr(self, "_stop_qty_resized_levels", None) or set())
+                        if int(x) in (1, 2, 3)
+                    ),
                     "adverse_sl_armed": self.adverse_sl_armed,
                     "adverse_sl_prices": self.adverse_sl_prices,
                     "adverse_consumed_tiers": list(self.adverse_consumed_tiers),
@@ -374,6 +378,9 @@ class PositionSupervisor(
                     self.consumed_tp_levels = [
                         int(x) for x in (s.get("consumed_tp_levels") or []) if int(x) in (1, 2, 3)
                     ]
+                    self._stop_qty_resized_levels = {
+                        int(x) for x in (s.get("stop_qty_resized_levels") or []) if int(x) in (1, 2, 3)
+                    }
                     self.adverse_sl_armed = bool(s.get("adverse_sl_armed", False))
                     self.adverse_sl_prices = [
                         float(x) for x in (s.get("adverse_sl_prices") or [])
@@ -727,7 +734,7 @@ class PositionSupervisor(
             if live_qty <= 0:
                 if hasattr(self, "_purge_defense_orders_on_flat"):
                     try:
-                        self._purge_defense_orders_on_flat(reason=f"reconcile_{action}")
+                        self._purge_defense_orders_on_flat(f"reconcile_{action}")
                     except Exception:
                         pass
                 if hasattr(self, "_clear_position_local_state"):
@@ -746,7 +753,7 @@ class PositionSupervisor(
         elif live_qty <= 0:
             if hasattr(self, "_purge_defense_orders_on_flat"):
                 try:
-                    self._purge_defense_orders_on_flat(reason=f"reconcile_{action}")
+                    self._purge_defense_orders_on_flat(f"reconcile_{action}")
                 except Exception:
                     pass
             if hasattr(self, "_clear_position_local_state"):
@@ -1108,7 +1115,10 @@ class PositionSupervisor(
         return detail
 
     def _count_open_book_orders(self) -> int:
-        """TP limits + conditional stops still on the exchange book."""
+        """Filtered TP limits + adverse stops (defense audit). Prefer raw count for open gate.
+
+        Returns -1 on fetch failure (FAIL CLOSED).
+        """
         n = 0
         try:
             if hasattr(self, "_collect_tp_limit_orders"):
@@ -1116,20 +1126,73 @@ class PositionSupervisor(
             elif hasattr(self.client, "get_open_orders"):
                 n += len(self.client.get_open_orders(self.symbol) or [])
         except Exception:
-            pass
+            return -1
         try:
             if hasattr(self, "_collect_adverse_stop_orders"):
                 n += len(self._collect_adverse_stop_orders() or [])
             elif hasattr(self, "_collect_stop_orders"):
                 n += len(self._collect_stop_orders() or [])
         except Exception:
-            pass
+            return -1
         return int(n)
+
+    def _count_raw_exchange_orders(self) -> int:
+        """ALL working/conditional orders on this symbol. Flat-before-open requires 0.
+
+        Returns -1 on fetch failure (fail-closed: treat as dirty).
+        """
+        symbol = getattr(self, "symbol", None)
+        client = getattr(self, "client", None)
+        if not symbol or not client:
+            return -1
+        rows: list = []
+        try:
+            if hasattr(client, "_invalidate_book_cache"):
+                try:
+                    client._invalidate_book_cache("pre_open_raw_count")
+                except Exception:
+                    pass
+            got = client.get_open_orders(symbol) if hasattr(client, "get_open_orders") else []
+            if got is None:
+                got = []
+            if not isinstance(got, (list, tuple)):
+                return -1
+            rows.extend(got)
+            # Binance: get_open_orders already merges algo; still mop-count if available
+            if hasattr(client, "_mop_up_leftover_orders") and not rows:
+                # cheap re-list only — do not cancel here
+                pass
+            if hasattr(client, "get_open_algo_orders") and getattr(self, "exchange_id", "") == "binance":
+                # Extra pass when get_open_orders might omit algo under lag
+                try:
+                    algo = client.get_open_algo_orders(symbol=symbol) or []
+                    if isinstance(algo, (list, tuple)):
+                        seen = {
+                            o.get("algoId") or o.get("orderId")
+                            for o in rows
+                            if isinstance(o, dict)
+                        }
+                        for o in algo:
+                            if not isinstance(o, dict):
+                                continue
+                            oid = o.get("algoId") or o.get("orderId")
+                            if oid is not None and oid in seen:
+                                continue
+                            rows.append(o)
+                            if oid is not None:
+                                seen.add(oid)
+                except Exception:
+                    # Algo list failure with empty regular → unknown
+                    if not rows:
+                        return -1
+            return len(rows)
+        except Exception:
+            return -1
 
     def _ensure_book_clean_before_open(self, reason: str = "pre_open") -> dict:
         """
-        After flat (or before OPEN): wipe residual TP/stop so a fast CLOSE→OPEN
-        cannot leave reverse/oversize fills from stale reduce-only orders.
+        After flat (or before OPEN): wipe residual TP/stop/ghost LIMIT so OPEN
+        only proceeds on a raw-empty book (no position AND no working orders).
         """
         detail: dict = {
             "reason": reason,
@@ -1137,17 +1200,21 @@ class PositionSupervisor(
             "rounds": 0,
             "orders_before": 0,
             "orders_after": 0,
+            "raw_before": 0,
+            "raw_after": -1,
             "ok": False,
         }
         detail["orders_before"] = self._count_open_book_orders()
+        detail["raw_before"] = self._count_raw_exchange_orders()
         for round_i in range(3):
             detail["rounds"] = round_i + 1
             if hasattr(self, "_purge_defense_orders_on_flat"):
                 self._purge_defense_orders_on_flat(f"pre_open_{reason}", notify=False)
+            cancel_meta = None
             if hasattr(self, "_cancel_all_verified"):
                 self._cancel_all_verified()
-            elif hasattr(self.client, "cancel_all_open_orders"):
-                self.client.cancel_all_open_orders(self.symbol)
+            if hasattr(self.client, "cancel_all_open_orders"):
+                cancel_meta = self.client.cancel_all_open_orders(self.symbol)
             if hasattr(self, "_disarm_adverse_staged_stops"):
                 self._disarm_adverse_staged_stops(reason="pre_open_clean", notify=False)
             # 必须保留本笔 TV 刚写入的 tv_sl（清的是旧仓雷达状态，不是新信号硬止损）
@@ -1157,27 +1224,44 @@ class PositionSupervisor(
             if hasattr(self, "radar_latched"):
                 self.radar_latched = False
             time.sleep(0.35 + round_i * 0.15)
-            left = self._count_open_book_orders()
-            detail["orders_after"] = left
-            if left <= 0:
+            raw = self._count_raw_exchange_orders()
+            filtered = self._count_open_book_orders()
+            leftover_meta = (
+                int(cancel_meta.get("leftover"))
+                if isinstance(cancel_meta, dict) and cancel_meta.get("leftover") is not None
+                else None
+            )
+            detail["raw_after"] = raw
+            detail["orders_after"] = filtered
+            detail["cancel_leftover"] = leftover_meta
+            # Flat = raw empty AND known. Fail-closed: fetch error (-1) → dirty.
+            if raw == 0 and filtered == 0 and (leftover_meta is None or leftover_meta == 0):
                 detail["ok"] = True
                 break
+            if raw < 0 or filtered < 0 or (leftover_meta is not None and leftover_meta < 0):
+                detail["ok"] = False
+                # keep trying mop rounds, but never mark clean on unknown
+                continue
         if not detail["ok"]:
+            rem = detail.get("raw_after")
+            if rem is None or rem < 0:
+                rem = detail.get("orders_after")
             self._log(
                 "FLIP_CLEAN",
-                f"开仓前挂单未清零 remaining={detail['orders_after']} | {reason}",
+                f"开仓前挂单未清零 raw={detail.get('raw_after')} filtered={detail.get('orders_after')} | {reason}",
                 detail,
             )
             self._alert(
                 "warning",
                 "FLIP_CLEAN",
                 "开仓前挂单残留·已尽力撤单",
-                f"仍有 {detail['orders_after']} 笔挂单 | {reason} — 上层将中止开仓",
+                f"仍有 raw={detail.get('raw_after')} 笔挂单 | {reason} — 上层将中止开仓",
                 detail,
             )
         else:
-            if detail["orders_before"] > 0:
-                self._log("FLIP_CLEAN", f"开仓前清场完成 撤尽 {detail['orders_before']} 笔 | {reason}", detail)
+            before = detail.get("raw_before") or detail.get("orders_before") or 0
+            if before and before > 0:
+                self._log("FLIP_CLEAN", f"开仓前清场完成 撤尽 raw≈{before} 笔 | {reason}", detail)
         if hasattr(self, "_save_state"):
             self._save_state()
         return detail
@@ -1291,6 +1375,7 @@ class PositionSupervisor(
                 self.add_count = 0
                 self.consumed_tp_levels = []
                 self._tp_fill_dingtalk_levels = set()
+                self._stop_qty_resized_levels = set()
                 self.current_side = None
             # Preserve pending TV Pine stop_loss + atr for sizing (after wipe)
             _restore_pending_open_refs()
@@ -1588,12 +1673,57 @@ class PositionSupervisor(
         except Exception as exc:
             self._log("WARN", f"daily_loss_circuit check failed: {exc}")
         leverage = self._bind_tv_leverage()
-        self.client.cancel_all_open_orders(self.symbol)
+        cancel_meta = self.client.cancel_all_open_orders(self.symbol)
         if hasattr(self, "_cancel_binance_all_close_stops"):
             purged = int(self._cancel_binance_all_close_stops() or 0)
             if purged:
                 self._log("SIGNAL", f"🧹 开仓前清残留硬止损/条件单 ×{purged}")
         time.sleep(0.4)
+        # Hard gate: never open on a non-empty book (ghost LIMIT / leftover STOP).
+        leftover = (
+            int(cancel_meta.get("leftover"))
+            if isinstance(cancel_meta, dict) and cancel_meta.get("leftover") is not None
+            else None
+        )
+        raw_left = (
+            self._count_raw_exchange_orders()
+            if hasattr(self, "_count_raw_exchange_orders")
+            else -1
+        )
+        if (leftover is not None and leftover != 0) or raw_left != 0:
+            if hasattr(self.client, "_mop_up_leftover_orders"):
+                try:
+                    leftover = int(self.client._mop_up_leftover_orders(self.symbol, rounds=2))
+                except Exception:
+                    leftover = -1
+                time.sleep(0.3)
+                raw_left = self._count_raw_exchange_orders()
+            if raw_left != 0 or (leftover is not None and leftover != 0):
+                self._log(
+                    "ERROR",
+                    f"开仓中止·盘口未清 raw={raw_left} leftover={leftover}",
+                    {"raw": raw_left, "leftover": leftover},
+                )
+                self._alert(
+                    "critical",
+                    "OPEN_BOOK_DIRTY",
+                    "开仓中止·盘口未清零",
+                    f"{getattr(self, 'canonical_symbol', self.symbol)} "
+                    f"仍有 raw={raw_left} 笔挂单，拒绝开仓",
+                    {"raw": raw_left, "leftover": leftover},
+                )
+                if hasattr(self, "_pause_trading"):
+                    try:
+                        self._pause_trading("open_book_dirty")
+                    except Exception:
+                        pass
+                return {
+                    "status": "error",
+                    "reason": "open_book_dirty",
+                    "message": "开仓前挂单未清零，已中止",
+                    "raw_orders": raw_left,
+                    "cancel_leftover": leftover,
+                }
         # 双保险：先平后开清场若仍抹掉 tv_sl，从硬止损缓存/本笔字段恢复后再算仓
         # Restore Pine stop_loss ref only (never VPS hang price into tv_sl).
         if float(getattr(self, "tv_sl", 0) or 0) <= 0:
@@ -1669,6 +1799,7 @@ class PositionSupervisor(
             self.add_count = 0
             self.consumed_tp_levels = []
             self._tp_fill_dingtalk_levels = set()
+            self._stop_qty_resized_levels = set()
             self.current_trade_id = self.on_trade_open(
                 self.user_id, action, real_qty, entry_price, self.regime, self.tv_tps,
                 symbol=self.canonical_symbol,
@@ -1966,12 +2097,15 @@ class PositionSupervisor(
                     break
             if still_on_book:
                 logger.warning(
-                    "[User %s] 仓位仍满且 TP 限价仍在盘口，清除误记账 consumed=%s",
+                    "[User %s] 仓位仍满且 TP 限价仍在盘口，清除误记账 consumed=%s"
+                    "（保留 stop_resized 标记防撤挂死循环）",
                     self.user_id, self.consumed_tp_levels,
                 )
                 self.consumed_tp_levels = []
                 if hasattr(self, "_tp_fill_dingtalk_levels"):
                     self._tp_fill_dingtalk_levels = set()
+                self._stop_qty_resized_levels = set()
+                # Keep _stop_qty_resized_levels — re-inferring TP must not cancel↔rehang.
                 if hasattr(self, "_save_state"):
                     self._save_state()
                 return []
@@ -2170,18 +2304,25 @@ class PositionSupervisor(
             self._tp_fill_dingtalk_levels = set()
             alerted = self._tp_fill_dingtalk_levels
 
+        # Stop-qty resize is once-per-level; never cancel↔rehang on repeat notifies.
+        resized = getattr(self, "_stop_qty_resized_levels", None)
+        if resized is None:
+            self._stop_qty_resized_levels = set()
+            resized = self._stop_qty_resized_levels
+
         bump: dict = {}
-        if lvl in (1, 2) and float(new_qty or 0) > 0 and hasattr(self, "_bump_sl_after_tp_reconcile"):
+        if (
+            lvl in (1, 2)
+            and float(new_qty or 0) > 0
+            and lvl not in resized
+            and hasattr(self, "_bump_sl_after_tp_reconcile")
+        ):
             try:
                 bump = self._bump_sl_after_tp_reconcile(str(lvl)) or {}
             except Exception as exc:
                 logger.warning("[User %s] TP%d SL bump failed: %s", self.user_id, lvl, exc)
                 bump = {"error": str(exc)}
-            if hasattr(self, "_boost_radar_after_tp_fill"):
-                try:
-                    self._boost_radar_after_tp_fill(f"tp{lvl}_filled", float(curr_px or 0), float(new_qty or 0))
-                except Exception:
-                    pass
+            # _bump_sl_after_tp_reconcile already calls _boost_radar_after_tp_fill
         if hasattr(self, "_clear_defense_order_ids"):
             self._clear_defense_order_ids(str(lvl))
             if hasattr(self, "_save_state"):
@@ -2619,33 +2760,63 @@ class PositionSupervisor(
         return head + " | " + "; ".join(parts) if parts else head
 
     def _cancel_all_verified(self) -> dict:
-        """Cancel all open orders; verify empty; fallback to per-order cancel."""
+        """Cancel all open orders; verify empty; fallback to per-order cancel.
+
+        Fetch failure → ok=False (FAIL CLOSED — never claim empty on unknown book).
+        """
         cancelled_ids: list[int] = []
-        for round_i in range(CANCEL_VERIFY_ROUNDS):
-            open_orders = self.client.get_open_orders(self.symbol) or []
-            if not open_orders:
-                return {"ok": True, "rounds": round_i, "cancelled_ids": cancelled_ids}
+        try:
+            for round_i in range(CANCEL_VERIFY_ROUNDS):
+                try:
+                    open_orders = self.client.get_open_orders(self.symbol) or []
+                except Exception as e:
+                    return {
+                        "ok": False,
+                        "rounds": round_i,
+                        "cancelled_ids": cancelled_ids,
+                        "error": f"book_fetch:{e}",
+                    }
+                if not open_orders:
+                    return {"ok": True, "rounds": round_i, "cancelled_ids": cancelled_ids}
 
-            self.client.cancel_all_open_orders(self.symbol)
-            time.sleep(0.4 + round_i * 0.25)
+                self.client.cancel_all_open_orders(self.symbol)
+                time.sleep(0.4 + round_i * 0.25)
 
-            remaining = self.client.get_open_orders(self.symbol) or []
-            if not remaining:
-                return {"ok": True, "rounds": round_i + 1, "cancelled_ids": cancelled_ids}
+                try:
+                    remaining = self.client.get_open_orders(self.symbol) or []
+                except Exception as e:
+                    return {
+                        "ok": False,
+                        "rounds": round_i + 1,
+                        "cancelled_ids": cancelled_ids,
+                        "error": f"book_fetch:{e}",
+                    }
+                if not remaining:
+                    return {"ok": True, "rounds": round_i + 1, "cancelled_ids": cancelled_ids}
 
-            for order in remaining:
-                oid = order.get("orderId")
-                if oid and self.client.cancel_order(self.symbol, int(oid)):
-                    cancelled_ids.append(int(oid))
-            time.sleep(0.35)
+                for order in remaining:
+                    oid = order.get("orderId")
+                    if oid and self.client.cancel_order(self.symbol, int(oid)):
+                        cancelled_ids.append(int(oid))
+                time.sleep(0.35)
 
-        remaining = self.client.get_open_orders(self.symbol) or []
-        return {
-            "ok": not remaining,
-            "rounds": CANCEL_VERIFY_ROUNDS,
-            "remaining": len(remaining),
-            "cancelled_ids": cancelled_ids,
-        }
+            try:
+                remaining = self.client.get_open_orders(self.symbol) or []
+            except Exception as e:
+                return {
+                    "ok": False,
+                    "rounds": CANCEL_VERIFY_ROUNDS,
+                    "cancelled_ids": cancelled_ids,
+                    "error": f"book_fetch:{e}",
+                }
+            return {
+                "ok": not remaining,
+                "rounds": CANCEL_VERIFY_ROUNDS,
+                "remaining": len(remaining),
+                "cancelled_ids": cancelled_ids,
+            }
+        except Exception as e:
+            return {"ok": False, "rounds": 0, "cancelled_ids": cancelled_ids, "error": str(e)}
 
     def _place_all_defense_orders(
         self,
@@ -2719,9 +2890,38 @@ class PositionSupervisor(
                     if hasattr(self, "_save_state"):
                         self._save_state()
                 continue
+            # Max-1 per price: already on book → never place another (TP storm root).
+            from app.core.tp_defense_reconcile import tp_price_matches
+            if any(tp_price_matches(float(p), place_px) for p in (open_prices or [])):
+                self._log(
+                    "TP_SKIP_REHANG",
+                    f"全量重挂跳过 TP{level}: already_on_book @{place_px:.2f}",
+                )
+                continue
+            # Fresh book check (open_prices may lag heal rounds)
+            if hasattr(self, "_collect_tp_limit_orders"):
+                try:
+                    live_tps = self._collect_tp_limit_orders() or []
+                    if any(
+                        tp_price_matches(float(o.get("price") or 0), place_px)
+                        for o in live_tps
+                    ):
+                        self._log(
+                            "TP_SKIP_REHANG",
+                            f"全量重挂跳过 TP{level}: live_book @{place_px:.2f}",
+                        )
+                        open_prices = [
+                            round_price(float(o.get("price") or 0))
+                            for o in live_tps
+                            if float(o.get("price") or 0) > 0
+                        ]
+                        continue
+                except Exception:
+                    pass
             result = self._place_limit_with_retry(close_side, qty, place_px, f"TP{level}")
             if result["ok"]:
                 placed.append(result)
+                open_prices = list(open_prices or []) + [round_price(place_px)]
                 if hasattr(self, "_mark_tp_placed"):
                     self._mark_tp_placed(int(level), order_id=result.get("order_id"))
                 if hasattr(self, "_save_state"):
@@ -3248,9 +3448,8 @@ class PositionSupervisor(
             after = set(int(x) for x in (self.consumed_tp_levels or []))
             gained = sorted(after - before)
             if gained and hasattr(self, "_notify_tp_fill_detected"):
+                # notify → bump → boost (once). Do NOT call boost again here.
                 self._notify_tp_fill_detected(gained[0], self.watched_qty or live_qty, live_qty, curr_px)
-                if hasattr(self, "_boost_radar_after_tp_fill"):
-                    self._boost_radar_after_tp_fill(f"tp{gained[0]}_filled", curr_px, live_qty)
         self.watched_qty = live_qty
         if entry > 0:
             self.watched_entry = entry

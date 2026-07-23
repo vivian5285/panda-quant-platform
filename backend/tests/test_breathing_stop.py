@@ -24,9 +24,9 @@ def test_breathing_coefficient_continuous_eth():
 
 
 def test_breathing_coefficient_continuous_xau_tighter():
-    assert abs(get_breathing_coefficient(0.5, "XAUUSDT") - 0.8) < 1e-9
-    assert abs(get_breathing_coefficient(1.0, "XAUUSDT") - 1.05) < 1e-9
-    assert abs(get_breathing_coefficient(2.2, "XAUUSDT") - 1.8) < 1e-9
+    assert abs(get_breathing_coefficient(0.5, "XAUUSDT") - 0.5) < 1e-9
+    assert abs(get_breathing_coefficient(1.0, "XAUUSDT") - 0.675) < 1e-9
+    assert abs(get_breathing_coefficient(2.2, "XAUUSDT") - 1.2) < 1e-9
     for r in (0.5, 0.8, 1.2, 1.75, 2.5):
         assert get_breathing_coefficient(r, "XAUUSDT") <= get_breathing_coefficient(r, "ETHUSDT")
 
@@ -42,7 +42,7 @@ def test_xau_buffer_and_steps():
     assert apply_stop_order_buffer("LONG", 3300, "XAUUSDT") == 3299.5
     assert apply_stop_order_buffer("SHORT", 3300, "XAUUSDT") == 3300.5
     entry, atr = 3300.0, 10.0
-    coef = 1.05  # cold-start-ish; phase1 steps ignore coef
+    coef = 0.675  # cold-start-ish; phase1 steps ignore coef
     initial_stop = compute_initial_stop(entry, "LONG", atr, symbol="XAUUSDT")
     assert abs(initial_stop - (entry - 1.5 * atr)) < 1e-9
     stop, high, phase, meta = calculate_stop_long(
