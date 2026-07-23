@@ -308,9 +308,11 @@ TV_HARD_CLOSE_ACTIONS = frozenset({"CLOSE_QUICK_EXIT", "CLOSE_RSI_EXIT"})
 
 def _safe_float(val, default: float = 0.0) -> float:
     try:
-        return float(val or 0)
+        if val is None or val == "":
+            return float(default)
+        return float(val)
     except (TypeError, ValueError):
-        return default
+        return float(default)
 
 
 def is_tv_close_action(action: str | None) -> bool:
@@ -1221,8 +1223,16 @@ class StartupReconcileMixin:
         get_pos = getattr(self, "_get_active_position", None)
         if not get_pos:
             return
-        pos = get_pos()
-        live_qty = float(pos.get("size", 0) or 0) if pos else 0.0
+        try:
+            pos = get_pos()
+        except Exception as exc:
+            # ExchangeTransientError / QUERY_FAILED — never invent flat or force-close
+            logger.warning(
+                "[User %s] idle live watch query failed (fail-closed): %s",
+                getattr(self, "user_id", "?"), exc,
+            )
+            raise
+        live_qty = float(pos.get("size", 0) or 0) if isinstance(pos, dict) else 0.0
 
         if live_qty <= 0:
             if not self._idle_book_is_flat():

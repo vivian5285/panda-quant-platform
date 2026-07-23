@@ -1003,12 +1003,24 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
     def _scan_and_sweep_dust_on_startup(self):
         """重启首检：发现蚂蚁仓/止盈残张 → 扫尾收网，避免误接管为正常持仓"""
-        pos = self._get_active_position()
-        if not pos or self._safe_qty(pos.get("size")) <= 0:
+        from app.core.exchange_errors import ExchangeTransientError
+
+        try:
+            pos = self._get_active_position()
+        except ExchangeTransientError as e:
+            logger.error("startup dust scan skipped — QUERY_FAILED: %s", e)
+            return False
+        if not isinstance(pos, dict) or self._safe_qty(pos.get("size")) <= 0:
             return False
         if not self.current_side:
-            self.current_side = "LONG" if pos.get("posSide") == "long" else "SHORT"
-        real_amt = self._safe_qty(pos["size"])
+            ps = str(pos.get("posSide") or pos.get("side") or "").lower()
+            if ps in ("long", "buy"):
+                self.current_side = "LONG"
+            elif ps in ("short", "sell"):
+                self.current_side = "SHORT"
+            elif pos.get("side") in ("LONG", "SHORT"):
+                self.current_side = pos.get("side")
+        real_amt = self._safe_qty(pos.get("size"))
         if not self._is_dust_qty(real_amt):
             return False
         if self._safe_qty(self.initial_qty) > 0 or self._safe_qty(self.watched_qty) > 0:

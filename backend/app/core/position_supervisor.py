@@ -3764,6 +3764,15 @@ class PositionSupervisor(
         )
         # No DingTalk on recover — FAIL already notified; OK was flapping under -1003
 
+    def _safe_pos_float(self, val, default: float = 0.0) -> float:
+        """Never float(None) — Binance may return null fields."""
+        try:
+            if val is None or val == "":
+                return float(default)
+            return float(val)
+        except (TypeError, ValueError):
+            return float(default)
+
     def _get_active_position(self) -> dict | None:
         """Confirmed live position, or None if exchange reports flat.
 
@@ -3777,12 +3786,14 @@ class PositionSupervisor(
             self._handle_position_query_failure(e)
             raise
         self._clear_position_query_degraded()
-        if not pos or float(pos.get("positionAmt", 0)) == 0:
+        if not isinstance(pos, dict):
             return None
-        amt = float(pos["positionAmt"])
+        amt = self._safe_pos_float(pos.get("positionAmt"), 0.0)
+        if amt == 0:
+            return None
         return {
             "size": abs(amt),
-            "entry_price": float(pos.get("entryPrice", 0)),
+            "entry_price": self._safe_pos_float(pos.get("entryPrice"), 0.0),
             "side": "LONG" if amt > 0 else "SHORT",
         }
 
@@ -4106,12 +4117,29 @@ class PositionSupervisor(
         self._purge_defense_orders_on_flat("dust_sweep", notify=True)
 
     def _scan_and_sweep_dust_on_startup(self) -> bool:
-        pos = self._get_active_position()
-        if not pos or pos["size"] <= 0:
+        """重启首检蚂蚁仓。查仓失败 / 非 dict 行绝不下标崩溃、绝不误强平。"""
+        from app.core.exchange_errors import ExchangeTransientError
+
+        try:
+            pos = self._get_active_position()
+        except ExchangeTransientError as e:
+            logger.error(
+                "[User %s] startup dust scan skipped — QUERY_FAILED: %s",
+                self.user_id, e,
+            )
             return False
-        if not self.current_side:
-            self.current_side = pos["side"]
-        if not self._is_dust_qty(pos["size"]):
+        if not isinstance(pos, dict):
+            return False
+        try:
+            size = self._safe_pos_float(pos.get("size"), 0.0)
+        except Exception:
+            return False
+        if size <= 0:
+            return False
+        side = pos.get("side")
+        if not self.current_side and side in ("LONG", "SHORT"):
+            self.current_side = side
+        if not self._is_dust_qty(size):
             return False
         reason = (
             "仓位归零 (止盈吃单 / 人工全平 / TV 强制平仓)"
@@ -4201,7 +4229,11 @@ class PositionSupervisor(
     def _start_idle_flat_patrol(self) -> None:
         from app.config import get_settings
 
-        interval = float(get_settings().IDLE_PATROL_INTERVAL_SEC or 10.0)
+        settings = get_settings()
+        interval = float(getattr(settings, "IDLE_PATROL_INTERVAL_SEC", 45.0) or 45.0)
+        fail_backoff = float(
+            getattr(settings, "IDLE_PATROL_FAIL_BACKOFF_SEC", 120.0) or 120.0
+        )
 
         def loop():
             while True:
@@ -4216,6 +4248,8 @@ class PositionSupervisor(
                     self._run_idle_live_watch()
                 except Exception as exc:
                     logger.error(f"[User {self.user_id}] idle patrol: {exc}")
+                    # QUERY_FAILED / transient — cool down before next REST hit
+                    time.sleep(max(0.0, fail_backoff - interval))
                 finally:
                     self._lock.release()
 
@@ -4418,12 +4452,21 @@ class PositionSupervisor(
                         pos = self.position_manager.get_position(self.symbol)
                     except ExchangeTransientError as e:
                         self._handle_position_query_failure(e)
-                        # Do NOT treat as flat — back off hard under ban/rate-limit
+                        # Do NOT treat as flat — sleep first, then next poll
+                        from app.config import get_settings
                         ban_left = self._position_query_ban_remaining_sec()
-                        time.sleep(min(max(ban_left, 15.0), 60.0) if ban_left > 0 else 15.0)
+                        fail_sleep = float(
+                            getattr(get_settings(), "SENTINEL_QUERY_FAIL_SLEEP_SEC", 15.0) or 15.0
+                        )
+                        time.sleep(
+                            min(max(ban_left, fail_sleep), 60.0) if ban_left > 0 else fail_sleep
+                        )
                         continue
                     self._clear_position_query_degraded()
-                    real_amt = float(pos.get("positionAmt", 0)) if pos else 0.0
+                    if not isinstance(pos, dict):
+                        time.sleep(self._sentinel_poll_sec(last_px))
+                        continue
+                    real_amt = self._safe_pos_float(pos.get("positionAmt"), 0.0)
                     actual_side = "LONG" if real_amt > 0 else "SHORT"
                     actual_qty = abs(real_amt)
 
@@ -4632,6 +4675,16 @@ class PositionSupervisor(
                         {"user_id": self.user_id},
                     )
                     self._sentinel_error_notified = True
+                # Sleep before next poll — avoid tight error loops / REST storms
+                try:
+                    from app.config import get_settings
+                    err_sleep = float(
+                        getattr(get_settings(), "SENTINEL_ERROR_SLEEP_SEC", 30.0) or 30.0
+                    )
+                except Exception:
+                    err_sleep = 30.0
+                time.sleep(max(err_sleep, self._sentinel_poll_sec(last_px)))
+                continue
             if self.monitoring:
                 time.sleep(self._sentinel_poll_sec(last_px))
 
