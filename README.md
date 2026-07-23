@@ -6,25 +6,56 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-07-23 · 三层防线永久共存终稿 · commit `1f716e7`）**  
-> 凡与本文冲突的旧描述（含「90m 合成行情作为开仓/雷达 ATR」「≤2.5s 同 symbol 缓存」「呼吸引擎为唯一止损写入方」「TV atr 为开仓 ATR 唯一来源」「离散呼吸档位」「先撤硬止损再挂雷达」）**一律作废**。  
+> **文档同步（2026-07-23 · 防重复挂单硬闸终稿）**  
+> 凡与本文冲突的旧描述（含「90m 合成行情作为开仓/雷达 ATR」「≤2.5s 同 symbol 缓存」「呼吸引擎为唯一止损写入方」「TV atr 为开仓 ATR 唯一来源」「离散呼吸档位」「先撤硬止损再挂雷达」「查不到 TP 就盲重试加挂」）**一律作废**。  
 > 权威白皮书：桌面《Gemini终极生产级全功能白皮书.md》  
+> 呼吸锁定表：桌面《ETH_XAU呼吸雷达参数最终锁定表.md》  
 > 部署：`docs/VPS_DEPLOY.md` · 呼吸：`docs/CONTINUOUS_BREATH_FINAL_SPEC.md` · 旧逻辑清除：`docs/LEGACY_PURGE_LIST_20260722.md`
 
 ### 当前实盘一句话
 
-**VPS = 三层防线永久共存（硬止损永冻 + 独立雷达止损 + TP1/TP2）+ 本金×20%×5 算仓 + 开仓前/平仓后净场 + 同 symbol 15s 开平铁律 + ETH/XAU 隔离。**  
+**VPS = 三层防线永久共存（硬止损永冻 + 独立雷达止损 + TP1/TP2）+ 本金×20%×5 算仓 + 开仓前/平仓后净场 + 同 symbol 15s 开平铁律 + ETH/XAU 隔离 + 限价/止损盘口幂等硬帽。**  
 硬止损与雷达止损**并行挂单、互不升级替换**；谁先触发谁执行，仓位归零后撤销其余挂单。  
-**状态：本地 / GitHub / VPS 已对齐 `1f716e7`，空仓待命，等待真实 TV 信号。**
+**「Cursor 说完成了」不是终点**——必须以交易所空仓零挂单 + 三方 commit hash 肉眼一致 + 原始日志/订单 JSON 为准。
 
 ### 生产代码锚点
 
 | 项 | 值 |
 |----|-----|
-| 三方 commit | **`1f716e7`**（本地 = origin/main = VPS） |
+| 三方 commit | 以 `git rev-parse --short HEAD` / GitHub `main` / VPS 三方**肉眼同数字**为准（本轮含防重复挂单硬闸） |
 | VPS 路径 | `/home/panda/panda-quant-platform` |
 | Webhook | `https://twinstar.pro/gemini/webhook` → `:6010` |
 | 交易对 | **ETH + XAU**（`TRADING_SYMBOLS=ETHUSDT,XAUUSDT`） |
+
+### 事故纪要 · 重复限价止盈 / 幽灵单（2026-07-23）
+
+**现象（交易所截图）**  
+- 持仓 ETH 多 + XAU 多时，基础单出现**成对 1 秒间隔**的同向限价止盈；ETH 甚至出现 **BUY 只减仓**限价（多仓正确平仓方向应为 SELL）。  
+- 条件单同时可见 **两笔接近但不等的 STOP**（正确双轨：硬止损×1.2 + 雷达；**不是**「TV 原价硬止损 + 再挂×1.2」——交易所只挂永冻×1.2，原价仅作计算锚点）。  
+- 仓位已归零仍残留限价/条件单 → **幽灵单**，下一笔 OPEN 前必须净场。  
+- 历史极端：同一价格限价止盈可叠到约 **50 笔** → 实盘击穿风险，**灾难级**。
+
+**根因（已修）**  
+1. `_place_limit_with_retry` / 缺失 TP 补挂：超时返回 `None` 后**盲重试**，未先验盘口是否已成交受理 → 风暴。  
+2. `current_side` 为空时 `else → LONG → BUY`：多仓错挂 BUY 只减仓。  
+3. 平仓净场 mop 轮次不足 / 限流下 leftover≠0 仍只告警 → 幽灵单。  
+4. 雷达 `_ensure_radar_sl`：cancel→place 窗口无「盘口已有≥2 笔 STOP」硬帽。
+
+**硬闸（必须永久保留）**  
+| 闸 | 规则 |
+|----|------|
+| 限价幂等 | 下单前/重试前：同价已有 reduce-only LIMIT → **视为成功，禁止再挂** |
+| 限价硬帽 | 盘口 reduce-only LIMIT ≥ `max(期望档数, 3)` → **拒挂 + 去重**，禁止加到第 4 笔 |
+| 方向 | 平仓方向优先读交易所 `positionAmt`；未知方向 → **拒挂**（永不默认 LONG→BUY） |
+| 无仓拒挂 | 交易所 qty=0 → **禁止任何 TP/雷达补挂**，只走净场 |
+| STOP 硬帽 | 双轨最多 **2** 笔 STOP（硬×1.2 + 雷达）；≥2 或簿记未知 → **拒挂雷达** |
+| 平仓净场 | mop≥5 轮 + 额外 cancel_all；leftover≠0 → 钉钉 critical + dirty 标记，开仓门禁拒绝脏盘 |
+
+**自查口令（独立于文字汇报）**  
+1. GitHub / 本地 / VPS `git rev-parse --short HEAD` 三数字一致。  
+2. 币安：仓位(0) + 当前委托(0) + 条件委托(0)。  
+3. 代码原样：`breathing_profile.py` 内 `XAU_PROFILE.coef_min=0.5` / `coef_max=1.2`。  
+4. 当面最小资金 LONG：应见 **硬止损1 + 雷达1 + TP限价≤2**（场景一），钉钉杠杆 **5×**，无旧档位字样。
 
 ### 三层防线永久共存（核心，不得误解）
 
@@ -69,8 +100,8 @@ project: panda-quant-platform
 product: GEMINI AI / 双子星AI量化
 domain: twinstar.pro
 repo_path_on_vps: /home/panda/panda-quant-platform
-code_anchor: 1f716e7
-deploy_status: synced local=github=vps — awaiting real TV
+code_anchor: see git HEAD (anti-dup TP/stop hard gates)
+deploy_status: must verify empty book + three-way hash before real TV
 
 services:
   frontend:6080

@@ -209,6 +209,90 @@ class BinanceSmartDefenseMixin:
             return live
         return fallback_qty
 
+    # Hard ceiling: never more than 3 reduce-only LIMIT TPs on book (TP1/TP2/TP3).
+    # Historical storm: up to ~50 identical-price LIMITs when heal/retry lacked idempotency.
+    MAX_TP_LIMITS_ON_BOOK = 3
+
+    def _position_signed_amt(self) -> float:
+        """Signed exchange positionAmt (>0 LONG, <0 SHORT). Prefer live book over state."""
+        try:
+            if hasattr(self, "_get_active_position"):
+                pos = self._get_active_position()
+                if pos:
+                    # size is abs; side may be present
+                    side = str(pos.get("side") or "").upper()
+                    size = float(pos.get("size") or pos.get("positionAmt") or 0)
+                    if side == "SHORT" or size < 0:
+                        return -abs(size)
+                    if side == "LONG" or size > 0:
+                        return abs(size)
+        except Exception:
+            pass
+        try:
+            pm = getattr(self, "position_manager", None)
+            if pm and hasattr(pm, "get_position"):
+                pos = pm.get_position(getattr(self, "symbol", None)) or {}
+                return float(pos.get("positionAmt") or 0)
+        except Exception:
+            pass
+        side = getattr(self, "current_side", None)
+        qty = float(getattr(self, "watched_qty", 0) or 0)
+        if side == "LONG" and qty > 0:
+            return qty
+        if side == "SHORT" and qty > 0:
+            return -qty
+        return 0.0
+
+    def _tp_close_side_label(self) -> str | None:
+        """LONG/SHORT label for reduce-only close (maps to BUY/SELL in client).
+
+        LONG position → SHORT label → SELL. Never default to LONG when side unknown
+        (that bug hung BUY reduce-only while still long — screenshot 2026-07-23).
+        """
+        amt = float(self._position_signed_amt() or 0)
+        if abs(amt) > 1e-12:
+            return "SHORT" if amt > 0 else "LONG"
+        side = getattr(self, "current_side", None)
+        if side == "LONG":
+            return "SHORT"
+        if side == "SHORT":
+            return "LONG"
+        return None
+
+    def _count_reduce_only_limits(self) -> int:
+        try:
+            return len(self._collect_tp_limit_orders() or [])
+        except Exception:
+            return -1
+
+    def _tp_limit_exists_near(self, price: float, *, tol: float | None = None) -> bool:
+        price_tol = float(tol if tol is not None else self._tp_price_tol())
+        try:
+            orders = self._collect_tp_limit_orders() or []
+        except Exception:
+            return False
+        return any(tp_price_matches(float(o.get("price") or 0), price, price_tol) for o in orders)
+
+    def _refuse_tp_place_if_saturated(self, *, expected: int | None = None) -> bool:
+        """True = DO NOT place. Cap book at max(expected, MAX_TP_LIMITS_ON_BOOK)."""
+        n = self._count_reduce_only_limits()
+        if n < 0:
+            self._def_log("✗ TP拒挂·盘口未知（防风暴）", logging.WARNING)
+            return True
+        cap = max(int(expected or 0), int(self.MAX_TP_LIMITS_ON_BOOK))
+        if n >= cap:
+            self._def_log(
+                f"✗ TP拒挂·盘口已有 {n} 张限价≥帽 {cap}，先去重不再加挂",
+                logging.WARNING,
+            )
+            try:
+                live = float(self._resolve_live_qty(float(getattr(self, "watched_qty", 0) or 0)))
+                self._purge_duplicate_tp_orders(live)
+            except Exception:
+                pass
+            return True
+        return False
+
     def _wait_verify(self, checks_fn, retries: int = 3, delay: float = 0.6):
         for _ in range(retries):
             result = checks_fn()
@@ -638,8 +722,14 @@ class BinanceSmartDefenseMixin:
         from app.core.tp_slice_guard import should_skip_rehang_tp_level
 
         price_tol = self._tp_price_tol() if tolerance is None else float(tolerance)
-        close_side = "SHORT" if self.current_side == "LONG" else "LONG"
+        close_side = self._tp_close_side_label()
+        if not close_side:
+            self._def_log("✗ TP补挂中止·仓位方向未知（拒默认LONG→BUY）", logging.WARNING)
+            return 0
         live_qty = self._resolve_live_qty(live_qty)
+        if live_qty <= 0:
+            self._def_log("✗ TP补挂中止·交易所无仓（防幽灵限价）", logging.WARNING)
+            return 0
         px_now = float(curr_px or 0) or self._current_tp_price()
         if hasattr(self, "_sync_consumed_tp_levels"):
             self._sync_consumed_tp_levels(live_qty, px_now)
@@ -779,6 +869,8 @@ class BinanceSmartDefenseMixin:
                     logging.WARNING,
                 )
                 continue
+            if self._refuse_tp_place_if_saturated(expected=len(levels)):
+                break
             self._def_log(f"  + 补挂 TP @ {px:.2f} qty={q} ETH")
             res = self.client.place_limit_order(
                 close_side, q, px, symbol=self.symbol, reduce_only=True
@@ -993,9 +1085,39 @@ class BinanceSmartDefenseMixin:
                 return bool(result.get("aligned") or result.get("armed"))
         if self._has_stop_sl_near(sl):
             return True
+        # Dual-track hard cap: never exceed 2 STOPs (hard×1.2 + radar). Not raw TV+×1.2.
+        try:
+            live_stops = int(self._count_live_stop_orders()) if hasattr(self, "_count_live_stop_orders") else -1
+        except Exception:
+            live_stops = -1
+        if live_stops >= 2:
+            self._def_log(
+                f"✗ 雷达拒挂·盘口已有 {live_stops} 笔STOP（帽=2·防双轨叠暴）",
+                logging.WARNING,
+            )
+            return True
+        if live_stops < 0:
+            self._def_log("✗ 雷达拒挂·STOP簿记未知", logging.WARNING)
+            return False
         self._cancel_radar_stop_orders()
-        time.sleep(0.25)
-        close_side = "SHORT" if self.current_side == "LONG" else "LONG"
+        time.sleep(0.35)
+        # Cancel lag: re-check before place (timeout-after-accept must not stack)
+        if self._has_stop_sl_near(sl):
+            return True
+        try:
+            live_stops = int(self._count_live_stop_orders()) if hasattr(self, "_count_live_stop_orders") else -1
+        except Exception:
+            live_stops = -1
+        if live_stops >= 2 or live_stops < 0:
+            self._def_log(
+                f"✗ 雷达撤后拒挂·stops={live_stops}",
+                logging.WARNING,
+            )
+            return live_stops >= 2
+        close_side = self._tp_close_side_label()
+        if not close_side:
+            self._def_log("✗ 雷达拒挂·仓位方向未知", logging.WARNING)
+            return False
         symbol = getattr(self, "symbol", "ETHUSDT")
         # Dual track: qty reduceOnly so hard closePosition/qty stop can coexist
         use_qty = float(qty or 0) if (
@@ -1028,7 +1150,10 @@ class BinanceSmartDefenseMixin:
         reduce-only TP on the book (duplicate TP bug). Same existence check as
         `_patch_missing_tp_levels`.
         """
-        close_side = "SHORT" if self.current_side == "LONG" else "LONG"
+        close_side = self._tp_close_side_label()
+        if not close_side:
+            self._def_log("重建防线跳过：仓位方向未知（拒默认LONG→BUY）", logging.WARNING)
+            return 0
 
         live_qty = self._resolve_live_qty(qty)
         if live_qty <= 0:
@@ -1129,6 +1254,8 @@ class BinanceSmartDefenseMixin:
                     logging.WARNING,
                 )
                 continue
+            if self._refuse_tp_place_if_saturated(expected=len(levels)):
+                break
             self._def_log(f"  + 重建挂 TP{level} @ {px:.2f} qty={q}")
             res = self.client.place_limit_order(
                 close_side, q, px, symbol=self.symbol, reduce_only=True

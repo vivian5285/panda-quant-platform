@@ -2549,10 +2549,62 @@ class PositionSupervisor(
     def _place_limit_with_retry(
         self, close_side: str, qty: float, price: float, label: str
     ) -> dict:
+        """Place one reduce-only LIMIT with book-level idempotency.
+
+        Never blind-retry after a possibly-accepted timeout — that produced
+        duplicate TP storms (historical peak ~50 identical-price LIMITs).
+        """
         last_err = None
+        # Prefer exchange-derived close side; reject unknown (never default LONG→BUY)
+        resolved = None
+        if hasattr(self, "_tp_close_side_label"):
+            resolved = self._tp_close_side_label()
+        side = resolved or close_side
+        if not side:
+            return {
+                "ok": False,
+                "label": label,
+                "qty": round_quantity(qty),
+                "price": round_price(price),
+                "error": "close_side_unknown_refuse",
+            }
+        # Flat refuse
+        if hasattr(self, "_resolve_live_qty"):
+            try:
+                live = float(self._resolve_live_qty(float(getattr(self, "watched_qty", 0) or 0)))
+            except Exception:
+                live = float(getattr(self, "watched_qty", 0) or 0)
+            if live <= 0:
+                return {
+                    "ok": False,
+                    "label": label,
+                    "qty": round_quantity(qty),
+                    "price": round_price(price),
+                    "error": "flat_refuse_tp_place",
+                }
         for attempt in range(1, TP_RETRY_MAX + 1):
+            # Idempotent: if already on book at this price, treat as success
+            if hasattr(self, "_tp_limit_exists_near") and self._tp_limit_exists_near(price):
+                return {
+                    "ok": True,
+                    "label": label,
+                    "order_id": None,
+                    "qty": round_quantity(qty),
+                    "price": round_price(price),
+                    "attempt": attempt,
+                    "skipped": "already_on_book",
+                }
+            if hasattr(self, "_refuse_tp_place_if_saturated") and self._refuse_tp_place_if_saturated():
+                return {
+                    "ok": False,
+                    "label": label,
+                    "qty": round_quantity(qty),
+                    "price": round_price(price),
+                    "error": "tp_book_saturated_refuse",
+                    "attempt": attempt,
+                }
             order = self.client.place_limit_order(
-                close_side, qty, price, self.symbol, reduce_only=True
+                side, qty, price, self.symbol, reduce_only=True
             )
             if order:
                 return {
@@ -2562,6 +2614,23 @@ class PositionSupervisor(
                     "qty": round_quantity(qty),
                     "price": round_price(price),
                     "attempt": attempt,
+                }
+            # Timeout / None: re-check book before retry (order may have landed)
+            time.sleep(0.35)
+            if hasattr(self.client, "_invalidate_book_cache"):
+                try:
+                    self.client._invalidate_book_cache("tp_retry_verify")
+                except Exception:
+                    pass
+            if hasattr(self, "_tp_limit_exists_near") and self._tp_limit_exists_near(price):
+                return {
+                    "ok": True,
+                    "label": label,
+                    "order_id": None,
+                    "qty": round_quantity(qty),
+                    "price": round_price(price),
+                    "attempt": attempt,
+                    "skipped": "accepted_after_none",
                 }
             last_err = f"{label} attempt {attempt}/{TP_RETRY_MAX} failed"
             logger.warning(f"[User {self.user_id}] {last_err} qty={qty} price={price}")
@@ -3069,7 +3138,29 @@ class PositionSupervisor(
         slices: list[tuple[int, float, float]] | None = None,
     ) -> dict:
         """Only place TPs/SL that scan says are missing — never re-place matched levels."""
-        close_side = "SHORT" if self.current_side == "LONG" else "LONG"
+        close_side = (
+            self._tp_close_side_label()
+            if hasattr(self, "_tp_close_side_label")
+            else ("SHORT" if self.current_side == "LONG" else None)
+        )
+        if not close_side:
+            self._log("TP_RETRY", "缺失补挂中止·仓位方向未知（拒默认LONG→BUY）")
+            return {"repaired": [], "failed": [{"error": "close_side_unknown"}], "skipped": True}
+        # Exchange-first flat gate
+        live = float(qty or 0)
+        if hasattr(self, "_resolve_live_qty"):
+            try:
+                live = float(self._resolve_live_qty(live))
+            except Exception:
+                pass
+        if live <= 0:
+            self._log("TP_RETRY", "缺失补挂中止·交易所无仓（防幽灵限价）")
+            if hasattr(self, "_purge_defense_orders_on_flat"):
+                try:
+                    self._purge_defense_orders_on_flat("missing_tp_flat_refuse", notify=True)
+                except Exception:
+                    pass
+            return {"repaired": [], "failed": [], "skipped": True, "reason": "flat"}
         repaired = []
         failed = []
 
@@ -3077,6 +3168,13 @@ class PositionSupervisor(
             label = f"TP{item['level']}"
             level = int(item.get("level") or 0)
             tp_px = float(item.get("price") or 0)
+            # Fresh book recheck — never trust stale scan alone
+            if hasattr(self, "_tp_limit_exists_near") and self._tp_limit_exists_near(tp_px):
+                self._log("TP_RETRY", f"跳过 {label}：盘口已有同价限价")
+                continue
+            if hasattr(self, "_refuse_tp_place_if_saturated") and self._refuse_tp_place_if_saturated():
+                failed.append({"label": label, "error": "tp_book_saturated_refuse"})
+                break
             mark = 0.0
             try:
                 mark = float(self.client.get_current_price(self.symbol) or 0)
@@ -3099,8 +3197,8 @@ class PositionSupervisor(
                 side=self.current_side,
                 curr_px=mark,
                 consumed=consumed,
-                live_qty=float(qty or 0),
-                initial_qty=float(self.initial_qty or qty or 0),
+                live_qty=float(live or 0),
+                initial_qty=float(self.initial_qty or live or 0),
                 regime=int(self.regime or 3),
                 tv_tps=list(self.tv_tps or []),
                 regime_settings=self.regime_settings,
@@ -4465,8 +4563,23 @@ class PositionSupervisor(
                         and (now_ts - last_audit) >= SENTINEL_ORDER_AUDIT_SEC
                     ):
                         self._last_tp_audit_ts = now_ts
+                        # Flat safety: never heal/place when exchange qty is 0
+                        if actual_qty <= 0:
+                            self._purge_defense_orders_on_flat(
+                                "sentinel_audit_flat", notify=True,
+                            )
+                            continue
                         audit = self._audit_tp_levels(actual_qty, curr_px=curr_px or None)
                         if audit["issues"]:
+                            # Cap storm: if book already saturated, purge dupes only — no place
+                            if (
+                                hasattr(self, "_refuse_tp_place_if_saturated")
+                                and self._refuse_tp_place_if_saturated()
+                            ):
+                                logger.warning(
+                                    f"[User {self.user_id}] 定期扫描·盘口TP已满，仅去重拒补挂"
+                                )
+                                continue
                             logger.info(
                                 f"[User {self.user_id}] 🔍 定期扫描发现异常: {audit['issues']}，触发智能补挂"
                             )

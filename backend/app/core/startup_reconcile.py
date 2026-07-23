@@ -1015,10 +1015,28 @@ class StartupReconcileMixin:
         # Hard verify: flat must leave zero working/conditional orders
         leftover_n = 0
         try:
+            # Aggressive mop: historical ghost LIMITs survived 2 rounds under rate-limit lag
+            mop_rounds = 5
             if hasattr(self.client, "_mop_up_leftover_orders"):
-                leftover_n = int(self.client._mop_up_leftover_orders(sym, rounds=2))
+                leftover_n = int(self.client._mop_up_leftover_orders(sym, rounds=mop_rounds))
             elif hasattr(self.client, "get_open_orders"):
                 leftover_n = len(self.client.get_open_orders(sym) or [])
+            # Extra cancel_all passes if still dirty
+            for _extra in range(3):
+                if leftover_n == 0:
+                    break
+                if leftover_n < 0:
+                    break
+                if hasattr(self.client, "cancel_all_open_orders"):
+                    try:
+                        self.client.cancel_all_open_orders(sym)
+                    except Exception:
+                        pass
+                time.sleep(0.4)
+                if hasattr(self.client, "_mop_up_leftover_orders"):
+                    leftover_n = int(self.client._mop_up_leftover_orders(sym, rounds=2))
+                elif hasattr(self.client, "get_open_orders"):
+                    leftover_n = len(self.client.get_open_orders(sym) or [])
         except Exception as e:
             detail["leftover_verify_error"] = str(e)[:200]
             leftover_n = -1
@@ -1029,9 +1047,21 @@ class StartupReconcileMixin:
                     "critical",
                     "FLAT_ORDERS_LEFT",
                     "平仓后仍有挂单或簿记未知",
-                    f"{getattr(self, 'canonical_symbol', sym)} 平仓后 leftover={leftover_n}（-1=簿记未知），已二次清扫",
+                    f"{getattr(self, 'canonical_symbol', sym)} 平仓后 leftover={leftover_n}（-1=簿记未知），已强化清扫",
                     detail,
                 )
+            except Exception:
+                pass
+        # Fail-closed for next OPEN: leave a sticky flag if still dirty
+        if leftover_n not in (0, None) and hasattr(self, "_save_state"):
+            try:
+                setattr(self, "_flat_book_dirty", True)
+                self._save_state()
+            except Exception:
+                pass
+        elif leftover_n == 0:
+            try:
+                setattr(self, "_flat_book_dirty", False)
             except Exception:
                 pass
 
