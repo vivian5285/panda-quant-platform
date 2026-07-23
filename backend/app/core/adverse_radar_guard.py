@@ -1498,22 +1498,28 @@ class AdverseRadarMixin:
             tv_sl_price=tv_sl if tv_sl > 0 else None,
         )
 
-    def _hard_stop_on_book(self, hard_px: float) -> bool:
-        """True when a live stop sits near the frozen hard trigger."""
+    def _hard_stop_on_book(self, hard_px: float) -> bool | None:
+        """True/False when book known; None when unreadable.
+
+        Never claim「已有」on unread book (no local-cache lie → naked continue).
+        """
         if hard_px <= 0:
             return False
         hang = self._exchange_hang_stop_px(hard_px) or hard_px
         if hasattr(self, "_has_stop_sl_near"):
             try:
                 near = self._has_stop_sl_near(hang)
+                if near is None:
+                    return None
                 if near is True:
                     return True
                 if near is False:
-                    # also accept exact frozen trigger without buffer
                     near2 = self._has_stop_sl_near(hard_px)
+                    if near2 is None:
+                        return None
                     return bool(near2)
             except Exception:
-                pass
+                return None
         try:
             for o in self._collect_adverse_stop_orders() or []:
                 px = float(_adverse_defense_price(o) or 0)
@@ -1522,7 +1528,7 @@ class AdverseRadarMixin:
                 if px > 0 and abs(px - hard_px) <= ADVERSE_STOP_TOLERANCE:
                     return True
         except Exception:
-            pass
+            return None
         return False
 
     def _hard_stop_live_qty(self, hard_px: float) -> float:
@@ -1675,6 +1681,27 @@ class AdverseRadarMixin:
 
         hang = self._exchange_hang_stop_px(hard)
         on_book = self._hard_stop_on_book(hard)
+        if on_book is None:
+            # Unreadable + no verified book → refuse「已有」and refuse place
+            ids = dict(getattr(self, "_defense_order_ids", None) or {})
+            hard_oid = ids.get("hard")
+            if hard_oid is not None:
+                # Local oid alone is NOT proof — book unread; fail-closed
+                logger.warning(
+                    "[User %s] hard stop book unread · local oid=%s 不得谎称已有",
+                    getattr(self, "user_id", "?"),
+                    hard_oid,
+                )
+            return {
+                "armed": False,
+                "aligned": False,
+                "reason": "book_unknown",
+                "skipped": "refuse_claim_hard_present_unread",
+                "stop_price": hang,
+                "hard_price": hard,
+                "placed": 0,
+                "label": self._hard_stop_label(),
+            }
         if on_book and not force_replace:
             return {
                 "armed": True,
@@ -1710,17 +1737,30 @@ class AdverseRadarMixin:
                     getattr(self, "user_id", "?"),
                     exc,
                 )
-            if n_cancel <= 0 and self._hard_stop_on_book(hard):
-                # Cluster refuse left hard intact — do not place a second hard
-                return {
-                    "armed": True,
-                    "aligned": True,
-                    "skipped": "resize_refused_keep_hard",
-                    "stop_price": hang,
-                    "hard_price": hard,
-                    "placed": 0,
-                    "label": self._hard_stop_label(),
-                }
+            if n_cancel <= 0:
+                still = self._hard_stop_on_book(hard)
+                if still is None:
+                    return {
+                        "armed": False,
+                        "aligned": False,
+                        "reason": "book_unknown",
+                        "skipped": "resize_book_unknown",
+                        "stop_price": hang,
+                        "hard_price": hard,
+                        "placed": 0,
+                        "label": self._hard_stop_label(),
+                    }
+                if still:
+                    # Cluster refuse left hard intact — do not place a second hard
+                    return {
+                        "armed": True,
+                        "aligned": True,
+                        "skipped": "resize_refused_keep_hard",
+                        "stop_price": hang,
+                        "hard_price": hard,
+                        "placed": 0,
+                        "label": self._hard_stop_label(),
+                    }
             time.sleep(0.2)
         elif not on_book:
             # Missing hard — place without wiping radar
@@ -1737,16 +1777,29 @@ class AdverseRadarMixin:
             }
 
         placed = bool(self._place_adverse_stop_slice(hang, live_qty))
-        if not placed and self._hard_stop_on_book(hard):
-            return {
-                "armed": True,
-                "aligned": True,
-                "skipped": "live_already_aligned",
-                "stop_price": hang,
-                "hard_price": hard,
-                "placed": 0,
-                "label": self._hard_stop_label(),
-            }
+        if not placed:
+            still = self._hard_stop_on_book(hard)
+            if still is True:
+                return {
+                    "armed": True,
+                    "aligned": True,
+                    "skipped": "live_already_aligned",
+                    "stop_price": hang,
+                    "hard_price": hard,
+                    "placed": 0,
+                    "label": self._hard_stop_label(),
+                }
+            if still is None:
+                return {
+                    "armed": False,
+                    "aligned": False,
+                    "reason": "book_unknown",
+                    "skipped": "post_place_book_unknown",
+                    "stop_price": hang,
+                    "hard_price": hard,
+                    "placed": 0,
+                    "label": self._hard_stop_label(),
+                }
         return {
             "armed": placed,
             "placed": 1 if placed else 0,
@@ -2391,11 +2444,14 @@ class AdverseRadarMixin:
                 else:
                     placed = bool(self._ensure_radar_sl(hang_px, live_qty))
                 # Repair missing hard without price change
-                if float(self._frozen_hard_px() or 0) > 0 and not self._hard_stop_on_book(self._frozen_hard_px()):
-                    try:
-                        self._sync_hard_stop_only(live_qty, force_replace=False)
-                    except Exception:
-                        pass
+                if float(self._frozen_hard_px() or 0) > 0:
+                    hard_live = self._hard_stop_on_book(self._frozen_hard_px())
+                    if hard_live is False:
+                        try:
+                            self._sync_hard_stop_only(live_qty, force_replace=False)
+                        except Exception:
+                            pass
+                    # hard_live is None → unread; sync_hard_stop_only also fail-closes
             elif hasattr(self, "_sync_binance_merged_stop"):
                 merged = self._sync_binance_merged_stop(
                     live_qty,
@@ -2769,9 +2825,13 @@ class AdverseRadarMixin:
         if self._uses_dual_stop_track():
             if live_n >= ADVERSE_MAX_STOP_ORDERS:
                 # Already at hard+radar — treat as success if hard near target
-                if self._hard_stop_on_book(float(stop_price or 0)):
+                hard_live = self._hard_stop_on_book(float(stop_price or 0))
+                if hard_live is True:
                     self._last_hard_sl_order_style = "skipped_already_live"
                     return True
+                if hard_live is None:
+                    self._last_hard_sl_order_style = "refused_book_unknown"
+                    return False
                 logger.info(
                     "[User %s] %s skip place hard @%.2f — book full (%s)",
                     getattr(self, "user_id", "?"),
@@ -2781,9 +2841,13 @@ class AdverseRadarMixin:
                 )
                 self._last_hard_sl_order_style = "skipped_book_full"
                 return False
-            if live_n >= 1 and self._hard_stop_on_book(float(stop_price or 0)):
+            hard_live = self._hard_stop_on_book(float(stop_price or 0))
+            if live_n >= 1 and hard_live is True:
                 self._last_hard_sl_order_style = "skipped_already_live"
                 return True
+            if hard_live is None:
+                self._last_hard_sl_order_style = "refused_book_unknown"
+                return False
         elif live_n >= 1:
             logger.info(
                 "[User %s] %s skip place stop @%.2f — already %s live (anti-dup)",

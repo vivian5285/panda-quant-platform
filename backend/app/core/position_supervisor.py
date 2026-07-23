@@ -2569,16 +2569,27 @@ class PositionSupervisor(
                 }
         for attempt in range(1, TP_RETRY_MAX + 1):
             # Idempotent: if already on book at this price, treat as success
-            if hasattr(self, "_tp_limit_exists_near") and self._tp_limit_exists_near(price):
-                return {
-                    "ok": True,
-                    "label": label,
-                    "order_id": None,
-                    "qty": round_quantity(qty),
-                    "price": round_price(price),
-                    "attempt": attempt,
-                    "skipped": "already_on_book",
-                }
+            if hasattr(self, "_tp_limit_exists_near"):
+                exists = self._tp_limit_exists_near(price)
+                if exists is None:
+                    return {
+                        "ok": False,
+                        "label": label,
+                        "qty": round_quantity(qty),
+                        "price": round_price(price),
+                        "error": "tp_book_unreadable_refuse",
+                        "attempt": attempt,
+                    }
+                if exists is True:
+                    return {
+                        "ok": True,
+                        "label": label,
+                        "order_id": None,
+                        "qty": round_quantity(qty),
+                        "price": round_price(price),
+                        "attempt": attempt,
+                        "skipped": "already_on_book",
+                    }
             if hasattr(self, "_refuse_tp_place_if_saturated") and self._refuse_tp_place_if_saturated():
                 return {
                     "ok": False,
@@ -2607,16 +2618,27 @@ class PositionSupervisor(
                     self.client._invalidate_book_cache("tp_retry_verify")
                 except Exception:
                     pass
-            if hasattr(self, "_tp_limit_exists_near") and self._tp_limit_exists_near(price):
-                return {
-                    "ok": True,
-                    "label": label,
-                    "order_id": None,
-                    "qty": round_quantity(qty),
-                    "price": round_price(price),
-                    "attempt": attempt,
-                    "skipped": "accepted_after_none",
-                }
+            if hasattr(self, "_tp_limit_exists_near"):
+                exists = self._tp_limit_exists_near(price)
+                if exists is None:
+                    return {
+                        "ok": False,
+                        "label": label,
+                        "qty": round_quantity(qty),
+                        "price": round_price(price),
+                        "error": "tp_book_unreadable_after_none",
+                        "attempt": attempt,
+                    }
+                if exists is True:
+                    return {
+                        "ok": True,
+                        "label": label,
+                        "order_id": None,
+                        "qty": round_quantity(qty),
+                        "price": round_price(price),
+                        "attempt": attempt,
+                        "skipped": "accepted_after_none",
+                    }
             last_err = f"{label} attempt {attempt}/{TP_RETRY_MAX} failed"
             logger.warning(f"[User {self.user_id}] {last_err} qty={qty} price={price}")
             if attempt < TP_RETRY_MAX:
@@ -3067,9 +3089,46 @@ class PositionSupervisor(
         # Route A：只撤 TP 限价，保留硬止损/雷达条件槽
         if hasattr(self, "_cancel_all_tp_limit_orders"):
             purged = int(self._cancel_all_tp_limit_orders() or 0)
+            if purged < 0:
+                self._log(
+                    "DEFENSE_HEAL",
+                    f"✗ [{reason}] 盘口不可读·中止撤挂/盲补（禁 cancel_all）",
+                    {"scan": scan, "reason": reason},
+                )
+                self._alert(
+                    "error", "DEFENSE_HEAL",
+                    "盘口不可读·止盈修复中止",
+                    "查单失败禁止 cancel_all，避免误撤 STOP",
+                    {"scan": scan, "reason": reason},
+                )
+                return {
+                    "ok": False,
+                    "aligned": False,
+                    "healed": False,
+                    "reason": "book_unreadable_abort",
+                    "before": before_summary,
+                    "after": before_summary,
+                    "cancel": {"ok": False, "mode": "tp_only", "purged": -1},
+                }
             cancel_result = {"ok": True, "mode": "tp_only", "purged": purged}
         else:
+            # Fallback path still verifies book first — never blind cancel_all on unread
             cancel_result = self._cancel_all_verified()
+            if not cancel_result.get("ok"):
+                self._log(
+                    "DEFENSE_HEAL",
+                    f"✗ [{reason}] cancel_all_verified 失败·中止盲补",
+                    {"scan": scan, "cancel": cancel_result},
+                )
+                return {
+                    "ok": False,
+                    "aligned": False,
+                    "healed": False,
+                    "reason": "cancel_verified_failed",
+                    "before": before_summary,
+                    "after": before_summary,
+                    "cancel": cancel_result,
+                }
         placed: list = []
         failed: list = []
         post = scan
@@ -3376,6 +3435,14 @@ class PositionSupervisor(
             self._last_shield_result = shield_temp
             temp_ok = bool(
                 temp.get("ok")
+                and shield_temp.get("reason") != "book_unknown"
+                and shield_temp.get("skipped")
+                not in (
+                    "refuse_claim_hard_present_unread",
+                    "refuse_place_book_unknown",
+                    "resize_book_unknown",
+                    "post_place_book_unknown",
+                )
                 and (
                     shield_temp.get("placed", 0) > 0
                     or shield_temp.get("armed")
