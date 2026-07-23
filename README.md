@@ -6,54 +6,59 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-07-23 · 连续插值呼吸终验 + 算仓铁律）**  
-> 凡与本文冲突的旧描述（含「妈妈版」权益×1 算仓、挂 TP123、原生 4H、旧雷达 0.5/0.3/2.0ATR、钉钉独立 25× 杠杆源、名义 0.85 haircut、**离散呼吸档位 / XAU×0.8 trail_tighten**）**一律作废**。  
-> **最终状态清单：** [docs/GEMINI_FINAL_STATUS_20260722.md](docs/GEMINI_FINAL_STATUS_20260722.md)  
-> 行为规格权威：[docs/VPS_LIVE_CHECKLIST.md](docs/VPS_LIVE_CHECKLIST.md)  
-> 连续插值设计定稿：[docs/CONTINUOUS_BREATH_FINAL_SPEC.md](docs/CONTINUOUS_BREATH_FINAL_SPEC.md)（含完整回测表）  
-> 连续插值呼吸终验：[docs/CONTINUOUS_BREATH_PROD_TEST_20260723.md](docs/CONTINUOUS_BREATH_PROD_TEST_20260723.md)（**测试一至四 PASS**）  
-> 旧逻辑清除清单：[docs/LEGACY_PURGE_LIST_20260722.md](docs/LEGACY_PURGE_LIST_20260722.md)  
-> 币安执行层验收：[docs/BINANCE_EXECUTION_ACCEPTANCE.md](docs/BINANCE_EXECUTION_ACCEPTANCE.md)（**已通过**）  
-> E2E 时间线 / 异常说明：[docs/E2E_WEBHOOK_TIMELINE_20260722.md](docs/E2E_WEBHOOK_TIMELINE_20260722.md) · [docs/E2E_ANOMALY_ANALYSIS_20260722.md](docs/E2E_ANOMALY_ANALYSIS_20260722.md)
+> **文档同步（2026-07-23 · 三层防线永久共存终稿 · commit `1f716e7`）**  
+> 凡与本文冲突的旧描述（含「90m 合成行情作为开仓/雷达 ATR」「≤2.5s 同 symbol 缓存」「呼吸引擎为唯一止损写入方」「TV atr 为开仓 ATR 唯一来源」「离散呼吸档位」「先撤硬止损再挂雷达」）**一律作废**。  
+> 权威白皮书：桌面《Gemini终极生产级全功能白皮书.md》  
+> 部署：`docs/VPS_DEPLOY.md` · 呼吸：`docs/CONTINUOUS_BREATH_FINAL_SPEC.md` · 旧逻辑清除：`docs/LEGACY_PURGE_LIST_20260722.md`
 
 ### 当前实盘一句话
 
-**VPS = 先平后开开仓 + 合约本金余额×20%风险∩×5名义算仓 + 呼吸止损引擎（唯一止损写入方）+ 仅挂 TP1/TP2 + 90m 行情 ATR/ADX + 1s 缓存先平后开 + 反转保护。**  
-除 TV 的 4 类信号与引擎自身止损触发外，不存在第三方平仓判断路径。
+**VPS = 三层防线永久共存（硬止损永冻 + 独立雷达止损 + TP1/TP2）+ 本金×20%×5 算仓 + 开仓前/平仓后净场 + 同 symbol 15s 开平铁律 + ETH/XAU 隔离。**  
+硬止损与雷达止损**并行挂单、互不升级替换**；谁先触发谁执行，仓位归零后撤销其余挂单。  
+**状态：本地 / GitHub / VPS 已对齐 `1f716e7`，空仓待命，等待真实 TV 信号。**
 
 ### 生产代码锚点
 
 | 项 | 值 |
 |----|-----|
-| 代码提交（执行层） | **见 `main` HEAD** — 连续插值呼吸（ETH 1.2~2.5 / XAU 0.5~1.2）+ 算仓铁律 + 平仓零挂单加固 |
+| 三方 commit | **`1f716e7`**（本地 = origin/main = VPS） |
 | VPS 路径 | `/home/panda/panda-quant-platform` |
 | Webhook | `https://twinstar.pro/gemini/webhook` → `:6010` |
-| 默认交易对 | **ETH + XAU**（`TRADING_SYMBOLS=ETHUSDT,XAUUSDT`） |
+| 交易对 | **ETH + XAU**（`TRADING_SYMBOLS=ETHUSDT,XAUUSDT`） |
 
-**近期已入库修复：** 止损撤挂抖动；TP 超时误撤→重复挂单；仓位查询失败≠空仓；平仓归因证据门；钉钉杠杆双源根治；未登记仓位 ATR 接管；天文数字下单；**连续插值呼吸替代离散档**；XAU 回测后收紧 min/max；平仓 leftover 逐笔清扫。
+### 三层防线永久共存（核心，不得误解）
+
+| 层 | 规则 |
+|----|------|
+| **① 硬止损（永久防线）** | 开仓即挂：`distance=\|entry−TV.stop_loss\|×1.2`；LONG=`entry−dist`，SHORT=`entry+dist`（例 1900/1880→**1876**）。至 flat 前：**禁止**撤销 / 改价 / 替换。ATR 升级、雷达上移**都不碰硬止损**。唯一撤销时机：仓位归零。 |
+| **② 雷达止损（独立动态）** | 呼吸引擎**额外**挂出的 STOP，**不是**硬止损升级版。与硬止损同时存在、各自改单、各自触发。雷达改单不影响硬止损。 |
+| **③ TP 限价** | TP1/TP2 **始终** TV 价各 **30%**。TP3：**仅场景二**（VPS 1h ATR 失败用 TV atr）挂 TV 价 **40%**；场景一不挂 TP3（剩余由雷达收网）。 |
+| 部分平仓 | TP 成交后仓位变 70%/40%：硬止损与雷达止损**数量同步收缩**，价格不变。 |
+| 归零清理 | 任一止损触发或全部 TP 成交 → 立即撤销其余挂单，不留孤儿单。 |
+
+### 开仓瞬间三件事（同步）
+
+1. 挂硬止损（TV×1.2 永冻）  
+2. 挂 TP1 + TP2（30%/30% @ TV 价）  
+3. 同步拉取交易所原生 **1h K 线**算真实 ATR → 场景一武装雷达；失败则场景二（TV atr + 挂 TP3）
+
+### 关键参数
 
 | 项 | 现行值 |
 |----|--------|
-| TV 消息 | 仅 `LONG` / `SHORT` / `CLOSE_QUICK_EXIT` / `CLOSE_RSI_EXIT` |
-| 算仓铁律 | **永远** 合约本金×20% 保证金 ×5 杠杆 = **名义≈本金×1**（`qty=本金/价`）；TV.qty 不参与数量 |
-| 止损 | 开仓即呼吸：TV `atr`→`initial_atr`；挂单缓冲 ETH±0.3 / XAU±0.5；**阶段一**阶梯/早保本/底线仅用锁定 ATR（**不含 coef**）；**阶段二** `trail = initial_atr × trailDistanceMultiplier`；币安 1h ATR→SMA3→连续插值呼吸系数 |
-| 呼吸系数 | ETH **1.2~2.5**（冷启动 **1.525**）；XAU **0.5~1.2**（冷启动 **0.675**）；共用 ratioFloor/Ceiling **0.6~2.2**；**无**离散档、**无** XAU×0.8 |
-| 同时到达 | 同 symbol **≤2.5s 缓存**；CLOSE 优先先平后开；开仓成功后 **3s** 内迟到平仓忽略（防刚开又平） |
-| 杠杆 | 执行/钉钉/API 校验/client 初始化 **一律 `FIXED_LEVERAGE=5`** |
-| 行情 | 交易所 30m → **合成 90m** → ATR(14)/ADX(14) |
+| TV action | 仅 `LONG` / `SHORT` / `CLOSE_QUICK_EXIT` / `CLOSE_RSI_EXIT`；**无 qty 字段** |
+| 算仓 | `qty = 合约本金 × 20% × 5 / 价`（≈本金×1 名义）；忽略 TV qty |
+| 15s 铁律 | OPEN 先到 → 15s 内 CLOSE **丢弃**；CLOSE 先到 → **先平后开**；>15s CLOSE 独立平仓 |
+| 净场 | 开仓前无仓无挂单；平仓后立即撤该 symbol 全部挂单；反手一律先平 |
+| ATR | **优先**交易所原生 1h；失败用 TV atr；雷达/开仓**不用** 90m 合成 |
+| 呼吸 | ETH 1.2~2.5 / XAU 0.5~1.2 连续插值；阶段一阶梯**不含** coef |
+| 杠杆 | 一律 `FIXED_LEVERAGE=5` |
 | 加仓 | **禁用**；同向亦先平后开 |
-| CAP_ALIGN | **仅检测告警，不下单减仓** |
-| 未登记仓位 | 市价 ATR 接管呼吸止损 + 推导 TP；钉钉「来源待核实」 |
-| 保留兜底 | `HARD_SL_FAIL_ABORT`、`FLIP_CLEAN_ABORT`、`FORCE_ALIGN`、`EXCHANGE_QUERY_FAIL` |
-| 通知 | 管理员渠道当前为 **钉钉**（VPS 已配）；文案已清旧「雷达/保护性全平/TP3止盈/加仓」 |
 
 | 生产域名 | [https://twinstar.pro](https://twinstar.pro) |
 |----------|---------------------------------------------|
-| **TV Webhook（Gemini）** | `https://twinstar.pro/gemini/webhook` |
+| **TV Webhook** | `https://twinstar.pro/gemini/webhook` |
 | 仓库 | [github.com/vivian5285/panda-quant-platform](https://github.com/vivian5285/panda-quant-platform) |
-
-> Gemini 多用户：Binance / OKX / Gate.io U 本位 + DeepCoin SWAP。  
-> 同机可共存 legacy 单账户：币安大脑 `:5003`、深币 `:5004`，与 Gemini `:6010` 互不冲突。
 
 ---
 
@@ -64,66 +69,33 @@ project: panda-quant-platform
 product: GEMINI AI / 双子星AI量化
 domain: twinstar.pro
 repo_path_on_vps: /home/panda/panda-quant-platform
-authority: docs/VPS_LIVE_CHECKLIST.md
-legacy_purge: docs/LEGACY_PURGE_LIST_20260722.md
-code_anchor: main HEAD  # 合约本金×20%∩×5 算仓铁律
+code_anchor: 1f716e7
+deploy_status: synced local=github=vps — awaiting real TV
 
 services:
-  frontend:6080    # React + nginx /api/
-  backend:8000     # FastAPI
-  backend:6010     # Flask TV webhook
+  frontend:6080
+  backend:8000
+  backend:6010   # TV webhook
   redis:6379
 
-# 信号主链路
-TradingView POST → nginx /gemini/webhook → :6010/webhook
-  → 校验 secret / action∈{LONG,SHORT,CLOSE_QUICK_EXIT,CLOSE_RSI_EXIT} / 幂等
-  → 同 symbol 1s 缓存（CLOSE > OPEN）→ HTTP 200 → SignalDispatcher → handle_signal()
-
-# 四条硬性原则
 rules:
-  - 开仓永远先平后开（不问同向/反向；外部仓亦同；须仓位归零确认）
-  - 单仓不加仓（无 PYRAMID / PROFIT_ADD 生效路径）
-  - 仓位无状态纯函数：合约本金×20%保证金×5杠杆 = 名义本金×1（永远）
-  - 止损单唯一写入方 = 呼吸止损引擎（adverse_radar_guard + breathing_stop）
-  - 钉钉杠杆/关键字段 = 本笔执行快照（_resolve_entry_leverage → FIXED_LEVERAGE）
+  - hard_stop frozen until flat (TV stop_loss x1.2); never replace with radar
+  - radar stop independent extra STOP; coexist with hard
+  - sizing = equity * 0.20 * 5 / price; ignore TV qty
+  - 15s coalesce: open-first discards late CLOSE; close-first → flatten then open
+  - clean slate before open and after flat
+  - ATR prefer VPS native 1h; fallback TV atr + TP3
 
-# 开仓流水线
-open_flow: |
-  查实盘 → 非空则市价全平+撤单+等确认 → 重置呼吸状态
-  → 拉 VPS ATR → initialStop=entry±1.5×ATR
-  → qty=本金×0.20×5/价  (=本金/价，名义≈本金×1)
-  → LIMIT@TV price（不足市价补）→ 挂 TP1/TP2 → 呼吸引擎挂止损(带qty)
-  → 行情引擎持续供 ATR/ADX → 钉钉开仓（leverage=5 写入 detail）
-
-# 平仓
-close_tv: CLOSE_QUICK_EXIT | CLOSE_RSI_EXIT → 市价全平+撤单+重置+钉钉反转保护
-close_breath: 价格触及 currentStop → 引擎全平+重置+钉钉阶段一/二
-tp_fill: 订单监控只通知 → 引擎暂停tick → 撤旧止损 → 按70%/40%重挂 → 恢复tick
-
-# 未登记 / 外部仓
-manual_adopt: |
-  重启或空仓巡检发现无 trade_id 的实盘仓
-  → prepare_manual_adopt：VPS ATR → initialStop；缺 TP 则 1.35/2.5/4.0×ATR 推导
-  → 钉钉「未登记来源仓位·系统接管（来源待核实）」
-  → 后续任意 LONG/SHORT 仍先平后开（无同向续用特例）
-
-# 关键模块
-sizing: backend/app/core/tv_entry_sizing.py          # RISK20 + FIXED_LEVERAGE=5
-breath:         backend/app/core/breathing_profile.py        # ETH/XAU 连续插值 min/max
-        backend/app/core/breathing_stop.py           # 阶段一/二 + compute_tp_ladder_from_atr
-        backend/app/core/atr_1h_breathing.py         # 币安 1h ATR → SMA3 → 连续呼吸系数
-engine: backend/app/core/adverse_radar_guard.py      # 挂/改/触发止损唯一路径
-market: backend/app/core/market_engine.py            # 30m→90m ATR/ADX
-tp: backend/app/core/tp_regime_targets.py            # PLACEABLE={1,2}
-webhook: backend/app/services/webhook_guard.py       # VALID_ACTIONS 仅4个
-alerts: backend/app/services/trading_alerts.py       # theme 杠杆=FIXED
-attribution: backend/app/core/close_attribution.py   # 证据不足不硬判
-errors: backend/app/core/exchange_errors.py          # ExchangeTransientError
-supervisor: backend/app/core/position_supervisor.py
-deepcoin: backend/app/core/position_supervisor_deepcoin.py
+modules:
+  sizing: backend/app/core/tv_entry_sizing.py
+  hard_sl: backend/app/core/breathing_stop.py::compute_temp_tv_stop
+  open_atr: backend/app/core/open_atr_scenario.py
+  radar: backend/app/core/adverse_radar_guard.py + breathing_stop.py
+  tp: backend/app/core/tp_regime_targets.py
+  coalesce: backend/app/services/webhook_symbol_coalesce.py
+  supervisor: backend/app/core/position_supervisor.py
 ```
 
----
 
 ## 目录
 
