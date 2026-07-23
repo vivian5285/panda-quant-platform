@@ -167,7 +167,7 @@ def main():
         "discrete_baseline": disc,
         "candidates": rows,
         "recommended": best,
-        "note": "Production currently uses 0.8/1.8 per 最终方案; sensitivity may recommend tighter band.",
+        "note": "Production locked after backtest: XAU 0.5/1.2 (cold 0.675). 0.8/1.8 was final-spec draft only.",
     }
     out = ROOT / "data" / "_xau_min_max_sensitivity.json"
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

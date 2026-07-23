@@ -50,6 +50,24 @@ def resolve_breathing_coef(coef: float | None, symbol: str | None = None) -> flo
     return resolve_coef(coef, profile_for_symbol(symbol))
 
 
+def default_breathing_coef(symbol: str | None = None) -> float:
+    """Idle / missing-seed default = continuous cold-start (not literal 1.0)."""
+    return cold_start_multiplier(profile_for_symbol(symbol))
+
+
+def load_breathing_coef(raw: Any, symbol: str | None = None) -> float:
+    """State load: missing/non-positive → cold-start; else keep value (tick clamps)."""
+    if raw is None:
+        return default_breathing_coef(symbol)
+    try:
+        c = float(raw)
+    except (TypeError, ValueError):
+        return default_breathing_coef(symbol)
+    if c != c or c <= 0:  # NaN or non-positive
+        return default_breathing_coef(symbol)
+    return c
+
+
 def trail_distance_by_adx(adx_val: float) -> float:
     """Legacy ADX trail helper — maps to ETH continuous ends (kept for imports)."""
     adx = float(adx_val if adx_val is not None else DEFAULT_ADX)

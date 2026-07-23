@@ -10,6 +10,7 @@ from typing import Callable, Optional
 
 from app.core.deepcoin_client import DeepcoinClient, CLIENT_VERSION
 from app.core.radar_trail import clamp_stop_market_safe, tp_path_progress
+from app.core.breathing_stop import load_breathing_coef, resolve_breathing_coef
 from app.core.vps_radar_stages import (
     tp1_filled_from_consumed,
 )
@@ -677,7 +678,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "initial_atr": float(getattr(self, "initial_atr", 0) or 0),
                     "initial_stop": float(getattr(self, "initial_stop", 0) or 0),
                     "breakeven_phase": bool(getattr(self, "breakeven_phase", False)),
-                    "breathing_coefficient": float(getattr(self, "breathing_coefficient", 1.0) or 1.0),
+                    "breathing_coefficient": resolve_breathing_coef(
+                        getattr(self, "breathing_coefficient", None),
+                        getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None),
+                    ),
                     "breath_ratio_history": list(getattr(self, "breath_ratio_history", None) or []),
                     "atr_1h": float(getattr(self, "atr_1h", 0) or 0),
                     "breath_smooth_ratio": float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
@@ -4028,7 +4032,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.initial_atr = float(s.get("initial_atr", 0) or 0)
                     self.initial_stop = float(s.get("initial_stop", 0) or 0)
                     self.breakeven_phase = bool(s.get("breakeven_phase", False))
-                    self.breathing_coefficient = float(s.get("breathing_coefficient", 1.0) or 1.0)
+                    self.breathing_coefficient = load_breathing_coef(
+                        s.get("breathing_coefficient"),
+                        getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None),
+                    )
                     self.breath_ratio_history = [
                         float(x) for x in (s.get("breath_ratio_history") or [])
                     ]

@@ -6,10 +6,12 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-07-23 · 清单终验 + 算仓铁律）**  
-> 凡与本文冲突的旧描述（含「妈妈版」权益×1 算仓、挂 TP123、原生 4H、旧雷达 0.5/0.3/2.0ATR、钉钉独立 25× 杠杆源、名义 0.85 haircut）**一律作废**。  
+> **文档同步（2026-07-23 · 连续插值呼吸终验 + 算仓铁律）**  
+> 凡与本文冲突的旧描述（含「妈妈版」权益×1 算仓、挂 TP123、原生 4H、旧雷达 0.5/0.3/2.0ATR、钉钉独立 25× 杠杆源、名义 0.85 haircut、**离散呼吸档位 / XAU×0.8 trail_tighten**）**一律作废**。  
 > **最终状态清单：** [docs/GEMINI_FINAL_STATUS_20260722.md](docs/GEMINI_FINAL_STATUS_20260722.md)  
 > 行为规格权威：[docs/VPS_LIVE_CHECKLIST.md](docs/VPS_LIVE_CHECKLIST.md)  
+> 连续插值设计定稿：[docs/CONTINUOUS_BREATH_FINAL_SPEC.md](docs/CONTINUOUS_BREATH_FINAL_SPEC.md)（含完整回测表）  
+> 连续插值呼吸终验：[docs/CONTINUOUS_BREATH_PROD_TEST_20260723.md](docs/CONTINUOUS_BREATH_PROD_TEST_20260723.md)（**测试一至四 PASS**）  
 > 旧逻辑清除清单：[docs/LEGACY_PURGE_LIST_20260722.md](docs/LEGACY_PURGE_LIST_20260722.md)  
 > 币安执行层验收：[docs/BINANCE_EXECUTION_ACCEPTANCE.md](docs/BINANCE_EXECUTION_ACCEPTANCE.md)（**已通过**）  
 > E2E 时间线 / 异常说明：[docs/E2E_WEBHOOK_TIMELINE_20260722.md](docs/E2E_WEBHOOK_TIMELINE_20260722.md) · [docs/E2E_ANOMALY_ANALYSIS_20260722.md](docs/E2E_ANOMALY_ANALYSIS_20260722.md)
@@ -23,18 +25,19 @@
 
 | 项 | 值 |
 |----|-----|
-| 代码提交（执行层） | **见 `main` HEAD** — 算仓铁律（合约本金×20%∩×5，无 haircut）+ 天文 qty 兜底 |
+| 代码提交（执行层） | **见 `main` HEAD** — 连续插值呼吸（ETH 1.2~2.5 / XAU 0.5~1.2）+ 算仓铁律 + 平仓零挂单加固 |
 | VPS 路径 | `/home/panda/panda-quant-platform` |
 | Webhook | `https://twinstar.pro/gemini/webhook` → `:6010` |
 | 默认交易对 | **ETH + XAU**（`TRADING_SYMBOLS=ETHUSDT,XAUUSDT`） |
 
-**近期已入库修复：** 止损撤挂抖动；TP 超时误撤→重复挂单；仓位查询失败≠空仓；平仓归因证据门；钉钉杠杆双源根治；未登记仓位 ATR 接管；**天文数字下单**（荒谬 TV.qty 忽略 + 名义硬顶 本金×5）。
+**近期已入库修复：** 止损撤挂抖动；TP 超时误撤→重复挂单；仓位查询失败≠空仓；平仓归因证据门；钉钉杠杆双源根治；未登记仓位 ATR 接管；天文数字下单；**连续插值呼吸替代离散档**；XAU 回测后收紧 min/max；平仓 leftover 逐笔清扫。
 
 | 项 | 现行值 |
 |----|--------|
 | TV 消息 | 仅 `LONG` / `SHORT` / `CLOSE_QUICK_EXIT` / `CLOSE_RSI_EXIT` |
 | 算仓铁律 | **永远** 合约本金×20% 保证金 ×5 杠杆 = **名义≈本金×1**（`qty=本金/价`）；TV.qty 不参与数量 |
-| 止损 | 开仓即呼吸：TV `atr`→`initial_atr`；1.5×ATR±0.3；阶段一 0.75/0.4×呼吸系数；阶段二 追踪=ATR×呼吸系数；币安 1h ATR 调呼吸 |
+| 止损 | 开仓即呼吸：TV `atr`→`initial_atr`；挂单缓冲 ETH±0.3 / XAU±0.5；**阶段一**阶梯/早保本/底线仅用锁定 ATR（**不含 coef**）；**阶段二** `trail = initial_atr × trailDistanceMultiplier`；币安 1h ATR→SMA3→连续插值呼吸系数 |
+| 呼吸系数 | ETH **1.2~2.5**（冷启动 **1.525**）；XAU **0.5~1.2**（冷启动 **0.675**）；共用 ratioFloor/Ceiling **0.6~2.2**；**无**离散档、**无** XAU×0.8 |
 | 同时到达 | 同 symbol **≤2.5s 缓存**；CLOSE 优先先平后开；开仓成功后 **3s** 内迟到平仓忽略（防刚开又平） |
 | 杠杆 | 执行/钉钉/API 校验/client 初始化 **一律 `FIXED_LEVERAGE=5`** |
 | 行情 | 交易所 30m → **合成 90m** → ATR(14)/ADX(14) |
@@ -106,9 +109,9 @@ manual_adopt: |
 
 # 关键模块
 sizing: backend/app/core/tv_entry_sizing.py          # RISK20 + FIXED_LEVERAGE=5
-breath: backend/app/core/breathing_profile.py        # ETH/XAU 参数表
+breath:         backend/app/core/breathing_profile.py        # ETH/XAU 连续插值 min/max
         backend/app/core/breathing_stop.py           # 阶段一/二 + compute_tp_ladder_from_atr
-        backend/app/core/atr_1h_breathing.py         # 币安 1h ATR → 呼吸系数
+        backend/app/core/atr_1h_breathing.py         # 币安 1h ATR → SMA3 → 连续呼吸系数
 engine: backend/app/core/adverse_radar_guard.py      # 挂/改/触发止损唯一路径
 market: backend/app/core/market_engine.py            # 30m→90m ATR/ADX
 tp: backend/app/core/tp_regime_targets.py            # PLACEABLE={1,2}
@@ -468,36 +471,47 @@ https://twinstar.pro/gemini/webhook
 
 ## 呼吸止损引擎详解
 
-实现：`breathing_profile.py`（ETH/XAU）+ `breathing_stop.py` + `adverse_radar_guard.py`。  
-权威全文：[docs/VPS_LIVE_CHECKLIST.md §二～§四](docs/VPS_LIVE_CHECKLIST.md)
+实现：`breathing_profile.py`（ETH/XAU 连续插值）+ `breathing_stop.py` + `atr_1h_breathing.py` + `adverse_radar_guard.py`。  
+权威全文：[docs/VPS_LIVE_CHECKLIST.md §二～§四](docs/VPS_LIVE_CHECKLIST.md)  
+终验证据：[docs/CONTINUOUS_BREATH_PROD_TEST_20260723.md](docs/CONTINUOUS_BREATH_PROD_TEST_20260723.md)
 
 **与仓位计算独立：** 数量开仓一次定死；止损价每个 tick 重算。TV `price`/`stop_loss` **不参与** tick。  
-**双币种：** 同一引擎；XAU 更紧（早保本 0.3ATR、步长 0.4/0.35、coef 0.5~1.3、追踪×0.8）。并存时各约 1× 余额名义，合计约 2×。
+**双币种：** 同一引擎；状态 / 1h ATR / coef 按 `(exchange, user_id, symbol)` 隔离。XAU 更紧靠 **更窄的 minMult/maxMult**（0.5~1.2），**不再**另乘 trail_tighten×0.8。并存时各约 1× 余额名义，合计约 2×。
 
 ### 止损价输入（与 TV 挂单价无关）
 
-开仓时：TV `atr` → 冻结 `initialAtr` → `initialStop = entry ± 1.5×initialAtr` → 挂单时再加减执行缓冲（ETH 0.3 / XAU 0.5）。运行中呼吸系数来自币安原生 1h ATR。
+开仓时：TV `atr` → 冻结 `initialAtr` → `initialStop = entry ± 1.5×initialAtr` → 挂单时再加减执行缓冲（ETH 0.3 / XAU 0.5）。  
+运行中：`ratio = atr_1h / initialAtr` → SMA(3) → **连续线性插值** `trailDistanceMultiplier`（非离散档）。
+
+| 参数 | ETH | XAU |
+|------|-----|-----|
+| coef 区间 (minMult~maxMult) | 1.2 ~ 2.5 | 0.5 ~ 1.2 |
+| 冷启动（ratio=1.0） | **1.525** | **0.675** |
+| ratioFloor / ratioCeiling | 0.6 / 2.2（共用只读） | 同左 |
 
 ### 必须持久化的状态
 
 | 字段 | 含义 |
 |------|------|
 | `entryPrice` / `watched_entry` | 开仓均价（固定） |
-| `initialAtr` | 开仓时刻 ATR，**全程固定** |
+| `initialAtr` | 开仓时刻 ATR，**全程固定**（描述符只读锁） |
 | `initialStop` | `entry ± 1.5×ATR`，阶梯基准（固定） |
 | `currentStop` / `current_sl` | 当前止损，只朝盈利方向移（每 tick） |
 | `best_price`（highest/lowest） | 持仓极值（每 tick） |
 | `breakevenPhase` | 是否阶段二（只升不降） |
-| `breathing_coefficient` | 当前呼吸系数（1h ATR 刷新） |
+| `breathing_coefficient` | 当前呼吸系数（1h ATR 连续插值；空闲默认=冷启动，**不是**字面量 1.0） |
+| `breath_ratio_history` / `breath_smooth_ratio` | ratio SMA 窗口 |
 | `remainingQtyPct` | TP 成交后剩余比例（改挂单量，不改止损公式） |
 | `schema_version` | ≥2；旧雷达 schema → 告警暂停 |
 
 ### 阶段一（开仓即呼吸，每 tick）
 
+阶段一阶梯 / 早保本 / TP 路径底线 **只用锁定 `initialAtr`，不含呼吸系数**。
+
 ```
 早保本: 浮盈 ≥ early_be×ATR → 止损锁到 entry±1 tick   # ETH 0.5 / XAU 0.3
-step_count = floor(|price − entry| / (step_trigger × initialAtr × coef))
-step_stop  = initialStop ± step_count × step_advance × initialAtr × coef
+step_count = floor(|price − entry| / (step_trigger × initialAtr))
+step_stop  = initialStop ± step_count × step_advance × initialAtr
 candidate  = max/min(currentStop, step_stop, early_be)   # 只朝盈利
 
 若 |price−entry| ≥ 1.35×ATR：candidate 不低于/不高于 entry±0.5×ATR   # TP1 底线
@@ -508,7 +522,7 @@ candidate  = max/min(currentStop, step_stop, early_be)   # 只朝盈利
 ### 阶段二（自适应追踪）
 
 ```
-trail_dist = initialAtr × coef × trail_tighten   # ETH 1.0 / XAU 0.8
+trail_dist = initialAtr × trailDistanceMultiplier(smoothedRatio)   # = coef；无额外 tighten
 currentStop = max/min(currentStop, extreme ∓ trail_dist)
 ```
 
@@ -519,6 +533,7 @@ currentStop = max/min(currentStop, extreme ∓ trail_dist)
 - 价格触及 `currentStop` → 市价全平 → 统一状态清零 → 钉钉（标明阶段一/二 + `[ETH]`/`[XAU]`）  
 - TP1/TP2 成交 → 通知引擎按 70%/40% **重挂数量**（价格仍用当前 `currentStop`）  
 - 改单/下单失败 → **`HARD_SL_FAIL_ABORT`**
+- 平仓后：bulk cancel + leftover 逐笔清扫；残留则 `FLAT_ORDERS_LEFT` / 开仓门禁 `OPEN_BOOK_DIRTY`
 
 ---
 
@@ -740,7 +755,8 @@ docker compose logs -f backend | grep -E \
 ## 生产就绪与验收
 
 **状态跟踪（权威）：** [docs/GEMINI_FINAL_STATUS_20260722.md](docs/GEMINI_FINAL_STATUS_20260722.md)  
-**判定：Gemini 币安执行层验收通过**（2026-07-22）。明细见 [docs/BINANCE_EXECUTION_ACCEPTANCE.md](docs/BINANCE_EXECUTION_ACCEPTANCE.md)。
+**判定：Gemini 币安执行层验收通过**（2026-07-22）。明细见 [docs/BINANCE_EXECUTION_ACCEPTANCE.md](docs/BINANCE_EXECUTION_ACCEPTANCE.md)。  
+**连续插值呼吸：生产级终验通过**（2026-07-23）。明细见 [docs/CONTINUOUS_BREATH_PROD_TEST_20260723.md](docs/CONTINUOUS_BREATH_PROD_TEST_20260723.md)。
 
 ### 上线前 / 回归核对
 
@@ -749,21 +765,24 @@ docker compose logs -f backend | grep -E \
 - [x] 钉钉杠杆恒为 **5×**；未登记仓位文案诚实  
 - [x] `docs/VPS_LIVE_CHECKLIST.md` / `LEGACY_PURGE_LIST` / 最终状态清单一致  
 - [x] B1 观察无 TP 重复抖动；B3 全平清零；B2 qty 收缩代码模拟  
+- [x] 连续插值 Test1~4：双币持仓观察 ≥5 采样、回测对比、双币/多用户隔离  
 
 ### 自动化验收
 
 ```bash
 cd backend
-py -3 -m pytest tests/test_breathing_stop.py tests/test_tv_v6985_sizing.py \
-  tests/test_vps_entry_routing.py tests/test_pine_tp_regime_ratios.py \
-  tests/test_market_indicators.py tests/test_market_engine_wire.py \
-  tests/test_close_alert_utils.py tests/test_position_cap_guard.py \
-  tests/test_vps_dev_checklist.py tests/test_v656_core.py \
-  tests/test_tp_rebuild_no_duplicate.py tests/test_tp_timeout_no_thrash.py \
-  tests/test_tp_fill_stop_qty_resize.py tests/test_tp3_phase2_flat_clear.py \
-  tests/test_user_symbol_isolation.py tests/test_deepcoin_binance_parity.py \
-  tests/test_manual_adopt.py tests/test_trading_alerts.py \
-  tests/test_attribution_evidence_gates.py tests/test_position_query_fail_safe.py -q
+py -3 -m pytest tests/test_breathing_stop.py tests/test_continuous_breath_and_atr_lock.py \
+  tests/test_continuous_prod_isolation.py tests/test_atr_1h_breathing.py \
+  tests/test_tv_v6985_sizing.py tests/test_vps_entry_routing.py \
+  tests/test_pine_tp_regime_ratios.py tests/test_market_indicators.py \
+  tests/test_market_engine_wire.py tests/test_close_alert_utils.py \
+  tests/test_position_cap_guard.py tests/test_vps_dev_checklist.py \
+  tests/test_v656_core.py tests/test_tp_rebuild_no_duplicate.py \
+  tests/test_tp_timeout_no_thrash.py tests/test_tp_fill_stop_qty_resize.py \
+  tests/test_tp3_phase2_flat_clear.py tests/test_user_symbol_isolation.py \
+  tests/test_deepcoin_binance_parity.py tests/test_manual_adopt.py \
+  tests/test_trading_alerts.py tests/test_attribution_evidence_gates.py \
+  tests/test_position_query_fail_safe.py -q
 ```
 
 ---
@@ -777,6 +796,16 @@ py -3 -m pytest tests/test_breathing_stop.py tests/test_tv_v6985_sizing.py \
 | Webhook | Flask :6010 |
 | 前端 | React 18, Vite, TypeScript |
 | 部署 | Docker Compose, Nginx, Certbot |
+
+### 2026-07-23 · 连续插值呼吸生产终验
+
+| Commit / 证据 | 内容 |
+|--------|------|
+| **连续插值终验** | [CONTINUOUS_BREATH_PROD_TEST_20260723.md](docs/CONTINUOUS_BREATH_PROD_TEST_20260723.md) — Test1~4 **PASS**，可作长期生产配置 |
+| `aab2e41` | 连续 `trailDistanceMultiplier`；钉钉平仓归因细化 |
+| XAU 参数修正 | 回测后 `coef_min/max` **0.5~1.2**（原文 0.8~1.8 过松）；冷启动 **0.675** |
+| `56bdb4b` | 平仓挂单 fail-closed 计数 + 开仓零挂单门禁 |
+| 冷启动种子 | 空闲/重置 coef=品种冷启动（禁字面量 1.0 误夹紧/放松） |
 
 ### 2026-07-22 · 生产级最终落地
 
@@ -794,7 +823,7 @@ py -3 -m pytest tests/test_breathing_stop.py tests/test_tv_v6985_sizing.py \
 
 ### 历史说明（勿再当现行）
 
-此前 README 中的「路径比例雷达 50/60/70/80」「TP123 基础单×3」「PYRAMID 加仓」「TV `risk_pct`/`tv_sl` 权威算仓与挂止损」「妈妈版权益×1」「钉钉主题可回落 env 25×」等，均已被本节与 `docs/VPS_LIVE_CHECKLIST.md` / `docs/LEGACY_PURGE_LIST_20260722.md` **取代**。
+此前 README 中的「路径比例雷达 50/60/70/80」「TP123 基础单×3」「PYRAMID 加仓」「TV `risk_pct`/`tv_sl` 权威算仓与挂止损」「妈妈版权益×1」「钉钉主题可回落 env 25×」「**离散呼吸档位 / XAU trail_tighten×0.8**」等，均已被本节与 `docs/VPS_LIVE_CHECKLIST.md` / `docs/LEGACY_PURGE_LIST_20260722.md` / `docs/CONTINUOUS_BREATH_PROD_TEST_20260723.md` **取代**。
 
 事故档案中的修复思路（先平后开、TP 不重挂已成交档、硬止损禁普通限价秒平等）仍有运维参考价值，但参数与模块名请以**呼吸止损 + RISK20 + FIXED_LEVERAGE**为准。
 

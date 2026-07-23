@@ -1,0 +1,98 @@
+{
+  "generated_at": "2026-07-22T23:37:41Z",
+  "discrete_baseline": {
+    "n": 57,
+    "total_pnl_R": -4.5092,
+    "winrate": 0.5789,
+    "profit_factor": 0.8747,
+    "max_dd_R": 20.9926
+  },
+  "candidates": [
+    {
+      "label": "discrete_old",
+      "n": 57,
+      "total_pnl_R": -4.5092,
+      "winrate": 0.5789,
+      "profit_factor": 0.8747,
+      "max_dd_R": 20.9926
+    },
+    {
+      "label": "cont_0.8_1.8",
+      "min": 0.8,
+      "max": 1.8,
+      "n": 58,
+      "total_pnl_R": -11.8826,
+      "winrate": 0.5862,
+      "profit_factor": 0.6699,
+      "max_dd_R": 20.9926,
+      "delta_vs_disc": -7.3734
+    },
+    {
+      "label": "cont_0.5_1.2",
+      "min": 0.5,
+      "max": 1.2,
+      "n": 57,
+      "total_pnl_R": -4.5092,
+      "winrate": 0.5789,
+      "profit_factor": 0.8747,
+      "max_dd_R": 20.9926,
+      "delta_vs_disc": 0.0
+    },
+    {
+      "label": "cont_0.6_1.4",
+      "min": 0.6,
+      "max": 1.4,
+      "n": 57,
+      "total_pnl_R": -4.5164,
+      "winrate": 0.5789,
+      "profit_factor": 0.8745,
+      "max_dd_R": 20.9926,
+      "delta_vs_disc": -0.0072
+    },
+    {
+      "label": "cont_0.7_1.5",
+      "min": 0.7,
+      "max": 1.5,
+      "n": 57,
+      "total_pnl_R": -4.6586,
+      "winrate": 0.5789,
+      "profit_factor": 0.8706,
+      "max_dd_R": 20.9926,
+      "delta_vs_disc": -0.1494
+    },
+    {
+      "label": "cont_0.5_1.0",
+      "min": 0.5,
+      "max": 1.0,
+      "n": 57,
+      "total_pnl_R": -4.5092,
+      "winrate": 0.5789,
+      "profit_factor": 0.8747,
+      "max_dd_R": 20.9926,
+      "delta_vs_disc": 0.0
+    },
+    {
+      "label": "cont_0.4_1.04",
+      "min": 0.4,
+      "max": 1.04,
+      "n": 57,
+      "total_pnl_R": -4.5092,
+      "winrate": 0.5789,
+      "profit_factor": 0.8747,
+      "max_dd_R": 20.9926,
+      "delta_vs_disc": 0.0
+    }
+  ],
+  "recommended": {
+    "label": "cont_0.5_1.2",
+    "min": 0.5,
+    "max": 1.2,
+    "n": 57,
+    "total_pnl_R": -4.5092,
+    "winrate": 0.5789,
+    "profit_factor": 0.8747,
+    "max_dd_R": 20.9926,
+    "delta_vs_disc": 0.0
+  },
+  "note": "Production locked: XAU 0.5/1.2 (cold 0.675). Draft 0.8/1.8 rejected (ΔPnL≈-7.37R vs discrete)."
+}

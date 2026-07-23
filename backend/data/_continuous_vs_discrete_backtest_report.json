@@ -1,0 +1,1433 @@
+{
+  "generated_at": "2026-07-22T23:40:01Z",
+  "head_note": "continuous = aab2e41 trailDistanceMultiplier; discrete = pre-aab2e41 ladder",
+  "params": {
+    "lookback_bars": 1500,
+    "entry_every": 24,
+    "tp_exit_atr": 5.0,
+    "time_stop_bars": 96
+  },
+  "symbols": {
+    "ETHUSDT": {
+      "continuous": {
+        "mode": "continuous",
+        "symbol": "ETHUSDT",
+        "n_trades": 60,
+        "total_pnl_R": -3.6519,
+        "winrate": 0.6,
+        "profit_factor": 0.8986,
+        "max_drawdown_R": 17.4973,
+        "avg_pnl_R": -0.0609,
+        "stop_exit_pct": 0.9333,
+        "phase2_trade_pct": 0.0667,
+        "phase2_avg_pnl_R": 4.209,
+        "near_breakpoint_trades": 56,
+        "near_breakpoint_avg_pnl_R": -0.217,
+        "exit_reasons": {
+          "stop": 55,
+          "tp_far": 1,
+          "time": 0,
+          "eod": 0,
+          "phase2_stop": 1,
+          "phase2_tp_far": 3,
+          "phase2_time": 0,
+          "phase2_eod": 0
+        },
+        "sample_near_trades": [
+          {
+            "pnl_R": -1.5,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              1.525,
+              1.5511,
+              1.3923
+            ],
+            "smooth_path": [
+              1.0,
+              1.0321,
+              0.8367
+            ],
+            "entry": 2071.91,
+            "exit": 2049.26623126411
+          },
+          {
+            "pnl_R": 0.0005,
+            "exit_reason": "stop",
+            "near": [
+              "~0.7",
+              "~1.0"
+            ],
+            "coef_path": [
+              1.525,
+              1.4761,
+              1.3382,
+              1.2434
+            ],
+            "smooth_path": [
+              1.0,
+              0.9398,
+              0.77,
+              0.6534
+            ],
+            "entry": 2115.75,
+            "exit": 2115.76
+          },
+          {
+            "pnl_R": 0.0007,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              1.525,
+              1.5219
+            ],
+            "smooth_path": [
+              1.0,
+              0.9962
+            ],
+            "entry": 2091.38,
+            "exit": 2091.3900000000003
+          },
+          {
+            "pnl_R": 0.0008,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              1.525,
+              1.5652
+            ],
+            "smooth_path": [
+              1.0,
+              1.0494
+            ],
+            "entry": 2102.59,
+            "exit": 2102.6000000000004
+          },
+          {
+            "pnl_R": 0.0006,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              1.525,
+              1.4885
+            ],
+            "smooth_path": [
+              1.0,
+              0.955
+            ],
+            "entry": 2068.0,
+            "exit": 2068.01
+          },
+          {
+            "pnl_R": -1.5,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              1.525,
+              1.4955
+            ],
+            "smooth_path": [
+              1.0,
+              0.9637
+            ],
+            "entry": 2024.34,
+            "exit": 1998.765771507865
+          },
+          {
+            "pnl_R": 0.0006,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              1.525,
+              1.4759,
+              1.3888
+            ],
+            "smooth_path": [
+              1.0,
+              0.9396,
+              0.8324
+            ],
+            "entry": 2004.89,
+            "exit": 2004.9
+          },
+          {
+            "pnl_R": 0.0006,
+            "exit_reason": "stop",
+            "near": [
+              "~0.7",
+              "~1.0"
+            ],
+            "coef_path": [
+              1.525,
+              1.4815,
+              1.3934,
+              1.239,
+              1.2,
+              1.2,
+              1.2,
+              1.2
+            ],
+            "smooth_path": [
+              1.0,
+              0.9464,
+              0.838,
+              0.648,
+              0.5637,
+              0.4875,
+              0.4493,
+              0.429
+            ],
+            "entry": 2012.8,
+            "exit": 2012.81
+          }
+        ],
+        "sample_phase2_trades": [
+          {
+            "pnl_R": 5.0,
+            "exit_reason": "phase2_tp_far",
+            "coef_path": [
+              1.525
+            ],
+            "smooth_path": [
+              1.0
+            ]
+          },
+          {
+            "pnl_R": 5.0,
+            "exit_reason": "phase2_tp_far",
+            "coef_path": [
+              1.525,
+              1.6246
+            ],
+            "smooth_path": [
+              1.0,
+              1.1226
+            ]
+          },
+          {
+            "pnl_R": 5.0,
+            "exit_reason": "phase2_tp_far",
+            "coef_path": [
+              1.525,
+              1.4445,
+              1.4689
+            ],
+            "smooth_path": [
+              1.0,
+              0.9009,
+              0.9309
+            ]
+          },
+          {
+            "pnl_R": 1.8358,
+            "exit_reason": "phase2_stop",
+            "coef_path": [
+              1.525,
+              1.4759,
+              1.4652
+            ],
+            "smooth_path": [
+              1.0,
+              0.9396,
+              0.9264
+            ]
+          }
+        ]
+      },
+      "discrete": {
+        "mode": "discrete",
+        "symbol": "ETHUSDT",
+        "n_trades": 60,
+        "total_pnl_R": -3.257,
+        "winrate": 0.6,
+        "profit_factor": 0.9095,
+        "max_drawdown_R": 17.4973,
+        "avg_pnl_R": -0.0543,
+        "stop_exit_pct": 0.9333,
+        "phase2_trade_pct": 0.0667,
+        "phase2_avg_pnl_R": 4.3077,
+        "near_breakpoint_trades": 56,
+        "near_breakpoint_avg_pnl_R": -0.21,
+        "exit_reasons": {
+          "stop": 55,
+          "tp_far": 1,
+          "time": 0,
+          "eod": 0,
+          "phase2_stop": 1,
+          "phase2_tp_far": 3,
+          "phase2_time": 0,
+          "phase2_eod": 0
+        },
+        "sample_near_trades": [
+          {
+            "pnl_R": -1.5,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              1.0,
+              1.0,
+              0.85
+            ],
+            "smooth_path": [
+              1.0,
+              1.0321,
+              0.8367
+            ],
+            "entry": 2071.91,
+            "exit": 2049.26623126411
+          },
+          {
+            "pnl_R": 0.0005,
+            "exit_reason": "stop",
+            "near": [
+              "~0.7",
+              "~1.0"
+            ],
+            "coef_path": [
+              1.0,
+              0.85,
+              0.85,
+              0.7
+            ],
+            "smooth_path": [
+              1.0,
+              0.9398,
+              0.77,
+              0.6534
+            ],
+            "entry": 2115.75,
+            "exit": 2115.76
+          },
+          {
+            "pnl_R": 0.0007,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              1.0,
+              0.85
+            ],
+            "smooth_path": [
+              1.0,
+              0.9962
+            ],
+            "entry": 2091.38,
+            "exit": 2091.3900000000003
+          },
+          {
+            "pnl_R": 0.0008,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              1.0,
+              1.0
+            ],
+            "smooth_path": [
+              1.0,
+              1.0494
+            ],
+            "entry": 2102.59,
+            "exit": 2102.6000000000004
+          },
+          {
+            "pnl_R": 0.0006,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              1.0,
+              0.85
+            ],
+            "smooth_path": [
+              1.0,
+              0.955
+            ],
+            "entry": 2068.0,
+            "exit": 2068.01
+          },
+          {
+            "pnl_R": -1.5,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              1.0,
+              0.85
+            ],
+            "smooth_path": [
+              1.0,
+              0.9637
+            ],
+            "entry": 2024.34,
+            "exit": 1998.765771507865
+          },
+          {
+            "pnl_R": 0.0006,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              1.0,
+              0.85,
+              0.85
+            ],
+            "smooth_path": [
+              1.0,
+              0.9396,
+              0.8324
+            ],
+            "entry": 2004.89,
+            "exit": 2004.9
+          },
+          {
+            "pnl_R": 0.0006,
+            "exit_reason": "stop",
+            "near": [
+              "~0.7",
+              "~1.0"
+            ],
+            "coef_path": [
+              1.0,
+              0.85,
+              0.85,
+              0.7,
+              0.7,
+              0.7,
+              0.7,
+              0.7
+            ],
+            "smooth_path": [
+              1.0,
+              0.9464,
+              0.838,
+              0.648,
+              0.5637,
+              0.4875,
+              0.4493,
+              0.429
+            ],
+            "entry": 2012.8,
+            "exit": 2012.81
+          }
+        ],
+        "sample_phase2_trades": [
+          {
+            "pnl_R": 5.0,
+            "exit_reason": "phase2_tp_far",
+            "coef_path": [
+              1.0
+            ],
+            "smooth_path": [
+              1.0
+            ]
+          },
+          {
+            "pnl_R": 5.0,
+            "exit_reason": "phase2_tp_far",
+            "coef_path": [
+              1.0,
+              1.0
+            ],
+            "smooth_path": [
+              1.0,
+              1.1226
+            ]
+          },
+          {
+            "pnl_R": 5.0,
+            "exit_reason": "phase2_tp_far",
+            "coef_path": [
+              1.0,
+              0.85,
+              0.85
+            ],
+            "smooth_path": [
+              1.0,
+              0.9009,
+              0.9309
+            ]
+          },
+          {
+            "pnl_R": 2.2307,
+            "exit_reason": "phase2_stop",
+            "coef_path": [
+              1.0,
+              0.85,
+              0.85
+            ],
+            "smooth_path": [
+              1.0,
+              0.9396,
+              0.9264
+            ]
+          }
+        ]
+      },
+      "delta_total_pnl_R": -0.3949,
+      "delta_max_dd_R": 0.0,
+      "delta_winrate": 0.0,
+      "delta_pf": -0.0109,
+      "continuous_not_worse_overall": true
+    },
+    "XAUUSDT": {
+      "continuous": {
+        "mode": "continuous",
+        "symbol": "XAUUSDT",
+        "n_trades": 57,
+        "total_pnl_R": -4.2343,
+        "winrate": 0.5789,
+        "profit_factor": 0.8824,
+        "max_drawdown_R": 20.9926,
+        "avg_pnl_R": -0.0743,
+        "stop_exit_pct": 0.9298,
+        "phase2_trade_pct": 0.1053,
+        "phase2_avg_pnl_R": 4.2078,
+        "near_breakpoint_trades": 51,
+        "near_breakpoint_avg_pnl_R": 0.0934,
+        "exit_reasons": {
+          "stop": 51,
+          "tp_far": 0,
+          "time": 0,
+          "eod": 0,
+          "phase2_stop": 2,
+          "phase2_tp_far": 4,
+          "phase2_time": 0,
+          "phase2_eod": 0
+        },
+        "sample_near_trades": [
+          {
+            "pnl_R": 0.0007,
+            "exit_reason": "stop",
+            "near": [
+              "~0.7",
+              "~1.0"
+            ],
+            "coef_path": [
+              0.6749999999999999,
+              0.6478,
+              0.5515
+            ],
+            "smooth_path": [
+              1.0,
+              0.9377,
+              0.7177
+            ],
+            "entry": 4511.1,
+            "exit": 4511.110000000001
+          },
+          {
+            "pnl_R": 0.5,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              0.6749999999999999,
+              0.6787,
+              0.7112,
+              0.6474
+            ],
+            "smooth_path": [
+              1.0,
+              1.0084,
+              1.0828,
+              0.9369
+            ],
+            "entry": 4538.83,
+            "exit": 4542.739544325843
+          },
+          {
+            "pnl_R": 0.0011,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              0.6749999999999999,
+              0.6979
+            ],
+            "smooth_path": [
+              1.0,
+              1.0523
+            ],
+            "entry": 4567.81,
+            "exit": 4567.820000000001
+          },
+          {
+            "pnl_R": 0.0008,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              0.6749999999999999,
+              0.6933
+            ],
+            "smooth_path": [
+              1.0,
+              1.0418
+            ],
+            "entry": 4514.5,
+            "exit": 4514.51
+          },
+          {
+            "pnl_R": -1.5,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              0.6749999999999999,
+              0.6691
+            ],
+            "smooth_path": [
+              1.0,
+              0.9864
+            ],
+            "entry": 4460.29,
+            "exit": 4436.308190247576
+          },
+          {
+            "pnl_R": 1.5,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              0.6749999999999999,
+              0.6496,
+              0.6234,
+              0.636
+            ],
+            "smooth_path": [
+              1.0,
+              0.9419,
+              0.882,
+              0.9109
+            ],
+            "entry": 4493.28,
+            "exit": 4520.03551158702
+          },
+          {
+            "pnl_R": -1.5,
+            "exit_reason": "stop",
+            "near": [
+              "~0.7",
+              "~1.0"
+            ],
+            "coef_path": [
+              0.6749999999999999,
+              0.644,
+              0.5494,
+              0.5,
+              0.5,
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "smooth_path": [
+              1.0,
+              0.9292,
+              0.7129,
+              0.5398,
+              0.4007,
+              0.3193,
+              0.293,
+              0.2665,
+              0.2272
+            ],
+            "entry": 4546.81,
+            "exit": 4522.417288720662
+          },
+          {
+            "pnl_R": -1.5,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              0.6749999999999999,
+              0.7023
+            ],
+            "smooth_path": [
+              1.0,
+              1.0623
+            ],
+            "entry": 4543.01,
+            "exit": 4534.518055054254
+          }
+        ],
+        "sample_phase2_trades": [
+          {
+            "pnl_R": 5.0,
+            "exit_reason": "phase2_tp_far",
+            "coef_path": [
+              0.6749999999999999,
+              0.6816,
+              0.6711,
+              0.6674
+            ],
+            "smooth_path": [
+              1.0,
+              1.015,
+              0.991,
+              0.9827
+            ]
+          },
+          {
+            "pnl_R": 2.4754,
+            "exit_reason": "phase2_stop",
+            "coef_path": [
+              0.6749999999999999,
+              0.6928
+            ],
+            "smooth_path": [
+              1.0,
+              1.0407
+            ]
+          },
+          {
+            "pnl_R": 2.7713,
+            "exit_reason": "phase2_stop",
+            "coef_path": [
+              0.6749999999999999,
+              0.6778,
+              0.6607,
+              0.634,
+              0.6316
+            ],
+            "smooth_path": [
+              1.0,
+              1.0065,
+              0.9673,
+              0.9063,
+              0.9008
+            ]
+          },
+          {
+            "pnl_R": 5.0,
+            "exit_reason": "phase2_tp_far",
+            "coef_path": [
+              0.6749999999999999,
+              0.6783,
+              0.6705,
+              0.6885
+            ],
+            "smooth_path": [
+              1.0,
+              1.0075,
+              0.9897,
+              1.0308
+            ]
+          },
+          {
+            "pnl_R": 5.0,
+            "exit_reason": "phase2_tp_far",
+            "coef_path": [
+              0.6749999999999999,
+              0.6915
+            ],
+            "smooth_path": [
+              1.0,
+              1.0377
+            ]
+          },
+          {
+            "pnl_R": 5.0,
+            "exit_reason": "phase2_tp_far",
+            "coef_path": [
+              0.6749999999999999,
+              0.6705
+            ],
+            "smooth_path": [
+              1.0,
+              0.9896
+            ]
+          }
+        ]
+      },
+      "discrete": {
+        "mode": "discrete",
+        "symbol": "XAUUSDT",
+        "n_trades": 57,
+        "total_pnl_R": -4.1892,
+        "winrate": 0.5789,
+        "profit_factor": 0.8836,
+        "max_drawdown_R": 20.9926,
+        "avg_pnl_R": -0.0735,
+        "stop_exit_pct": 0.9298,
+        "phase2_trade_pct": 0.1053,
+        "phase2_avg_pnl_R": 4.2153,
+        "near_breakpoint_trades": 51,
+        "near_breakpoint_avg_pnl_R": 0.0943,
+        "exit_reasons": {
+          "stop": 51,
+          "tp_far": 0,
+          "time": 0,
+          "eod": 0,
+          "phase2_stop": 2,
+          "phase2_tp_far": 4,
+          "phase2_time": 0,
+          "phase2_eod": 0
+        },
+        "sample_near_trades": [
+          {
+            "pnl_R": 0.0007,
+            "exit_reason": "stop",
+            "near": [
+              "~0.7",
+              "~1.0"
+            ],
+            "coef_path": [
+              0.7200000000000001,
+              0.56,
+              0.56
+            ],
+            "smooth_path": [
+              1.0,
+              0.9377,
+              0.7177
+            ],
+            "entry": 4511.1,
+            "exit": 4511.110000000001
+          },
+          {
+            "pnl_R": 0.5,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              0.7200000000000001,
+              0.72,
+              0.72,
+              0.56
+            ],
+            "smooth_path": [
+              1.0,
+              1.0084,
+              1.0828,
+              0.9369
+            ],
+            "entry": 4538.83,
+            "exit": 4542.739544325843
+          },
+          {
+            "pnl_R": 0.0011,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              0.7200000000000001,
+              0.72
+            ],
+            "smooth_path": [
+              1.0,
+              1.0523
+            ],
+            "entry": 4567.81,
+            "exit": 4567.820000000001
+          },
+          {
+            "pnl_R": 0.0008,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              0.7200000000000001,
+              0.72
+            ],
+            "smooth_path": [
+              1.0,
+              1.0418
+            ],
+            "entry": 4514.5,
+            "exit": 4514.51
+          },
+          {
+            "pnl_R": -1.5,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              0.7200000000000001,
+              0.56
+            ],
+            "smooth_path": [
+              1.0,
+              0.9864
+            ],
+            "entry": 4460.29,
+            "exit": 4436.308190247576
+          },
+          {
+            "pnl_R": 1.5,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              0.7200000000000001,
+              0.56,
+              0.56,
+              0.56
+            ],
+            "smooth_path": [
+              1.0,
+              0.9419,
+              0.882,
+              0.9109
+            ],
+            "entry": 4493.28,
+            "exit": 4520.03551158702
+          },
+          {
+            "pnl_R": -1.5,
+            "exit_reason": "stop",
+            "near": [
+              "~0.7",
+              "~1.0"
+            ],
+            "coef_path": [
+              0.7200000000000001,
+              0.56,
+              0.56,
+              0.4,
+              0.4,
+              0.4,
+              0.4,
+              0.4,
+              0.4
+            ],
+            "smooth_path": [
+              1.0,
+              0.9292,
+              0.7129,
+              0.5398,
+              0.4007,
+              0.3193,
+              0.293,
+              0.2665,
+              0.2272
+            ],
+            "entry": 4546.81,
+            "exit": 4522.417288720662
+          },
+          {
+            "pnl_R": -1.5,
+            "exit_reason": "stop",
+            "near": [
+              "~1.0"
+            ],
+            "coef_path": [
+              0.7200000000000001,
+              0.72
+            ],
+            "smooth_path": [
+              1.0,
+              1.0623
+            ],
+            "entry": 4543.01,
+            "exit": 4534.518055054254
+          }
+        ],
+        "sample_phase2_trades": [
+          {
+            "pnl_R": 5.0,
+            "exit_reason": "phase2_tp_far",
+            "coef_path": [
+              0.7200000000000001,
+              0.72,
+              0.56,
+              0.56
+            ],
+            "smooth_path": [
+              1.0,
+              1.015,
+              0.991,
+              0.9827
+            ]
+          },
+          {
+            "pnl_R": 2.4489,
+            "exit_reason": "phase2_stop",
+            "coef_path": [
+              0.7200000000000001,
+              0.72
+            ],
+            "smooth_path": [
+              1.0,
+              1.0407
+            ]
+          },
+          {
+            "pnl_R": 2.8429,
+            "exit_reason": "phase2_stop",
+            "coef_path": [
+              0.7200000000000001,
+              0.72,
+              0.56,
+              0.56,
+              0.56
+            ],
+            "smooth_path": [
+              1.0,
+              1.0065,
+              0.9673,
+              0.9063,
+              0.9008
+            ]
+          },
+          {
+            "pnl_R": 5.0,
+            "exit_reason": "phase2_tp_far",
+            "coef_path": [
+              0.7200000000000001,
+              0.72,
+              0.56,
+              0.72
+            ],
+            "smooth_path": [
+              1.0,
+              1.0075,
+              0.9897,
+              1.0308
+            ]
+          },
+          {
+            "pnl_R": 5.0,
+            "exit_reason": "phase2_tp_far",
+            "coef_path": [
+              0.7200000000000001,
+              0.72
+            ],
+            "smooth_path": [
+              1.0,
+              1.0377
+            ]
+          },
+          {
+            "pnl_R": 5.0,
+            "exit_reason": "phase2_tp_far",
+            "coef_path": [
+              0.7200000000000001,
+              0.56
+            ],
+            "smooth_path": [
+              1.0,
+              0.9896
+            ]
+          }
+        ]
+      },
+      "delta_total_pnl_R": -0.0451,
+      "delta_max_dd_R": 0.0,
+      "delta_winrate": 0.0,
+      "delta_pf": -0.0012,
+      "continuous_not_worse_overall": true
+    }
+  },
+  "breakpoint_continuity": {
+    "ETHUSDT": {
+      "symbol": "ETHUSDT",
+      "max_abs_discrete_step": 0.2,
+      "max_abs_continuous_step": 0.008125,
+      "continuous_smoother": true,
+      "breakpoint_spotlight": [
+        {
+          "ratio": 0.69,
+          "continuous": 1.273125,
+          "discrete": 0.7,
+          "delta": 0.573125,
+          "cont_jump_vs_prev": 0.008125,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 0.7,
+          "continuous": 1.28125,
+          "discrete": 0.85,
+          "delta": 0.43125,
+          "cont_jump_vs_prev": 0.008125,
+          "disc_jump_vs_prev": 0.15
+        },
+        {
+          "ratio": 0.71,
+          "continuous": 1.289375,
+          "discrete": 0.85,
+          "delta": 0.439375,
+          "cont_jump_vs_prev": 0.008125,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 0.99,
+          "continuous": 1.516875,
+          "discrete": 0.85,
+          "delta": 0.666875,
+          "cont_jump_vs_prev": 0.008125,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 1.0,
+          "continuous": 1.525,
+          "discrete": 1.0,
+          "delta": 0.525,
+          "cont_jump_vs_prev": 0.008125,
+          "disc_jump_vs_prev": 0.15
+        },
+        {
+          "ratio": 1.01,
+          "continuous": 1.533125,
+          "discrete": 1.0,
+          "delta": 0.533125,
+          "cont_jump_vs_prev": 0.008125,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 1.39,
+          "continuous": 1.841875,
+          "discrete": 1.0,
+          "delta": 0.841875,
+          "cont_jump_vs_prev": 0.008125,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 1.4,
+          "continuous": 1.85,
+          "discrete": 1.2,
+          "delta": 0.65,
+          "cont_jump_vs_prev": 0.008125,
+          "disc_jump_vs_prev": 0.2
+        },
+        {
+          "ratio": 1.41,
+          "continuous": 1.858125,
+          "discrete": 1.203333,
+          "delta": 0.654792,
+          "cont_jump_vs_prev": 0.008125,
+          "disc_jump_vs_prev": 0.003333
+        },
+        {
+          "ratio": 1.99,
+          "continuous": 2.329375,
+          "discrete": 1.396667,
+          "delta": 0.932708,
+          "cont_jump_vs_prev": 0.008125,
+          "disc_jump_vs_prev": 0.003334
+        },
+        {
+          "ratio": 2.0,
+          "continuous": 2.3375,
+          "discrete": 1.5,
+          "delta": 0.8375,
+          "cont_jump_vs_prev": 0.008125,
+          "disc_jump_vs_prev": 0.103333
+        },
+        {
+          "ratio": 2.01,
+          "continuous": 2.345625,
+          "discrete": 1.5,
+          "delta": 0.845625,
+          "cont_jump_vs_prev": 0.008125,
+          "disc_jump_vs_prev": 0.0
+        }
+      ],
+      "grid_head": [
+        {
+          "ratio": 0.5,
+          "continuous": 1.2,
+          "discrete": 0.7,
+          "delta": 0.5,
+          "cont_jump_vs_prev": null,
+          "disc_jump_vs_prev": null
+        },
+        {
+          "ratio": 0.51,
+          "continuous": 1.2,
+          "discrete": 0.7,
+          "delta": 0.5,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 0.52,
+          "continuous": 1.2,
+          "discrete": 0.7,
+          "delta": 0.5,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 0.53,
+          "continuous": 1.2,
+          "discrete": 0.7,
+          "delta": 0.5,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 0.54,
+          "continuous": 1.2,
+          "discrete": 0.7,
+          "delta": 0.5,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        }
+      ],
+      "grid_tail": [
+        {
+          "ratio": 2.26,
+          "continuous": 2.5,
+          "discrete": 1.5,
+          "delta": 1.0,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 2.27,
+          "continuous": 2.5,
+          "discrete": 1.5,
+          "delta": 1.0,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 2.28,
+          "continuous": 2.5,
+          "discrete": 1.5,
+          "delta": 1.0,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 2.29,
+          "continuous": 2.5,
+          "discrete": 1.5,
+          "delta": 1.0,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 2.3,
+          "continuous": 2.5,
+          "discrete": 1.5,
+          "delta": 1.0,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        }
+      ]
+    },
+    "XAUUSDT": {
+      "symbol": "XAUUSDT",
+      "max_abs_discrete_step": 0.16,
+      "max_abs_continuous_step": 0.004375,
+      "continuous_smoother": true,
+      "breakpoint_spotlight": [
+        {
+          "ratio": 0.69,
+          "continuous": 0.539375,
+          "discrete": 0.4,
+          "delta": 0.139375,
+          "cont_jump_vs_prev": 0.004375,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 0.7,
+          "continuous": 0.54375,
+          "discrete": 0.56,
+          "delta": -0.01625,
+          "cont_jump_vs_prev": 0.004375,
+          "disc_jump_vs_prev": 0.16
+        },
+        {
+          "ratio": 0.71,
+          "continuous": 0.548125,
+          "discrete": 0.56,
+          "delta": -0.011875,
+          "cont_jump_vs_prev": 0.004375,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 0.99,
+          "continuous": 0.670625,
+          "discrete": 0.56,
+          "delta": 0.110625,
+          "cont_jump_vs_prev": 0.004375,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 1.0,
+          "continuous": 0.675,
+          "discrete": 0.72,
+          "delta": -0.045,
+          "cont_jump_vs_prev": 0.004375,
+          "disc_jump_vs_prev": 0.16
+        },
+        {
+          "ratio": 1.01,
+          "continuous": 0.679375,
+          "discrete": 0.72,
+          "delta": -0.040625,
+          "cont_jump_vs_prev": 0.004375,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 1.39,
+          "continuous": 0.845625,
+          "discrete": 0.72,
+          "delta": 0.125625,
+          "cont_jump_vs_prev": 0.004375,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 1.4,
+          "continuous": 0.85,
+          "discrete": 0.8,
+          "delta": 0.05,
+          "cont_jump_vs_prev": 0.004375,
+          "disc_jump_vs_prev": 0.08
+        },
+        {
+          "ratio": 1.41,
+          "continuous": 0.854375,
+          "discrete": 0.802667,
+          "delta": 0.051708,
+          "cont_jump_vs_prev": 0.004375,
+          "disc_jump_vs_prev": 0.002667
+        },
+        {
+          "ratio": 1.99,
+          "continuous": 1.108125,
+          "discrete": 0.957333,
+          "delta": 0.150792,
+          "cont_jump_vs_prev": 0.004375,
+          "disc_jump_vs_prev": 0.002666
+        },
+        {
+          "ratio": 2.0,
+          "continuous": 1.1125,
+          "discrete": 1.04,
+          "delta": 0.0725,
+          "cont_jump_vs_prev": 0.004375,
+          "disc_jump_vs_prev": 0.082667
+        },
+        {
+          "ratio": 2.01,
+          "continuous": 1.116875,
+          "discrete": 1.04,
+          "delta": 0.076875,
+          "cont_jump_vs_prev": 0.004375,
+          "disc_jump_vs_prev": 0.0
+        }
+      ],
+      "grid_head": [
+        {
+          "ratio": 0.5,
+          "continuous": 0.5,
+          "discrete": 0.4,
+          "delta": 0.1,
+          "cont_jump_vs_prev": null,
+          "disc_jump_vs_prev": null
+        },
+        {
+          "ratio": 0.51,
+          "continuous": 0.5,
+          "discrete": 0.4,
+          "delta": 0.1,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 0.52,
+          "continuous": 0.5,
+          "discrete": 0.4,
+          "delta": 0.1,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 0.53,
+          "continuous": 0.5,
+          "discrete": 0.4,
+          "delta": 0.1,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 0.54,
+          "continuous": 0.5,
+          "discrete": 0.4,
+          "delta": 0.1,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        }
+      ],
+      "grid_tail": [
+        {
+          "ratio": 2.26,
+          "continuous": 1.2,
+          "discrete": 1.04,
+          "delta": 0.16,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 2.27,
+          "continuous": 1.2,
+          "discrete": 1.04,
+          "delta": 0.16,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 2.28,
+          "continuous": 1.2,
+          "discrete": 1.04,
+          "delta": 0.16,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 2.29,
+          "continuous": 1.2,
+          "discrete": 1.04,
+          "delta": 0.16,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        },
+        {
+          "ratio": 2.3,
+          "continuous": 1.2,
+          "discrete": 1.04,
+          "delta": 0.16,
+          "cont_jump_vs_prev": 0.0,
+          "disc_jump_vs_prev": 0.0
+        }
+      ]
+    }
+  },
+  "verdict_pass": true
+}

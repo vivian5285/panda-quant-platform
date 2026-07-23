@@ -1,7 +1,8 @@
 # VPS 实盘最终行为规格（完整版 · 唯一权威）
 
-> 同步：2026-07-23 · 双雷达 REST 限频适配（1s+抖动 / 合并账本缓存 / user-data 失效）
-> 实现入口：`tv_entry_sizing.py`（算仓）· `breathing_stop.py`（止损纯函数）· `atr_1h_breathing.py`（1h ATR）· `adverse_radar_guard.py`（挂/改/触发）· `webhook_symbol_coalesce.py`（≤2.5s 缓存）· `rest_book_cache.py`（双币合并 REST）· `binance_user_stream.py`（成交失效缓存）
+> 同步：2026-07-23 · 连续插值呼吸终验（ETH 1.2~2.5 / XAU 0.5~1.2）+ 双雷达 REST 限频适配  
+> 实现入口：`tv_entry_sizing.py`（算仓）· `breathing_profile.py`（连续插值）· `breathing_stop.py`（止损纯函数）· `atr_1h_breathing.py`（1h ATR）· `adverse_radar_guard.py`（挂/改/触发）· `webhook_symbol_coalesce.py`（≤2.5s 缓存）· `rest_book_cache.py`（双币合并 REST）· `binance_user_stream.py`（成交失效缓存）  
+> 终验证据：`docs/CONTINUOUS_BREATH_PROD_TEST_20260723.md`
 
 ## 硬性原则
 
@@ -10,7 +11,7 @@
 3. 仓位每次独立计算（见第三节）：本金×20%×5=名义×1
 4. 止损单唯一写入方 = 呼吸止损引擎（与 TV 止损价无关）
 5. **算仓铁律（永远）**：合约本金余额 × 20% 作保证金 × 5 杠杆 = **名义 = 本金×1**（`qty = 本金/价`）
-6. **initial_atr** = TV webhook `atr`（开仓冻结）；阶段二用币安原生 **1h ATR** 驱动呼吸系数
+6. **initial_atr** = TV webhook `atr`（开仓冻结）；币安原生 **1h ATR** → SMA(3) → **连续插值** `trailDistanceMultiplier`（阶段二追踪用；阶段一阶梯不含 coef）
 
 ## Webhook action
 
@@ -63,7 +64,7 @@
 1. 读 TV webhook **`atr`** → `initialAtr`（冻结，全程不变）
 2. 初始逻辑止损：多 `entry − 1.5×initialAtr` / 空对称
 3. **挂单缓冲**：多再 −0.3 USDT / 空再 +0.3 USDT（仅交易所挂单价）
-4. 拉币安原生 **1h** K 线算 ATR(14)，每 5 分钟刷新；`ratio = atr_1h / initialAtr` 取最近 3 次 SMA → 呼吸系数
+4. 拉币安原生 **1h** K 线算 ATR(14)，每 5 分钟刷新；`smooth_ratio = sma(atr_1h / initialAtr, 3)` → **连续线性插值**呼吸系数（非离散档）
 
 TV `stop_loss` **不参与**挂单价。
 
@@ -83,47 +84,39 @@ TV `stop_loss` **不参与**挂单价。
 
 ## 四、呼吸止损引擎
 
-实现：`breathing_profile.py`（ETH/XAU 参数）+ `breathing_stop.py` + `atr_1h_breathing.py` + `adverse_radar_guard.py`。
+实现：`breathing_profile.py`（ETH/XAU 连续插值）+ `breathing_stop.py` + `atr_1h_breathing.py` + `adverse_radar_guard.py`。
 
-**双雷达：** ETH 与 XAU 共用同一执行引擎；状态 / WebSocket / 1h ATR 拉取 / 呼吸系数表按 `canonical_symbol` 隔离。钉钉与日志带 `[ETH]` / `[XAU]` 标签。
+**双雷达：** ETH 与 XAU 共用同一执行引擎；状态 / WebSocket / 1h ATR 拉取 / 呼吸系数按 `canonical_symbol`（及 user）隔离。钉钉与日志带 `[ETH]` / `[XAU]` 标签。
 
 | 参数 | ETH | XAU |
 |------|-----|-----|
 | 挂单缓冲 | 0.3 | 0.5 |
 | 早保本 | 0.5×ATR | 0.3×ATR |
-| 阶梯步长/跟进 | 0.75 / 0.4 ×ATR×coef | 0.4 / 0.35 ×ATR×coef |
+| 阶梯步长/跟进（阶段一，**无 coef**） | 0.75 / 0.4 ×ATR | 0.4 / 0.35 ×ATR |
 | 阶段二触发 | 3.0×ATR | 3.0×ATR |
-| 呼吸系数范围 | 0.7 ~ 1.5 | 0.5 ~ 1.3 |
-| 阶段二追踪 | `initialAtr × coef` | `initialAtr × coef × 0.8` |
+| 呼吸系数区间 (minMult~maxMult) | **1.2 ~ 2.5** | **0.5 ~ 1.2** |
+| 冷启动（ratio=1.0） | **1.525** | **0.675** |
+| ratioFloor / ratioCeiling | 0.6 / 2.2（共用只读） | 同左 |
+| 阶段二追踪 | `initialAtr × coef` | `initialAtr × coef`（**无**额外 ×0.8） |
 | 仓位名义 | 余额×20%×5 = 1×余额 | 同左（并存合计 ≈ 2×） |
 
-### 呼吸系数档位（`smooth_ratio = sma(atr_1h / initial_atr, 3)`）
+### 呼吸系数：连续插值（取代旧离散档）
 
-**ETH**
+```
+smooth_ratio = sma(atr_1h / initial_atr, 3)   # 空历史 → 冷启动 ratio=1.0
+trailDistanceMultiplier =
+  coef_min                                      if ratio ≤ 0.6
+  coef_max                                      if ratio ≥ 2.2
+  coef_min + (coef_max−coef_min)×(ratio−0.6)/1.6   otherwise
+```
 
-| smooth_ratio | 呼吸系数 |
-|--------------|----------|
-| < 0.7 | 0.7 |
-| 0.7 ~ 1.0 | 0.85 |
-| 1.0 ~ 1.4 | 1.0 |
-| 1.4 ~ 2.0 | 1.2 ~ 1.4（线性） |
-| ≥ 2.0 | 1.5 |
-
-**XAU（整体更紧）**
-
-| smooth_ratio | 呼吸系数 |
-|--------------|----------|
-| < 0.7 | 0.5 |
-| 0.7 ~ 1.0 | 0.7 |
-| 1.0 ~ 1.4 | 0.9 |
-| 1.4 ~ 2.0 | 1.0 ~ 1.2（线性） |
-| ≥ 2.0 | 1.3 |
+旧离散表（ETH 0.7/0.85/1.0/…、XAU×0.8）**已废除**，不得再作运维依据。
 
 ### 阶段一（开仓即呼吸）
 
 ```
 早保本: 浮盈 ≥ early_be×ATR → 止损锁到 entry±1 tick
-step_trigger / step_advance = profile 值 × initialAtr × coef
+step_trigger / step_advance = profile 值 × initialAtr   # 不含 coef
 TP1 路径底线 entry±0.5×ATR；TP2 路径底线 entry±1.5×ATR
 浮盈 ≥ 3.0×initialAtr → 进入阶段二
 ```
@@ -131,13 +124,13 @@ TP1 路径底线 entry±0.5×ATR；TP2 路径底线 entry±1.5×ATR
 ### 阶段二（自适应追踪）
 
 ```
-trail_distance = initialAtr × coef × trail_tighten   # ETH 1.0 / XAU 0.8
+trail_distance = initialAtr × trailDistanceMultiplier(smoothedRatio)
 候选 = peak ∓ trail_distance   # 只朝盈利，不倒退
 ```
 
 ### 必须持久化
 
-`entry_price` · `initial_atr` · `initial_stop` · `current_sl` · `best_price` · `breakeven_phase` · `breathing_coefficient` · `step_count` · `remaining_qty_pct` · `breath_ratio_history`
+`entry_price` · `initial_atr` · `initial_stop` · `current_sl` · `best_price` · `breakeven_phase` · `breathing_coefficient`（空闲=冷启动） · `step_count` · `remaining_qty_pct` · `breath_ratio_history`
 
 ---
 
@@ -145,7 +138,8 @@ trail_distance = initialAtr × coef × trail_tighten   # ETH 1.0 / XAU 0.8
 
 ```bash
 cd backend
-py -m pytest tests/test_breathing_stop.py tests/test_atr_1h_breathing.py \
+py -m pytest tests/test_breathing_stop.py tests/test_continuous_breath_and_atr_lock.py \
+   tests/test_continuous_prod_isolation.py tests/test_atr_1h_breathing.py \
    tests/test_open_close_grace.py tests/test_webhook_coalesce.py \
    tests/test_tv_v6985_sizing.py tests/test_vps_entry_routing.py -q
 ```

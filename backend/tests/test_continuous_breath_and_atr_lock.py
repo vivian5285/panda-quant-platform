@@ -6,7 +6,12 @@ from app.core.breathing_profile import (
     cold_start_multiplier,
     trail_distance_multiplier,
 )
-from app.core.breathing_stop import get_breathing_coefficient, init_breathing_state
+from app.core.breathing_stop import (
+    get_breathing_coefficient,
+    init_breathing_state,
+    load_breathing_coef,
+    resolve_breathing_coef,
+)
 from app.core.atr_1h_breathing import update_breathing_coefficient
 from app.core.initial_atr_lock import (
     InitialAtrDescriptor,
@@ -37,6 +42,19 @@ def test_continuous_ends_and_midpoints():
     # XAU always tighter than ETH at same ratio
     for r in (0.6, 1.0, 1.4, 2.0, 2.2):
         assert get_breathing_coefficient(r, "XAUUSDT") <= get_breathing_coefficient(r, "ETHUSDT")
+
+
+def test_missing_coef_seed_is_cold_start_not_literal_one():
+    """Idle/missing seed must not use literal 1.0 (clamps ETH→1.2, leaves XAU too loose)."""
+    assert abs(resolve_breathing_coef(None, "ETHUSDT") - 1.525) < 1e-9
+    assert abs(resolve_breathing_coef(None, "XAUUSDT") - 0.675) < 1e-9
+    assert abs(load_breathing_coef(None, "ETHUSDT") - 1.525) < 1e-9
+    assert abs(load_breathing_coef(0, "XAUUSDT") - 0.675) < 1e-9
+    assert abs(load_breathing_coef(0.744, "XAUUSDT") - 0.744) < 1e-9
+    # Literal 1.0 is a real in-range value for XAU — keep as-is when persisted from live
+    assert abs(resolve_breathing_coef(1.0, "XAUUSDT") - 1.0) < 1e-9
+    # ETH 1.0 is below minMult → clamp to 1.2 (why idle must store cold 1.525, not 1.0)
+    assert abs(resolve_breathing_coef(1.0, "ETHUSDT") - 1.2) < 1e-9
 
 
 def test_smooth_then_interpolate():

@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from app.core.atr_1h_breathing import refresh_supervisor_breath
+from app.core.breathing_profile import cold_start_multiplier, profile_for_symbol
 from app.core.breathing_stop import (
     INITIAL_SL_ATR,
     apply_breathing_tick,
@@ -319,7 +320,6 @@ class AdverseRadarMixin:
         if not hasattr(self, "breakeven_phase"):
             self.breakeven_phase = False
         if not hasattr(self, "breathing_coefficient"):
-            from app.core.breathing_profile import cold_start_multiplier, profile_for_symbol
             can = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
             self.breathing_coefficient = cold_start_multiplier(profile_for_symbol(can))
         if not hasattr(self, "breath_ratio_history"):
@@ -608,7 +608,8 @@ class AdverseRadarMixin:
         self.breakeven_phase = False
         self.remaining_qty_pct = 1.0
         self._last_breath_trail_alert_sl = 0.0
-        self.breathing_coefficient = 1.0
+        _can = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
+        self.breathing_coefficient = cold_start_multiplier(profile_for_symbol(_can))
         self.breath_ratio_history = []
         self.atr_1h = 0.0
         self.breath_smooth_ratio = 1.0
@@ -644,7 +645,8 @@ class AdverseRadarMixin:
         self.initial_atr = 0.0
         self.breakeven_phase = False
         self.remaining_qty_pct = 1.0
-        self.breathing_coefficient = 1.0
+        _can = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
+        self.breathing_coefficient = cold_start_multiplier(profile_for_symbol(_can))
         self.breath_ratio_history = []
         self.atr_1h = 0.0
         self.breath_smooth_ratio = 1.0
@@ -794,7 +796,9 @@ class AdverseRadarMixin:
             "side": side_u,
             "atr": atr,
             "atr_source": atr_source,
-            "breathing_coefficient": float(getattr(self, "breathing_coefficient", 1.0) or 1.0),
+            "breathing_coefficient": resolve_breathing_coef(
+                getattr(self, "breathing_coefficient", None), sym
+            ),
             "initial_sl_atr": 1.5,
             "symbol": sym,
             "market_source": snap.get("source") if snap else atr_source,
@@ -1742,7 +1746,7 @@ class AdverseRadarMixin:
         coef = resolve_breathing_coef(
             breathing_coefficient
             if breathing_coefficient is not None
-            else getattr(self, "breathing_coefficient", 1.0),
+            else getattr(self, "breathing_coefficient", None),
             sym,
         )
         self.breathing_coefficient = coef
@@ -1804,7 +1808,7 @@ class AdverseRadarMixin:
         best = float(getattr(self, "best_price", 0) or entry or 0)
         phase = bool(getattr(self, "breakeven_phase", False))
         sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
-        coef = resolve_breathing_coef(getattr(self, "breathing_coefficient", 1.0), sym)
+        coef = resolve_breathing_coef(getattr(self, "breathing_coefficient", None), sym)
         px = float(curr_px or 0)
         if entry <= 0 or atr <= 0 or side not in ("LONG", "SHORT") or px <= 0:
             return False
@@ -2036,7 +2040,7 @@ class AdverseRadarMixin:
             return
 
         sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
-        coef = resolve_breathing_coef(getattr(self, "breathing_coefficient", 1.0), sym)
+        coef = resolve_breathing_coef(getattr(self, "breathing_coefficient", None), sym)
         tick = apply_breathing_tick(
             side=side,
             price=float(curr_px),
@@ -2073,7 +2077,7 @@ class AdverseRadarMixin:
             float(self.best_price),
             float(self.current_sl or 0),
             atr,
-            float(getattr(self, "breathing_coefficient", 1.0) or 1.0),
+            resolve_breathing_coef(getattr(self, "breathing_coefficient", None), sym),
         )
 
     def _tp1_limit_still_live_on_book(self) -> bool:
