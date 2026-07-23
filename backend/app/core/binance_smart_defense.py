@@ -955,7 +955,7 @@ class BinanceSmartDefenseMixin:
         return cancelled
 
     def _ensure_radar_sl(self, dynamic_sl, live_qty=None) -> bool:
-        """Place radar breakeven STOP — Route A: Binance 合并单槽，Deepcoin 双轨。"""
+        """Place independent radar STOP — never cancels frozen hard stop."""
         if not dynamic_sl:
             return False
         curr_px = self._current_tp_price() if hasattr(self, "_current_tp_price") else 0.0
@@ -997,12 +997,18 @@ class BinanceSmartDefenseMixin:
         time.sleep(0.25)
         close_side = "SHORT" if self.current_side == "LONG" else "LONG"
         symbol = getattr(self, "symbol", "ETHUSDT")
+        # Dual track: qty reduceOnly so hard closePosition/qty stop can coexist
+        use_qty = float(qty or 0) if (
+            hasattr(self, "_uses_dual_stop_track") and self._uses_dual_stop_track()
+        ) else None
+        if use_qty is not None and use_qty <= 0:
+            use_qty = None
         res = self.client.place_stop_market_order(
-            close_side, sl, symbol, quantity=None,
+            close_side, sl, symbol, quantity=use_qty,
         )
         if not res:
             self._def_log(
-                f"⚠️ 呼吸止损 STOP 下单失败 @ {sl:.2f}（closePosition，不与 TP 抢份额）",
+                f"⚠️ 雷达止损 STOP 下单失败 @ {sl:.2f}",
                 logging.WARNING,
             )
             return False

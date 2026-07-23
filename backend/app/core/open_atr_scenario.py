@@ -1,8 +1,10 @@
 """Open-time ATR scenario: VPS native 1h ATR preferred; TV atr + TP3 fallback.
 
-Scenario 1 (preferred): VPS 1h ATR ok → initial_atr/real stop from VPS; no TP3 limit.
-Scenario 2 (degrade): fetch fail → initial_atr=TV atr; hang TP3@TV price 40%;
+Scenario 1 (preferred): VPS 1h ATR ok → radar initial_atr from VPS; no TP3 limit.
+Scenario 2 (degrade): fetch fail → radar initial_atr=TV atr; hang TP3@TV price 40%;
   breath ticks keep retrying; on success upgrade to scenario 1 and cancel TP3.
+
+Hard stop (TV stop_loss × 1.2) is permanent and never rewritten by ATR upgrade.
 """
 
 from __future__ import annotations
@@ -81,12 +83,21 @@ def apply_vps_atr_upgrade(
     *,
     live_qty: float = 0.0,
 ) -> dict[str, Any]:
-    """Scenario2→1: rewrite initial_atr, never retreat stop, cancel TP3 limit."""
+    """Scenario2→1: rewrite radar initial_atr, never retreat radar stop, cancel TP3.
+
+    Never mutates frozen hard stop (`_frozen_hard_stop_px` / `_tv_hard_sl_price`).
+    """
     atr = float(atr_1h or 0)
     if atr <= 0:
         return {"upgraded": False, "reason": "atr_invalid"}
     if not rewrite_initial_atr_for_vps_upgrade(supervisor, atr, reason="vps_1h_upgrade"):
         return {"upgraded": False, "reason": "rewrite_failed"}
+
+    frozen_hard = float(
+        getattr(supervisor, "_frozen_hard_stop_px", 0)
+        or getattr(supervisor, "_tv_hard_sl_price", 0)
+        or 0
+    )
 
     entry = float(getattr(supervisor, "watched_entry", 0) or 0)
     side = str(getattr(supervisor, "current_side", "") or "").upper()
@@ -101,7 +112,18 @@ def apply_vps_atr_upgrade(
             supervisor.current_sl = max(old_sl, new_init)
         elif side == "SHORT":
             supervisor.current_sl = min(old_sl, new_init)
-        supervisor._tv_hard_sl_price = float(supervisor.current_sl)
+        if hasattr(supervisor, "_clamp_radar_sl_to_tv_floor"):
+            try:
+                supervisor.current_sl = supervisor._clamp_radar_sl_to_tv_floor(
+                    float(supervisor.current_sl)
+                )
+            except Exception:
+                pass
+
+    # Restore frozen hard — ATR upgrade must never rewrite it
+    if frozen_hard > 0:
+        supervisor._frozen_hard_stop_px = frozen_hard
+        supervisor._tv_hard_sl_price = frozen_hard
 
     supervisor.current_atr = atr
     supervisor.atr_1h = atr
@@ -123,11 +145,20 @@ def apply_vps_atr_upgrade(
     except Exception:
         pass
 
-    if live_qty > 0 and hasattr(supervisor, "_sync_tv_hard_stop"):
-        try:
-            supervisor._sync_tv_hard_stop(live_qty, force_replace=True)
-        except Exception:
-            pass
+    # Re-sync radar only (never force-replace hard)
+    if live_qty > 0 and hasattr(supervisor, "_ensure_radar_sl"):
+        radar = float(getattr(supervisor, "current_sl", 0) or 0)
+        if radar > 0:
+            try:
+                if getattr(supervisor, "exchange_id", "") == "deepcoin":
+                    supervisor._ensure_radar_sl(live_qty, radar)
+                else:
+                    hang = radar
+                    if hasattr(supervisor, "_exchange_hang_stop_px"):
+                        hang = supervisor._exchange_hang_stop_px(radar) or radar
+                    supervisor._ensure_radar_sl(hang, live_qty)
+            except Exception:
+                pass
 
     detail = {
         "upgraded": True,
@@ -135,17 +166,18 @@ def apply_vps_atr_upgrade(
         "initial_atr": atr,
         "initial_stop": float(getattr(supervisor, "initial_stop", 0) or 0),
         "current_sl": float(getattr(supervisor, "current_sl", 0) or 0),
+        "frozen_hard": float(getattr(supervisor, "_frozen_hard_stop_px", 0) or 0),
         "tp3_cancelled": cancelled,
         "was_tp3_limit_active": was_tp3,
     }
     if hasattr(supervisor, "_log"):
-        supervisor._log("ATR_SCENARIO", "VPS真实ATR已接管·撤销TP3兜底", detail)
+        supervisor._log("ATR_SCENARIO", "VPS真实ATR已武装雷达·撤销TP3兜底（硬止损永冻）", detail)
     if hasattr(supervisor, "_alert") and was_tp3:
         supervisor._alert(
             "info",
             "ATR_SCENARIO",
             "VPS真实ATR恢复·已切回场景一",
-            f"initial_atr={atr:.4f} | 已撤TP3={cancelled}",
+            f"initial_atr={atr:.4f} | 已撤TP3={cancelled} | 硬止损未改",
             detail,
         )
     return detail

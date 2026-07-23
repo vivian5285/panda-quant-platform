@@ -42,7 +42,8 @@ def test_evaluate_reopen_when_atr_changed_even_if_small_price_diff():
     assert "ATR变化" in format_reopen_reason(ev, 0.20)
 
 
-def test_evaluate_refresh_when_atr_same_and_small_price_diff():
+def test_evaluate_always_reopen_when_atr_same_and_small_price_diff():
+    """Whitepaper §三: no REFRESH_TPS skip — same dir always close-reopen."""
     ev = evaluate_same_direction(
         has_position=True,
         current_side="LONG",
@@ -56,8 +57,8 @@ def test_evaluate_refresh_when_atr_same_and_small_price_diff():
         new_atr=12.5,
         threshold_pct=0.20,
     )
-    assert ev.action == SameDirAction.REFRESH_TPS
-    assert ev.reason == "atr_same_price_diff_below_threshold"
+    assert ev.action == SameDirAction.CLOSE_REOPEN
+    assert ev.reason == "same_dir_always_reopen"
 
 
 def test_evaluate_reopen_when_regime_changed_atr_same():
@@ -93,7 +94,7 @@ def test_evaluate_reopen_when_atr_same_and_price_diff_large():
         threshold_pct=0.20,
     )
     assert ev.action == SameDirAction.CLOSE_REOPEN
-    assert ev.reason == "price_diff_sufficient"
+    assert ev.reason == "same_dir_always_reopen"
 
 
 def test_evaluate_open_new_when_flat():
@@ -144,7 +145,12 @@ def supervisor():
     return sup
 
 
-def test_supervisor_refresh_tps_when_atr_unchanged(supervisor):
+def test_supervisor_same_dir_always_reopens(supervisor):
+    """Whitepaper: same-dir with unchanged ATR still force-flats then opens."""
+    supervisor._close_all = MagicMock()
+    supervisor._open_position = MagicMock(return_value={"status": "ok"})
+    supervisor._wait_until_flat = MagicMock(return_value=True)
+    supervisor._force_flat_before_open = MagicMock(return_value=True)
     ev = evaluate_same_direction(
         has_position=True,
         current_side="LONG",
@@ -158,13 +164,9 @@ def test_supervisor_refresh_tps_when_atr_unchanged(supervisor):
         new_atr=12.5,
         threshold_pct=0.20,
     )
-    out = supervisor._refresh_same_direction_tps("LONG", 3500.0, ev, prev_tv_tps=[3550.0, 3650.0, 3750.0])
-
-    assert out["status"] == "ok"
-    supervisor.client.cancel_all_open_orders.assert_not_called()
-    supervisor._alert.assert_called()
-    assert supervisor._alert.call_args[0][1] == "SAME_DIR_TP_REFRESH"
-    assert "ATR未变" in supervisor._alert.call_args[0][3]
+    assert ev.action == SameDirAction.CLOSE_REOPEN
+    supervisor._close_then_open_entry("LONG", 3500.0, ev)
+    supervisor._force_flat_before_open.assert_called()
 
 
 def test_supervisor_reopen_when_atr_changed(supervisor):

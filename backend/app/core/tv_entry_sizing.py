@@ -165,6 +165,16 @@ def compute_tv_entry_qty(
     # 铁律：本金×20% 保证金 ×5 杠杆 = 名义 = 本金×1（不读 TV qty / 不反推系数）
     margin_usd = sizing_base * risk_frac
     notional_target = margin_usd * lev
+    # 内测闸门：E2E_FORCE_NOTIONAL_USD>0 时压到约最小名义（生产默认 0，不生效）
+    try:
+        e2e_notional = float(getattr(get_settings(), "E2E_FORCE_NOTIONAL_USD", 0) or 0)
+    except Exception:
+        e2e_notional = 0.0
+    if e2e_notional > 0:
+        notional_target = min(float(notional_target), e2e_notional)
+        margin_usd = notional_target / lev if lev > 0 else margin_usd
+        meta["e2e_force_notional_usd"] = e2e_notional
+        meta["binding"] = "e2e_force_notional"
     theoretical = notional_target / price_f
 
     vps_dist = abs(price_f - vps_stop_f) if vps_stop_f > 0 else 0.0
@@ -191,7 +201,8 @@ def compute_tv_entry_qty(
     meta["candidate_qty_by_risk"] = None
     meta["candidate_qty_by_notional"] = meta["qty_by_notional"]
     meta["candidate_qty_by_tv_adj"] = None
-    meta["binding"] = "margin20_lev5"
+    if not meta.get("e2e_force_notional_usd"):
+        meta["binding"] = "margin20_lev5"
 
     floored = floor_qty(theoretical, step)
     if round_fn is not None:

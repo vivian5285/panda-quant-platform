@@ -1,4 +1,4 @@
-"""TV webhook symbol coalesce — CLOSE once then latest OPEN."""
+"""TV webhook symbol coalesce — 15s OPEN/CLOSE iron rule."""
 
 import time
 from unittest.mock import MagicMock
@@ -29,13 +29,13 @@ def _msg(action: str, symbol: str = "ETHUSDT", price: float = 3300.0, **extra):
     return d, compute_fingerprint(d)
 
 
-def test_coalesce_window_hard_capped_at_2_5s(monkeypatch):
+def test_coalesce_window_hard_capped_at_15s(monkeypatch):
     monkeypatch.setattr(
         "app.services.webhook_symbol_coalesce.get_settings",
-        lambda: MagicMock(WEBHOOK_COALESCE_SEC=9.0),
+        lambda: MagicMock(WEBHOOK_COALESCE_SEC=99.0),
     )
     c = WebhookSymbolCoalesce()
-    assert c.window_sec() == 2.5
+    assert c.window_sec() == 15.0
 
 
 def test_coalesce_window_default_clamped(monkeypatch):
@@ -69,7 +69,7 @@ def test_close_open_same_window_notifies_dingtalk(coalesce, monkeypatch):
 
 
 def test_close_then_open_same_window_not_ignore_open(coalesce):
-    """Confirmed rule: has CLOSE → still execute latest OPEN after close once."""
+    """CLOSE first → still execute latest OPEN after close once."""
     released = []
     coalesce.set_dispatch(lambda p, fp: released.append(p["action"]))
     coalesce.submit(*_msg("CLOSE_QUICK_EXIT", price=3290))
@@ -78,23 +78,14 @@ def test_close_then_open_same_window_not_ignore_open(coalesce):
     assert released == ["CLOSE_QUICK_EXIT", "SHORT"]
 
 
-def test_short_then_close_reorders_close_first(coalesce, monkeypatch):
-    monkeypatch.setattr(
-        "app.services.webhook_symbol_coalesce.get_settings",
-        lambda: MagicMock(WEBHOOK_COALESCE_SEC=1.0),
-    )
+def test_open_then_close_in_window_discards_close(coalesce):
+    """OPEN first in window → CLOSE discarded; only OPEN executes."""
     released = []
-
-    def capture(payload, fp):
-        released.append(payload["action"])
-
-    coalesce.set_dispatch(capture)
-    # 乱序：先 SHORT 后 CLOSE
-    coalesce.submit(*_msg("SHORT", price=3301), dispatch=capture)
-    coalesce.submit(*_msg("CLOSE_QUICK_EXIT", price=3290, reason="rev"), dispatch=capture)
+    coalesce.set_dispatch(lambda p, fp: released.append(p["action"]))
+    coalesce.submit(*_msg("SHORT", price=3301))
+    coalesce.submit(*_msg("CLOSE_QUICK_EXIT", price=3290, reason="rev"))
     coalesce.flush_now("ETHUSDT")
-
-    assert released == ["CLOSE_QUICK_EXIT", "SHORT"]
+    assert released == ["SHORT"]
 
 
 def test_close_then_short_normal_order(coalesce):
@@ -146,7 +137,6 @@ def test_in_window_same_fingerprint_dropped(coalesce):
 
 
 def test_timer_callback_flushes(coalesce, monkeypatch):
-    """超时兜底：timer 回调清空缓存并派发（不依赖真实 sleep）。"""
     monkeypatch.setattr(
         "app.services.webhook_symbol_coalesce.get_settings",
         lambda: MagicMock(WEBHOOK_COALESCE_SEC=1.0),
@@ -161,12 +151,47 @@ def test_timer_callback_flushes(coalesce, monkeypatch):
     assert c.pending_depth() == 0
 
 
+def test_post_open_close_discarded_within_15s(monkeypatch):
+    """Whitepaper: OPEN dispatched → CLOSE within 1–10s discarded."""
+    monkeypatch.setattr(
+        "app.services.webhook_symbol_coalesce.get_settings",
+        lambda: MagicMock(WEBHOOK_COALESCE_SEC=1.0),
+    )
+    c = reset_coalesce_for_tests()
+    released = []
+    c.set_dispatch(lambda p, fp: released.append(p["action"]))
+    c.submit(*_msg("LONG", price=3300))
+    c.flush_now("ETHUSDT")
+    assert released == ["LONG"]
+    # Simulate CLOSE 5s after OPEN
+    c._last_open_dispatched_at["ETHUSDT"] = time.time() - 5.0
+    disp = c.submit(*_msg("CLOSE_QUICK_EXIT", price=3290))
+    assert disp == "discarded_post_open"
+    assert released == ["LONG"]
+
+
+def test_post_open_close_accepted_after_15s(monkeypatch):
+    """Whitepaper: CLOSE 20s after OPEN → independent close."""
+    monkeypatch.setattr(
+        "app.services.webhook_symbol_coalesce.get_settings",
+        lambda: MagicMock(WEBHOOK_COALESCE_SEC=1.0),
+    )
+    c = reset_coalesce_for_tests()
+    released = []
+    c.set_dispatch(lambda p, fp: released.append(p["action"]))
+    c.submit(*_msg("LONG", price=3300))
+    c.flush_now("ETHUSDT")
+    c._last_open_dispatched_at["ETHUSDT"] = time.time() - 20.0
+    assert c.submit(*_msg("CLOSE_QUICK_EXIT", price=3290)) == "buffered"
+    c.flush_now("ETHUSDT")
+    assert released == ["LONG", "CLOSE_QUICK_EXIT"]
+
+
 def test_idempotency_60s_includes_price():
-    """拍板: 60s 去重 key = action+symbol+price（不含 price 会误杀变价信号）."""
     assert IDEMPOTENCY_TTL_SEC == 60
     a = compute_fingerprint({"action": "LONG", "symbol": "ETHUSDT", "price": 3300.5})
     b = compute_fingerprint({"action": "LONG", "symbol": "ETHUSDT", "price": 3399.0})
-    assert a != b  # price part of key
+    assert a != b
     c = compute_fingerprint({"action": "LONG", "symbol": "ETHUSDT", "price": 3300.5})
     assert a == c
     d = compute_fingerprint({"action": "SHORT", "symbol": "ETHUSDT", "price": 3300.5})

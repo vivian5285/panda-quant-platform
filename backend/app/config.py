@@ -14,8 +14,10 @@ class Settings(BaseSettings):
     WEBHOOK_SEQ_IDEMPOTENCY_TTL_SEC: int = 86400
     # 同 bar 缺前置 seq 时暂存等待秒数，超时报警后按已有顺序释放
     WEBHOOK_SEQ_WAIT_SEC: float = 3.0
-    # TV 同 K 线多消息缓存窗口（硬封顶 2.5s）：到期后先平仓一次再开最新仓
-    WEBHOOK_COALESCE_SEC: float = 2.5
+    # TV 同 K 线多消息缓存窗口（硬封顶 15s）：白皮书开平铁律
+    WEBHOOK_COALESCE_SEC: float = 15.0
+    # 内测专用：>0 时强制名义价值≈该 USD（压到交易所最小名义附近）。生产必须保持 0。
+    E2E_FORCE_NOTIONAL_USD: float = 0.0
     # DB / webhook 日志保留天数（checklist §12.4）
     LOG_RETENTION_DAYS: int = 30
     LOG_RETENTION_INTERVAL_SEC: int = 86400

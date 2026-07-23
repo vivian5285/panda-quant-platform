@@ -1,4 +1,7 @@
-"""Same-direction TV entry policy — ATR-first, then price-diff filter."""
+"""Same-direction TV entry policy — always flatten-then-open (whitepaper §三).
+
+No REFRESH_TPS skip: same-direction is never a special case that skips flatten.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +14,7 @@ from app.core.regime_utils import clamp_regime
 class SameDirAction(str, Enum):
     OPEN_NEW = "open_new"
     CLOSE_REOPEN = "close_reopen"
+    # Kept for import/compat; evaluate_same_direction never returns this anymore
     REFRESH_TPS = "refresh_tps"
 
 
@@ -50,16 +54,14 @@ def format_reopen_reason(ev: "SameDirectionEval", threshold_pct: float) -> str:
     if ev.regime_changed:
         return f"同方向档位变化 {ev.held_regime}→{ev.new_regime}，先平后开换仓"
     return (
-        f"同方向ATR未变({ev.held_atr}) 价差 {ev.price_diff_pct:.3f}% "
-        f"≥ 阈值 {threshold_pct}%，先平后开"
+        f"同方向先平后开（白皮书·无跳过特例）价差 {ev.price_diff_pct:.3f}% "
+        f"阈值参考 {threshold_pct}%"
     )
 
 
 def format_refresh_reason(ev: "SameDirectionEval", threshold_pct: float) -> str:
-    return (
-        f"ATR未变({ev.held_atr}) 价差 {ev.price_diff_pct:.3f}% "
-        f"< 阈值 {threshold_pct}% → 忽略重复开仓，更新止盈"
-    )
+    # Compat stub — refresh path abolished
+    return format_reopen_reason(ev, threshold_pct)
 
 
 def evaluate_same_direction(
@@ -109,32 +111,15 @@ def evaluate_same_direction(
             **base,
         )
 
-    # Priority 1: ATR change → refresh position (close then reopen)
+    # Whitepaper §三: 同向一律先平后开，不存在跳过平仓特例
     if atr_changed:
-        return SameDirectionEval(
-            action=SameDirAction.CLOSE_REOPEN,
-            reason="atr_changed",
-            **base,
-        )
-
-    # Priority 2: regime change → close then reopen
-    if regime_changed:
-        return SameDirectionEval(
-            action=SameDirAction.CLOSE_REOPEN,
-            reason="regime_changed",
-            **base,
-        )
-
-    # Priority 3: same ATR + same regime → price diff gate
-    if diff < threshold_pct:
-        return SameDirectionEval(
-            action=SameDirAction.REFRESH_TPS,
-            reason="atr_same_price_diff_below_threshold",
-            **base,
-        )
-
+        reason = "atr_changed"
+    elif regime_changed:
+        reason = "regime_changed"
+    else:
+        reason = "same_dir_always_reopen"
     return SameDirectionEval(
         action=SameDirAction.CLOSE_REOPEN,
-        reason="price_diff_sufficient",
+        reason=reason,
         **base,
     )

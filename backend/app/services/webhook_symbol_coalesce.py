@@ -1,13 +1,9 @@
-"""Per-symbol TV webhook coalesce — checklist §消息顺序处理.
+"""Per-symbol TV webhook coalesce — whitepaper §二 15s OPEN/CLOSE iron rule.
 
-Cache ≤2.5s per symbol (default 2.5s), then execute:
-  1. At most one CLOSE_* (idempotent flat)
-  2. Latest LONG/SHORT (open path still force-flats)
-
-Same-window rule (拍板 · 废止旧 14.5「有平仓则忽略开仓」):
-  ALWAYS close-then-open — CLOSE once, then latest OPEN.
-  OPEN still force-flats as final safety net.
-Works with or without bar_index/seq — all exchanges share this ingress.
+Window default 15s. Rules (no TV timestamp comparison):
+  - CLOSE first, OPEN within window → flush CLOSE once then latest OPEN
+  - OPEN first (buffered or already dispatched), CLOSE within 15s of OPEN → discard CLOSE
+  - CLOSE >15s after last OPEN → normal independent close
 """
 from __future__ import annotations
 
@@ -25,9 +21,10 @@ DispatchFn = Callable[[dict, str], None]
 
 CLOSE_ACTIONS = frozenset({"CLOSE_QUICK_EXIT", "CLOSE_RSI_EXIT"})
 ENTRY_ACTIONS = frozenset({"LONG", "SHORT"})
-# Spec: cache window up to 2.5s so CLOSE/OPEN arriving with 1–2s skew still pair.
-COALESCE_WINDOW_MAX_SEC = 2.5
+# Whitepaper: 15s window for same-K OPEN/CLOSE pairing / discard
+COALESCE_WINDOW_MAX_SEC = 15.0
 COALESCE_WINDOW_MIN_SEC = 0.5
+POST_OPEN_CLOSE_DISCARD_SEC = 15.0
 
 
 @dataclass
@@ -47,12 +44,14 @@ class _SymbolBucket:
 
 
 class WebhookSymbolCoalesce:
-    """Buffer per symbol → priority flush (CLOSE once, then latest OPEN)."""
+    """Buffer per symbol → priority flush with post-OPEN CLOSE discard."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._buckets: dict[str, _SymbolBucket] = {}
         self._dispatch: DispatchFn | None = None
+        # Wall-clock of last successfully dispatched OPEN per symbol
+        self._last_open_dispatched_at: dict[str, float] = {}
 
     def set_dispatch(self, fn: DispatchFn) -> None:
         self._dispatch = fn
@@ -62,8 +61,18 @@ class WebhookSymbolCoalesce:
             return sum(len(b.messages) for b in self._buckets.values())
 
     def window_sec(self) -> float:
-        raw = float(getattr(get_settings(), "WEBHOOK_COALESCE_SEC", 2.5) or 2.5)
+        raw = float(getattr(get_settings(), "WEBHOOK_COALESCE_SEC", 15.0) or 15.0)
         return max(COALESCE_WINDOW_MIN_SEC, min(COALESCE_WINDOW_MAX_SEC, raw))
+
+    def discard_window_sec(self) -> float:
+        return POST_OPEN_CLOSE_DISCARD_SEC
+
+    def last_open_age_sec(self, symbol: str) -> float | None:
+        with self._lock:
+            ts = self._last_open_dispatched_at.get(symbol)
+            if ts is None:
+                return None
+            return time.time() - ts
 
     def submit(
         self,
@@ -72,7 +81,7 @@ class WebhookSymbolCoalesce:
         *,
         dispatch: DispatchFn | None = None,
     ) -> str:
-        """Enqueue into symbol window. Returns buffered | coalesced_drop | flushed."""
+        """Enqueue into symbol window. Returns buffered | coalesced_drop | discarded_post_open | flushed."""
         fn = dispatch or self._dispatch
         if dispatch is not None:
             self._dispatch = dispatch
@@ -86,6 +95,18 @@ class WebhookSymbolCoalesce:
         now = time.time()
 
         with self._lock:
+            # OPEN already executed → CLOSE within 15s is discarded (whitepaper)
+            if action in CLOSE_ACTIONS:
+                last_open = self._last_open_dispatched_at.get(symbol)
+                if last_open is not None and (now - last_open) < self.discard_window_sec():
+                    logger.info(
+                        "[WebhookCoalesce] discarded_post_open symbol=%s action=%s age=%.2fs",
+                        symbol,
+                        action,
+                        now - last_open,
+                    )
+                    return "discarded_post_open"
+
             bucket = self._buckets.get(symbol)
             if bucket is None:
                 bucket = _SymbolBucket(first_seen=now)
@@ -164,20 +185,32 @@ class WebhookSymbolCoalesce:
 
         exits = [m for m in msgs if m.action in CLOSE_ACTIONS]
         entries = [m for m in msgs if m.action in ENTRY_ACTIONS]
-        # Prefer QUICK over RSI if both present; else earliest exit
         exits.sort(
             key=lambda m: (
                 0 if m.action == "CLOSE_QUICK_EXIT" else 1,
                 m.enqueued_at,
             )
         )
-        # Latest open by enqueue time
         entries.sort(key=lambda m: m.enqueued_at)
 
         plan: list[_CachedMsg] = []
-        if exits:
+        if exits and entries:
+            first_exit = min(exits, key=lambda m: m.enqueued_at)
+            first_entry = min(entries, key=lambda m: m.enqueued_at)
+            if first_entry.enqueued_at <= first_exit.enqueued_at:
+                # OPEN arrived first in window → discard CLOSE, keep latest OPEN
+                plan.append(entries[-1])
+                logger.info(
+                    "[WebhookCoalesce] OPEN-first in window → discard CLOSE symbol=%s",
+                    symbol,
+                )
+            else:
+                # CLOSE first → flatten then open
+                plan.append(exits[0])
+                plan.append(entries[-1])
+        elif exits:
             plan.append(exits[0])
-        if entries:
+        elif entries:
             plan.append(entries[-1])
 
         logger.info(
@@ -187,7 +220,7 @@ class WebhookSymbolCoalesce:
             [f"{m.action}" for m in plan],
         )
 
-        if exits and entries:
+        if exits and entries and len(plan) >= 2:
             self._notify_close_open_same_window(symbol, msgs, plan)
 
         released = 0
@@ -195,6 +228,8 @@ class WebhookSymbolCoalesce:
             try:
                 fn(m.payload, m.fingerprint)
                 released += 1
+                if m.action in ENTRY_ACTIONS:
+                    self._last_open_dispatched_at[symbol] = time.time()
             except Exception:
                 logger.exception(
                     "[WebhookCoalesce] dispatch failed symbol=%s action=%s",
@@ -208,7 +243,7 @@ class WebhookSymbolCoalesce:
         raw_msgs: list[_CachedMsg],
         plan: list[_CachedMsg],
     ) -> None:
-        """Checklist §10.11 — DingTalk when CLOSE+OPEN share one coalesce window."""
+        """DingTalk when CLOSE+OPEN share one coalesce window (CLOSE-first path)."""
         try:
             from app.services.alert_service import notify_system
 
@@ -252,10 +287,11 @@ def reset_coalesce_for_tests() -> WebhookSymbolCoalesce:
     with _coalesce_lock:
         old = _coalesce
         if old is not None:
-            with old._lock:
-                for b in old._buckets.values():
-                    if b.timer:
+            try:
+                for b in list(old._buckets.values()):
+                    if b.timer is not None:
                         b.timer.cancel()
-                old._buckets.clear()
+            except Exception:
+                pass
         _coalesce = WebhookSymbolCoalesce()
         return _coalesce

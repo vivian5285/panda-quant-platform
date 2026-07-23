@@ -706,8 +706,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
                     "tv_stop_loss_ref": float(getattr(self, "_tv_stop_loss_ref", 0) or 0),
                     "tv_hard_sl_price": float(
-                        getattr(self, "_tv_hard_sl_price", 0)
-                        or getattr(self, "current_sl", 0)
+                        getattr(self, "_frozen_hard_stop_px", 0)
+                        or getattr(self, "_tv_hard_sl_price", 0)
+                        or 0
+                    ),
+                    "frozen_hard_stop_px": float(
+                        getattr(self, "_frozen_hard_stop_px", 0)
+                        or getattr(self, "_tv_hard_sl_price", 0)
                         or 0
                     ),
                     "leverage": int(getattr(self, "leverage", 0) or 0),
@@ -3420,9 +3425,24 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 matched, expected = result.get("matched", 0), result.get("expected", 0)
                 audit = result.get("audit") or {}
 
-            # ④ 精确止损替换临时止损
-            shield = self._sync_tv_hard_stop(live_qty, at_open=True, force_replace=True)
+            # ④ 确认硬止损仍在（永冻价）+ 独立挂雷达止损
+            shield = self._sync_tv_hard_stop(live_qty, at_open=False, force_replace=False)
             self._last_shield_result = shield
+            radar_sl = float(
+                getattr(self, "current_sl", 0)
+                or getattr(self, "initial_stop", 0)
+                or 0
+            )
+            if radar_sl > 0 and hasattr(self, "_ensure_radar_sl"):
+                try:
+                    hang = (
+                        self._exchange_hang_stop_px(radar_sl)
+                        if hasattr(self, "_exchange_hang_stop_px")
+                        else radar_sl
+                    )
+                    self._ensure_radar_sl(live_qty, hang)
+                except Exception as e:
+                    logger.warning(f"open radar place failed: {e}")
             armed = bool(
                 shield.get("placed", 0) > 0
                 or shield.get("armed")
@@ -3431,8 +3451,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             )
             sl_label = shield.get("label") or self._hard_stop_label()
             breath_sl = float(
-                getattr(self, "current_sl", 0)
-                or getattr(self, "initial_stop", 0)
+                getattr(self, "_frozen_hard_stop_px", 0)
+                or getattr(self, "_tv_hard_sl_price", 0)
                 or 0
             )
             if armed:
@@ -3444,7 +3464,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 self._dt.report_system_alert(
                     "开仓后硬止损未挂上·立即撤仓",
                     f"{self.current_side} {verified['size']}张 | "
-                    f"breath_sl={breath_sl} | {shield}",
+                    f"hard_sl={breath_sl} | {shield}",
                 )
                 try:
                     self._close_all(
@@ -4166,12 +4186,19 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         s.get("tv_stop_loss_ref") or s.get("tv_sl", 0) or 0
                     )
                     self._tv_hard_sl_price = float(
-                        s.get("tv_hard_sl_price")
-                        or s.get("current_sl", 0)
+                        s.get("frozen_hard_stop_px")
+                        or s.get("tv_hard_sl_price")
                         or 0
                     )
-                    if self._tv_hard_sl_price <= 0 and float(s.get("initial_stop", 0) or 0) > 0:
-                        self._tv_hard_sl_price = float(s.get("initial_stop") or 0)
+                    self._frozen_hard_stop_px = float(
+                        s.get("frozen_hard_stop_px")
+                        or s.get("tv_hard_sl_price")
+                        or self._tv_hard_sl_price
+                        or 0
+                    )
+                    if self._frozen_hard_stop_px <= 0 and float(s.get("tv_sl", 0) or 0) > 0:
+                        self._frozen_hard_stop_px = float(s.get("tv_sl") or 0)
+                        self._tv_hard_sl_price = self._frozen_hard_stop_px
                     lev = int(s.get("leverage", 0) or 0)
                     if lev > 0:
                         self.leverage = lev

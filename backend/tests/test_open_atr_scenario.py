@@ -76,19 +76,29 @@ def test_upgrade_cancels_tp3_and_never_retreats_long():
         watched_entry = 1900.0
         current_side = "LONG"
         canonical_symbol = "ETHUSDT"
-        current_sl = 1890.0  # already improved
+        exchange_id = "binance"
+        current_sl = 1890.0  # already improved radar
         initial_stop = 1870.0
         tp3_limit_active = True
         atr_scenario = ATR_SCENARIO_TV
         _temp_tv_stop_active = False
+        _frozen_hard_stop_px = 1880.0  # permanent hard
+        _tv_hard_sl_price = 1880.0
         client = None
 
         def _cancel_tp_orders_at_levels(self, levels):
             self._cancelled = list(levels)
             return 1
 
-        def _sync_tv_hard_stop(self, qty, force_replace=False):
-            return {"placed": 1}
+        def _ensure_radar_sl(self, sl, qty):
+            self._radar_synced = (sl, qty)
+            return True
+
+        def _exchange_hang_stop_px(self, logical):
+            return float(logical)
+
+        def _clamp_radar_sl_to_tv_floor(self, sl):
+            return max(float(sl), float(self._frozen_hard_stop_px))
 
         def _log(self, *a, **k):
             pass
@@ -104,8 +114,12 @@ def test_upgrade_cancels_tp3_and_never_retreats_long():
     assert s.atr_scenario == ATR_SCENARIO_VPS
     assert s.tp3_limit_active is False
     assert s._cancelled == [3]
-    # Never retreat: keep 1890 even if new initial is lower
+    # Never retreat radar: keep 1890 even if new initial is lower
     assert s.current_sl >= 1890.0 - 1e-9
+    # Hard stop frozen — upgrade must not rewrite
+    assert abs(s._frozen_hard_stop_px - 1880.0) < 1e-9
+    assert abs(s._tv_hard_sl_price - 1880.0) < 1e-9
+    assert abs(detail["frozen_hard"] - 1880.0) < 1e-9
 
 
 def test_supervisor_placeable_follows_flag():
@@ -114,3 +128,19 @@ def test_supervisor_placeable_follows_flag():
     assert supervisor_placeable_levels(s) == frozenset({1, 2})
     s.tp3_limit_active = True
     assert supervisor_placeable_levels(s) == frozenset({1, 2, 3})
+
+
+def test_dual_stop_track_enabled():
+    from app.core.adverse_radar_guard import AdverseRadarMixin, ADVERSE_MAX_STOP_ORDERS
+
+    class H(AdverseRadarMixin):
+        pass
+
+    h = H()
+    h._init_adverse_radar_fields()
+    assert h._uses_dual_stop_track() is True
+    assert ADVERSE_MAX_STOP_ORDERS == 2
+    h._frozen_hard_stop_px = 1900.0
+    h.current_side = "LONG"
+    assert h._clamp_radar_sl_to_tv_floor(1890.0) == 1900.0
+    assert h._clamp_radar_sl_to_tv_floor(1910.0) == 1910.0

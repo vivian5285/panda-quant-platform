@@ -323,8 +323,13 @@ class PositionSupervisor(
                     "tv_sl": float(getattr(self, "tv_sl", 0) or 0),
                     "tv_stop_loss_ref": float(getattr(self, "_tv_stop_loss_ref", 0) or 0),
                     "tv_hard_sl_price": float(
-                        getattr(self, "_tv_hard_sl_price", 0)
-                        or getattr(self, "current_sl", 0)
+                        getattr(self, "_frozen_hard_stop_px", 0)
+                        or getattr(self, "_tv_hard_sl_price", 0)
+                        or 0
+                    ),
+                    "frozen_hard_stop_px": float(
+                        getattr(self, "_frozen_hard_stop_px", 0)
+                        or getattr(self, "_tv_hard_sl_price", 0)
                         or 0
                     ),
                     "leverage": int(getattr(self, "leverage", 0) or 0),
@@ -406,12 +411,20 @@ class PositionSupervisor(
                         s.get("tv_stop_loss_ref") or s.get("tv_sl", 0) or 0
                     )
                     self._tv_hard_sl_price = float(
-                        s.get("tv_hard_sl_price")
-                        or s.get("current_sl", 0)
+                        s.get("frozen_hard_stop_px")
+                        or s.get("tv_hard_sl_price")
                         or 0
                     )
-                    if self._tv_hard_sl_price <= 0 and float(s.get("initial_stop", 0) or 0) > 0:
-                        self._tv_hard_sl_price = float(s.get("initial_stop") or 0)
+                    self._frozen_hard_stop_px = float(
+                        s.get("frozen_hard_stop_px")
+                        or s.get("tv_hard_sl_price")
+                        or self._tv_hard_sl_price
+                        or 0
+                    )
+                    if self._frozen_hard_stop_px <= 0 and float(s.get("tv_sl", 0) or 0) > 0:
+                        # Legacy state: do not fall back to current_sl (radar)
+                        self._frozen_hard_stop_px = float(s.get("tv_sl") or 0)
+                        self._tv_hard_sl_price = self._frozen_hard_stop_px
                     lev = int(s.get("leverage", 0) or 0)
                     if lev > 0:
                         self.leverage = lev
@@ -3242,7 +3255,7 @@ class PositionSupervisor(
 
     def _protect_and_monitor(self, qty: float, entry_price: float) -> dict:
         """
-        开仓后：临时TV止损 → TP1/TP2 → VPS 1h ATR场景判定 → 精确止损（场景二再挂TP3）。
+        开仓后：硬止损(TV×1.2永冻) → TP1/TP2 → VPS 1h ATR场景判定武装雷达 → 场景二再挂TP3。
         返回 {ok, aborted, defense, shield}；硬止损挂失败则撤仓并 aborted=True（禁止裸奔）。
         """
         self._reset_adverse_radar(keep_tv_sl=False)
@@ -3396,18 +3409,37 @@ class PositionSupervisor(
                 )
                 self._last_defense_result = result
 
-            # ④ 用精确止损替换临时止损
-            shield = self._sync_tv_hard_stop(pos["size"], at_open=True, force_replace=True)
+            # ④ 确认硬止损仍在（永冻价）+ 独立挂雷达止损
+            shield = self._sync_tv_hard_stop(pos["size"], at_open=False, force_replace=False)
             self._last_shield_result = shield
+            radar_sl = float(
+                getattr(self, "current_sl", 0)
+                or getattr(self, "initial_stop", 0)
+                or 0
+            )
+            if radar_sl > 0 and hasattr(self, "_ensure_radar_sl"):
+                try:
+                    hang = (
+                        self._exchange_hang_stop_px(radar_sl)
+                        if hasattr(self, "_exchange_hang_stop_px")
+                        else radar_sl
+                    )
+                    self._ensure_radar_sl(hang, pos["size"])
+                except Exception as e:
+                    logger.warning(
+                        "[User %s] open radar place failed: %s",
+                        getattr(self, "user_id", "?"),
+                        e,
+                    )
             sl_label = shield.get("label") or self._hard_stop_label()
             shield_note = ""
             if shield.get("aligned") or shield.get("skipped") == "live_already_aligned":
                 shield_note = f" | {sl_label}已核实 @{shield.get('stop_price', 0):.2f}"
             elif shield.get("armed"):
                 shield_note = f" | {sl_label} @{shield.get('stop_price', 0):.2f}"
-            breath_sl = float(
-                getattr(self, "current_sl", 0)
-                or getattr(self, "initial_stop", 0)
+            breath_sl = float(self._frozen_hard_px() if hasattr(self, "_frozen_hard_px") else 0) or float(
+                getattr(self, "_frozen_hard_stop_px", 0)
+                or getattr(self, "_tv_hard_sl_price", 0)
                 or 0
             )
             if shield.get("placed", 0) > 0:
@@ -3465,6 +3497,7 @@ class PositionSupervisor(
             "breathing_active": True,
             "atr_scenario": str(getattr(self, "atr_scenario", "") or ""),
             "tp3_limit_active": bool(getattr(self, "tp3_limit_active", False)),
+            "frozen_hard": float(getattr(self, "_frozen_hard_stop_px", 0) or 0),
         }
         self._last_protect_result = out
         return out

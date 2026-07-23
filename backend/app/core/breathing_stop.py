@@ -102,7 +102,7 @@ def _price_tick(symbol: str | None) -> float:
         return 0.01
 
 
-TEMP_TV_STOP_BUFFER = 1.2  # |entry − TV.stop_loss| × 1.2 before VPS ATR takeover
+TEMP_TV_STOP_BUFFER = 1.2  # |entry − TV.stop_loss| × 1.2 permanent hard stop
 
 
 def compute_initial_stop(
