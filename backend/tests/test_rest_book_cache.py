@@ -1,5 +1,6 @@
 """Shared REST book cache — dual-symbol merge tests."""
 
+from app.core.ip_rest_cooldown import note_rate_limit, reset_for_tests as reset_cool
 from app.core.rest_book_cache import (
     get_cached_open_orders,
     get_cached_position,
@@ -10,6 +11,7 @@ from app.core.rest_book_cache import (
 
 def test_position_cache_one_fetch_serves_two_symbols():
     reset_for_tests()
+    reset_cool()
     calls = {"n": 0}
 
     def fetch_all():
@@ -32,6 +34,7 @@ def test_position_cache_one_fetch_serves_two_symbols():
 
 def test_orders_cache_and_invalidate():
     reset_for_tests()
+    reset_cool()
     calls = {"n": 0}
 
     def fetch_all():
@@ -56,3 +59,26 @@ def test_orders_cache_and_invalidate():
         exchange="binance", user_id=6, symbol="ETHUSDT", fetch_all=fetch_all,
     )
     assert calls["n"] == 2
+
+
+def test_cool_down_serves_stale_without_fetch():
+    reset_for_tests()
+    reset_cool()
+    calls = {"n": 0}
+
+    def fetch_all():
+        calls["n"] += 1
+        return [{"symbol": "ETHUSDT", "positionAmt": "0.031", "entryPrice": "1896"}]
+
+    get_cached_position(
+        exchange="binance", user_id=6, symbol="ETHUSDT", fetch_all=fetch_all,
+    )
+    assert calls["n"] == 1
+
+    note_rate_limit(exchange="binance", user_id=6, cool_sec=90.0)
+    invalidate("binance", 6, reason="place")  # soft expire only
+    eth = get_cached_position(
+        exchange="binance", user_id=6, symbol="ETHUSDT", fetch_all=fetch_all,
+    )
+    assert eth["positionAmt"] == "0.031"
+    assert calls["n"] == 1  # no REST under cool-down

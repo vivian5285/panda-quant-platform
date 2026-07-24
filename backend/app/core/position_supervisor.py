@@ -3841,7 +3841,8 @@ class PositionSupervisor(
                 ).isoformat()
             except (OSError, OverflowError, ValueError):
                 detail["banned_until_ms"] = ban_ms
-        logger.error(
+        log_fn = logger.debug if already else logger.error
+        log_fn(
             "[User %s] position query failed — keep book qty=%s side=%s | %s",
             self.user_id,
             detail["watched_qty"],
@@ -4551,8 +4552,32 @@ class PositionSupervisor(
             try:
                 ban_left = self._position_query_ban_remaining_sec()
                 if ban_left > 0:
-                    # Do not hammer REST during -1003 IP ban
-                    time.sleep(min(max(ban_left, 5.0), 60.0))
+                    # Cool-down: no REST position. Breath on last-known qty + WS px only.
+                    self._ensure_price_ws()
+                    if self.watched_qty > 0 and self._lock.acquire(timeout=0.5):
+                        try:
+                            try:
+                                curr_px = float(
+                                    self.client.get_current_price(
+                                        self.symbol, prefer_ws=True,
+                                    )
+                                    or 0
+                                )
+                            except Exception:
+                                curr_px = float(last_px or 0)
+                            if curr_px > 0:
+                                last_px = curr_px
+                            if curr_px > 0 and hasattr(self, "_process_breathing_stop_tick"):
+                                sign = 1.0 if str(self.current_side or "").upper() == "LONG" else -1.0
+                                try:
+                                    self._process_breathing_stop_tick(
+                                        float(self.watched_qty) * sign, curr_px,
+                                    )
+                                except Exception:
+                                    pass
+                        finally:
+                            self._lock.release()
+                    time.sleep(min(max(ban_left, 5.0), 30.0))
                     continue
                 self._ensure_price_ws()
                 if not self._lock.acquire(timeout=2.0):

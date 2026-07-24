@@ -1124,12 +1124,8 @@ class AdverseRadarMixin:
         if getattr(self, "exchange_id", "") == "deepcoin":
             return list(self._collect_adverse_stop_orders() or [])
 
-        if hasattr(client, "_invalidate_book_cache"):
-            try:
-                client._invalidate_book_cache("count_all_stops")
-            except Exception:
-                pass
-
+        # Do NOT invalidate cache here — breath ticks every ~1s; force-refresh was
+        # the main -1003 storm (ETH+XAU × orders+algo). Rely on short TTL + place/cancel invalidate.
         orders: list[dict] = []
         seen: set[str | int] = set()
         try:
@@ -1146,6 +1142,21 @@ class AdverseRadarMixin:
                 seen.add(oid)
             orders.append(o)
 
+        # Under IP cool-down: serve cache only; skip per-id algo probes
+        cooling = False
+        try:
+            from app.core.ip_rest_cooldown import remaining_sec
+
+            cooling = float(
+                remaining_sec(
+                    exchange=getattr(self, "exchange_id", None) or "binance",
+                    user_id=getattr(self, "user_id", None),
+                )
+                or 0
+            ) > 0
+        except Exception:
+            cooling = False
+
         for o in client.get_open_orders(symbol) or []:
             if not isinstance(o, dict):
                 continue
@@ -1159,19 +1170,21 @@ class AdverseRadarMixin:
                 _add(o)
 
         # Pending algo ids — fetch by id without tier filter (lag cover)
-        for aid in list(getattr(self, "_pending_adverse_algo_ids", None) or []):
-            try:
-                aid_int = int(aid)
-            except (TypeError, ValueError):
-                continue
-            if aid_int in seen:
-                continue
-            try:
-                o = client.get_algo_order(symbol, aid_int) if hasattr(client, "get_algo_order") else None
-            except Exception:
-                o = None
-            if o and isinstance(o, dict) and _is_stop_market_like(o):
-                _add(o)
+        # Skip under cool-down: each get_algo_order is a REST hit.
+        if not cooling:
+            for aid in list(getattr(self, "_pending_adverse_algo_ids", None) or []):
+                try:
+                    aid_int = int(aid)
+                except (TypeError, ValueError):
+                    continue
+                if aid_int in seen:
+                    continue
+                try:
+                    o = client.get_algo_order(symbol, aid_int) if hasattr(client, "get_algo_order") else None
+                except Exception:
+                    o = None
+                if o and isinstance(o, dict) and _is_stop_market_like(o):
+                    _add(o)
 
         if hasattr(client, "get_open_algo_orders"):
             try:
@@ -2714,9 +2727,23 @@ class AdverseRadarMixin:
                 live_stop_n = -1
         if live_stop_n < 0:
             # Book unknown — do not place; attempt cancel-only sync refuse path
-            logger.warning(
-                "[User %s] breath tick: stop book unknown — skip place",
+            try:
+                from app.core.ip_rest_cooldown import remaining_sec
+
+                cooling = float(
+                    remaining_sec(
+                        exchange=getattr(self, "exchange_id", None) or "binance",
+                        user_id=getattr(self, "user_id", None),
+                    )
+                    or 0
+                ) > 0
+            except Exception:
+                cooling = False
+            log_fn = logger.debug if cooling else logger.warning
+            log_fn(
+                "[User %s] breath tick: stop book unknown — skip place%s",
                 getattr(self, "user_id", "?"),
+                " (cool-down)" if cooling else "",
             )
             return False
         if live_stop_n > ADVERSE_MAX_STOP_ORDERS:
