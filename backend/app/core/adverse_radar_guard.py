@@ -2658,6 +2658,7 @@ class AdverseRadarMixin:
             breathing_coefficient=coef,
             symbol=sym,
             smooth_ratio=float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
+            **(self._breathing_tier_kwargs() if hasattr(self, "_breathing_tier_kwargs") else {}),
         )
         new_sl = float(tick.get("current_sl") or 0)
         new_best = float(tick.get("best_price") or best)
@@ -2919,6 +2920,7 @@ class AdverseRadarMixin:
             breathing_coefficient=coef,
             symbol=sym,
             smooth_ratio=float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
+            **(self._breathing_tier_kwargs() if hasattr(self, "_breathing_tier_kwargs") else {}),
         )
         new_sl = float(tick.get("current_sl") or current_sl)
         self.best_price = float(tick.get("best_price") or self.best_price)

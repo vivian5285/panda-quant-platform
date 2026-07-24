@@ -51,8 +51,7 @@ def test_eth_xau_coef_independent_same_ratio():
     eth = get_breathing_coefficient(r, "ETHUSDT")
     xau = get_breathing_coefficient(r, "XAUUSDT")
     assert abs(eth - 1.525) < 1e-9
-    assert abs(xau - 0.675) < 1e-9
-    assert xau < eth
+    assert abs(xau - 1.525) < 1e-9
     # Updating ETH history must not affect XAU formula output
     coef_e, hist_e, smooth_e = update_breathing_coefficient(
         initial_atr=20.0, atr_1h=14.0, ratio_history=[], symbol="ETHUSDT",
@@ -63,8 +62,10 @@ def test_eth_xau_coef_independent_same_ratio():
     assert hist_e != hist_x or abs(hist_e[-1] - hist_x[-1]) > 1e-9
     assert abs(coef_e - get_breathing_coefficient(smooth_e, "ETHUSDT")) < 1e-9
     assert abs(coef_x - get_breathing_coefficient(smooth_x, "XAUUSDT")) < 1e-9
-    # XAU still colder/tighter at ratio≈1
-    assert get_breathing_coefficient(1.0, "XAUUSDT") < get_breathing_coefficient(1.0, "ETHUSDT")
+    # Same phase2 band — equal at identical ratio
+    assert abs(
+        get_breathing_coefficient(1.0, "XAUUSDT") - get_breathing_coefficient(1.0, "ETHUSDT")
+    ) < 1e-9
 
 
 def test_atr_cache_keys_are_symbol_scoped_not_user():

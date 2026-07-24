@@ -197,10 +197,14 @@ def diagnose_flat_close(
     platform_initiated_market: bool = False,
     peak_price: float = 0.0,
     exit_price: float = 0.0,
+    frozen_hard_px: float = 0.0,
+    radar_initial_stop: float = 0.0,
 ) -> dict[str, Any]:
     """
     Build structured close attribution for logs, DB detail_json, and DingTalk.
     """
+    from app.core.smart_reentry import classify_stop_track
+
     trigger_key = trigger if trigger in CLOSE_TRIGGERS else "sentinel_zero"
     tps = list(tv_tps or [])
     tp3 = float(tps[2] or 0) if len(tps) > 2 else 0.0
@@ -212,6 +216,8 @@ def diagnose_flat_close(
         "radar_active": radar_active,
         "current_sl": float(current_sl or 0),
         "initial_stop": float(initial_stop or 0),
+        "frozen_hard_px": float(frozen_hard_px or 0),
+        "radar_initial_stop": float(radar_initial_stop or 0),
         "consumed_tp_levels": list(consumed_tp_levels or []),
         "peak_price": peak,
         "tp3": tp3,
@@ -415,6 +421,19 @@ def diagnose_flat_close(
     CLOSE_ORIGINS_LOCAL = dict(CLOSE_ORIGINS)
     CLOSE_ORIGINS_LOCAL["radar_tp3_trail"] = "雷达TP3追踪收网"
 
+    fill_for_track = float(evidence.get("closing_avg_price") or exit_price or 0)
+    stop_track = classify_stop_track(
+        close_action=close_action_hint,
+        close_trigger=trigger_key,
+        fill_px=fill_for_track,
+        frozen_hard_px=float(frozen_hard_px or 0),
+        radar_sl_px=float(current_sl or 0),
+        side=side,
+    )
+    if origin == "radar_tp3_trail":
+        stop_track = "radar"
+    evidence["stop_track"] = stop_track
+
     return {
         "close_trigger": trigger_key,
         "close_origin": origin,
@@ -425,6 +444,7 @@ def diagnose_flat_close(
         "actor_label": CLOSE_ACTORS.get(actor, actor),
         "sl_kind": sl_kind if origin == "exchange_stop" else None,
         "close_action_hint": close_action_hint,
+        "stop_track": stop_track,
         "confidence": confidence,
         "evidence": evidence,
         "matched_tps": tp_matched if origin == "exchange_limit_tp" else [],

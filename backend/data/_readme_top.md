@@ -48,8 +48,9 @@
 | 算仓 | `qty = 本金 × 20% × 5 / 价` |
 | 15s 铁律 | OPEN 先到丢弃晚 CLOSE；CLOSE 先到先平后开 |
 | ATR | 优先交易所原生 1h；失败用 TV atr；**不用** 90m 合成 |
-| 呼吸 coef | ETH 1.2~2.5 / XAU 0.5~1.2 连续插值 |
-| 雷达启动 | TP1×50%~85%（动态）；**禁止**与 0.75×ATR 双轨并存 |
+| 呼吸 coef | ETH/XAU 1.2~2.5 连续插值；再入场档位递进 early_be/step |
+| 雷达启动 | TP1×50/65/80/95 递进 + step_trigger 下限；**禁止**旧 0.75 双轨 |
+| 智能再入场 | 雷达保本/微赚 → 5m低/高±1tick（须优于TV）；硬止损不重入；最多3次 |
 | 杠杆 | `FIXED_LEVERAGE=5` |
 
 | 生产域名 | [https://twinstar.pro](https://twinstar.pro) |
@@ -69,7 +70,8 @@ repo_path_on_vps: /home/panda/panda-quant-platform
 
 rules:
   - hard_stop = max(|TV.entry-TV.SL|*1.2, 1.5*ATR*1.05) + |fill-TV.entry|*2; hang from fill; widen-once then frozen
-  - radar first-move = TP1_dist * (50%~85% inverse smooth ATR ratio); NO fixed 0.75×ATR gate
+  - radar first-move = TP1×50/65/80/95 progressive + step_trigger×ATR floor
+  - smart reentry: after radar BE/micro-profit, limit at 5m low+tick / high-tick (must beat TV px); hard stop never reenters
   - stagnant tighten (Option A): ETH 18 / XAU 12 breath samples → radar to TV raw dist; hard untouched
   - chart TF: ETH 90m / XAU 45m; VPS 1h ATR is volatility oracle only
   - sizing = equity * 0.20 * 5 / price

@@ -21,16 +21,16 @@ from app.core.initial_atr_lock import (
 
 
 def test_continuous_ends_and_midpoints():
-    # Floor / ceiling
+    # Floor / ceiling — ETH + XAU both phase2 1.2~2.5 (smart re-entry plan)
     assert abs(trail_distance_multiplier(0.5, ETH_PROFILE) - 1.2) < 1e-9
     assert abs(trail_distance_multiplier(2.5, ETH_PROFILE) - 2.5) < 1e-9
-    assert abs(trail_distance_multiplier(0.5, XAU_PROFILE) - 0.5) < 1e-9
-    assert abs(trail_distance_multiplier(2.5, XAU_PROFILE) - 1.2) < 1e-9
-    # Cold start ratio=1.0 → min + (max-min)*0.25
+    assert abs(trail_distance_multiplier(0.5, XAU_PROFILE) - 1.2) < 1e-9
+    assert abs(trail_distance_multiplier(2.5, XAU_PROFILE) - 2.5) < 1e-9
+    # Cold start ratio=1.0 → min + (max-min)*0.25 = 1.525 both
     assert abs(cold_start_multiplier(ETH_PROFILE) - 1.525) < 1e-9
-    assert abs(cold_start_multiplier(XAU_PROFILE) - 0.675) < 1e-9
+    assert abs(cold_start_multiplier(XAU_PROFILE) - 1.525) < 1e-9
     assert abs(get_breathing_coefficient(1.0, "ETHUSDT") - 1.525) < 1e-9
-    assert abs(get_breathing_coefficient(1.0, "XAUUSDT") - 0.675) < 1e-9
+    assert abs(get_breathing_coefficient(1.0, "XAUUSDT") - 1.525) < 1e-9
     # Midpoints continuous (no discrete jump)
     eth_07 = get_breathing_coefficient(0.7, "ETHUSDT")
     eth_10 = get_breathing_coefficient(1.0, "ETHUSDT")
@@ -38,22 +38,24 @@ def test_continuous_ends_and_midpoints():
     assert eth_07 < eth_10 < eth_14
     xau_07 = get_breathing_coefficient(0.7, "XAUUSDT")
     xau_10 = get_breathing_coefficient(1.0, "XAUUSDT")
-    assert xau_07 < xau_10
-    # XAU always tighter than ETH at same ratio
+    xau_14 = get_breathing_coefficient(1.4, "XAUUSDT")
+    assert xau_07 < xau_10 < xau_14
+    # ETH/XAU share phase2 coef band 1.2~2.5 — same ratio → same multiplier
     for r in (0.6, 1.0, 1.4, 2.0, 2.2):
-        assert get_breathing_coefficient(r, "XAUUSDT") <= get_breathing_coefficient(r, "ETHUSDT")
+        assert abs(
+            get_breathing_coefficient(r, "XAUUSDT") - get_breathing_coefficient(r, "ETHUSDT")
+        ) < 1e-9
 
 
 def test_missing_coef_seed_is_cold_start_not_literal_one():
-    """Idle/missing seed must not use literal 1.0 (clamps ETH→1.2, leaves XAU too loose)."""
+    """Idle/missing seed must not use literal 1.0 (clamps ETH→1.2)."""
     assert abs(resolve_breathing_coef(None, "ETHUSDT") - 1.525) < 1e-9
-    assert abs(resolve_breathing_coef(None, "XAUUSDT") - 0.675) < 1e-9
+    assert abs(resolve_breathing_coef(None, "XAUUSDT") - 1.525) < 1e-9
     assert abs(load_breathing_coef(None, "ETHUSDT") - 1.525) < 1e-9
-    assert abs(load_breathing_coef(0, "XAUUSDT") - 0.675) < 1e-9
-    assert abs(load_breathing_coef(0.744, "XAUUSDT") - 0.744) < 1e-9
-    # Literal 1.0 is a real in-range value for XAU — keep as-is when persisted from live
-    assert abs(resolve_breathing_coef(1.0, "XAUUSDT") - 1.0) < 1e-9
-    # ETH 1.0 is below minMult → clamp to 1.2 (why idle must store cold 1.525, not 1.0)
+    assert abs(load_breathing_coef(0, "XAUUSDT") - 1.525) < 1e-9
+    assert abs(load_breathing_coef(1.4, "XAUUSDT") - 1.4) < 1e-9
+    # Literal 1.0 below minMult → clamp to 1.2 for both
+    assert abs(resolve_breathing_coef(1.0, "XAUUSDT") - 1.2) < 1e-9
     assert abs(resolve_breathing_coef(1.0, "ETHUSDT") - 1.2) < 1e-9
 
 

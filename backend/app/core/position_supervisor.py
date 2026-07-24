@@ -9,6 +9,7 @@ from typing import Callable, Optional
 
 from app.core.binance_client import BinanceClient
 from app.core.adverse_radar_guard import AdverseRadarMixin, parse_tv_sl
+from app.core.smart_reentry_mixin import SmartReentryMixin
 from app.core.startup_reconcile import (
     StartupReconcileMixin,
     apply_tv_sl_from_sources,
@@ -105,6 +106,7 @@ class _QueuedSignal:
 
 class PositionSupervisor(
     PositionCapGuardMixin, AdverseRadarMixin, BinanceSmartDefenseMixin, StartupReconcileMixin,
+    SmartReentryMixin,
 ):
     """
     多用户版 position_supervisor_binance.py
@@ -200,6 +202,7 @@ class PositionSupervisor(
         self._scan_ticks = 0
         self._last_tp_audit_ts = 0.0
         self._init_adverse_radar_fields()
+        self._init_smart_reentry_fields()
 
         state_key = supervisor_state_key(self.exchange_id, user_id, self.canonical_symbol)
         base_dir = os.path.join("data", "supervisor", state_key)
@@ -353,6 +356,7 @@ class PositionSupervisor(
                     "atr_fallback_active": bool(getattr(self, "atr_fallback_active", False)),
                     "current_trade_id": getattr(self, "current_trade_id", None),
                     "canonical_symbol": getattr(self, "canonical_symbol", None),
+                    **(self._smart_reentry_state_dict() if hasattr(self, "_smart_reentry_state_dict") else {}),
                 }, f)
         except Exception as e:
             logger.error(f"[User {self.user_id}] save state failed: {e}")
@@ -479,6 +483,8 @@ class PositionSupervisor(
                         except (TypeError, ValueError):
                             pass
                     self._infer_radar_latched_from_state()
+                    if hasattr(self, "_load_smart_reentry_state"):
+                        self._load_smart_reentry_state(s)
         except Exception as e:
             logger.error(f"[User {self.user_id}] load state failed: {e}")
 
@@ -1335,6 +1341,13 @@ class PositionSupervisor(
             self._tv_stop_loss_ref = pending_tv_sl
             self._pending_open_tv_sl = pending_tv_sl
 
+        # New TV → wipe progressive re-entry state before flatten/open
+        if hasattr(self, "reset_reentry_state"):
+            try:
+                self.reset_reentry_state(reason="new_tv_clear")
+            except Exception:
+                pass
+
         def _restore_pending_open_refs() -> None:
             if pending_tv_sl > 0:
                 self._tv_stop_loss_ref = pending_tv_sl
@@ -1819,6 +1832,11 @@ class PositionSupervisor(
             self.initial_qty = real_qty
             self.add_count = 0
             self.consumed_tp_levels = []
+            if hasattr(self, "_seed_tier0_on_open"):
+                try:
+                    self._seed_tier0_on_open(action, float(getattr(self, "tv_price", 0) or entry_price))
+                except Exception:
+                    pass
             self._tp_fill_dingtalk_levels = set()
             self._stop_qty_resized_levels = set()
             self.current_trade_id = self.on_trade_open(
@@ -4004,6 +4022,12 @@ class PositionSupervisor(
             platform_initiated_market=platform_market,
             peak_price=float(getattr(self, "best_price", 0) or 0),
             exit_price=0.0,
+            frozen_hard_px=float(
+                getattr(self, "_frozen_hard_stop_px", 0)
+                or getattr(self, "_tv_hard_sl_price", 0)
+                or 0
+            ),
+            radar_initial_stop=float(getattr(self, "initial_stop", 0) or 0),
         )
 
     def _record_trade_close(
@@ -4951,6 +4975,46 @@ class PositionSupervisor(
 
         if closed_successfully and had_position:
             self._trigger_settlement_on_flat()
+            # Smart re-entry: arm limit reopen BEFORE wiping book (needs watched_*)
+            try:
+                ca_u = str(close_action or "").upper()
+                trig = str(close_trigger or "").lower()
+                tvish = (
+                    "TV" in ca_u
+                    or trig in ("tv_signal",)
+                    or is_close_protect
+                    or bool(tv_side and close_action and "CLOSE_" in ca_u and "BREATH" not in ca_u)
+                )
+                if tvish and hasattr(self, "reset_reentry_state"):
+                    self.reset_reentry_state(reason="tv_close_no_reentry")
+                elif hasattr(self, "_maybe_arm_smart_reentry"):
+                    from app.core.smart_reentry import classify_stop_track
+
+                    track = "unknown"
+                    if isinstance(attribution, dict) and attribution.get("stop_track"):
+                        track = str(attribution.get("stop_track"))
+                    else:
+                        track = classify_stop_track(
+                            close_action=close_action,
+                            close_trigger=close_trigger,
+                            fill_px=float(exit_price or 0),
+                            frozen_hard_px=float(
+                                getattr(self, "_frozen_hard_stop_px", 0)
+                                or getattr(self, "_tv_hard_sl_price", 0)
+                                or 0
+                            ),
+                            radar_sl_px=float(getattr(self, "current_sl", 0) or 0),
+                            side=getattr(self, "current_side", None),
+                        )
+                    self._maybe_arm_smart_reentry(
+                        close_track=track,
+                        close_px=float(exit_price or self.last_close_px or 0),
+                        close_action=close_action,
+                    )
+            except Exception as re_exc:
+                logger.warning(
+                    "[User %s] smart reentry arm failed: %s", self.user_id, re_exc,
+                )
         elif had_position and not closed_successfully:
             residual_amt = 0.0
             try:

@@ -14,6 +14,7 @@ from typing import Any
 from app.core.breathing_profile import (
     ETH_PROFILE,
     cold_start_multiplier,
+    effective_radar_arm_distance,
     get_breathing_coefficient_for_profile,
     profile_for_symbol,
     radar_arm_distance,
@@ -355,6 +356,25 @@ def init_breathing_state(
     }
 
 
+def _tier_overrides(legacy: dict[str, Any], profile) -> dict[str, float | None]:
+    """Pull smart-reentry tier overrides from kwargs (None = use profile)."""
+    def _f(key: str) -> float | None:
+        if key not in legacy or legacy.get(key) is None:
+            return None
+        try:
+            v = float(legacy[key])
+        except (TypeError, ValueError):
+            return None
+        return v if v > 0 else None
+
+    return {
+        "arm_tp1_pct": _f("arm_tp1_pct"),
+        "step_trigger_atr": _f("step_trigger_atr"),
+        "early_breakeven_atr": _f("early_breakeven_atr"),
+        "step_advance_atr": _f("step_advance_atr"),
+    }
+
+
 def calculate_stop_long(
     price: float,
     entry_price: float,
@@ -369,6 +389,12 @@ def calculate_stop_long(
     **_legacy: Any,
 ) -> tuple[float, float, bool, dict[str, Any]]:
     p = profile_for_symbol(symbol)
+    ov = _tier_overrides(_legacy, p)
+    early_be = float(ov["early_breakeven_atr"] if ov["early_breakeven_atr"] is not None else p.early_breakeven_atr)
+    step_adv_atr = float(ov["step_advance_atr"] if ov["step_advance_atr"] is not None else p.step_advance_atr)
+    step_trig = float(ov["step_trigger_atr"] if ov["step_trigger_atr"] is not None else p.step_trigger_atr)
+    arm_pct = ov["arm_tp1_pct"]
+
     price = float(price or 0)
     entry_price = float(entry_price or 0)
     initial_atr = resolve_atr(initial_atr)
@@ -389,13 +415,18 @@ def calculate_stop_long(
         "symbol_tag": p.symbol_tag,
     }
 
-    # Dynamic first-move arm (replaces fixed 0.75×ATR). Then step by 0.4×ATR.
-    step_advance = p.step_advance_atr * initial_atr
-    arm_dist = radar_arm_distance(initial_atr, sr, p)
-    arm_ratio = radar_start_ratio(sr, p)
+    step_advance = step_adv_atr * initial_atr
+    arm_dist = effective_radar_arm_distance(
+        initial_atr, sr, p, arm_tp1_pct=arm_pct, step_trigger_atr=step_trig,
+    )
+    # Legacy dynamic ratio kept for logs only when no fixed pct
+    arm_ratio = float(arm_pct) if arm_pct is not None else radar_start_ratio(sr, p)
     meta["radar_arm_ratio"] = arm_ratio
     meta["radar_arm_dist"] = arm_dist
-    # Phase-2 trail: initial_atr × trailDistanceMultiplier (coef)
+    meta["arm_tp1_pct"] = arm_pct if arm_pct is not None else arm_ratio
+    meta["step_trigger_atr"] = step_trig
+    meta["early_breakeven_atr"] = early_be
+    meta["step_advance_atr"] = step_adv_atr
     trail_dist = initial_atr * coef
 
     if not new_phase:
@@ -417,8 +448,7 @@ def calculate_stop_long(
                 event = "step"
         meta["step_count"] = step_count
 
-        # Early breakeven → entry + 1 tick
-        if p.early_breakeven_atr > 0 and price >= entry_price + p.early_breakeven_atr * initial_atr:
+        if early_be > 0 and price >= entry_price + early_be * initial_atr:
             be = entry_price + tick
             if be > candidate:
                 candidate = be
@@ -473,6 +503,12 @@ def calculate_stop_short(
     **_legacy: Any,
 ) -> tuple[float, float, bool, dict[str, Any]]:
     p = profile_for_symbol(symbol)
+    ov = _tier_overrides(_legacy, p)
+    early_be = float(ov["early_breakeven_atr"] if ov["early_breakeven_atr"] is not None else p.early_breakeven_atr)
+    step_adv_atr = float(ov["step_advance_atr"] if ov["step_advance_atr"] is not None else p.step_advance_atr)
+    step_trig = float(ov["step_trigger_atr"] if ov["step_trigger_atr"] is not None else p.step_trigger_atr)
+    arm_pct = ov["arm_tp1_pct"]
+
     price = float(price or 0)
     entry_price = float(entry_price or 0)
     initial_atr = resolve_atr(initial_atr)
@@ -495,12 +531,17 @@ def calculate_stop_short(
         "symbol_tag": p.symbol_tag,
     }
 
-    # Dynamic first-move arm (replaces fixed step_trigger_atr). Then step by advance×ATR.
-    step_advance = p.step_advance_atr * initial_atr
-    arm_dist = radar_arm_distance(initial_atr, sr, p)
-    arm_ratio = radar_start_ratio(sr, p)
+    step_advance = step_adv_atr * initial_atr
+    arm_dist = effective_radar_arm_distance(
+        initial_atr, sr, p, arm_tp1_pct=arm_pct, step_trigger_atr=step_trig,
+    )
+    arm_ratio = float(arm_pct) if arm_pct is not None else radar_start_ratio(sr, p)
     meta["radar_arm_ratio"] = arm_ratio
     meta["radar_arm_dist"] = arm_dist
+    meta["arm_tp1_pct"] = arm_pct if arm_pct is not None else arm_ratio
+    meta["step_trigger_atr"] = step_trig
+    meta["early_breakeven_atr"] = early_be
+    meta["step_advance_atr"] = step_adv_atr
     trail_dist = initial_atr * coef
 
     if not new_phase:
@@ -524,7 +565,7 @@ def calculate_stop_short(
                 event = "step"
         meta["step_count"] = step_count
 
-        if p.early_breakeven_atr > 0 and price <= entry_price - p.early_breakeven_atr * initial_atr:
+        if early_be > 0 and price <= entry_price - early_be * initial_atr:
             be = entry_price - tick
             if be < candidate:
                 candidate = be
@@ -579,21 +620,31 @@ def apply_breathing_tick(
     adx_val: float | None = None,
     symbol: str | None = None,
     smooth_ratio: float | None = None,
+    arm_tp1_pct: float | None = None,
+    step_trigger_atr: float | None = None,
+    early_breakeven_atr: float | None = None,
+    step_advance_atr: float | None = None,
 ) -> dict[str, Any]:
     coef = resolve_breathing_coef(breathing_coefficient, symbol)
     side_u = str(side or "").upper()
     sr = float(smooth_ratio if smooth_ratio is not None else COLD_START_RATIO)
+    tier_kw = {
+        "arm_tp1_pct": arm_tp1_pct,
+        "step_trigger_atr": step_trigger_atr,
+        "early_breakeven_atr": early_breakeven_atr,
+        "step_advance_atr": step_advance_atr,
+    }
     if side_u == "LONG":
         new_stop, peak, phase, meta = calculate_stop_long(
             price, entry_price, initial_atr, initial_stop,
             current_stop, best_price, breakeven_phase, coef,
-            symbol=symbol, smooth_ratio=sr,
+            symbol=symbol, smooth_ratio=sr, **tier_kw,
         )
     elif side_u == "SHORT":
         new_stop, peak, phase, meta = calculate_stop_short(
             price, entry_price, initial_atr, initial_stop,
             current_stop, best_price, breakeven_phase, coef,
-            symbol=symbol, smooth_ratio=sr,
+            symbol=symbol, smooth_ratio=sr, **tier_kw,
         )
     else:
         return {
@@ -646,7 +697,7 @@ def format_breathing_legend(symbol: str | None = None) -> str:
     p = profile_for_symbol(symbol)
     return (
         f"[{p.symbol_tag}] 初始{p.initial_sl_atr}ATR±{p.stop_order_buffer}"
-        f" · 雷达启动=TP1×50%~85%(动态)/步进{p.step_advance_atr}×ATR"
+        f" · 雷达启动=TP1×50/65/80/95递进/步进{p.step_advance_atr}×ATR"
         f" · 早保本{p.early_breakeven_atr}ATR"
         f" · 阶段二={p.phase2_trigger_atr}ATR"
         f" · 追踪{p.coef_min}~{p.coef_max}×ATR(连续插值)"
