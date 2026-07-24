@@ -34,9 +34,21 @@ curl -sS http://127.0.0.1:6010/health
 | `TV_STOP_ATR_MULT` | 默认 `1.0`（TV 止损反推，勿改回 1.5） |
 | `ATR_FALLBACK_STREAK` / `ATR_FALLBACK_MISMATCH_PCT` | ATR 应急降级 |
 | `FORCE_FLAT_RETRY_DELAYS_SEC` | 默认 `1,3,6` |
+| `SMART_REENTRY_ETH_ENABLED` / `SMART_REENTRY_XAU_ENABLED` | 智能再入场分品种开关（默认 True） |
+| `E2E_FORCE_NOTIONAL_USD` | **生产必须 0**（禁止主动压测名义） |
 | 交易所 API Key | 用户库内加密字段，勿进 Git |
 
 配置文件通常在 `backend/.env`（宿主机挂载进容器）。
+
+部署后探针：
+
+```bash
+docker compose exec -T -e PYTHONPATH=/app backend python /app/data/_vps_verify_smart_reentry.py
+docker compose exec -T -e PYTHONPATH=/app -e GIT_HEAD=$(git rev-parse --short HEAD) \
+  backend python /app/data/_vps_sync_ready_ding.py
+```
+
+再入场结构解说：`docs/SMART_REENTRY_CLOSED_LOOP.md`。
 
 ## 部署后人工检查清单
 

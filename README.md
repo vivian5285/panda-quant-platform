@@ -9,7 +9,7 @@
 > **文档同步（2026-07-25 · 智能再入场闭环 + 本地挂单标签防风暴）**  
 > 凡与本文冲突的旧描述（含「雷达扫出=失败离场」「查不到单就当没挂盲补」「硬止损=TV原价」）**一律作废**。  
 > 权威：TV 窗口内仅硬止损可主动认输；雷达 BE/微赚扫出 → 清场 → 双保险限价再入 → fill±(缓冲+滑点)硬止损+TP12+雷达。  
-> 部署：`docs/VPS_DEPLOY.md` · 呼吸：`docs/CONTINUOUS_BREATH_FINAL_SPEC.md` · 速查：`backend/data/_readme_top.md`
+> 结构解说：`docs/SMART_REENTRY_CLOSED_LOOP.md` · 部署：`docs/VPS_DEPLOY.md` · 呼吸：`docs/CONTINUOUS_BREATH_FINAL_SPEC.md` · 速查：`backend/data/_readme_top.md`
 
 ### 当前实盘一句话
 

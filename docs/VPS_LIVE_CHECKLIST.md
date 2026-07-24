@@ -1,8 +1,8 @@
 # VPS 实盘最终行为规格（完整版 · 唯一权威）
 
-> 同步：2026-07-23 · **Gemini 终极最终方案（两场景 ATR）** + 连续插值呼吸（ETH 1.2~2.5 / XAU 0.5~1.2）  
-> 实现入口：`open_atr_scenario.py`（两场景）· `tv_entry_sizing.py`（算仓）· `breathing_profile.py` · `breathing_stop.py` · `atr_1h_breathing.py` · `adverse_radar_guard.py` · `tp_regime_targets.py`  
-> 对照桌面：《Gemini终极最终方案.md》
+> 同步：2026-07-25 · **智能再入场闭环 + 本地挂单标签** + 两场景 ATR + 连续插值呼吸  
+> 实现入口：`smart_reentry.py` · `smart_reentry_mixin.py` · `order_place_guard.py` · `open_atr_scenario.py` · `tv_entry_sizing.py` · `breathing_profile.py` · `breathing_stop.py` · `adverse_radar_guard.py`  
+> 结构解说：`docs/SMART_REENTRY_CLOSED_LOOP.md` · 根 `README.md`
 
 ## 硬性原则
 
@@ -13,6 +13,8 @@
 5. **算仓铁律（永远）**：合约本金余额 × 20% 作保证金 × 5 杠杆 = **名义 = 本金×1**（`qty = 本金/价`）
 6. **initial_atr 两场景**：优先 VPS 原生 1h ATR（场景一）；拉取失败则用 TV `atr` 并挂 TP3（场景二）；tick 可持续升级回场景一并撤 TP3
 7. 交易连续性优先：场景二**不暂停**开仓、不拖延告警（仅记录钉钉）
+8. **TV 窗口再入场**：雷达保本/微赚扫出 → 净场后双保险限价再入；硬止损/亏损永不重入；本地挂单标签防风暴（见 `SMART_REENTRY_CLOSED_LOOP.md`）
+9. **挂单幂等**：盘口不可读或本地标签占用 → 拒挂；禁止「查不到就盲挂」
 
 ## Webhook action
 
