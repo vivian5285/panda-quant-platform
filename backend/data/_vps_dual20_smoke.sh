@@ -1,7 +1,7 @@
 #!/bin/bash
-# Dual-symbol ~20U live smoke: ETH LONG + XAU SHORT full chain on user6.
+# Dual-symbol ~20U live smoke: ETH/XAU LONG+SHORT full chain on user6.
 # Evidence under /tmp/dual20_smoke/evidence_*
-set -u
+# Asserts: hard=fill±(|TV.e−SL|×1.2), TP1+TP2+TP3 limits, dual algo stops.set -u
 cd /home/panda/panda-quant-platform
 SECRET="${WEBHOOK_SECRET:-528586}"
 WH=http://127.0.0.1:6010/webhook
@@ -59,7 +59,7 @@ run_cycle() {
   mkdir -p "$DIR"
   python3 - <<PY
 import json,time,urllib.request,random
-sym="$SYM"; action="$ACTION"; atr=float("$ATR"); secret="$SECRET"
+sym="$SYM"; action="$ACTION"; atr=float("$ATR"); secret="$SECRET"; tag="$TAG"
 price=float(json.loads(urllib.request.urlopen(f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={sym}",timeout=8).read())["price"])
 if action=="LONG":
     stop=round(price-1.5*atr,2); tp1=round(price+1.35*atr,2); tp2=round(price+2.5*atr,2); tp3=round(price+4.0*atr,2)
@@ -68,7 +68,7 @@ else:
 payload={"symbol":f"{sym}.P","action":action,"secret":secret,"price":round(price,2),
   "tp1":tp1,"tp2":tp2,"tp3":tp3,"stop_loss":stop,"atr":atr,
   "bar_index":int(time.time()*1000)%2000000000,"seq":random.randint(1,99),
-  "reason":f"dual20 {TAG}"}
+  "reason":f"dual20 {tag}"}
 open("$DIR/open_payload.json","w").write(json.dumps(payload,indent=2))
 print(json.dumps(payload))
 PY
@@ -125,10 +125,10 @@ PY
   # CLOSE
   python3 - <<PY
 import json,time,urllib.request,random
-sym="$SYM"; secret="$SECRET"
+sym="$SYM"; secret="$SECRET"; tag="$TAG"
 price=float(json.loads(urllib.request.urlopen(f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={sym}",timeout=8).read())["price"])
 payload={"symbol":f"{sym}.P","action":"CLOSE_QUICK_EXIT","secret":secret,"price":round(price,2),
-  "bar_index":int(time.time()*1000)%2000000000,"seq":random.randint(1,99),"reason":f"dual20 close {TAG}"}
+  "bar_index":int(time.time()*1000)%2000000000,"seq":random.randint(1,99),"reason":f"dual20 close {tag}"}
 open("$DIR/close_payload.json","w").write(json.dumps(payload,indent=2))
 PY
   echo "=== CLOSE $TAG ===" | tee "$DIR/close_http.txt"
