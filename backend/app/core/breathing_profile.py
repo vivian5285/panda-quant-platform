@@ -70,7 +70,9 @@ XAU_PROFILE = BreathingProfile(
     symbol_tag="XAU",
     initial_sl_atr=1.5,
     stop_order_buffer=0.5,
-    early_breakeven_atr=0.3,
+    # 0.3×ATR ≈ 3–5 pts on XAU — noise swept BE too early; align ETH 0.5 for 1–2w
+    # observe (step_trigger/advance stay XAU-local until BE sweep rate improves).
+    early_breakeven_atr=0.5,
     step_trigger_atr=0.4,
     step_advance_atr=0.35,
     phase2_trigger_atr=3.0,

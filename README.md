@@ -538,7 +538,7 @@ https://twinstar.pro/gemini/webhook
 阶段一阶梯 / 早保本 / TP 路径底线 **只用锁定 `initialAtr`，不含呼吸系数**。
 
 ```
-早保本: 浮盈 ≥ early_be×ATR → 止损锁到 entry±1 tick   # ETH 0.5 / XAU 0.3
+早保本: 浮盈 ≥ early_be×ATR → 止损锁到 entry±1 tick   # ETH 0.5 / XAU 0.5
 step_count = floor(|price − entry| / (step_trigger × initialAtr))
 step_stop  = initialStop ± step_count × step_advance × initialAtr
 candidate  = max/min(currentStop, step_stop, early_be)   # 只朝盈利
