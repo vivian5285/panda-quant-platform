@@ -1,5 +1,6 @@
 """Unit tests: daily loss circuit + atr webhook hard reject helpers."""
 
+import app.core.daily_loss_circuit as dlc
 from app.core.daily_loss_circuit import (
     DAILY_LOSS_LIMIT_PCT,
     check_allows_open,
@@ -10,6 +11,12 @@ from app.core.tv_entry_sizing import compute_tv_entry_qty
 
 
 def setup_function():
+    reset_for_tests()
+    dlc.DAILY_LOSS_CIRCUIT_ENABLED = True
+
+
+def teardown_function():
+    dlc.DAILY_LOSS_CIRCUIT_ENABLED = False
     reset_for_tests()
 
 
@@ -33,6 +40,14 @@ def test_daily_loss_isolated_per_symbol():
     ok_xau, _ = check_allows_open(user_id=6, symbol="XAUUSDT", equity=100.0)
     assert not ok_eth
     assert ok_xau
+
+
+def test_daily_loss_disabled_never_trips():
+    dlc.DAILY_LOSS_CIRCUIT_ENABLED = False
+    record_close_pnl(user_id=6, symbol="ETHUSDT", pnl_usd=-50.0, equity=100.0)
+    ok, meta = check_allows_open(user_id=6, symbol="ETHUSDT", equity=100.0)
+    assert ok
+    assert meta.get("bypassed") is True
 
 
 def test_min_notional_pre_reject_eth():

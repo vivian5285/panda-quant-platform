@@ -1,4 +1,9 @@
-"""Per-symbol daily loss circuit — pause opens after −5.5% of equity (UTC day)."""
+"""Per-symbol daily loss circuit — pause opens after −5.5% of equity (UTC day).
+
+Disabled by default: live incidents showed false trips (stale/mis-attributed PnL
+and tiny equity_ref) blocking real TV opens when the account was not at −5.5%.
+Re-enable only after PnL attribution is audited end-to-end.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +17,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Kill-switch: must stay False until close PnL bookkeeping is proven correct.
+DAILY_LOSS_CIRCUIT_ENABLED = False
 DAILY_LOSS_LIMIT_PCT = 0.055  # 5.5% of equity
 _lock = threading.RLock()
 
@@ -87,7 +94,11 @@ def check_allows_open(
         "loss_pct": round(loss_pct, 6),
         "limit_pct": DAILY_LOSS_LIMIT_PCT,
         "symbol": symbol,
+        "enabled": bool(DAILY_LOSS_CIRCUIT_ENABLED),
     }
+    if not DAILY_LOSS_CIRCUIT_ENABLED:
+        meta["bypassed"] = True
+        return True, meta
     if ref > 0 and pnl < 0 and (-pnl / ref) + 1e-12 >= DAILY_LOSS_LIMIT_PCT:
         meta["error"] = "daily_loss_circuit"
         logger.warning(
@@ -96,6 +107,28 @@ def check_allows_open(
         )
         return False, meta
     return True, meta
+
+
+def clear_user_symbol(user_id: int | str, symbol: str | None = None) -> list[str]:
+    """Delete stored daily-loss files (ops: unblock opens after false trip)."""
+    root = Path(__file__).resolve().parents[2] / "data" / "daily_loss"
+    removed: list[str] = []
+    if not root.exists():
+        return removed
+    with _lock:
+        if symbol:
+            path = _store_path(user_id, symbol)
+            if path.exists():
+                path.unlink()
+                removed.append(str(path.name))
+        else:
+            for p in root.glob(f"u{int(user_id)}_*.json"):
+                try:
+                    p.unlink()
+                    removed.append(p.name)
+                except Exception:
+                    pass
+    return removed
 
 
 def reset_for_tests() -> None:
