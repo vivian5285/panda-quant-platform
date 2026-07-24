@@ -1273,15 +1273,45 @@ class BinanceSmartDefenseMixin:
         ) else None
         if use_qty is not None and use_qty <= 0:
             use_qty = None
+        _radar_tag = None
+        _radar_reg = None
+        if hasattr(self, "_pending_orders"):
+            try:
+                from app.core.order_place_guard import STOP_TAG_TTL_SEC, radar_tag
+
+                _radar_reg = self._pending_orders()
+                _radar_tag = radar_tag(getattr(self, "user_id", 0), symbol)
+                ok_acq, acq_reason = _radar_reg.try_acquire(
+                    _radar_tag,
+                    kind="radar",
+                    symbol=symbol,
+                    ttl_sec=STOP_TAG_TTL_SEC,
+                    meta={"sl": float(sl)},
+                )
+                if not ok_acq:
+                    self._def_log(
+                        f"✗ 雷达拒挂·本地标签占用 ({acq_reason})",
+                        logging.WARNING,
+                    )
+                    return False
+            except Exception as tag_exc:
+                logger.warning("radar local-tag: %s", tag_exc)
         res = self.client.place_stop_market_order(
             close_side, sl, symbol, quantity=use_qty,
         )
         if not res:
+            # Keep tag on None to block storm
             self._def_log(
-                f"⚠️ 雷达止损 STOP 下单失败 @ {sl:.2f}",
+                f"⚠️ 雷达止损 STOP 下单失败 @ {sl:.2f}（本地标签已占用防风暴）",
                 logging.WARNING,
             )
             return False
+        if _radar_reg and _radar_tag:
+            try:
+                _radar_reg.mark_oid(_radar_tag, res.get("algoId") or res.get("orderId"))
+                _radar_reg.release(_radar_tag, reason="placed_ok")
+            except Exception:
+                pass
         # Remember radar oid so hard qty-resize never cancels it by price proximity
         try:
             rid = res.get("algoId") or res.get("orderId")

@@ -3188,12 +3188,46 @@ class AdverseRadarMixin:
             self._last_hard_sl_order_style = "skipped_already_live"
             return True
 
+        # Local pending-tag — refuse second hard place even if book falsely empty
+        _hard_tag = None
+        _hard_reg = None
+        if hasattr(self, "_pending_orders"):
+            try:
+                from app.core.order_place_guard import STOP_TAG_TTL_SEC, hard_tag
+
+                _hard_reg = self._pending_orders()
+                _hard_tag = hard_tag(getattr(self, "user_id", 0), symbol)
+                ok_acq, acq_reason = _hard_reg.try_acquire(
+                    _hard_tag,
+                    kind="hard",
+                    symbol=symbol,
+                    ttl_sec=STOP_TAG_TTL_SEC,
+                    meta={"stop_price": float(stop_price or 0)},
+                )
+                if not ok_acq:
+                    logger.warning(
+                        "[User %s] hard place refused local_tag=%s",
+                        getattr(self, "user_id", "?"), acq_reason,
+                    )
+                    self._last_hard_sl_order_style = f"local_tag_refuse:{acq_reason}"
+                    return False
+            except Exception as tag_exc:
+                logger.warning("hard local-tag gate: %s", tag_exc)
+
         close_side = self._adverse_close_side()
+
+        def _release_hard_tag(reason: str) -> None:
+            if _hard_reg and _hard_tag:
+                try:
+                    _hard_reg.release(_hard_tag, reason=reason)
+                except Exception:
+                    pass
 
         if getattr(self, "exchange_id", "") == "deepcoin":
             pos_side = "long" if self.current_side == "LONG" else "short"
             sz = int(self._safe_qty(qty))
             if sz <= 0:
+                _release_hard_tag("qty0")
                 return False
             trigger_px = round_price(stop_price)
             order = None
@@ -3220,7 +3254,9 @@ class AdverseRadarMixin:
                 oid = order.get("ordId") or order.get("algoId") or order.get("orderId")
                 if oid is not None and hasattr(self, "_remember_defense_order_id"):
                     self._remember_defense_order_id("hard", oid)
+                _release_hard_tag("placed_ok")
                 return True
+            _release_hard_tag("place_fail")
             return False
 
         limit_px = self._hard_sl_limit_price(stop_price)
@@ -3248,7 +3284,11 @@ class AdverseRadarMixin:
             if order:
                 self._last_hard_sl_order_style = "stop_market_qty"
                 _track_algo(order)
+                _release_hard_tag("placed_ok")
                 return True
+            # None/timeout — KEEP local tag to block storm
+            self._last_hard_sl_order_style = "place_none_tag_held"
+            return False
 
         # Fallback: qty Stop-Limit（closePosition 已禁用）
         if hasattr(client, "place_stop_limit_order") and qty_f > 0:
@@ -3265,6 +3305,7 @@ class AdverseRadarMixin:
                     qty_f,
                     float(stop_price or 0),
                 )
+                _release_hard_tag("placed_ok")
                 return True
 
         if hasattr(client, "place_stop_market_order"):
@@ -3280,7 +3321,9 @@ class AdverseRadarMixin:
                     getattr(self, "user_id", "?"),
                     float(stop_price or 0),
                 )
+                _release_hard_tag("placed_ok")
                 return True
+        _release_hard_tag("place_fail")
         return False
 
     def _is_adverse_stop_order(self, o: dict, tier_prices: set[float]) -> bool:

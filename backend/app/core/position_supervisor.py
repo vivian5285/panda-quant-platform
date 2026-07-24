@@ -2629,10 +2629,56 @@ class PositionSupervisor(
                     "error": "tp_book_saturated_refuse",
                     "attempt": attempt,
                 }
-            order = self.client.place_limit_order(
-                side, qty, price, self.symbol, reduce_only=True
-            )
+            # Local pending-tag gate — even if book falsely empty, refuse second place
+            _tp_tag = None
+            _reg = None
+            if hasattr(self, "_pending_orders"):
+                try:
+                    from app.core.order_place_guard import (
+                        TP_TAG_TTL_SEC,
+                        make_client_order_id,
+                        tp_tag,
+                    )
+                    _reg = self._pending_orders()
+                    _tp_tag = tp_tag(self.user_id, self.symbol, label, float(price))
+                    ok_acq, acq_reason = _reg.try_acquire(
+                        _tp_tag,
+                        kind="tp",
+                        symbol=self.symbol,
+                        ttl_sec=TP_TAG_TTL_SEC,
+                        meta={"label": label, "price": float(price)},
+                    )
+                    if not ok_acq:
+                        return {
+                            "ok": False,
+                            "label": label,
+                            "qty": round_quantity(qty),
+                            "price": round_price(price),
+                            "error": f"local_tag_refuse:{acq_reason}",
+                            "attempt": attempt,
+                        }
+                except Exception as tag_exc:
+                    logger.warning("tp local-tag gate error: %s", tag_exc)
+
+            _cid = None
+            try:
+                from app.core.order_place_guard import make_client_order_id
+                _cid = make_client_order_id("tp", self.user_id, label, attempt)
+            except Exception:
+                _cid = None
+            try:
+                order = self.client.place_limit_order(
+                    side, qty, price, self.symbol, reduce_only=True,
+                    client_order_id=_cid,
+                )
+            except TypeError:
+                order = self.client.place_limit_order(
+                    side, qty, price, self.symbol, reduce_only=True
+                )
             if order:
+                if _reg and _tp_tag:
+                    _reg.mark_oid(_tp_tag, order.get("orderId"))
+                    _reg.release(_tp_tag, reason="placed_ok")
                 return {
                     "ok": True,
                     "label": label,
@@ -2641,7 +2687,7 @@ class PositionSupervisor(
                     "price": round_price(price),
                     "attempt": attempt,
                 }
-            # Timeout / None: re-check book before retry (order may have landed)
+            # Timeout / None: keep tag briefly; re-check book before retry
             time.sleep(0.35)
             if hasattr(self.client, "_invalidate_book_cache"):
                 try:
@@ -2650,16 +2696,9 @@ class PositionSupervisor(
                     pass
             if hasattr(self, "_tp_limit_exists_near"):
                 exists = self._tp_limit_exists_near(price)
-                if exists is None:
-                    return {
-                        "ok": False,
-                        "label": label,
-                        "qty": round_quantity(qty),
-                        "price": round_price(price),
-                        "error": "tp_book_unreadable_after_none",
-                        "attempt": attempt,
-                    }
                 if exists is True:
+                    if _reg and _tp_tag:
+                        _reg.release(_tp_tag, reason="found_on_book")
                     return {
                         "ok": True,
                         "label": label,
@@ -2667,8 +2706,21 @@ class PositionSupervisor(
                         "qty": round_quantity(qty),
                         "price": round_price(price),
                         "attempt": attempt,
-                        "skipped": "accepted_after_none",
+                        "skipped": "already_on_book_after_none",
                     }
+                if exists is None:
+                    # Unreadable — keep tag to block storm, refuse more places
+                    return {
+                        "ok": False,
+                        "label": label,
+                        "qty": round_quantity(qty),
+                        "price": round_price(price),
+                        "error": "tp_book_unreadable_after_none",
+                        "attempt": attempt,
+                        "local_tag_held": True,
+                    }
+            if _reg and _tp_tag:
+                _reg.release(_tp_tag, reason="retry_next")
             last_err = f"{label} attempt {attempt}/{TP_RETRY_MAX} failed"
             logger.warning(f"[User {self.user_id}] {last_err} qty={qty} price={price}")
             if attempt < TP_RETRY_MAX:
@@ -4975,7 +5027,7 @@ class PositionSupervisor(
 
         if closed_successfully and had_position:
             self._trigger_settlement_on_flat()
-            # Smart re-entry: arm limit reopen BEFORE wiping book (needs watched_*)
+            # Smart re-entry: PLAN only (snapshot qty/side/TV) — start AFTER purge
             try:
                 ca_u = str(close_action or "").upper()
                 trig = str(close_trigger or "").lower()
@@ -5010,6 +5062,7 @@ class PositionSupervisor(
                         close_track=track,
                         close_px=float(exit_price or self.last_close_px or 0),
                         close_action=close_action,
+                        defer=True,
                     )
             except Exception as re_exc:
                 logger.warning(
@@ -5065,6 +5118,12 @@ class PositionSupervisor(
             self.best_price = 0.0
             self.current_trade_id = None
             self.trade_opened_at = None
+        # Clear local place-tags (except deferred reentry plan already snapshotted)
+        if hasattr(self, "_pending_orders"):
+            try:
+                self._pending_orders().clear_all(reason="flat_reset")
+            except Exception:
+                pass
         self._save_state()
         self._purge_defense_orders_on_flat("flat_reset", notify=True)
         if closed_successfully:
@@ -5073,6 +5132,14 @@ class PositionSupervisor(
                 context=str(close_action or close_trigger or "close"),
                 notify_ok=False,
             )
+        # AFTER purge: commit deferred smart reentry (empty book → limit)
+        if closed_successfully and had_position and hasattr(self, "_commit_deferred_reentry"):
+            try:
+                self._commit_deferred_reentry()
+            except Exception as re_exc:
+                logger.warning(
+                    "[User %s] deferred reentry commit failed: %s", self.user_id, re_exc,
+                )
         return {"status": "ok" if closed_successfully else "CLOSE_FAIL"}
 
     def _trigger_settlement_on_flat(self) -> None:

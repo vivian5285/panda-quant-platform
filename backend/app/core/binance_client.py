@@ -552,6 +552,7 @@ class BinanceClient:
         symbol=None,
         reduce_only=True,
         time_in_force: str = "GTC",
+        client_order_id: str | None = None,
     ):
         symbol = self._sym(symbol)
         can = self._can_sym()
@@ -577,10 +578,14 @@ class BinanceClient:
             }
             if reduce_only:
                 params["reduceOnly"] = "true"
+            if client_order_id:
+                cid = str(client_order_id).strip()[:36]
+                if cid:
+                    params["newClientOrderId"] = cid
             order = self.client.futures_create_order(**params)
             logger.info(
                 f"[User {self.user_id}] limit {side} {qty_str} @ {price_str} {symbol} "
-                f"tif={tif} reduce={reduce_only}"
+                f"tif={tif} reduce={reduce_only} cid={params.get('newClientOrderId')}"
             )
             return order
         except Exception as e:

@@ -6,25 +6,51 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-07-23 · 硬止损缓冲垫 + 动态雷达启动 + 考核收紧）**  
-> 凡与本文冲突的旧描述（含「硬止损=|entry−TV.SL|×1.2 无地板/无滑点」「雷达首动=固定0.75×ATR」「XAU 图表=1小时」「90m 合成 ATR」「离散呼吸档位」「先撤硬止损再挂雷达」「查不到 TP 就盲重试加挂」）**一律作废**。  
-> 权威指令：桌面《Gemini硬止损修复与雷达启动阈值合并指令.md》  
+> **文档同步（2026-07-25 · 智能再入场闭环 + 本地挂单标签防风暴）**  
+> 凡与本文冲突的旧描述（含「雷达扫出=失败离场」「查不到单就当没挂盲补」「硬止损=TV原价」）**一律作废**。  
+> 权威：TV 窗口内仅硬止损可主动认输；雷达 BE/微赚扫出 → 清场 → 双保险限价再入 → fill±(缓冲+滑点)硬止损+TP12+雷达。  
 > 部署：`docs/VPS_DEPLOY.md` · 呼吸：`docs/CONTINUOUS_BREATH_FINAL_SPEC.md` · 速查：`backend/data/_readme_top.md`
 
 ### 当前实盘一句话
 
-**VPS = 三层防线永久共存（硬止损永冻 + 独立雷达止损 + TP1/TP2）+ 本金×20%×5 算仓 + 开仓前/平仓后净场 + 同 symbol 15s 开平铁律 + ETH/XAU 隔离 + 限价/止损盘口幂等硬帽。**  
+**VPS = 三层防线永久共存（硬止损永冻 + 独立雷达止损 + TP1/TP2）+ 智能再入场波段滚动 + 本金×20%×5 算仓 + 开仓前/平仓后净场 + 本地挂单标签幂等 + ETH/XAU 隔离。**  
 硬止损与雷达止损**并行挂单、互不升级替换**；谁先触发谁执行，仓位归零后撤销其余挂单。  
-**「Cursor 说完成了」不是终点**——必须以交易所空仓零挂单 + 三方 commit hash 肉眼一致 + 原始日志/订单 JSON 为准。
+**两次 TV 之间只有三条路**：①走到 TP 止盈 ②雷达 BE/微赚扫出→更优价限价再入→再冲击 TP ③硬止损触发→坚决离场不重入。没有第四种「主动认输」。  
+**「Cursor 说完成了」不是终点**——必须以交易所空仓零挂单 + 三方 commit hash 肉眼一致 + 原始日志/订单 JSON / 钉钉核查为准。
 
 ### 生产代码锚点
 
 | 项 | 值 |
 |----|-----|
-| 三方 commit | 以 `git rev-parse --short HEAD` / GitHub `main` / VPS 三方**肉眼同数字**为准（本轮含防重复挂单硬闸） |
+| 三方 commit | 以 `git rev-parse --short HEAD` / GitHub `main` / VPS 三方**肉眼同数字**为准 |
 | VPS 路径 | `/home/panda/panda-quant-platform` |
 | Webhook | `https://twinstar.pro/gemini/webhook` → `:6010` |
 | 交易对 | **ETH + XAU**（`TRADING_SYMBOLS=ETHUSDT,XAUUSDT`） |
+| 再入场开关 | `SMART_REENTRY_ETH_ENABLED` / `SMART_REENTRY_XAU_ENABLED`（默认均 True） |
+
+### 智能再入场闭环（2026-07-25 最终版）
+
+**理念**：TV 方向未变期间，VPS 不主动认输。雷达扫出不是失败，而是以更优价格再上车的机会；硬止损才是方向被证伪。
+
+| 步骤 | 规则 |
+|------|------|
+| ① 归零清场 | 仓位=0 后：撤销全部限价/条件单，确认盘口空、持仓零（最多 3 轮）。失败 → 钉钉 critical，**拒挂再入限价** |
+| ② 重入判断 | 仅雷达轨 + 平仓价在保本~微赚区（ETH 0.5×ATR / XAU 0.3×ATR）。硬止损/亏损 → 永不重入 |
+| ③ 双保险价 | 多 `min(5m低+tick, TV×0.997)`；空 `max(5m高−tick, TV×1.003)`；不优于 TV → 终止 |
+| ④ 挂限价 | **先查本地标签**；标签占用 → 绝对拒挂（即使交易所返回空）。`newClientOrderId` 幂等。TTL 5min，超时撤旧标签再挂 |
+| ⑤ 成交保护 | fill 为原点：硬止损=`fill±(max(\|TV.e−TV.SL\|×1.2, 1.5×ATR×1.05)+\|fill−TV.e\|×2)`（偏离 TV 越多滑点垫越大）+ TP1/TP2 + 雷达候命。钉钉 `SMART_REENTRY_PROTECTED` |
+| ⑥ 档位递进 | 1.0→5.0：arm 50/65/80/90/95；每档独立 early_be / step_* / coef_min~max。满 5.0 再扫出 → 终止 |
+| ⑦ 新 TV | 先清场归零，重置档位/标签/计数器，再开新方向 |
+
+**红色硬闸（击穿实盘级）**  
+| 闸 | 规则 |
+|----|------|
+| 本地标签 | `order_place_guard.PendingOrderRegistry`：reentry/tp/hard/radar 任一 in-flight → **禁止再挂**，盘口空也不例外 |
+| 查单失败 | open-orders / pos 查询异常或 `None` → **fail-closed 拒挂**（禁止 `except: pass` 后盲挂） |
+| 单周期单挂 | 同一品种同时只允许一笔再入场开仓限价；超时先 `release` 旧标签再新标签 |
+| 延迟启动 | `_close_all` 先 **plan** 快照 → purge → **commit** 启动 worker（避免 cancel_all 误杀刚挂的再入限价） |
+
+模块：`backend/app/core/smart_reentry.py` · `smart_reentry_mixin.py` · `order_place_guard.py`
 
 ### 事故纪要 · 重复限价止盈 / 幽灵单（2026-07-23）
 
@@ -38,12 +64,14 @@
 1. `_place_limit_with_retry` / 缺失 TP 补挂：超时返回 `None` 后**盲重试**，未先验盘口是否已成交受理 → 风暴。  
 2. `current_side` 为空时 `else → LONG → BUY`：多仓错挂 BUY 只减仓。  
 3. 平仓净场 mop 轮次不足 / 限流下 leftover≠0 仍只告警 → 幽灵单。  
-4. 雷达 `_ensure_radar_sl`：cancel→place 窗口无「盘口已有≥2 笔 STOP」硬帽。
+4. 雷达 `_ensure_radar_sl`：cancel→place 窗口无「盘口已有≥2 笔 STOP」硬帽。  
+5. **(2026-07-25)** 再入场路径曾对 `get_open_orders` 异常 `pass` 后继续挂 → 升级为本地标签 + fail-closed。
 
 **硬闸（必须永久保留）**  
 | 闸 | 规则 |
 |----|------|
 | 限价幂等 | 下单前/重试前：同价已有 reduce-only LIMIT → **视为成功，禁止再挂**；盘口不可读 → **拒挂**（不得当「没有」盲挂） |
+| **本地标签** | 品种+种类 in-flight 标签存在 → **绝对拒挂**（防查单失败风暴，最后一道） |
 | 限价硬帽 | 盘口 reduce-only LIMIT ≥ `max(期望档数, 3)` → **拒挂 + 同价去重** |
 | LIMIT≥6 熔断 | 盘口 ≥6 张 reduce-only LIMIT → **仅轻量同价去重（每价留 1），禁止再挂/核武盲补** |
 | 方向 | 平仓方向优先读交易所 `positionAmt`；未知方向 → **拒挂**（永不默认 LONG→BUY） |
