@@ -96,10 +96,17 @@ def symbol_tag(symbol: str | None = None) -> str:
     return profile_for_symbol(symbol).symbol_tag
 
 
-def trail_distance_multiplier(ratio: float, profile: BreathingProfile | None = None) -> float:
+def trail_distance_multiplier(
+    ratio: float,
+    profile: BreathingProfile | None = None,
+    *,
+    coef_min: float | None = None,
+    coef_max: float | None = None,
+) -> float:
     """Continuous linear interpolation — no discrete ladder jumps.
 
     ratio = smoothed(realtime_atr / initial_atr)
+    Optional ``coef_min``/``coef_max`` override profile bands (smart-reentry tiers).
     """
     p = profile or ETH_PROFILE
     try:
@@ -109,7 +116,8 @@ def trail_distance_multiplier(ratio: float, profile: BreathingProfile | None = N
     if r != r:  # NaN
         r = COLD_START_RATIO
     lo, hi = float(p.ratio_floor), float(p.ratio_ceiling)
-    mn, mx = float(p.coef_min), float(p.coef_max)
+    mn = float(coef_min if coef_min is not None else p.coef_min)
+    mx = float(coef_max if coef_max is not None else p.coef_max)
     if r <= lo:
         return mn
     if r >= hi:
@@ -227,17 +235,30 @@ def get_breathing_coefficient_for_profile(
     return trail_distance_multiplier(r, p)
 
 
-def resolve_coef(coef: float | None, profile: BreathingProfile | None = None) -> float:
+def resolve_coef(
+    coef: float | None,
+    profile: BreathingProfile | None = None,
+    *,
+    coef_min: float | None = None,
+    coef_max: float | None = None,
+) -> float:
     p = profile or ETH_PROFILE
+    mn = float(coef_min if coef_min is not None else p.coef_min)
+    mx = float(coef_max if coef_max is not None else p.coef_max)
+    if mx < mn:
+        mx = mn
     if coef is None:
-        return cold_start_multiplier(p)
+        mid = cold_start_multiplier(p)
+        return max(mn, min(mx, mid))
     try:
         c = float(coef)
     except (TypeError, ValueError):
-        return cold_start_multiplier(p)
+        mid = cold_start_multiplier(p)
+        return max(mn, min(mx, mid))
     if c <= 0:
-        return cold_start_multiplier(p)
-    return max(p.coef_min, min(p.coef_max, c))
+        mid = cold_start_multiplier(p)
+        return max(mn, min(mx, mid))
+    return max(mn, min(mx, c))
 
 
 def profile_as_dict(profile: BreathingProfile) -> dict[str, Any]:
@@ -257,6 +278,6 @@ def profile_as_dict(profile: BreathingProfile) -> dict[str, Any]:
         "chart_tf_min": profile.chart_tf_min,
         "stagnant_window_min": profile.stagnant_window_min,
         "stagnant_breath_samples": stagnant_breath_samples(profile),
-        "radar_arm": "TP1×50/65/80/95 progressive (+ step_trigger floor)",
+        "radar_arm": "TP1×50/65/80/90/95 progressive (+ step_trigger floor)",
         "trail_tighten": 1.0,  # removed — always 1.0 (tightness in min/max)
     }

@@ -372,6 +372,8 @@ def _tier_overrides(legacy: dict[str, Any], profile) -> dict[str, float | None]:
         "step_trigger_atr": _f("step_trigger_atr"),
         "early_breakeven_atr": _f("early_breakeven_atr"),
         "step_advance_atr": _f("step_advance_atr"),
+        "coef_min": _f("coef_min"),
+        "coef_max": _f("coef_max"),
     }
 
 
@@ -394,6 +396,8 @@ def calculate_stop_long(
     step_adv_atr = float(ov["step_advance_atr"] if ov["step_advance_atr"] is not None else p.step_advance_atr)
     step_trig = float(ov["step_trigger_atr"] if ov["step_trigger_atr"] is not None else p.step_trigger_atr)
     arm_pct = ov["arm_tp1_pct"]
+    cmin = ov["coef_min"]
+    cmax = ov["coef_max"]
 
     price = float(price or 0)
     entry_price = float(entry_price or 0)
@@ -401,7 +405,10 @@ def calculate_stop_long(
     initial_stop = float(initial_stop or 0)
     current_stop = float(current_stop or 0)
     highest_price = float(highest_price or entry_price or 0)
-    coef = resolve_coef(breathing_coefficient, p)
+    coef = resolve_coef(
+        breathing_coefficient, p,
+        coef_min=cmin, coef_max=cmax,
+    )
     tick = _price_tick(symbol)
     sr = float(smooth_ratio if smooth_ratio is not None else COLD_START_RATIO)
 
@@ -427,6 +434,8 @@ def calculate_stop_long(
     meta["step_trigger_atr"] = step_trig
     meta["early_breakeven_atr"] = early_be
     meta["step_advance_atr"] = step_adv_atr
+    meta["coef_min"] = float(cmin if cmin is not None else p.coef_min)
+    meta["coef_max"] = float(cmax if cmax is not None else p.coef_max)
     trail_dist = initial_atr * coef
 
     if not new_phase:
@@ -508,6 +517,8 @@ def calculate_stop_short(
     step_adv_atr = float(ov["step_advance_atr"] if ov["step_advance_atr"] is not None else p.step_advance_atr)
     step_trig = float(ov["step_trigger_atr"] if ov["step_trigger_atr"] is not None else p.step_trigger_atr)
     arm_pct = ov["arm_tp1_pct"]
+    cmin = ov["coef_min"]
+    cmax = ov["coef_max"]
 
     price = float(price or 0)
     entry_price = float(entry_price or 0)
@@ -515,7 +526,10 @@ def calculate_stop_short(
     initial_stop = float(initial_stop or 0)
     current_stop = float(current_stop or 0)
     lowest_price = float(lowest_price or entry_price or 0)
-    coef = resolve_coef(breathing_coefficient, p)
+    coef = resolve_coef(
+        breathing_coefficient, p,
+        coef_min=cmin, coef_max=cmax,
+    )
     tick = _price_tick(symbol)
     sr = float(smooth_ratio if smooth_ratio is not None else COLD_START_RATIO)
 
@@ -542,6 +556,8 @@ def calculate_stop_short(
     meta["step_trigger_atr"] = step_trig
     meta["early_breakeven_atr"] = early_be
     meta["step_advance_atr"] = step_adv_atr
+    meta["coef_min"] = float(cmin if cmin is not None else p.coef_min)
+    meta["coef_max"] = float(cmax if cmax is not None else p.coef_max)
     trail_dist = initial_atr * coef
 
     if not new_phase:
@@ -624,15 +640,28 @@ def apply_breathing_tick(
     step_trigger_atr: float | None = None,
     early_breakeven_atr: float | None = None,
     step_advance_atr: float | None = None,
+    coef_min: float | None = None,
+    coef_max: float | None = None,
 ) -> dict[str, Any]:
-    coef = resolve_breathing_coef(breathing_coefficient, symbol)
-    side_u = str(side or "").upper()
+    from app.core.breathing_profile import trail_distance_multiplier
+
+    p = profile_for_symbol(symbol)
     sr = float(smooth_ratio if smooth_ratio is not None else COLD_START_RATIO)
+    if coef_min is not None or coef_max is not None:
+        cmin = float(coef_min if coef_min is not None else p.coef_min)
+        cmax = float(coef_max if coef_max is not None else p.coef_max)
+        # Progressive tier: remap ATR ratio onto this attempt's trail band
+        coef = trail_distance_multiplier(sr, p, coef_min=cmin, coef_max=cmax)
+    else:
+        coef = resolve_breathing_coef(breathing_coefficient, symbol)
+    side_u = str(side or "").upper()
     tier_kw = {
         "arm_tp1_pct": arm_tp1_pct,
         "step_trigger_atr": step_trigger_atr,
         "early_breakeven_atr": early_breakeven_atr,
         "step_advance_atr": step_advance_atr,
+        "coef_min": coef_min,
+        "coef_max": coef_max,
     }
     if side_u == "LONG":
         new_stop, peak, phase, meta = calculate_stop_long(

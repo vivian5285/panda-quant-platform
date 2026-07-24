@@ -38,6 +38,9 @@ class SmartReentryMixin:
             "active_early_be_atr": float(getattr(self, "active_early_be_atr", 0) or 0),
             "active_step_trigger_atr": float(getattr(self, "active_step_trigger_atr", 0) or 0),
             "active_step_advance_atr": float(getattr(self, "active_step_advance_atr", 0) or 0),
+            "active_coef_min": float(getattr(self, "active_coef_min", 0) or 0),
+            "active_coef_max": float(getattr(self, "active_coef_max", 0) or 0),
+            "reentry_tier_label": getattr(self, "reentry_tier_label", None),
             "reentry_abort_reason": getattr(self, "reentry_abort_reason", None),
         }
 
@@ -65,6 +68,9 @@ class SmartReentryMixin:
         self.active_step_advance_atr = float(
             s.get("active_step_advance_atr") or tier.step_advance_atr
         )
+        self.active_coef_min = float(s.get("active_coef_min") or tier.coef_min)
+        self.active_coef_max = float(s.get("active_coef_max") or tier.coef_max)
+        self.reentry_tier_label = s.get("reentry_tier_label") or tier.tier_label
 
     def _apply_radar_tier(self, attempt: int) -> None:
         from app.core.smart_reentry import apply_tier_to_state
@@ -112,11 +118,15 @@ class SmartReentryMixin:
         st = float(getattr(self, "active_step_trigger_atr", 0) or 0)
         eb = float(getattr(self, "active_early_be_atr", 0) or 0)
         sa = float(getattr(self, "active_step_advance_atr", 0) or 0)
+        cmin = float(getattr(self, "active_coef_min", 0) or 0)
+        cmax = float(getattr(self, "active_coef_max", 0) or 0)
         return {
             "arm_tp1_pct": arm,
             "step_trigger_atr": st if st > 0 else None,
             "early_breakeven_atr": eb if eb > 0 else None,
             "step_advance_atr": sa if sa > 0 else None,
+            "coef_min": cmin if cmin > 0 else None,
+            "coef_max": cmax if cmax > 0 else None,
         }
 
     def _cancel_reentry_limit_order(self) -> None:
@@ -163,13 +173,17 @@ class SmartReentryMixin:
         from app.core.smart_reentry import (
             MAX_REENTRY,
             close_allows_reentry,
-            next_attempt_arm_pct,
+            smart_reentry_enabled_for,
         )
+
+        sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
+        if not smart_reentry_enabled_for(sym):
+            self.reentry_abort_reason = "disabled"
+            return False
 
         side = str(getattr(self, "current_side", None) or getattr(self, "reentry_tv_side", "") or "").upper()
         entry = float(getattr(self, "watched_entry", 0) or 0)
         atr = float(getattr(self, "initial_atr", 0) or getattr(self, "current_atr", 0) or 0)
-        sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
         self.last_close_track = str(close_track or "")
         self.last_close_px = float(close_px or 0)
 
@@ -196,19 +210,22 @@ class SmartReentryMixin:
 
         cur = int(getattr(self, "reentry_attempt", 0) or 0)
         if cur >= MAX_REENTRY:
-            self.reentry_abort_reason = "max_reentry"
+            self.reentry_abort_reason = "max_reentry_tier5"
             if hasattr(self, "_log"):
                 try:
-                    self._log("REENTRY_SKIP", "再入场跳过·已达最大次数", {"attempt": cur})
+                    self._log(
+                        "REENTRY_SKIP",
+                        "再入场跳过·已达5.0档位后再扫出",
+                        {"attempt": cur, "tier": getattr(self, "reentry_tier_label", None)},
+                    )
                 except Exception:
                     pass
             return False
 
         next_attempt = cur + 1
-        self._apply_radar_tier(next_attempt)
-        # Prefer ×1.3 growth from previous arm (capped) — matches scheme step 5
         prev_pct = float(getattr(self, "reentry_arm_tp1_pct", 0.5) or 0.5)
-        # tier already set arm from ladder; keep ladder as source of truth
+        self._apply_radar_tier(next_attempt)
+        # Ladder is source of truth (50/65/80/90/95); ×1.3 is documented growth shape
         self.reentry_tv_side = side
         if float(getattr(self, "reentry_tv_px", 0) or 0) <= 0:
             self.reentry_tv_px = float(getattr(self, "tv_price", 0) or entry or 0)
@@ -224,17 +241,20 @@ class SmartReentryMixin:
             try:
                 self._log(
                     "REENTRY_ARM",
-                    f"雷达平仓·启动限价再入场 attempt={next_attempt}",
+                    f"雷达平仓·启动限价再入场 tier={self.reentry_tier_label} attempt={next_attempt}",
                     {
                         **meta,
                         "attempt": next_attempt,
+                        "tier_label": self.reentry_tier_label,
                         "arm_tp1_pct": self.reentry_arm_tp1_pct,
+                        "prev_arm_tp1_pct": prev_pct,
                         "tier": {
                             "early_be": self.active_early_be_atr,
                             "step_trigger": self.active_step_trigger_atr,
                             "step_advance": self.active_step_advance_atr,
+                            "coef_min": self.active_coef_min,
+                            "coef_max": self.active_coef_max,
                         },
-                        "prev_arm_growth": next_attempt_arm_pct(prev_pct),
                     },
                 )
             except Exception:
@@ -245,8 +265,8 @@ class SmartReentryMixin:
                     "info",
                     "SMART_REENTRY_ARM",
                     "智能再入场·限价挂单",
-                    f"attempt={next_attempt} arm={self.reentry_arm_tp1_pct:.0%} "
-                    f"early_be={self.active_early_be_atr}",
+                    f"tier={self.reentry_tier_label} arm={self.reentry_arm_tp1_pct:.0%} "
+                    f"early_be={self.active_early_be_atr} coef={self.active_coef_min}~{self.active_coef_max}",
                     {"attempt": next_attempt, "close_px": close_px},
                 )
             except Exception:

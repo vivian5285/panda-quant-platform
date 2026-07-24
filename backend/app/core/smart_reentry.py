@@ -1,7 +1,8 @@
-"""Dual-symbol smart re-entry after radar stop — progressive arm + radar tiers.
+"""Dual-symbol smart re-entry — progressive radar tiers + dual-insurance limit price.
 
-ETH 90m / XAU 45m share the same arm TP1%% ladder; coefficient tables differ.
-Hard-stop / loss closes never re-enter. Limit re-entry improves on TV px by 0.3%%.
+Final plan 2026-07-25: 5 tiers (1.0→5.0), arm 50/65/80/90/95×TP1,
+LONG limit = min(5m_low+tick, TV×0.997), SHORT = max(5m_high−tick, TV×1.003).
+Hard-stop / loss closes never re-enter.
 """
 
 from __future__ import annotations
@@ -9,18 +10,19 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from app.core.breathing_profile import ETH_PROFILE, profile_for_symbol
+from app.core.breathing_profile import profile_for_symbol
 from app.core.symbol_registry import CANONICAL_ETH, CANONICAL_XAU, normalize_canonical_symbol
 
-ARM_TP1_PCTS: tuple[float, ...] = (0.50, 0.65, 0.80, 0.95)
+# Tier index 0..4 = labels 1.0 .. 5.0
+ARM_TP1_PCTS: tuple[float, ...] = (0.50, 0.65, 0.80, 0.90, 0.95)
 ARM_PCT_GROWTH = 1.3
 ARM_PCT_CAP = 0.95
-LIMIT_IMPROVE_PCT = 0.003  # fallback when klines unavailable
-MAX_REENTRY = 3  # re-entries after first open (attempts 1..3)
+LIMIT_IMPROVE_PCT = 0.003
+MAX_TIER_INDEX = 4  # inclusive — tier 5.0
+MAX_REENTRY = 4  # re-entries after first open (attempts 1..4 → tiers 2.0..5.0)
 LIMIT_TTL_SEC = 300
-MAX_UNFILLED_CYCLES = 5  # consecutive TTL cycles without fill → abort
+MAX_UNFILLED_CYCLES = 5
 MAX_DEV_FROM_TV_PCT = 0.01
-# Favorable close zone (entry → entry ± zone×ATR) for BE / micro-profit
 REENTRY_ZONE_ATR = {
     CANONICAL_ETH: 0.5,
     CANONICAL_XAU: 0.3,
@@ -29,30 +31,35 @@ REENTRY_ZONE_ATR = {
 
 @dataclass(frozen=True)
 class RadarTier:
-    """Radar coefficient tier for open attempt index (0=first, 1..3=reentry)."""
+    """Radar coefficient tier — attempt 0 = first open (label 1.0)."""
 
     attempt: int
     early_breakeven_atr: float
     step_trigger_atr: float
     step_advance_atr: float
     arm_tp1_pct: float
+    coef_min: float
+    coef_max: float
+    tier_label: str
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
-# attempt -> (early_be, step_trigger, step_advance)
-_ETH_TIERS: tuple[tuple[float, float, float], ...] = (
-    (0.50, 0.75, 0.40),
-    (0.65, 0.90, 0.45),
-    (0.80, 1.05, 0.50),
-    (1.00, 1.20, 0.55),
+# (early_be, step_trigger, step_advance, coef_min, coef_max)
+_ETH_TIERS: tuple[tuple[float, float, float, float, float], ...] = (
+    (0.50, 0.75, 0.40, 1.2, 2.5),
+    (0.65, 0.90, 0.46, 1.4, 2.8),
+    (0.85, 1.10, 0.52, 1.6, 3.0),
+    (1.05, 1.25, 0.58, 1.8, 3.2),
+    (1.30, 1.40, 0.64, 2.0, 3.5),
 )
-_XAU_TIERS: tuple[tuple[float, float, float], ...] = (
-    (0.65, 0.70, 0.45),
-    (0.80, 0.85, 0.50),
-    (1.00, 1.00, 0.55),
-    (1.20, 1.15, 0.60),
+_XAU_TIERS: tuple[tuple[float, float, float, float, float], ...] = (
+    (0.65, 0.70, 0.45, 1.2, 2.5),
+    (0.85, 0.85, 0.52, 1.4, 2.8),
+    (1.10, 1.00, 0.58, 1.6, 3.0),
+    (1.30, 1.15, 0.64, 1.8, 3.2),
+    (1.55, 1.30, 0.70, 2.0, 3.5),
 )
 
 
@@ -60,14 +67,26 @@ def _canon(symbol: str | None) -> str:
     return normalize_canonical_symbol(symbol) or CANONICAL_ETH
 
 
+def smart_reentry_enabled_for(symbol: str | None) -> bool:
+    """Per-symbol kill switch (both ready; config can disable one)."""
+    try:
+        from app.config import get_settings
+
+        s = get_settings()
+        can = _canon(symbol)
+        if can == CANONICAL_XAU:
+            return bool(getattr(s, "SMART_REENTRY_XAU_ENABLED", True))
+        return bool(getattr(s, "SMART_REENTRY_ETH_ENABLED", True))
+    except Exception:
+        return True
+
+
 def arm_tp1_pct_for_attempt(attempt: int) -> float:
-    """Fixed ladder 50/65/80/95; clamp attempt into range."""
     idx = max(0, min(int(attempt), len(ARM_TP1_PCTS) - 1))
     return float(ARM_TP1_PCTS[idx])
 
 
 def next_attempt_arm_pct(prev_pct: float) -> float:
-    """×1.3 growth capped at 0.95×TP1 (scheme step 5)."""
     try:
         p = float(prev_pct)
     except (TypeError, ValueError):
@@ -81,13 +100,16 @@ def tier_for_attempt(attempt: int, symbol: str | None = None) -> RadarTier:
     can = _canon(symbol)
     table = _XAU_TIERS if can == CANONICAL_XAU else _ETH_TIERS
     idx = max(0, min(int(attempt), len(table) - 1))
-    early, trigger, advance = table[idx]
+    early, trigger, advance, cmin, cmax = table[idx]
     return RadarTier(
         attempt=idx,
         early_breakeven_atr=float(early),
         step_trigger_atr=float(trigger),
         step_advance_atr=float(advance),
         arm_tp1_pct=arm_tp1_pct_for_attempt(idx),
+        coef_min=float(cmin),
+        coef_max=float(cmax),
+        tier_label=f"{1 + idx}.0",
     )
 
 
@@ -112,13 +134,11 @@ def arm_distance(
     tier = tier_for_attempt(attempt, symbol)
     pct = float(arm_tp1_pct if arm_tp1_pct is not None else tier.arm_tp1_pct)
     trig = float(step_trigger_atr if step_trigger_atr is not None else tier.step_trigger_atr)
-    tp1_arm = float(p.tp1_atr) * a * pct
-    trigger_arm = trig * a
-    return max(tp1_arm, trigger_arm)
+    return max(float(p.tp1_atr) * a * pct, trig * a)
 
 
 def limit_reentry_price(side: str, tv_px: float) -> float:
-    """Fallback only: LONG TV×0.997 / SHORT TV×1.003."""
+    """TV×0.997 LONG / TV×1.003 SHORT — dual-insurance candidate B."""
     px = float(tv_px or 0)
     if px <= 0:
         return 0.0
@@ -142,7 +162,6 @@ def _price_tick(symbol: str | None) -> float:
 
 
 def _kline_high_low(rows: list | None) -> tuple[float, float]:
-    """Binance kline row: [ot, o, h, l, c, ...]. Use last closed-ish bar."""
     if not rows:
         return 0.0, 0.0
     row = rows[-1]
@@ -157,7 +176,6 @@ def _kline_high_low(rows: list | None) -> tuple[float, float]:
 
 
 def reentry_price_better_than_tv(side: str, limit_px: float, tv_px: float) -> bool:
-    """LONG must be < TV; SHORT must be > TV."""
     lim = float(limit_px or 0)
     tv = float(tv_px or 0)
     if lim <= 0 or tv <= 0:
@@ -178,49 +196,59 @@ def compute_optimal_reentry_price(
     klines_5m: list | None = None,
     klines_3m: list | None = None,
 ) -> tuple[float, dict[str, Any]]:
-    """Ultimate plan: LONG = 5m low + 1 tick; SHORT = 5m high − 1 tick.
-
-    Fallback 3m, then TV×0.997/1.003. Returns (price, meta); price=0 if not better than TV.
-    """
+    """Dual-insurance: LONG min(kline_low+tick, TV×0.997); SHORT max(kline_high−tick, TV×1.003)."""
     side_u = str(side or "").upper()
     tv = float(tv_px or 0)
     tick = _price_tick(symbol)
-    meta: dict[str, Any] = {
-        "side": side_u,
-        "tv_px": tv,
-        "tick": tick,
-        "source": None,
-    }
+    meta: dict[str, Any] = {"side": side_u, "tv_px": tv, "tick": tick}
     if side_u not in ("LONG", "SHORT") or tv <= 0:
         meta["reason"] = "bad_inputs"
         return 0.0, meta
 
+    tv_cand = limit_reentry_price(side_u, tv)
+    meta["tv_pct_candidate"] = tv_cand
+
     hi5, lo5 = _kline_high_low(klines_5m)
     hi3, lo3 = _kline_high_low(klines_3m)
-    candidate = 0.0
+    kline_cand = 0.0
     if hi5 > 0 and lo5 > 0:
-        candidate = (lo5 + tick) if side_u == "LONG" else (hi5 - tick)
-        meta["source"] = "kline_5m"
+        kline_cand = (lo5 + tick) if side_u == "LONG" else (hi5 - tick)
+        meta["kline_source"] = "5m"
         meta["kline_high"] = hi5
         meta["kline_low"] = lo5
     elif hi3 > 0 and lo3 > 0:
-        candidate = (lo3 + tick) if side_u == "LONG" else (hi3 - tick)
-        meta["source"] = "kline_3m"
+        kline_cand = (lo3 + tick) if side_u == "LONG" else (hi3 - tick)
+        meta["kline_source"] = "3m"
         meta["kline_high"] = hi3
         meta["kline_low"] = lo3
     else:
-        candidate = limit_reentry_price(side_u, tv)
-        meta["source"] = "tv_pct_fallback"
+        meta["kline_source"] = None
+    meta["kline_candidate"] = kline_cand
 
-    if candidate <= 0:
+    # Dual-insurance pick
+    if kline_cand > 0 and tv_cand > 0:
+        if side_u == "LONG":
+            candidate = min(kline_cand, tv_cand)
+            meta["source"] = "dual_min"
+        else:
+            candidate = max(kline_cand, tv_cand)
+            meta["source"] = "dual_max"
+    elif kline_cand > 0:
+        candidate = kline_cand
+        meta["source"] = f"kline_{meta.get('kline_source')}"
+    elif tv_cand > 0:
+        candidate = tv_cand
+        meta["source"] = "tv_pct_only"
+    else:
         meta["reason"] = "no_candidate"
         return 0.0, meta
+
     if not reentry_price_better_than_tv(side_u, candidate, tv):
         meta["reason"] = "not_better_than_tv"
         meta["candidate"] = candidate
         return 0.0, meta
     meta["reason"] = "ok"
-    meta["limit_px"] = candidate
+    meta["limit_px"] = float(candidate)
     return float(candidate), meta
 
 
@@ -241,7 +269,11 @@ def close_allows_reentry(
     symbol: str | None,
     close_track: str,
 ) -> tuple[bool, dict[str, Any]]:
-    """Radar BE/micro-profit in zone only; hard/loss/unknown → reject."""
+    """Final flat BE/micro-profit in zone + radar track; hard/loss → reject.
+
+    Covers pure radar flat and residual-after-TP radar flat — only the final
+    exit price / track matter.
+    """
     meta: dict[str, Any] = {
         "side": str(side or "").upper(),
         "entry": float(entry or 0),
@@ -251,6 +283,10 @@ def close_allows_reentry(
         "close_track": str(close_track or "").lower(),
         "zone_atr": reentry_zone_atr(symbol),
     }
+    if not smart_reentry_enabled_for(symbol):
+        meta["reason"] = "disabled"
+        return False, meta
+
     track = meta["close_track"]
     if track == "hard":
         meta["reason"] = "hard_stop_no_reentry"
@@ -268,7 +304,6 @@ def close_allows_reentry(
         return False, meta
 
     zone = reentry_zone_atr(symbol) * atr_v
-    # Loss: exit worse than entry
     if side_u == "LONG" and exit_px < entry_px - 1e-12:
         meta["reason"] = "loss_no_reentry"
         return False, meta
@@ -276,7 +311,6 @@ def close_allows_reentry(
         meta["reason"] = "loss_no_reentry"
         return False, meta
 
-    # Zone: BE or micro-profit within entry..entry±zone
     if side_u == "LONG":
         lo, hi = entry_px, entry_px + zone
         in_zone = lo - 1e-9 <= exit_px <= hi + 1e-9
@@ -303,7 +337,6 @@ def classify_stop_track(
     side: str | None = None,
     near_pct: float = 0.0025,
 ) -> str:
-    """Return hard | radar | unknown from soft tags and fill proximity."""
     action = str(close_action or "").upper()
     trigger = str(close_trigger or "").lower()
     if "BREATH" in action or trigger in ("breathing_stop_hit", "radar_stop", "close_breath_stop"):
@@ -329,7 +362,6 @@ def classify_stop_track(
     if near_radar and not near_hard:
         return "radar"
     if near_hard and near_radar:
-        # Prefer hard if fill is further into adverse region than radar
         side_u = str(side or "").upper()
         if side_u == "LONG" and hard > 0 and radar > 0:
             return "hard" if fill <= hard + 1e-9 and hard <= radar else "radar"
@@ -340,7 +372,6 @@ def classify_stop_track(
 
 
 def default_reentry_state() -> dict[str, Any]:
-    """Fresh state after new TV clear / first open seed."""
     t0 = tier_for_attempt(0, CANONICAL_ETH)
     return {
         "reentry_attempt": 0,
@@ -355,6 +386,9 @@ def default_reentry_state() -> dict[str, Any]:
         "active_early_be_atr": float(t0.early_breakeven_atr),
         "active_step_trigger_atr": float(t0.step_trigger_atr),
         "active_step_advance_atr": float(t0.step_advance_atr),
+        "active_coef_min": float(t0.coef_min),
+        "active_coef_max": float(t0.coef_max),
+        "reentry_tier_label": t0.tier_label,
         "reentry_abort_reason": None,
     }
 
@@ -367,10 +401,12 @@ def apply_tier_to_state(state: dict[str, Any], attempt: int, symbol: str | None)
     out["active_early_be_atr"] = float(tier.early_breakeven_atr)
     out["active_step_trigger_atr"] = float(tier.step_trigger_atr)
     out["active_step_advance_atr"] = float(tier.step_advance_atr)
+    out["active_coef_min"] = float(tier.coef_min)
+    out["active_coef_max"] = float(tier.coef_max)
+    out["reentry_tier_label"] = tier.tier_label
     return out
 
 
 def reset_reentry_state(symbol: str | None = None) -> dict[str, Any]:
-    """Clear pending + reset to tier0 for symbol."""
     base = default_reentry_state()
     return apply_tier_to_state(base, 0, symbol)

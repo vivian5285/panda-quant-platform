@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     # Same-direction TV entry: skip re-open when |TV价−持仓价|/现价 below this % (regime unchanged)
     SAME_DIR_IGNORE_PRICE_DIFF_PCT: float = 0.20
 
+    # Smart re-entry (wave roll): both symbols code-ready; env can disable one for staged observe
+    SMART_REENTRY_ETH_ENABLED: bool = True
+    SMART_REENTRY_XAU_ENABLED: bool = True
+
     # DEPRECATED — live OPEN ignores REGIME_MARGIN_* (use TV risk_pct / qty_ratio / leverage)
     REGIME_MARGIN_1: float = 0.0
     REGIME_MARGIN_2: float = 0.0
