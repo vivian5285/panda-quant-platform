@@ -106,9 +106,11 @@ def _price_tick(symbol: str | None) -> float:
         return 0.01
 
 
-TEMP_TV_STOP_BUFFER = 1.2  # TV implied distance × 1.2 (floor component)
-HARD_VS_RADAR_FLOOR = 1.05  # hard base ≥ radar_initial (1.5×ATR) × 1.05
-HARD_SLIP_MULT = 2.0  # |fill − TV.entry| × 2 slippage pad
+TEMP_TV_STOP_BUFFER = 1.2  # default buffer_multiplier (overridable via Settings)
+# Deprecated — radar floor / slip no longer widen hard stop (2026-07-25 TV sync).
+HARD_VS_RADAR_FLOOR = 1.05  # retained for tests/compat imports only
+HARD_SLIP_MULT = 0.0  # slip pad removed; hard = |TV.e−SL| × buffer from fill
+HARD_STOP_MIN_TICKS = 5  # reject open if tv_stop_distance < N ticks
 
 
 def compute_initial_stop(
@@ -117,7 +119,7 @@ def compute_initial_stop(
     atr: float,
     symbol: str | None = None,
 ) -> float:
-    """Logical initial stop (no exchange buffer)."""
+    """Logical radar initial stop (no exchange buffer). Unrelated to hard stop."""
     p = profile_for_symbol(symbol)
     entry = float(entry or 0)
     atr = resolve_atr(atr)
@@ -130,6 +132,30 @@ def compute_initial_stop(
     return 0.0
 
 
+def hard_stop_buffer_mult(symbol: str | None = None) -> float:
+    """Configurable buffer_multiplier (ETH/XAU can diverge later)."""
+    try:
+        from app.config import get_settings
+        from app.core.symbol_registry import CANONICAL_XAU, normalize_canonical_symbol
+
+        s = get_settings()
+        can = normalize_canonical_symbol(symbol) or ""
+        if can == CANONICAL_XAU:
+            return float(getattr(s, "HARD_STOP_BUFFER_MULT_XAU", None) or getattr(s, "HARD_STOP_BUFFER_MULT", TEMP_TV_STOP_BUFFER) or TEMP_TV_STOP_BUFFER)
+        return float(getattr(s, "HARD_STOP_BUFFER_MULT_ETH", None) or getattr(s, "HARD_STOP_BUFFER_MULT", TEMP_TV_STOP_BUFFER) or TEMP_TV_STOP_BUFFER)
+    except Exception:
+        return float(TEMP_TV_STOP_BUFFER)
+
+
+def hard_stop_min_ticks(symbol: str | None = None) -> int:
+    try:
+        from app.config import get_settings
+
+        return int(getattr(get_settings(), "HARD_STOP_MIN_TICKS", HARD_STOP_MIN_TICKS) or HARD_STOP_MIN_TICKS)
+    except Exception:
+        return int(HARD_STOP_MIN_TICKS)
+
+
 def compute_hard_stop_distance(
     *,
     fill_entry: float,
@@ -137,42 +163,51 @@ def compute_hard_stop_distance(
     tv_entry: float | None = None,
     initial_atr: float | None = None,
     symbol: str | None = None,
-    slip_mult: float = HARD_SLIP_MULT,
+    slip_mult: float | None = None,
+    buffer_mult: float | None = None,
 ) -> dict[str, float]:
-    """Merged hard-stop distance (buffer pad + radar floor + slippage).
+    """Hard-stop distance from TV (2026-07-25).
 
-    base = max(|TV.entry − TV.SL| × 1.2, 1.5 × ATR × 1.05)
-    slip = |fill − TV.entry| × slip_mult
-    final = base + slip
-    Hang price uses **fill** ± final (not TV theoretical entry).
+    tv_stop_distance = |TV.price − TV.stop_loss|
+    actual = tv_stop_distance × buffer_multiplier
+    Hang = fill ± actual  (no ATR floor, no fill-slip pad).
+
+    ``initial_atr`` / ``slip_mult`` kept for call-site compat; ignored.
     """
     fill = float(fill_entry or 0)
     tv_sl = float(tv_stop_loss or 0)
     tv_e = float(tv_entry or 0) or fill
+    buf = float(buffer_mult if buffer_mult is not None else hard_stop_buffer_mult(symbol))
+    if buf <= 0:
+        buf = float(TEMP_TV_STOP_BUFFER)
     out = {
-        "tv_implied_dist": 0.0,
-        "radar_floor_dist": 0.0,
+        "tv_stop_distance": 0.0,
+        "tv_implied_dist": 0.0,  # alias = actual after buffer (compat)
+        "radar_floor_dist": 0.0,  # always 0 — floor removed
         "base_dist": 0.0,
         "slip_dist": 0.0,
         "final_dist": 0.0,
         "fill_entry": fill,
         "tv_entry": tv_e,
+        "buffer_mult": buf,
+        "min_ticks": float(hard_stop_min_ticks(symbol)),
+        "tick": float(_price_tick(symbol)),
+        "reject_reason": "",
     }
-    if fill <= 0 or tv_sl <= 0:
+    if fill <= 0 or tv_sl <= 0 or tv_e <= 0:
+        out["reject_reason"] = "missing_tv_stop_or_entry"
         return out
-    tv_implied = abs(tv_e - tv_sl) * float(TEMP_TV_STOP_BUFFER)
-    out["tv_implied_dist"] = tv_implied
-    radar_floor = 0.0
-    atr = float(initial_atr or 0)
-    if atr > 0:
-        p = profile_for_symbol(symbol)
-        radar_floor = float(p.initial_sl_atr) * atr * float(HARD_VS_RADAR_FLOOR)
-    out["radar_floor_dist"] = radar_floor
-    base = max(tv_implied, radar_floor)
-    out["base_dist"] = base
-    slip = abs(fill - tv_e) * float(slip_mult if slip_mult is not None else HARD_SLIP_MULT)
-    out["slip_dist"] = slip
-    out["final_dist"] = base + slip
+    raw = abs(tv_e - tv_sl)
+    out["tv_stop_distance"] = raw
+    tick = float(out["tick"] or 0.01)
+    min_ticks = int(out["min_ticks"] or HARD_STOP_MIN_TICKS)
+    if raw + 1e-12 < tick * max(1, min_ticks):
+        out["reject_reason"] = "tv_stop_distance_too_small"
+        return out
+    actual = raw * buf
+    out["tv_implied_dist"] = actual
+    out["base_dist"] = actual
+    out["final_dist"] = actual
     return out
 
 
@@ -184,13 +219,12 @@ def compute_temp_tv_stop(
     tv_entry: float | None = None,
     initial_atr: float | None = None,
     symbol: str | None = None,
-    slip_mult: float = HARD_SLIP_MULT,
+    slip_mult: float | None = None,
+    buffer_mult: float | None = None,
 ) -> float:
-    """Permanent hard stop from fill price.
+    """Permanent hard stop from fill: fill ± (|TV.e−SL| × buffer).
 
-    ``entry`` MUST be exchange fill. Optional ``tv_entry`` / ``initial_atr``
-    widen vs radar initial and pad slippage (see compute_hard_stop_distance).
-    Missing TV stop_loss → 0 (caller fail-closes).
+    Missing / tiny TV stop_loss → 0 (caller fail-closes). ATR ignored.
     """
     fill = float(entry or 0)
     side_u = str(side or "").upper()
@@ -203,6 +237,7 @@ def compute_temp_tv_stop(
         initial_atr=initial_atr,
         symbol=symbol,
         slip_mult=slip_mult,
+        buffer_mult=buffer_mult,
     )
     dist = float(meta.get("final_dist") or 0)
     if dist <= 0:
@@ -210,6 +245,29 @@ def compute_temp_tv_stop(
     if side_u == "LONG":
         return fill - dist
     return fill + dist
+
+
+def hard_stop_meta_for_logs(
+    *,
+    fill_entry: float,
+    tv_stop_loss: float,
+    tv_entry: float | None = None,
+    symbol: str | None = None,
+) -> dict[str, float | str]:
+    """Fields required by deploy spec §6 for open logs."""
+    meta = compute_hard_stop_distance(
+        fill_entry=fill_entry,
+        tv_stop_loss=tv_stop_loss,
+        tv_entry=tv_entry,
+        symbol=symbol,
+    )
+    return {
+        "tv_stop_loss": float(tv_stop_loss or 0),
+        "tv_stop_distance": float(meta.get("tv_stop_distance") or 0),
+        "actual_stop_distance": float(meta.get("final_dist") or 0),
+        "buffer_mult": float(meta.get("buffer_mult") or TEMP_TV_STOP_BUFFER),
+        "reject_reason": str(meta.get("reject_reason") or ""),
+    }
 
 
 def tv_raw_stop_distance(

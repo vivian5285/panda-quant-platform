@@ -1184,7 +1184,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return dedupe_orders_by_id(orders)
 
     def _compute_tp_slices(self, qty, exclude_levels=None):
-        """Fixed 30/30/40; TP3 placeable only in atr scenario 2."""
+        """Fixed 10/20/70; TP1/TP2/TP3 always placeable."""
         from app.core.open_atr_scenario import supervisor_placeable_levels
         from app.core.tp_regime_targets import pine_tp_ratios_frac
 
@@ -2820,14 +2820,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self.consumed_tp_levels = sorted(set(consumed))
         if hasattr(self, "_remaining_qty_pct_from_consumed"):
             self.remaining_qty_pct = self._remaining_qty_pct_from_consumed(self.consumed_tp_levels)
-        elif {1, 2, 3}.issubset(set(self.consumed_tp_levels)):
-            self.remaining_qty_pct = 0.0
-        elif {1, 2}.issubset(set(self.consumed_tp_levels)):
-            self.remaining_qty_pct = 0.4
-        elif 1 in self.consumed_tp_levels:
-            self.remaining_qty_pct = 0.7
         else:
-            self.remaining_qty_pct = 1.0
+            from app.core.tp_regime_targets import remaining_qty_pct_from_consumed
+            self.remaining_qty_pct = remaining_qty_pct_from_consumed(self.consumed_tp_levels)
         change = {1: "tp1_filled", 2: "tp2_filled", 3: "tp3_filled"}.get(lvl)
         live_qty = float(getattr(self, "watched_qty", 0) or 0)
         if change and hasattr(self, "_boost_radar_after_tp_fill"):
@@ -3331,11 +3326,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
     def _protect_and_monitor(self, qty, entry_price):
         """
-        开仓后：临时TV止损 → TP1/TP2 → VPS 1h ATR场景判定 → 精确止损（场景二再挂TP3）。
+        开仓后：硬止损(fill±TV距×buffer) → TP1/TP2/TP3(10/20/70) → VPS 1h ATR武装雷达。
         返回 {ok, aborted, defense, shield}。
         """
         self._reset_adverse_radar(keep_tv_sl=False)
-        self.tp3_limit_active = False
+        self.tp3_limit_active = True
         self.atr_scenario = "pending"
         tp_pxs = self.tv_tps
         self.best_price = entry_price
@@ -3445,11 +3440,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 self._last_protect_result = out
                 return out
 
-            if bool(getattr(self, "tp3_limit_active", False)):
+            if bool(getattr(self, "tp3_limit_active", True)):
                 result = self._smart_realign_defenses(
                     live_qty, entry,
                     dynamic_sl=None,
-                    reason="场景二·补挂TP3兜底",
+                    reason="确认TP1/TP2/TP3限价·10/20/70",
                 )
                 self._last_defense_result = result
                 matched, expected = result.get("matched", 0), result.get("expected", 0)

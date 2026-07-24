@@ -782,14 +782,9 @@ class PositionSupervisor(
             self.consumed_tp_levels = sorted(set(consumed))
         if hasattr(self, "_remaining_qty_pct_from_consumed"):
             self.remaining_qty_pct = self._remaining_qty_pct_from_consumed(self.consumed_tp_levels)
-        elif {1, 2, 3}.issubset(set(self.consumed_tp_levels)):
-            self.remaining_qty_pct = 0.0
-        elif {1, 2}.issubset(set(self.consumed_tp_levels)):
-            self.remaining_qty_pct = 0.4
-        elif 1 in self.consumed_tp_levels:
-            self.remaining_qty_pct = 0.7
         else:
-            self.remaining_qty_pct = 1.0
+            from app.core.tp_regime_targets import remaining_qty_pct_from_consumed
+            self.remaining_qty_pct = remaining_qty_pct_from_consumed(self.consumed_tp_levels)
         change = {1: "tp1_filled", 2: "tp2_filled", 3: "tp3_filled"}.get(lvl)
         live_qty = float(getattr(self, "watched_qty", 0) or 0)
         if change and hasattr(self, "_boost_radar_after_tp_fill"):
@@ -2049,12 +2044,12 @@ class PositionSupervisor(
     def _compute_tp_slices(
         self, qty: float, exclude_levels: set[int] | None = None
     ) -> list[tuple[int, float, float]]:
-        """TP1/TP2 always; TP3 only when atr scenario 2 (TV atr fallback)."""
+        """TP1/TP2/TP3 always at configured ratios (default 10/20/70)."""
         from app.core.open_atr_scenario import supervisor_placeable_levels
+        from app.core.tp_regime_targets import pine_tp_ratios_frac
 
         placeable = supervisor_placeable_levels(self)
         exclude = set(exclude_levels or set())
-        # Exclude non-placeable levels (TP3 off in scenario 1)
         for lv in (1, 2, 3):
             if lv not in placeable:
                 exclude.add(lv)
@@ -2062,7 +2057,7 @@ class PositionSupervisor(
         settings = dict(self.regime_settings)
         r = int(self.regime or 3)
         row = dict(settings.get(r) or settings.get(3) or {})
-        row["ratios"] = [0.3, 0.3, 0.4]
+        row["ratios"] = pine_tp_ratios_frac()
         settings[r] = row
         slices = compute_tp_slices(
             qty_f,
@@ -2402,26 +2397,34 @@ class PositionSupervisor(
             return
         alerted.add(lvl)
         if lvl == 1:
-            title = "TP1 止盈成交"
+            rem = float(getattr(self, "remaining_qty_pct", 0.9) or 0.9)
+            title = "TP1限价止盈"
             msg = (
-                f"TP1 止盈成交，剩余仓位 70%，当前止损 "
+                f"TP1限价止盈成交，剩余仓位 {rem:.0%}，当前止损 "
                 f"@{float(detail['current_sl'] or 0):.2f}"
             )
         elif lvl == 2:
-            title = "TP2 止盈成交"
+            rem = float(getattr(self, "remaining_qty_pct", 0.7) or 0.7)
+            title = "TP2限价止盈"
             msg = (
-                f"TP2 止盈成交，剩余仓位 40%，当前止损 "
+                f"TP2限价止盈成交，剩余仓位 {rem:.0%}，当前止损 "
                 f"@{float(detail['current_sl'] or 0):.2f}"
             )
         elif lvl == 3:
-            # TP3 limit not placed — residual managed by breathing phase-2
-            title = "止盈成交"
+            title = "TP3限价止盈"
             msg = (
-                f"{self.current_side} 成交价{curr_px or '—'} | "
-                f"{old_qty}→{new_qty} | 阶段二由呼吸止损接管"
+                f"TP3限价止盈成交 {self.current_side} {old_qty}→{new_qty} @ {curr_px or '—'} "
+                f"| 互斥撤销雷达止损"
             )
-            # Confirm flat → cancel residual orders + reset radar
-            if float(new_qty or 0) <= float(getattr(self, "min_order_qty", 0) or 0) + 1e-12:
+            detail["close_source"] = "TP3_LIMIT"
+            radar_cancel_ok = True
+            if hasattr(self, "_cancel_radar_stop_orders"):
+                try:
+                    self._cancel_radar_stop_orders()
+                except Exception:
+                    radar_cancel_ok = False
+            flat_now = float(new_qty or 0) <= float(getattr(self, "min_order_qty", 0) or 0) + 1e-12
+            if flat_now:
                 if hasattr(self, "_purge_defense_orders_on_flat"):
                     try:
                         self._purge_defense_orders_on_flat("tp3_filled", notify=False)
@@ -2433,6 +2436,40 @@ class PositionSupervisor(
                     except Exception:
                         pass
                 self.monitoring = False
+            if not radar_cancel_ok:
+                if hasattr(self, "_alert"):
+                    try:
+                        self._alert(
+                            "critical",
+                            "TP3_RADAR_RACE",
+                            "双腿几乎同时触发·强制核对持仓",
+                            f"TP3先成交但撤销雷达失败 | {self.current_side} {old_qty}→{new_qty}",
+                            {**detail, "radar_cancel_ok": False},
+                        )
+                    except Exception:
+                        pass
+                if hasattr(self, "_purge_defense_orders_on_flat"):
+                    try:
+                        self._purge_defense_orders_on_flat("tp3_radar_race", notify=False)
+                    except Exception:
+                        pass
+            elif hasattr(self, "_alert"):
+                try:
+                    self._alert(
+                        "info",
+                        "TP3_RADAR_MUTEX",
+                        "TP3先成交·已撤雷达",
+                        msg,
+                        detail,
+                    )
+                except Exception:
+                    pass
+            if hasattr(self, "_clear_defense_order_ids"):
+                try:
+                    self._clear_defense_order_ids("3")
+                except Exception:
+                    pass
+            self.tp3_limit_active = False
         else:
             title = f"止盈TP{level}成交（VPS监控）{note}"
             msg = f"{self.current_side} {old_qty}→{new_qty} @ {curr_px or '—'} | 已成交档 {detail['consumed_tp_levels']}"
@@ -3493,11 +3530,11 @@ class PositionSupervisor(
 
     def _protect_and_monitor(self, qty: float, entry_price: float) -> dict:
         """
-        开仓后：硬止损(fill+TV缓冲/雷达地板+滑点) → TP1/TP2 → VPS 1h ATR场景判定武装雷达 → 场景二再挂TP3。
+        开仓后：硬止损(fill±TV距×buffer) → TP1/TP2/TP3(10/20/70) → VPS 1h ATR武装雷达。
         返回 {ok, aborted, defense, shield}；硬止损挂失败则撤仓并 aborted=True（禁止裸奔）。
         """
         self._reset_adverse_radar(keep_tv_sl=False)
-        self.tp3_limit_active = False
+        self.tp3_limit_active = True
         self.atr_scenario = "pending"
         self.best_price = entry_price
         self.watched_qty = qty
@@ -3657,13 +3694,13 @@ class PositionSupervisor(
                 self._last_protect_result = out
                 return out
 
-            # 场景二：补挂 TP3
-            if bool(getattr(self, "tp3_limit_active", False)):
+            # 确认 TP1/TP2/TP3 均在（10/20/70；ATR 场景不再门禁 TP3）
+            if bool(getattr(self, "tp3_limit_active", True)):
                 result = self._smart_realign_defenses(
                     pos["size"],
                     pos["entry_price"],
                     dynamic_sl=None,
-                    reason="场景二·补挂TP3兜底",
+                    reason="确认TP1/TP2/TP3限价·10/20/70",
                 )
                 self._last_defense_result = result
 
@@ -4197,6 +4234,19 @@ class PositionSupervisor(
         self, trigger: str = "sentinel_zero", *, skip_eager_purge: bool = False,
     ) -> bool:
         """Confirm flat, attribute cause, book-close, and detect false-flat / sync issues."""
+        # If TP3 still tracked, treat flat as possible radar-first and mutex-cancel TP3
+        if (
+            not skip_eager_purge
+            and bool(getattr(self, "tp3_limit_active", False))
+            and hasattr(self, "_mutex_cancel_tp3_on_radar_exit")
+        ):
+            try:
+                self._mutex_cancel_tp3_on_radar_exit(
+                    close_source="EXCHANGE_FLAT",
+                    fill_px=float(getattr(self, "last_close_px", 0) or 0),
+                )
+            except Exception:
+                pass
         if not skip_eager_purge:
             self._purge_defense_orders_on_flat(trigger, notify=False)
 

@@ -1,10 +1,8 @@
-"""Open-time ATR scenario: VPS native 1h ATR preferred; TV atr + TP3 fallback.
+"""Open-time ATR scenario: VPS native 1h ATR preferred; TV atr fallback for radar.
 
-Scenario 1 (preferred): VPS 1h ATR ok → radar initial_atr from VPS; no TP3 limit.
-Scenario 2 (degrade): fetch fail → radar initial_atr=TV atr; hang TP3@TV price 40%;
-  breath ticks keep retrying; on success upgrade to scenario 1 and cancel TP3.
-
-Hard stop (TV stop_loss × 1.2) is permanent and never rewritten by ATR upgrade.
+2026-07-25: TP1/TP2/TP3 limits always hung (10/20/70). ATR scenario only selects
+radar ``initial_atr`` source — never cancels TP3, never rewrites hard stop.
+Hard stop = |TV.price−TV.stop_loss| × buffer from fill.
 """
 
 from __future__ import annotations
@@ -55,7 +53,7 @@ def resolve_open_atr(
     symbol: str | None = None,
     tv_atr: float = 0.0,
 ) -> dict[str, Any]:
-    """Decide open ATR source. Never blocks open when TV atr is valid."""
+    """Decide radar ATR source. TP3 limit always active."""
     atr_1h, ok = fetch_vps_1h_atr_fresh(client=client, symbol=symbol)
     tv = float(tv_atr or 0)
     if ok and atr_1h > 0:
@@ -64,7 +62,7 @@ def resolve_open_atr(
             "initial_atr": float(atr_1h),
             "atr_1h": float(atr_1h),
             "tv_atr": tv,
-            "tp3_limit_active": False,
+            "tp3_limit_active": True,
             "atr_source": "vps_1h",
         }
     return {
@@ -83,10 +81,7 @@ def apply_vps_atr_upgrade(
     *,
     live_qty: float = 0.0,
 ) -> dict[str, Any]:
-    """Scenario2→1: rewrite radar initial_atr, never retreat radar stop, cancel TP3.
-
-    Never mutates frozen hard stop (`_frozen_hard_stop_px` / `_tv_hard_sl_price`).
-    """
+    """Scenario2→1: rewrite radar initial_atr only. Keep TP3. Never touch hard."""
     atr = float(atr_1h or 0)
     if atr <= 0:
         return {"upgraded": False, "reason": "atr_invalid"}
@@ -120,24 +115,15 @@ def apply_vps_atr_upgrade(
             except Exception:
                 pass
 
-    # Restore frozen hard — ATR upgrade must never rewrite it
     if frozen_hard > 0:
         supervisor._frozen_hard_stop_px = frozen_hard
         supervisor._tv_hard_sl_price = frozen_hard
 
     supervisor.current_atr = atr
     supervisor.atr_1h = atr
-    was_tp3 = bool(getattr(supervisor, "tp3_limit_active", False))
     supervisor.atr_scenario = ATR_SCENARIO_VPS
-    supervisor.tp3_limit_active = False
+    supervisor.tp3_limit_active = True  # never cancel TP3 on ATR upgrade
     supervisor._temp_tv_stop_active = False
-
-    cancelled = 0
-    if was_tp3 and hasattr(supervisor, "_cancel_tp_orders_at_levels"):
-        try:
-            cancelled = int(supervisor._cancel_tp_orders_at_levels([3]) or 0)
-        except Exception:
-            cancelled = 0
 
     try:
         from app.core.atr_1h_breathing import refresh_supervisor_breath
@@ -145,7 +131,6 @@ def apply_vps_atr_upgrade(
     except Exception:
         pass
 
-    # Re-sync radar only (never force-replace hard)
     if live_qty > 0 and hasattr(supervisor, "_ensure_radar_sl"):
         radar = float(getattr(supervisor, "current_sl", 0) or 0)
         if radar > 0:
@@ -167,27 +152,30 @@ def apply_vps_atr_upgrade(
         "initial_stop": float(getattr(supervisor, "initial_stop", 0) or 0),
         "current_sl": float(getattr(supervisor, "current_sl", 0) or 0),
         "frozen_hard": float(getattr(supervisor, "_frozen_hard_stop_px", 0) or 0),
-        "tp3_cancelled": cancelled,
-        "was_tp3_limit_active": was_tp3,
+        "tp3_cancelled": 0,
+        "tp3_limit_active": True,
     }
     if hasattr(supervisor, "_log"):
-        supervisor._log("ATR_SCENARIO", "VPS真实ATR已武装雷达·撤销TP3兜底（硬止损永冻）", detail)
-    if hasattr(supervisor, "_alert") and was_tp3:
+        supervisor._log(
+            "ATR_SCENARIO",
+            "VPS真实ATR已武装雷达（TP3限价保留·硬止损永冻）",
+            detail,
+        )
+    if hasattr(supervisor, "_alert"):
         supervisor._alert(
             "info",
             "ATR_SCENARIO",
             "VPS真实ATR恢复·已切回场景一",
-            f"initial_atr={atr:.4f} | 已撤TP3={cancelled} | 硬止损未改",
+            "雷达已用交易所1h ATR；TP1/2/3限价不撤",
             detail,
         )
     return detail
 
 
 def maybe_retry_vps_atr_on_tick(supervisor: Any, live_qty: float = 0.0) -> dict[str, Any]:
-    """Breath-tick hook: if still on TV fallback, retry VPS 1h ATR upgrade."""
+    """Breath-tick hook: if still on TV fallback, retry VPS 1h ATR upgrade (keep TP3)."""
     if str(getattr(supervisor, "atr_scenario", "") or "") != ATR_SCENARIO_TV:
-        if not bool(getattr(supervisor, "tp3_limit_active", False)):
-            return {"attempted": False}
+        return {"attempted": False}
     client = getattr(supervisor, "client", None)
     sym = (
         getattr(supervisor, "canonical_symbol", None)
@@ -201,9 +189,14 @@ def maybe_retry_vps_atr_on_tick(supervisor: Any, live_qty: float = 0.0) -> dict[
 
 
 def supervisor_placeable_levels(supervisor: Any) -> frozenset[int]:
-    return placeable_tp_levels(
-        tp3_limit_active=bool(getattr(supervisor, "tp3_limit_active", False)),
-    )
+    """Always TP1+TP2+TP3."""
+    return placeable_tp_levels(tp3_limit_active=True)
+
+
+def enrich_open_atr_detail(detail: dict | None = None, **extra: Any) -> dict[str, Any]:
+    out = dict(detail or {})
+    out.update(extra)
+    return out
 
 
 __all__ = [
@@ -216,4 +209,5 @@ __all__ = [
     "maybe_retry_vps_atr_on_tick",
     "resolve_open_atr",
     "supervisor_placeable_levels",
+    "enrich_open_atr_detail",
 ]

@@ -605,6 +605,136 @@ class AdverseRadarMixin:
             k = k[2:]
         return ids.get(k)
 
+    def _mutex_cancel_tp3_on_radar_exit(
+        self,
+        *,
+        close_source: str = "RADAR_STOP",
+        fill_px: float = 0.0,
+    ) -> dict:
+        """Radar/breath exit first → cancel TP3; race → critical alert + reconcile."""
+        self._init_adverse_radar_fields()
+        detail: dict[str, Any] = {
+            "close_source": str(close_source or "RADAR_STOP"),
+            "fill_px": float(fill_px or 0),
+            "tp3_oid": self._defense_order_id("3"),
+            "cancelled": 0,
+            "cancel_ok": True,
+            "race": False,
+            "exch_qty": None,
+        }
+        if not bool(getattr(self, "tp3_limit_active", True)):
+            detail["skipped"] = "tp3_inactive"
+            return detail
+
+        had_tp3_on_book = False
+        try:
+            tps = list(getattr(self, "tv_tps", None) or [])
+            if hasattr(self, "_collect_tp_limit_orders") and len(tps) >= 3:
+                from app.core.tp_slice_guard import tp_price_matches
+
+                tp3_px = float(tps[2] or 0)
+                if tp3_px > 0:
+                    for o in self._collect_tp_limit_orders() or []:
+                        if tp_price_matches(float(o.get("price") or 0), tp3_px):
+                            had_tp3_on_book = True
+                            break
+        except Exception:
+            had_tp3_on_book = True
+
+        cancelled = 0
+        if hasattr(self, "_cancel_tp_orders_at_levels"):
+            try:
+                cancelled = int(self._cancel_tp_orders_at_levels([3]) or 0)
+            except Exception as exc:
+                detail["cancel_error"] = str(exc)[:200]
+                detail["cancel_ok"] = False
+        detail["cancelled"] = cancelled
+
+        still_on_book = False
+        try:
+            tps = list(getattr(self, "tv_tps", None) or [])
+            if hasattr(self, "_collect_tp_limit_orders") and len(tps) >= 3:
+                from app.core.tp_slice_guard import tp_price_matches
+
+                tp3_px = float(tps[2] or 0)
+                if tp3_px > 0:
+                    for o in self._collect_tp_limit_orders() or []:
+                        if tp_price_matches(float(o.get("price") or 0), tp3_px):
+                            still_on_book = True
+                            break
+        except Exception:
+            still_on_book = False
+
+        exch_qty = None
+        try:
+            pos = None
+            if hasattr(self, "_get_active_position"):
+                pos = self._get_active_position()
+            elif hasattr(self, "position_manager"):
+                pos = self.position_manager.get_position(self.symbol)
+            if isinstance(pos, dict):
+                exch_qty = abs(float(pos.get("size") or pos.get("positionAmt") or 0))
+        except Exception as exc:
+            detail["pos_query_error"] = str(exc)[:200]
+        detail["exch_qty"] = exch_qty
+
+        race = False
+        if still_on_book:
+            race = True
+            detail["race_reason"] = "tp3_still_on_book_after_radar_exit"
+        elif had_tp3_on_book and cancelled <= 0 and exch_qty is not None and exch_qty > 1e-12:
+            race = True
+            detail["race_reason"] = "tp3_cancel_missed_with_residual_qty"
+        detail["race"] = race
+
+        self.tp3_limit_active = False
+        try:
+            self._clear_defense_order_ids("3")
+        except Exception:
+            pass
+
+        if hasattr(self, "_log"):
+            try:
+                self._log(
+                    "TP3_RADAR_MUTEX",
+                    f"雷达先成交·撤TP3 cancelled={cancelled} race={race}",
+                    detail,
+                )
+            except Exception:
+                pass
+        if hasattr(self, "_alert"):
+            try:
+                sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", "?")
+                if race:
+                    self._alert(
+                        "critical",
+                        "TP3_RADAR_RACE",
+                        "双腿几乎同时触发·强制核对持仓",
+                        f"{sym} 雷达退出后 TP3 互斥异常 | exch_qty={exch_qty} | {detail.get('race_reason')}",
+                        detail,
+                    )
+                    if hasattr(self, "_confirm_exchange_flat"):
+                        try:
+                            self._confirm_exchange_flat()
+                        except Exception:
+                            pass
+                    if hasattr(self, "_purge_defense_orders_on_flat"):
+                        try:
+                            self._purge_defense_orders_on_flat("tp3_radar_race", notify=False)
+                        except Exception:
+                            pass
+                else:
+                    self._alert(
+                        "info",
+                        "TP3_RADAR_MUTEX",
+                        "雷达先成交·已撤TP3",
+                        f"平仓来源=雷达止损 @ {float(fill_px or 0):.2f} | 已撤销 TP3 限价 cancelled={cancelled}",
+                        detail,
+                    )
+            except Exception:
+                pass
+        return detail
+
     def _apply_radar_eval_state(self, radar: dict) -> None:
         """Compat shim: mark breathing engaged; no legacy RADAR_ARM DingTalk."""
         if not radar:
@@ -778,12 +908,10 @@ class AdverseRadarMixin:
         payload: dict | None = None,
         side: str | None = None,
     ) -> dict:
-        """Seed radar initial stop from ATR; arm hard with fill+ATR floor+slip if unset.
+        """Seed radar initial stop from ATR; arm hard from TV distance×buffer if unset.
 
-        Whitepaper: hard = max(|TV.entry−TV.SL|×1.2, 1.5×ATR×1.05) + slip,
-        hung from fill; frozen after open (widen-only once ATR arrives).
+        Hard = fill ± (|TV.price−TV.stop_loss| × buffer); no ATR floor / slip pad.
         ATR breathing only arms/updates radar ``initial_stop`` / ``current_sl``.
-        Legacy single-track still mirrors stop into ``_tv_hard_sl_price``.
         """
         self._init_adverse_radar_fields()
         entry = float(
@@ -2154,51 +2282,66 @@ class AdverseRadarMixin:
         return entry > 0 and atr > 0
 
     def _remaining_qty_pct_from_consumed(self, consumed: list | None = None) -> float:
-        levels = {int(x) for x in (consumed if consumed is not None else getattr(self, "consumed_tp_levels", None) or [])}
-        if {1, 2, 3}.issubset(levels):
-            return 0.0
-        if {1, 2}.issubset(levels):
-            return 0.4
-        if 1 in levels:
-            return 0.7
-        return 1.0
+        from app.core.tp_regime_targets import remaining_qty_pct_from_consumed
+
+        return remaining_qty_pct_from_consumed(
+            consumed if consumed is not None else getattr(self, "consumed_tp_levels", None)
+        )
 
     def _arm_temp_tv_stop_on_open(self, entry: float) -> dict[str, Any]:
-        """Hang immediate post-fill hard stop (buffer + radar floor + slip).
+        """Hang hard stop: fill ± (|TV.price − TV.stop_loss| × buffer).
 
-        Uses exchange fill as hang origin; TV theoretical entry for implied
-        distance + slippage pad. ATR floor when available.
+        No ATR floor / slip pad. Rejects missing SL or distance < HARD_STOP_MIN_TICKS.
         """
+        from app.core.breathing_stop import (
+            compute_hard_stop_distance,
+            compute_temp_tv_stop,
+            hard_stop_meta_for_logs,
+        )
+
         self._init_adverse_radar_fields()
         side = str(getattr(self, "current_side", "") or "").upper()
         tv_sl = float(self._pine_stop_loss_ref() or 0)
         fill = float(entry or 0)
         tv_entry = float(getattr(self, "tv_price", 0) or 0) or None
-        atr = float(
-            getattr(self, "initial_atr", 0)
-            or getattr(self, "_tv_atr_ref", 0)
-            or 0
-        ) or None
         sym = (
             getattr(self, "canonical_symbol", None)
             or getattr(self, "symbol", None)
         )
+        dist_meta = compute_hard_stop_distance(
+            fill_entry=fill,
+            tv_stop_loss=tv_sl,
+            tv_entry=tv_entry,
+            symbol=sym,
+        )
+        log_meta = hard_stop_meta_for_logs(
+            fill_entry=fill, tv_stop_loss=tv_sl, tv_entry=tv_entry, symbol=sym,
+        )
+        reject = str(dist_meta.get("reject_reason") or "")
+        if reject or float(dist_meta.get("final_dist") or 0) <= 0:
+            reason = reject or "hard_stop_unavailable_need_tv_stop_loss"
+            return {
+                "ok": False,
+                "reason": reason,
+                "stop_price": 0.0,
+                "tv_stop_loss": tv_sl,
+                **log_meta,
+            }
         temp = compute_temp_tv_stop(
             fill,
             side,
             tv_sl,
             tv_entry=tv_entry,
-            initial_atr=atr,
             symbol=sym,
         )
-        source = "tv_hard_stop"
-        # Missing TV stop_loss → abort open (caller fail-closes), never invent a hard.
+        source = "tv_hard_stop_distance_buffer"
         if temp <= 0:
             return {
                 "ok": False,
                 "reason": "hard_stop_unavailable_need_tv_stop_loss",
                 "stop_price": 0.0,
                 "tv_stop_loss": tv_sl,
+                **log_meta,
             }
         # Hard floor is frozen here — radar uses current_sl / initial_stop separately
         self._frozen_hard_stop_px = float(temp)
@@ -2206,7 +2349,8 @@ class AdverseRadarMixin:
         self.tv_sl = float(temp) if float(getattr(self, "tv_sl", 0) or 0) <= 0 else float(self.tv_sl)
         self._temp_tv_stop_active = True
         self.atr_scenario = ATR_SCENARIO_PENDING
-        self.tp3_limit_active = False
+        # Always place TP3 limit (10/20/70); ATR scenario only selects radar ATR source
+        self.tp3_limit_active = True
         self._stamp_radar_open_clock()
         self._vps_hard_sl_meta = {
             "source": source,
@@ -2215,17 +2359,29 @@ class AdverseRadarMixin:
             "tv_entry": float(tv_entry or 0),
             "side": side,
             "tv_stop_loss": tv_sl,
-            "initial_atr": float(atr or 0),
-            "buffer": 1.2,
+            "tv_stop_distance": float(dist_meta.get("tv_stop_distance") or 0),
+            "actual_stop_distance": float(dist_meta.get("final_dist") or 0),
+            "buffer_mult": float(dist_meta.get("buffer_mult") or 1.2),
             "frozen": True,
         }
+        if hasattr(self, "_log"):
+            try:
+                self._log(
+                    "HARD_SL_ARM",
+                    f"硬止损锚定成交价 {temp:.4f} "
+                    f"(tv_dist={log_meta.get('tv_stop_distance')} ×buf "
+                    f"→ actual={log_meta.get('actual_stop_distance')})",
+                    dict(self._vps_hard_sl_meta),
+                )
+            except Exception:
+                pass
         return {
             "ok": True,
             "stop_price": float(temp),
             "source": source,
             "tv_stop_loss": tv_sl,
             "tv_entry": float(tv_entry or 0),
-            "initial_atr": float(atr or 0),
+            **log_meta,
         }
 
     def _stamp_radar_open_clock(self) -> None:
@@ -2373,79 +2529,17 @@ class AdverseRadarMixin:
         return out
 
     def _widen_frozen_hard_with_atr(self, fill: float, atr: float) -> dict[str, Any]:
-        """One-shot widen of frozen hard once ATR is known (never tighten).
-
-        Open path may arm hard before VPS ATR; radar floor must still apply.
-        """
-        self._init_adverse_radar_fields()
-        side = str(getattr(self, "current_side", "") or "").upper()
-        tv_sl = float(self._pine_stop_loss_ref() or 0)
-        atr_v = float(atr or 0)
-        fill_v = float(fill or 0)
-        out = {"widened": False, "reason": "noop"}
-        if fill_v <= 0 or atr_v <= 0 or tv_sl <= 0 or side not in ("LONG", "SHORT"):
-            out["reason"] = "missing_inputs"
-            return out
-        prev = float(self._frozen_hard_px() or 0)
-        if prev <= 0:
-            out["reason"] = "no_frozen"
-            return out
-        tv_entry = float(getattr(self, "tv_price", 0) or 0) or None
-        sym = (
-            getattr(self, "canonical_symbol", None)
-            or getattr(self, "symbol", None)
-        )
-        new_hard = float(
-            compute_temp_tv_stop(
-                fill_v,
-                side,
-                tv_sl,
-                tv_entry=tv_entry,
-                initial_atr=atr_v,
-                symbol=sym,
-            )
-            or 0
-        )
-        if new_hard <= 0:
-            out["reason"] = "recompute_failed"
-            return out
-        # Wider = farther from fill (LONG lower, SHORT higher)
-        if side == "LONG":
-            wider = new_hard < prev - 1e-12
-        else:
-            wider = new_hard > prev + 1e-12
-        if not wider:
-            out["reason"] = "already_wide_enough"
-            out["prev"] = prev
-            out["candidate"] = new_hard
-            return out
-        self._frozen_hard_stop_px = new_hard
-        self._tv_hard_sl_price = new_hard
-        meta = dict(getattr(self, "_vps_hard_sl_meta", None) or {})
-        meta.update(
-            {
-                "stop_price": new_hard,
-                "widened_with_atr": atr_v,
-                "prev_hard": prev,
-                "initial_atr": atr_v,
-            }
-        )
-        self._vps_hard_sl_meta = meta
-        out.update(
-            {
-                "widened": True,
-                "reason": "atr_radar_floor",
-                "prev": prev,
-                "stop_price": new_hard,
-                "atr": atr_v,
-            }
-        )
-        return out
+        """No-op: hard stop is TV-distance×buffer only (no ATR widen) since 2026-07-25."""
+        return {
+            "widened": False,
+            "reason": "disabled_tv_distance_only",
+            "prev": float(self._frozen_hard_px() or 0),
+        }
 
     def _resolve_and_apply_open_atr_scenario(self, entry: float) -> dict[str, Any]:
-        """After hard stop + TP1/TP2: pick scenario 1 (VPS ATR) or 2 (TV atr + TP3).
+        """After hard stop + TP limits: pick VPS 1h ATR or TV atr for radar only.
 
-        Never rewrites frozen hard stop price — only arms radar initial_stop/current_sl.
+        Never rewrites frozen hard stop. TP3 limit always stays (10/20/70).
         """
         self._init_adverse_radar_fields()
         tv_atr = float(getattr(self, "_tv_atr_ref", 0) or 0)
@@ -2474,16 +2568,17 @@ class AdverseRadarMixin:
         if frozen > 0:
             self._frozen_hard_stop_px = frozen
             self._tv_hard_sl_price = frozen
-        # ATR now known: widen hard once if radar floor requires (never tighten)
+        # ATR known: hard is TV-distance only (widen no-op)
         widen = self._widen_frozen_hard_with_atr(float(entry or 0), atr_v)
         self.atr_scenario = scenario
-        self.tp3_limit_active = bool(decision.get("tp3_limit_active"))
+        # Always keep TP3 limit active (10/20/70) — ATR scenario does not gate TP3
+        self.tp3_limit_active = True
         self._temp_tv_stop_active = False
         atr_src = str(decision.get("atr_source") or "")
         meta = dict(getattr(self, "_vps_hard_sl_meta", None) or {})
         meta["atr_source"] = atr_src
         meta["atr_scenario"] = scenario
-        meta["tp3_limit_active"] = self.tp3_limit_active
+        meta["tp3_limit_active"] = True
         meta["frozen_hard"] = float(self._frozen_hard_px() or 0)
         meta["hard_widen"] = widen
         self._vps_hard_sl_meta = meta
@@ -2497,7 +2592,7 @@ class AdverseRadarMixin:
             "frozen_hard": float(self._frozen_hard_px() or 0),
             "atr_1h": float(decision.get("atr_1h") or 0),
             "tv_atr": tv_atr,
-            "tp3_limit_active": self.tp3_limit_active,
+            "tp3_limit_active": True,
             "atr_source": atr_src,
             "hard_widen": widen,
         }
@@ -2505,9 +2600,9 @@ class AdverseRadarMixin:
             self._log(
                 "ATR_SCENARIO",
                 (
-                    "场景一·VPS真实ATR武装雷达（硬止损永冻）"
+                    "场景一·VPS真实ATR武装雷达（硬止损永冻·TP1/2/3限价常挂）"
                     if scenario == ATR_SCENARIO_VPS
-                    else "场景二·TV理论ATR武装雷达+TP3兜底（硬止损永冻）"
+                    else "场景二·TV理论ATR武装雷达（硬止损永冻·TP1/2/3限价常挂）"
                 ),
                 detail,
             )
@@ -2516,7 +2611,7 @@ class AdverseRadarMixin:
                 "info",
                 "ATR_SCENARIO",
                 "本次VPS真实ATR获取失败·已用TV理论ATR继续",
-                "TP3已按TV价位挂出兜底（记录通知，非告警）",
+                "雷达用TV atr；TP1/2/3限价仍按10/20/70挂出",
                 detail,
             )
         return detail
@@ -2600,7 +2695,7 @@ class AdverseRadarMixin:
         if pause_until and time.time() < pause_until:
             return False
         self._init_adverse_radar_fields()
-        # Scenario 2: keep retrying VPS 1h ATR → upgrade + cancel TP3
+        # Scenario 2: retry VPS 1h ATR → upgrade radar ATR only (keep TP3)
         try:
             maybe_retry_vps_atr_on_tick(self, live_qty=float(live_qty or 0))
         except Exception:
@@ -2696,6 +2791,18 @@ class AdverseRadarMixin:
                 phase_label = "保本止损平仓（阶段一·TP后）"
             else:
                 phase_label = "初始止损平仓（阶段一）"
+            # Mutex: radar/breath first → cancel TP3 before market flatten
+            if hasattr(self, "_mutex_cancel_tp3_on_radar_exit"):
+                try:
+                    self._mutex_cancel_tp3_on_radar_exit(
+                        close_source="RADAR_STOP", fill_px=float(px or 0),
+                    )
+                except Exception as mx_exc:
+                    logger.warning(
+                        "[User %s] tp3 mutex on radar exit: %s",
+                        getattr(self, "user_id", "?"),
+                        mx_exc,
+                    )
             if hasattr(self, "_close_all"):
                 try:
                     self._close_all(

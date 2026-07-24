@@ -1,7 +1,7 @@
-"""TP slice ratios — fixed 30/30/40; TP3 limit only in ATR scenario 2.
+"""TP slice ratios — fixed 10/20/70; TP1/TP2/TP3 limits always placed.
 
-Scenario 1 (VPS real ATR): place TP1+TP2 only; TP3 remainder via breath trail.
-Scenario 2 (TV atr fallback): also hang TP3 limit at TV price (40%).
+2026-07-25 TV sync: residual 70% has both TP3 limit and radar (mutual cancel on fill).
+ATR scenario no longer gates TP3 placement (still used for radar ATR source only).
 """
 
 from __future__ import annotations
@@ -10,8 +10,9 @@ from typing import Any
 
 from app.core.radar_trail import merge_regime_radar
 
-FIXED_TP_QTY_PERCENT: tuple[int, int, int] = (30, 30, 40)
-PLACEABLE_TP_LEVELS: frozenset[int] = frozenset({1, 2})
+# Defaults; overridden by Settings TP1_QTY_PCT / TP2_QTY_PCT when available
+FIXED_TP_QTY_PERCENT: tuple[int, int, int] = (10, 20, 70)
+PLACEABLE_TP_LEVELS: frozenset[int] = frozenset({1, 2, 3})
 PLACEABLE_TP_LEVELS_WITH_TP3: frozenset[int] = frozenset({1, 2, 3})
 
 PINE_TP_QTY_PERCENT: dict[int, tuple[int, int, int]] = {
@@ -24,8 +25,24 @@ PINE_TP_QTY_PERCENT: dict[int, tuple[int, int, int]] = {
 REGIME_MARGIN_PCT: dict[int, float] = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
 
 
-def placeable_tp_levels(*, tp3_limit_active: bool = False) -> frozenset[int]:
-    return PLACEABLE_TP_LEVELS_WITH_TP3 if tp3_limit_active else PLACEABLE_TP_LEVELS
+def _ratios_from_settings() -> tuple[int, int, int]:
+    try:
+        from app.config import get_settings
+
+        s = get_settings()
+        p1 = float(getattr(s, "TP1_QTY_PCT", 0.10) or 0.10)
+        p2 = float(getattr(s, "TP2_QTY_PCT", 0.20) or 0.20)
+        if p1 <= 0 or p2 <= 0 or p1 + p2 >= 1.0:
+            return FIXED_TP_QTY_PERCENT
+        p3 = 1.0 - p1 - p2
+        return (int(round(p1 * 100)), int(round(p2 * 100)), int(round(p3 * 100)))
+    except Exception:
+        return FIXED_TP_QTY_PERCENT
+
+
+def placeable_tp_levels(*, tp3_limit_active: bool = True) -> frozenset[int]:
+    """Always place TP1+TP2+TP3 (tp3_limit_active kept for call-site compat)."""
+    return PLACEABLE_TP_LEVELS_WITH_TP3
 
 
 def clamp_regime(regime: int) -> int:
@@ -34,13 +51,24 @@ def clamp_regime(regime: int) -> int:
 
 
 def pine_tp_ratios_frac(regime: int = 3) -> list[float]:
-    p1, p2, p3 = FIXED_TP_QTY_PERCENT
+    p1, p2, p3 = _ratios_from_settings()
     return [p1 / 100.0, p2 / 100.0, p3 / 100.0]
 
 
 def format_tp_ratio_pct(regime: int = 3) -> str:
-    p1, p2, p3 = FIXED_TP_QTY_PERCENT
+    p1, p2, p3 = _ratios_from_settings()
     return f"{p1}/{p2}/{p3}"
+
+
+def remaining_qty_pct_from_consumed(consumed: list | None) -> float:
+    """Residual fraction after TP fills (10/20/70 → 0.9 / 0.7 / 0)."""
+    levels = {int(x) for x in (consumed or []) if int(x) in (1, 2, 3)}
+    ratios = pine_tp_ratios_frac()
+    rem = 1.0
+    for lv in (1, 2, 3):
+        if lv in levels:
+            rem -= float(ratios[lv - 1])
+    return max(0.0, rem)
 
 
 def build_regime_settings() -> dict[int, dict[str, Any]]:
@@ -61,7 +89,7 @@ def enrich_tp_alert_detail(
     out["regime"] = clamp_regime(regime)
     out["tp_ratios_pct"] = format_tp_ratio_pct()
     out["tp_ratios"] = pine_tp_ratios_frac()
-    placed = bool(tp3_limit_placed) if tp3_limit_placed is not None else False
+    placed = True if tp3_limit_placed is None else bool(tp3_limit_placed)
     out["tp3_limit_placed"] = placed
     out["tp_placeable_levels"] = sorted(placeable_tp_levels(tp3_limit_active=placed))
     return out
