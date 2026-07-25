@@ -132,8 +132,19 @@ def compute_initial_stop(
     return 0.0
 
 
-def hard_stop_buffer_mult(symbol: str | None = None) -> float:
-    """Configurable buffer_multiplier (ETH/XAU can diverge later)."""
+def hard_stop_buffer_mult(
+    symbol: str | None = None,
+    *,
+    trend_tier: int | None = None,
+) -> float:
+    """Whitepaper v2: ADX tier buffer 1.1/1.2/1.3; Settings as fallback."""
+    if trend_tier is not None:
+        try:
+            from app.core.trend_tier_params import hard_buffer_for_tier
+
+            return float(hard_buffer_for_tier(int(trend_tier), symbol))
+        except Exception:
+            pass
     try:
         from app.config import get_settings
         from app.core.symbol_registry import CANONICAL_XAU, normalize_canonical_symbol
@@ -165,11 +176,12 @@ def compute_hard_stop_distance(
     symbol: str | None = None,
     slip_mult: float | None = None,
     buffer_mult: float | None = None,
+    trend_tier: int | None = None,
 ) -> dict[str, float]:
-    """Hard-stop distance from TV (2026-07-25).
+    """Hard-stop distance from TV (whitepaper v2).
 
     tv_stop_distance = |TV.price − TV.stop_loss|
-    actual = tv_stop_distance × buffer_multiplier
+    actual = tv_stop_distance × buffer_multiplier (ADX tier 1.1/1.2/1.3)
     Hang = fill ± actual  (no ATR floor, no fill-slip pad).
 
     ``initial_atr`` / ``slip_mult`` kept for call-site compat; ignored.
@@ -177,7 +189,11 @@ def compute_hard_stop_distance(
     fill = float(fill_entry or 0)
     tv_sl = float(tv_stop_loss or 0)
     tv_e = float(tv_entry or 0) or fill
-    buf = float(buffer_mult if buffer_mult is not None else hard_stop_buffer_mult(symbol))
+    buf = float(
+        buffer_mult
+        if buffer_mult is not None
+        else hard_stop_buffer_mult(symbol, trend_tier=trend_tier)
+    )
     if buf <= 0:
         buf = float(TEMP_TV_STOP_BUFFER)
     out = {
@@ -221,6 +237,7 @@ def compute_temp_tv_stop(
     symbol: str | None = None,
     slip_mult: float | None = None,
     buffer_mult: float | None = None,
+    trend_tier: int | None = None,
 ) -> float:
     """Permanent hard stop from fill: fill ± (|TV.e−SL| × buffer).
 
@@ -238,6 +255,7 @@ def compute_temp_tv_stop(
         symbol=symbol,
         slip_mult=slip_mult,
         buffer_mult=buffer_mult,
+        trend_tier=trend_tier,
     )
     dist = float(meta.get("final_dist") or 0)
     if dist <= 0:
@@ -415,7 +433,7 @@ def init_breathing_state(
 
 
 def _tier_overrides(legacy: dict[str, Any], profile) -> dict[str, float | None]:
-    """Pull smart-reentry tier overrides from kwargs (None = use profile)."""
+    """Pull ADX-tier / reentry overrides from kwargs (None = use profile)."""
     def _f(key: str) -> float | None:
         if key not in legacy or legacy.get(key) is None:
             return None
@@ -432,7 +450,28 @@ def _tier_overrides(legacy: dict[str, Any], profile) -> dict[str, float | None]:
         "step_advance_atr": _f("step_advance_atr"),
         "coef_min": _f("coef_min"),
         "coef_max": _f("coef_max"),
+        "breath_tp1_tp2_atr": _f("breath_tp1_tp2_atr"),
+        "breath_tp2_tp3_atr": _f("breath_tp2_tp3_atr"),
+        "tp1_price": _f("tp1_price"),
+        "tp2_price": _f("tp2_price"),
+        "tp3_price": _f("tp3_price"),
+        "radar_activated": legacy.get("radar_activated"),
     }
+
+
+def _resolve_tp_prices(
+    entry: float,
+    atr: float,
+    side: str,
+    symbol: str | None,
+    ov: dict[str, float | None],
+) -> tuple[float, float, float]:
+    p = profile_for_symbol(symbol)
+    sign = 1.0 if str(side).upper() == "LONG" else -1.0
+    t1 = float(ov.get("tp1_price") or 0) or (entry + sign * p.tp1_atr * atr)
+    t2 = float(ov.get("tp2_price") or 0) or (entry + sign * p.tp2_atr * atr)
+    t3 = float(ov.get("tp3_price") or 0) or (entry + sign * p.tp3_atr * atr)
+    return t1, t2, t3
 
 
 def calculate_stop_long(
@@ -448,14 +487,24 @@ def calculate_stop_long(
     smooth_ratio: float | None = None,
     **_legacy: Any,
 ) -> tuple[float, float, bool, dict[str, Any]]:
+    """Whitepaper v2: wait until TP1 path×0.85; activate entry+0.5ATR; then passive trail."""
+    from app.core.trend_tier_params import (
+        RADAR_ACTIVATE_BE_ATR,
+        RADAR_ARM_TP1_PCT,
+        radar_arm_trigger_price,
+        radar_armed_by_price,
+    )
+
     p = profile_for_symbol(symbol)
     ov = _tier_overrides(_legacy, p)
-    early_be = float(ov["early_breakeven_atr"] if ov["early_breakeven_atr"] is not None else p.early_breakeven_atr)
     step_adv_atr = float(ov["step_advance_atr"] if ov["step_advance_atr"] is not None else p.step_advance_atr)
     step_trig = float(ov["step_trigger_atr"] if ov["step_trigger_atr"] is not None else p.step_trigger_atr)
-    arm_pct = ov["arm_tp1_pct"]
+    arm_pct = float(ov["arm_tp1_pct"] if ov["arm_tp1_pct"] is not None else RADAR_ARM_TP1_PCT)
+    activate_be = float(ov["early_breakeven_atr"] if ov["early_breakeven_atr"] is not None else RADAR_ACTIVATE_BE_ATR)
     cmin = ov["coef_min"]
     cmax = ov["coef_max"]
+    breath12 = float(ov["breath_tp1_tp2_atr"] or 1.2)
+    breath23 = float(ov["breath_tp2_tp3_atr"] or 1.6)
 
     price = float(price or 0)
     entry_price = float(entry_price or 0)
@@ -467,92 +516,98 @@ def calculate_stop_long(
         breathing_coefficient, p,
         coef_min=cmin, coef_max=cmax,
     )
-    tick = _price_tick(symbol)
     sr = float(smooth_ratio if smooth_ratio is not None else COLD_START_RATIO)
+    tp1, tp2, tp3 = _resolve_tp_prices(entry_price, initial_atr, "LONG", symbol, ov)
 
     new_highest = max(highest_price, price) if price > 0 else highest_price
-    new_stop = current_stop
+    new_stop = current_stop if current_stop > 0 else initial_stop
     new_phase = bool(breakeven_phase)
     event = "none"
     meta: dict[str, Any] = {
         "mode": "phase2" if new_phase else "phase1",
         "breathing_coefficient": coef,
         "symbol_tag": p.symbol_tag,
+        "arm_tp1_pct": arm_pct,
+        "step_trigger_atr": step_trig,
+        "step_advance_atr": step_adv_atr,
+        "early_breakeven_atr": activate_be,
+        "coef_min": float(cmin if cmin is not None else p.coef_min),
+        "coef_max": float(cmax if cmax is not None else p.coef_max),
+        "breath_tp1_tp2_atr": breath12,
+        "breath_tp2_tp3_atr": breath23,
     }
 
-    step_advance = step_adv_atr * initial_atr
-    arm_dist = effective_radar_arm_distance(
-        initial_atr, sr, p, arm_tp1_pct=arm_pct, step_trigger_atr=step_trig,
+    arm_trig = radar_arm_trigger_price(
+        side="LONG", entry=entry_price, tp1=tp1, atr=initial_atr, symbol=symbol, arm_pct=arm_pct,
     )
-    # Legacy dynamic ratio kept for logs only when no fixed pct
-    arm_ratio = float(arm_pct) if arm_pct is not None else radar_start_ratio(sr, p)
-    meta["radar_arm_ratio"] = arm_ratio
+    arm_dist = abs(arm_trig - entry_price) if arm_trig > 0 else 0.0
     meta["radar_arm_dist"] = arm_dist
-    meta["arm_tp1_pct"] = arm_pct if arm_pct is not None else arm_ratio
-    meta["step_trigger_atr"] = step_trig
-    meta["early_breakeven_atr"] = early_be
-    meta["step_advance_atr"] = step_adv_atr
-    meta["coef_min"] = float(cmin if cmin is not None else p.coef_min)
-    meta["coef_max"] = float(cmax if cmax is not None else p.coef_max)
+    meta["radar_arm_trigger"] = arm_trig
+    meta["radar_arm_ratio"] = arm_pct
+    already = bool(ov.get("radar_activated"))
+    armed = already or radar_armed_by_price(
+        side="LONG", price=price, entry=entry_price, tp1=tp1,
+        atr=initial_atr, symbol=symbol, arm_pct=arm_pct,
+    )
+    meta["radar_armed"] = armed
+
+    if not armed:
+        meta["event"] = "waiting_arm"
+        meta["step_count"] = 0
+        return new_stop, new_highest, new_phase, meta
+
+    activate_stop = entry_price + activate_be * initial_atr
     trail_dist = initial_atr * coef
+    step_advance = step_adv_atr * initial_atr
+    step_size = step_trig * initial_atr if step_trig > 0 else 0.0
 
-    if not new_phase:
-        move = max(0.0, price - entry_price) if price > 0 else 0.0
-        if arm_dist <= 0 or move + 1e-12 < arm_dist:
-            step_count = 0
-            candidate = current_stop if current_stop > 0 else initial_stop
-        else:
-            extra = max(0.0, move - arm_dist)
-            steps_after = (
-                max(0, int(math.floor(extra / step_advance)))
-                if step_advance > 0
-                else 0
-            )
-            step_count = 1 + steps_after
-            step_stop = initial_stop + step_count * step_advance
-            candidate = max(current_stop, step_stop)
-            if step_count > 0 and candidate > current_stop + 1e-12:
-                event = "step"
-        meta["step_count"] = step_count
-
-        if early_be > 0 and price >= entry_price + early_be * initial_atr:
-            be = entry_price + tick
-            if be > candidate:
-                candidate = be
-                event = "early_breakeven"
-
-        if price >= entry_price + p.tp1_atr * initial_atr:
-            floor = entry_price + p.tp1_floor_atr * initial_atr
-            if floor > candidate:
-                candidate = floor
-                event = "floor_tp1"
-        if price >= entry_price + p.tp2_atr * initial_atr:
-            floor = entry_price + p.tp2_floor_atr * initial_atr
-            if floor > candidate:
-                candidate = floor
-                event = "floor_tp2"
-
+    if not already:
+        # First activation: lift stop to entry+0.5ATR
+        candidate = max(new_stop, activate_stop) if new_stop > 0 else activate_stop
+        if candidate > current_stop + 1e-12 or current_stop <= 0:
+            event = "radar_activate"
         new_stop = candidate
+        meta["event"] = event
+        meta["step_count"] = 0
+        meta["just_activated"] = True
+        # May continue into same-tick trail if already deep in profit
+        already = True
 
-        if price >= entry_price + p.phase2_trigger_atr * initial_atr:
-            new_phase = True
-            trailed = new_highest - trail_dist
-            new_stop = max(new_stop, trailed)
-            event = "phase2_enter"
-            meta["mode"] = "phase2"
-            meta["trail_dist_atr"] = coef
-            meta["trail_distance"] = trail_dist
+    move = max(0.0, price - entry_price) if price > 0 else 0.0
+    extra = max(0.0, move - arm_dist)
+    steps_after = max(0, int(math.floor(extra / step_size))) if step_size > 0 else 0
+    step_count = steps_after
+    step_stop = activate_stop + step_count * step_advance
+
+    # Breath zone by TP path
+    if price + 1e-12 >= tp3:
+        breath = coef  # phase2 uses continuous coef band
+        new_phase = True
+        zone = "tp3_trail"
+    elif price + 1e-12 >= tp2:
+        breath = breath23
+        zone = "tp2_tp3"
     else:
-        candidate = new_highest - trail_dist
-        if candidate > current_stop + 1e-12:
-            event = "trail"
-        new_stop = max(current_stop, candidate)
+        breath = breath12
+        zone = "tp1_tp2"
+    meta["breath_zone"] = zone
+    meta["breath_atr"] = breath
+    trail_stop = new_highest - breath * initial_atr
+    candidate = max(new_stop, step_stop, trail_stop, activate_stop)
+    if new_phase:
+        trailed = new_highest - trail_dist
+        candidate = max(candidate, trailed)
+        if event == "none":
+            event = "phase2_enter" if not breakeven_phase else "trail"
         meta["mode"] = "phase2"
         meta["trail_dist_atr"] = coef
         meta["trail_distance"] = trail_dist
+    elif candidate > new_stop + 1e-12 and event == "none":
+        event = "step" if step_count > 0 else "trail"
 
+    new_stop = candidate
     meta["event"] = event
-    meta["step_count"] = meta.get("step_count", 0)
+    meta["step_count"] = step_count
     return new_stop, new_highest, new_phase, meta
 
 
@@ -569,14 +624,24 @@ def calculate_stop_short(
     smooth_ratio: float | None = None,
     **_legacy: Any,
 ) -> tuple[float, float, bool, dict[str, Any]]:
+    """Whitepaper v2 short: symmetric to long (arm at path 85% to TP1)."""
+    from app.core.trend_tier_params import (
+        RADAR_ACTIVATE_BE_ATR,
+        RADAR_ARM_TP1_PCT,
+        radar_arm_trigger_price,
+        radar_armed_by_price,
+    )
+
     p = profile_for_symbol(symbol)
     ov = _tier_overrides(_legacy, p)
-    early_be = float(ov["early_breakeven_atr"] if ov["early_breakeven_atr"] is not None else p.early_breakeven_atr)
     step_adv_atr = float(ov["step_advance_atr"] if ov["step_advance_atr"] is not None else p.step_advance_atr)
     step_trig = float(ov["step_trigger_atr"] if ov["step_trigger_atr"] is not None else p.step_trigger_atr)
-    arm_pct = ov["arm_tp1_pct"]
+    arm_pct = float(ov["arm_tp1_pct"] if ov["arm_tp1_pct"] is not None else RADAR_ARM_TP1_PCT)
+    activate_be = float(ov["early_breakeven_atr"] if ov["early_breakeven_atr"] is not None else RADAR_ACTIVATE_BE_ATR)
     cmin = ov["coef_min"]
     cmax = ov["coef_max"]
+    breath12 = float(ov["breath_tp1_tp2_atr"] or 1.0)
+    breath23 = float(ov["breath_tp2_tp3_atr"] or 1.4)
 
     price = float(price or 0)
     entry_price = float(entry_price or 0)
@@ -588,95 +653,104 @@ def calculate_stop_short(
         breathing_coefficient, p,
         coef_min=cmin, coef_max=cmax,
     )
-    tick = _price_tick(symbol)
     sr = float(smooth_ratio if smooth_ratio is not None else COLD_START_RATIO)
+    _ = sr
+    tp1, tp2, tp3 = _resolve_tp_prices(entry_price, initial_atr, "SHORT", symbol, ov)
 
     new_lowest = min(lowest_price, price) if price > 0 else lowest_price
     if lowest_price <= 0 and price > 0:
         new_lowest = price
-    new_stop = current_stop
+    new_stop = current_stop if current_stop > 0 else initial_stop
     new_phase = bool(breakeven_phase)
     event = "none"
     meta: dict[str, Any] = {
         "mode": "phase2" if new_phase else "phase1",
         "breathing_coefficient": coef,
         "symbol_tag": p.symbol_tag,
+        "arm_tp1_pct": arm_pct,
+        "step_trigger_atr": step_trig,
+        "step_advance_atr": step_adv_atr,
+        "early_breakeven_atr": activate_be,
+        "coef_min": float(cmin if cmin is not None else p.coef_min),
+        "coef_max": float(cmax if cmax is not None else p.coef_max),
+        "breath_tp1_tp2_atr": breath12,
+        "breath_tp2_tp3_atr": breath23,
     }
 
-    step_advance = step_adv_atr * initial_atr
-    arm_dist = effective_radar_arm_distance(
-        initial_atr, sr, p, arm_tp1_pct=arm_pct, step_trigger_atr=step_trig,
+    arm_trig = radar_arm_trigger_price(
+        side="SHORT", entry=entry_price, tp1=tp1, atr=initial_atr, symbol=symbol, arm_pct=arm_pct,
     )
-    arm_ratio = float(arm_pct) if arm_pct is not None else radar_start_ratio(sr, p)
-    meta["radar_arm_ratio"] = arm_ratio
+    arm_dist = abs(entry_price - arm_trig) if arm_trig > 0 else 0.0
     meta["radar_arm_dist"] = arm_dist
-    meta["arm_tp1_pct"] = arm_pct if arm_pct is not None else arm_ratio
-    meta["step_trigger_atr"] = step_trig
-    meta["early_breakeven_atr"] = early_be
-    meta["step_advance_atr"] = step_adv_atr
-    meta["coef_min"] = float(cmin if cmin is not None else p.coef_min)
-    meta["coef_max"] = float(cmax if cmax is not None else p.coef_max)
+    meta["radar_arm_trigger"] = arm_trig
+    meta["radar_arm_ratio"] = arm_pct
+    already = bool(ov.get("radar_activated"))
+    armed = already or radar_armed_by_price(
+        side="SHORT", price=price, entry=entry_price, tp1=tp1,
+        atr=initial_atr, symbol=symbol, arm_pct=arm_pct,
+    )
+    meta["radar_armed"] = armed
+
+    if not armed:
+        meta["event"] = "waiting_arm"
+        meta["step_count"] = 0
+        return new_stop, new_lowest, new_phase, meta
+
+    activate_stop = entry_price - activate_be * initial_atr
     trail_dist = initial_atr * coef
+    step_advance = step_adv_atr * initial_atr
+    step_size = step_trig * initial_atr if step_trig > 0 else 0.0
 
-    if not new_phase:
-        move = max(0.0, entry_price - price) if price > 0 else 0.0
-        if arm_dist <= 0 or move + 1e-12 < arm_dist:
-            step_count = 0
-            candidate = current_stop if current_stop > 0 else initial_stop
+    if not already:
+        if current_stop <= 0:
+            candidate = activate_stop
         else:
-            extra = max(0.0, move - arm_dist)
-            steps_after = (
-                max(0, int(math.floor(extra / step_advance)))
-                if step_advance > 0
-                else 0
-            )
-            step_count = 1 + steps_after
-            step_stop = initial_stop - step_count * step_advance
-            candidate = min(current_stop, step_stop) if current_stop > 0 else step_stop
-            if current_stop <= 0:
-                candidate = step_stop
-            if step_count > 0 and (current_stop <= 0 or candidate < current_stop - 1e-12):
-                event = "step"
-        meta["step_count"] = step_count
-
-        if early_be > 0 and price <= entry_price - early_be * initial_atr:
-            be = entry_price - tick
-            if be < candidate:
-                candidate = be
-                event = "early_breakeven"
-
-        if price <= entry_price - p.tp1_atr * initial_atr:
-            floor = entry_price - p.tp1_floor_atr * initial_atr
-            if floor < candidate:
-                candidate = floor
-                event = "floor_tp1"
-        if price <= entry_price - p.tp2_atr * initial_atr:
-            floor = entry_price - p.tp2_floor_atr * initial_atr
-            if floor < candidate:
-                candidate = floor
-                event = "floor_tp2"
-
-        new_stop = candidate
-
-        if price <= entry_price - p.phase2_trigger_atr * initial_atr:
-            new_phase = True
-            trailed = new_lowest + trail_dist
-            new_stop = min(new_stop, trailed)
-            event = "phase2_enter"
-            meta["mode"] = "phase2"
-            meta["trail_dist_atr"] = coef
-            meta["trail_distance"] = trail_dist
-    else:
-        candidate = new_lowest + trail_dist
+            candidate = min(current_stop, activate_stop)
         if current_stop <= 0 or candidate < current_stop - 1e-12:
-            event = "trail"
-        new_stop = min(current_stop, candidate) if current_stop > 0 else candidate
+            event = "radar_activate"
+        new_stop = candidate
+        meta["event"] = event
+        meta["step_count"] = 0
+        meta["just_activated"] = True
+        already = True
+
+    move = max(0.0, entry_price - price) if price > 0 else 0.0
+    extra = max(0.0, move - arm_dist)
+    steps_after = max(0, int(math.floor(extra / step_size))) if step_size > 0 else 0
+    step_count = steps_after
+    step_stop = activate_stop - step_count * step_advance
+
+    if price - 1e-12 <= tp3:
+        breath = coef
+        new_phase = True
+        zone = "tp3_trail"
+    elif price - 1e-12 <= tp2:
+        breath = breath23
+        zone = "tp2_tp3"
+    else:
+        breath = breath12
+        zone = "tp1_tp2"
+    meta["breath_zone"] = zone
+    meta["breath_atr"] = breath
+    trail_stop = new_lowest + breath * initial_atr
+    if new_stop <= 0:
+        candidate = min(step_stop, trail_stop, activate_stop)
+    else:
+        candidate = min(new_stop, step_stop, trail_stop, activate_stop)
+    if new_phase:
+        trailed = new_lowest + trail_dist
+        candidate = min(candidate, trailed) if candidate > 0 else trailed
+        if event == "none":
+            event = "phase2_enter" if not breakeven_phase else "trail"
         meta["mode"] = "phase2"
         meta["trail_dist_atr"] = coef
         meta["trail_distance"] = trail_dist
+    elif (new_stop <= 0 or candidate < new_stop - 1e-12) and event == "none":
+        event = "step" if step_count > 0 else "trail"
 
+    new_stop = candidate
     meta["event"] = event
-    meta["step_count"] = meta.get("step_count", 0)
+    meta["step_count"] = step_count
     return new_stop, new_lowest, new_phase, meta
 
 
@@ -700,6 +774,12 @@ def apply_breathing_tick(
     step_advance_atr: float | None = None,
     coef_min: float | None = None,
     coef_max: float | None = None,
+    breath_tp1_tp2_atr: float | None = None,
+    breath_tp2_tp3_atr: float | None = None,
+    tp1_price: float | None = None,
+    tp2_price: float | None = None,
+    tp3_price: float | None = None,
+    radar_activated: bool | None = None,
 ) -> dict[str, Any]:
     from app.core.breathing_profile import trail_distance_multiplier
 
@@ -708,7 +788,6 @@ def apply_breathing_tick(
     if coef_min is not None or coef_max is not None:
         cmin = float(coef_min if coef_min is not None else p.coef_min)
         cmax = float(coef_max if coef_max is not None else p.coef_max)
-        # Progressive tier: remap ATR ratio onto this attempt's trail band
         coef = trail_distance_multiplier(sr, p, coef_min=cmin, coef_max=cmax)
     else:
         coef = resolve_breathing_coef(breathing_coefficient, symbol)
@@ -720,6 +799,12 @@ def apply_breathing_tick(
         "step_advance_atr": step_advance_atr,
         "coef_min": coef_min,
         "coef_max": coef_max,
+        "breath_tp1_tp2_atr": breath_tp1_tp2_atr,
+        "breath_tp2_tp3_atr": breath_tp2_tp3_atr,
+        "tp1_price": tp1_price,
+        "tp2_price": tp2_price,
+        "tp3_price": tp3_price,
+        "radar_activated": radar_activated,
     }
     if side_u == "LONG":
         new_stop, peak, phase, meta = calculate_stop_long(
@@ -764,6 +849,7 @@ def apply_breathing_tick(
         "initial_atr": resolve_atr(initial_atr),
         "initial_stop": float(initial_stop or 0),
         "symbol_tag": meta.get("symbol_tag"),
+        "radar_armed": bool(meta.get("radar_armed")),
     }
 
 
@@ -781,11 +867,14 @@ def stop_hit(side: str | None, price: float, current_stop: float) -> bool:
 
 
 def format_breathing_legend(symbol: str | None = None) -> str:
+    from app.core.trend_tier_params import params_for_tier
+
     p = profile_for_symbol(symbol)
+    mid = params_for_tier(1, symbol)
     return (
-        f"[{p.symbol_tag}] 初始{p.initial_sl_atr}ATR±{p.stop_order_buffer}"
-        f" · 雷达启动=TP1×50/65/80/95递进/步进{p.step_advance_atr}×ATR"
-        f" · 早保本{p.early_breakeven_atr}ATR"
-        f" · 阶段二={p.phase2_trigger_atr}ATR"
-        f" · 追踪{p.coef_min}~{p.coef_max}×ATR(连续插值)"
+        f"[{p.symbol_tag}] 硬止损ADX垫1.1/1.2/1.3"
+        f" · 雷达启动=TP1路径×0.85→entry±0.5ATR"
+        f" · 步进{mid.step_trigger_atr}/{mid.step_advance_atr}×ATR(中档)"
+        f" · 追踪{mid.trail_coef_min}~{mid.trail_coef_max}×ATR"
+        f" · 重入最多1次/{mid.reentry_bars}根K"
     )

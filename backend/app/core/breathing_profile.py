@@ -31,7 +31,7 @@ class BreathingProfile:
     initial_sl_atr: float = 1.5
     stop_order_buffer: float = 0.3
     early_breakeven_atr: float = 0.5
-    # Deprecated: live first-move uses radar_arm_distance (TP1×50%~85%).
+    # Deprecated: live first-move uses path TP1×0.85 (whitepaper v2).
     # Kept only so historical backtest scripts can rebuild the old 0.75 gate.
     step_trigger_atr: float = 0.75
     step_advance_atr: float = 0.4
@@ -56,11 +56,11 @@ ETH_PROFILE = BreathingProfile(
     symbol_tag="ETH",
     initial_sl_atr=1.5,
     stop_order_buffer=0.3,
-    early_breakeven_atr=0.5,
-    step_trigger_atr=0.75,
-    step_advance_atr=0.4,
+    early_breakeven_atr=0.5,  # activate → entry±0.5ATR
+    step_trigger_atr=0.50,  # mid-tier whitepaper default
+    step_advance_atr=0.35,
     phase2_trigger_atr=3.0,
-    coef_min=1.2,
+    coef_min=2.0,
     coef_max=2.5,
     chart_tf_min=90.0,
     stagnant_window_min=90.0,
@@ -70,13 +70,12 @@ XAU_PROFILE = BreathingProfile(
     symbol_tag="XAU",
     initial_sl_atr=1.5,
     stop_order_buffer=0.5,
-    # Smart re-entry tier0 (plan): wider BE + steps; phase2 coef aligned with ETH.
-    early_breakeven_atr=0.65,
-    step_trigger_atr=0.70,
-    step_advance_atr=0.45,
+    early_breakeven_atr=0.5,
+    step_trigger_atr=0.40,
+    step_advance_atr=0.30,
     phase2_trigger_atr=3.0,
-    coef_min=1.2,
-    coef_max=2.5,
+    coef_min=1.8,
+    coef_max=2.2,
     chart_tf_min=45.0,  # actual TV chart
     stagnant_window_min=60.0,  # 45×~1.33 buffer ≈ one bar + slack
 )
@@ -179,9 +178,9 @@ def effective_radar_arm_distance(
     arm_tp1_pct: float | None = None,
     step_trigger_atr: float | None = None,
 ) -> float:
-    """Live first-move gate: max(TP1×pct, step_trigger×ATR) when pct given; else dynamic.
+    """Live first-move gate: TP1×pct path distance when pct given; else dynamic.
 
-    Smart re-entry always passes ``arm_tp1_pct`` (50/65/80/95 ladder).
+    Whitepaper v2 always passes ``arm_tp1_pct=0.85``.
     """
     p = profile or ETH_PROFILE
     atr = float(initial_atr or 0)
@@ -278,6 +277,6 @@ def profile_as_dict(profile: BreathingProfile) -> dict[str, Any]:
         "chart_tf_min": profile.chart_tf_min,
         "stagnant_window_min": profile.stagnant_window_min,
         "stagnant_breath_samples": stagnant_breath_samples(profile),
-        "radar_arm": "TP1×50/65/80/90/95 progressive (+ step_trigger floor)",
+        "radar_arm": "TP1路径×0.85（白皮书v2）",
         "trail_tighten": 1.0,  # removed — always 1.0 (tightness in min/max)
     }

@@ -6,13 +6,12 @@
 
 多用户 **AI 量化决策引擎 SaaS**。TV → VPS webhook → 多交易所 U 永续独立执行。
 
-> **文档同步（2026-07-25）** · 权威长文：根 `README.md` · 再入场：`docs/SMART_REENTRY_CLOSED_LOOP.md` · 部署：`docs/VPS_DEPLOY.md`
+> **文档同步（2026-07-25 · 白皮书 v2.0）** · 权威长文：根 `README.md` · 再入场：`docs/SMART_REENTRY_CLOSED_LOOP.md` · 部署：`docs/VPS_DEPLOY.md`  
+> 凡与本文冲突的旧描述（「5 档递进 1.0→5.0」「arm 50/65/80/90/95」「buffer 固定 1.2」「雷达提前介入」）**一律作废**。
 
 ### 当前实盘一句话
 
-**三层防线 + 智能再入场 + 本地挂单标签幂等 + 挂单硬帽≤5 + ETH/XAU 隔离。**  
-TV 窗口三条路：止盈 / 雷达 BE 再入 / 硬止损认输 — 无第四种主动离场。  
-**杜绝同价 50 笔 LIMIT**；日亏熔断生产关闭；限流走共享 90s 冷静。
+**硬止损是底线，雷达是骑士。** TP1 之前仅硬止损守护；TP1 路径×0.85 后雷达被动跟随。ADX 弱/中/强档自适应；重入最多一次；TP 10/20/70；挂单硬帽≤5；ETH/XAU 隔离。
 
 ### 生产锚点
 
@@ -21,24 +20,24 @@ TV 窗口三条路：止盈 / 雷达 BE 再入 / 硬止损认输 — 无第四�
 | 三方 commit | 部署后 `git rev-parse --short HEAD` 本地=GitHub=VPS |
 | VPS | `/home/panda/panda-quant-platform` |
 | Webhook | `https://twinstar.pro/gemini/webhook` → `:6010` |
-| 品种 | ETHUSDT + XAUUSDT（图表 ETH 90m / XAU 45m） |
+| 品种 | ETHUSDT（90m）+ XAUUSDT（45m） |
 | 再入开关 | `SMART_REENTRY_ETH_ENABLED` / `SMART_REENTRY_XAU_ENABLED` |
 | E2E | 生产必须 `E2E_FORCE_NOTIONAL_USD=0` |
-| 日亏熔断 | `DAILY_LOSS_CIRCUIT_ENABLED=False`（误熔断曾挡真实 TV） |
+| 日亏熔断 | `DAILY_LOSS_CIRCUIT_ENABLED=False` |
 
-### 关键参数
+### 关键参数（白皮书 v2.0）
 
 | 项 | 现行值 |
 |----|--------|
 | 算仓 | `qty = 本金 × 20% × 5 / 价` |
-| 硬止损 | `fill±(|TV.e−SL|×buffer)`（默认 buffer=1.2；无 ATR 地板/滑点垫） |
-| TP 比例 | 固定 **10/20/70**；TP3 与雷达并行互斥 |
-| 雷达档位 | arm TP1×50/65/80/90/95；ETH/XAU 独立 early_be/step/coef |
-| 再入价 | 双保险 min/max(5m极值±tick, TV×0.997/1.003)；须优于 TV |
-| 再入区 | ETH 0.5×ATR / XAU 0.3×ATR；硬/亏永不重入；最多到 5.0 档 |
-| 挂单硬帽 | 单品种未成交挂单总数 **≤5**；超限 → critical + **暂停该品种开仓** |
-| 退出所有权 | `exit_ownership`: NONE / TP3_LIMIT / RADAR_STOP；先成交锁定，拒挂另一腿 |
-| API 限流 | `-1003` → `ip_rest_cooldown` 共享 90s；盘口不可读禁 cancel_all/盲补 |
+| 硬止损 | `fill±(\|TV.e−SL\|×buffer)`；buffer=ADX 档 **1.1 / 1.2 / 1.3**（弱/中/强） |
+| TP 比例 | 固定 **10/20/70**；TP3 与雷达互斥 |
+| 雷达启动 | 路径 **TP1×0.85**；激活后止损上移至开仓价±0.5×ATR |
+| ADX 档位 | 0 弱(&lt;20) / 1 中(20–30) / 2 强(&gt;30)；步长/跟进/呼吸空间按品种表 |
+| 再入 | 仅雷达扫出；ETH 0.5×ATR / XAU 0.3×ATR 区；窗口 ETH 2 根 90m / XAU 3 根 45m；**最多 1 次**；成功后雷达放宽 +1 档 |
+| 再入价 | 双保险 min/max(5m极值±tick, TV×0.997/1.003)；须优于 TV **且** 优于上次开仓价 |
+| 挂单硬帽 | 单品种未成交挂单总数 **≤5** |
+| 退出所有权 | `exit_ownership`: NONE / TP3_LIMIT / RADAR_STOP |
 
 ### 防重复限价（反 50 笔风暴）
 
@@ -54,24 +53,23 @@ TV 窗口三条路：止盈 / 雷达 BE 再入 / 硬止损认输 — 无第四�
 project: panda-quant-platform
 domain: twinstar.pro
 vps: /home/panda/panda-quant-platform
+whitepaper: v2.0-2026-07-25
 
 rules:
-  - hard_stop = fill ± (|TV.e−SL|×1.2); no ATR floor / slip pad; missing SL → reject
+  - hard_stop = fill ± (|TV.e−SL| × ADX_buffer 1.1/1.2/1.3); missing SL → reject
   - TP 10/20/70 always; TP3 ↔ radar mutex
+  - radar arm = path TP1×0.85; passive trail; max reentry = 1
   - local PendingOrderRegistry → refuse place even if book empty
   - OPEN_ORDERS_HARD_CAP=5; DAILY_LOSS_CIRCUIT_ENABLED=False
-  - -1003 → ip_rest_cooldown 90s shared ETH+XAU
   - E2E_FORCE_NOTIONAL_USD=0 in production; wait real TV
   - three-way commit alignment required
 
 modules:
+  trend_tiers: backend/app/core/trend_tier_params.py
   smart_reentry: backend/app/core/smart_reentry.py
   reentry_exec: backend/app/core/smart_reentry_mixin.py
   place_guard: backend/app/core/order_place_guard.py
   hard_sl: backend/app/core/breathing_stop.py::compute_temp_tv_stop
-  open_atr: backend/app/core/open_atr_scenario.py
-  rate_cool: backend/app/core/ip_rest_cooldown.py
-  daily_loss: backend/app/core/daily_loss_circuit.py
-  supervisor: backend/app/core/position_supervisor.py
+  radar: backend/app/core/adverse_radar_guard.py + breathing_stop.py
   docs: docs/SMART_REENTRY_CLOSED_LOOP.md
 ```

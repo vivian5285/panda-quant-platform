@@ -6,16 +6,15 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-07-25 · TP 10/20/70 + 硬止损无滑点垫 + 防 50 笔风暴 + 限流冷静）**  
-> 凡与本文冲突的旧描述（「雷达扫出=失败离场」「查不到单就盲补」「硬止损=TV原价」「硬=ATR地板+滑点垫」「仅 TP1/TP2」「日亏熔断默认开」）**一律作废**。  
-> 权威：TV 窗口内仅硬止损可主动认输；雷达 BE/微赚扫出 → 清场 → 双保险限价再入 → `fill±(|TV.e−SL|×buffer)` 硬止损 + **TP1/TP2/TP3(10/20/70)** + 雷达。  
-> 结构：`docs/SMART_REENTRY_CLOSED_LOOP.md` · 部署：`docs/VPS_DEPLOY.md` · 速查：`backend/data/_readme_top.md`
+> **文档同步（2026-07-25 · 白皮书 v2.0 · TP 10/20/70 + ADX 档呼吸垫 + 雷达延迟启动 + 重入最多 1 次）**  
+> 凡与本文冲突的旧描述（「雷达扫出=失败离场」「查不到单就盲补」「硬止损=TV原价」「硬=ATR地板+滑点垫」「仅 TP1/TP2」「5 档递进 1.0→5.0」「arm 50/65/80/90/95」「buffer 固定 1.2」「日亏熔断默认开」）**一律作废**。  
+> 权威：TV 窗口内仅硬止损可主动认输；雷达 BE/微赚扫出 → 清场 → 双保险限价再入（最多 1 次）→ `fill±(|TV.e−SL|×ADX档buffer)` 硬止损 + **TP1/TP2/TP3(10/20/70)** + 雷达被动跟随。  
+> 结构：`docs/SMART_REENTRY_CLOSED_LOOP.md` · 部署：`docs/VPS_DEPLOY.md` · 速查：`backend/data/_readme_top.md` · 参数表：`backend/app/core/trend_tier_params.py`
 
 ### 当前实盘一句话
 
-**VPS = 三层防线永久共存（硬止损永冻 + 独立雷达止损 + TP1/TP2/TP3）+ 智能再入场 + 本金×20%×5 算仓 + 开仓前/平仓后净场 + 本地挂单标签幂等 + 挂单硬帽≤5 + ETH/XAU 隔离。**  
-硬止损与雷达**并行、互不替换**；TP3 与雷达**互斥**（谁先成交撤另一条）。  
-**两次 TV 只有三条路**：①TP 止盈 ②雷达 BE/微赚扫出→更优价再入 ③硬止损认输不重入。  
+**硬止损是底线，雷达是骑士。** TP1 之前硬止损独自守护；路径到达 TP1×0.85 后雷达接管跟随。弱趋势收紧、强趋势放宽（ADX 0/1/2）。重入最多一次，有窗口期，价格须优于上次开仓价。TP3 与雷达互斥。本地挂单标签 + 挂单硬帽≤5 + ETH/XAU 隔离。  
+**两次 TV 只有三条路**：①TP 止盈 ②雷达 BE/微赚扫出→更优价再入（≤1 次）③硬止损认输不重入。  
 验收必须以：交易所空仓零挂单 + 本地/GitHub/VPS **三方 commit 同数字** + 日志/订单 JSON / 钉钉为准。
 
 ### 生产代码锚点
@@ -25,23 +24,23 @@
 | 三方 commit | `git rev-parse --short HEAD` 本地 = GitHub `main` = VPS **肉眼同数字** |
 | VPS 路径 | `/home/panda/panda-quant-platform` |
 | Webhook | `https://twinstar.pro/gemini/webhook` → `:6010` |
-| 交易对 | **ETH + XAU**（`TRADING_SYMBOLS=ETHUSDT,XAUUSDT`） |
+| 交易对 | **ETH + XAU**（`TRADING_SYMBOLS=ETHUSDT,XAUUSDT`；图表 ETH 90m / XAU 45m） |
 | 再入场开关 | `SMART_REENTRY_ETH_ENABLED` / `SMART_REENTRY_XAU_ENABLED`（默认 True） |
 | E2E | 生产必须 `E2E_FORCE_NOTIONAL_USD=0`（烟雾后立刻还原） |
 | 日亏熔断 | **`DAILY_LOSS_CIRCUIT_ENABLED=False`（生产关闭）** — 曾误熔断挡真实 TV |
 
-### 智能再入场闭环（2026-07-25 最终版）
+### 智能再入场闭环（白皮书 v2.0 · 2026-07-25）
 
-**理念**：TV 方向未变期间，VPS 不主动认输。雷达扫出不是失败，而是以更优价格再上车的机会；硬止损才是方向被证伪。
+**理念**：策略方向已验证；执行层过早干预才是利润杀手。雷达从「主动锁利」转为「被动跟随、守护趋势」。入场靠评分，利润兑现靠 TP，雷达防止趋势被过早打断。
 
 | 步骤 | 规则 |
 |------|------|
 | ① 归零清场 | 仓位=0 后：撤销全部限价/条件单，确认盘口空、持仓零（最多 3 轮）。失败 → 钉钉 critical，**拒挂再入限价** |
-| ② 重入判断 | 仅雷达轨 + 平仓价在保本~微赚区（ETH 0.5×ATR / XAU 0.3×ATR）。硬止损/亏损 → 永不重入 |
-| ③ 双保险价 | 多 `min(5m低+tick, TV×0.997)`；空 `max(5m高−tick, TV×1.003)`；不优于 TV → 终止 |
-| ④ 挂限价 | **先查本地标签**；标签占用 → 绝对拒挂（即使交易所返回空）。`newClientOrderId` 幂等。TTL 5min，超时撤旧标签再挂 |
-| ⑤ 成交保护 | fill 为原点：硬止损=`fill±(|TV.e−TV.SL|×buffer)`（buffer 默认 1.2，可配）+ TP1/TP2/TP3(10/20/70) + 雷达并行。钉钉 `SMART_REENTRY_PROTECTED` |
-| ⑥ 档位递进 | 1.0→5.0：arm 50/65/80/90/95；每档独立 early_be / step_* / coef_min~max。满 5.0 再扫出 → 终止 |
+| ② 重入判断 | 仅雷达轨 + 平仓价在保本~微赚区（ETH 0.5×ATR / XAU 0.3×ATR）+ **窗口内**（ETH 2×90m / XAU 3×45m）+ 累计重入=0。硬止损/亏损 → 永不重入 |
+| ③ 双保险价 | 多 `min(5m低+tick, TV×0.997)`；空 `max(5m高−tick, TV×1.003)`；须优于 TV **且** 优于上次开仓价 → 否则终止 |
+| ④ 挂限价 | **先查本地标签**；标签占用 → 绝对拒挂。`newClientOrderId` 幂等。TTL 5min |
+| ⑤ 成交保护 | fill 为原点：硬止损=`fill±(|TV.e−TV.SL|×ADX档buffer 1.1/1.2/1.3)` + TP1/TP2/TP3(10/20/70) + 雷达（**放宽 +1 档**）。钉钉 `SMART_REENTRY_PROTECTED` |
+| ⑥ 档位 | ADX 弱/中/强（0/1/2）；重入成功雷达 +1 档（封顶 2）；**最多重入 1 次** |
 | ⑦ 新 TV | 先清场归零，重置档位/标签/计数器，再开新方向 |
 
 **红色硬闸（击穿实盘级）**  
@@ -54,7 +53,7 @@
 | 单周期单挂 | 同一品种同时只允许一笔再入场开仓限价；超时先 `release` 旧标签再新标签 |
 | 延迟启动 | `_close_all` 先 **plan** 快照 → purge → **commit** 启动 worker（避免 cancel_all 误杀刚挂的再入限价） |
 
-模块：`backend/app/core/smart_reentry.py` · `smart_reentry_mixin.py` · `order_place_guard.py`
+模块：`trend_tier_params.py` · `smart_reentry.py` · `smart_reentry_mixin.py` · `order_place_guard.py`
 
 ### 事故纪要 · 重复限价止盈 / 幽灵单（2026-07-23）
 
@@ -90,7 +89,7 @@
 
 ```
 TV 入队 → 解析 → ATR 场景 → RISK20×5 算仓 → 市价开
-  → 永久硬止损 fill±(|TV.e−SL|×1.2) + TP1/TP2/TP3(10/20/70) → 雷达武装
+  → 永久硬止损 fill±(|TV.e−SL|×ADX档buffer) + TP1/TP2/TP3(10/20/70) → 雷达武装(TP1×0.85后启动)
 ```
 
 不可读盘口时：**禁止再挂 TP/Stop、禁止 cancel_all、禁止把未知当已保护**。
@@ -98,15 +97,15 @@ TV 入队 → 解析 → ATR 场景 → RISK20×5 算仓 → 市价开
 **自查口令（独立于文字汇报）**  
 1. GitHub / 本地 / VPS `git rev-parse --short HEAD` 三数字一致。  
 2. 币安：仓位(0) + 当前委托(0) + 条件委托(0)。  
-3. 代码原样：`breathing_profile.py` 内 ETH/XAU 基础 `coef_min=1.2` / `coef_max=2.5`（再入场档位可覆写更宽）；勿再查旧 XAU 0.5~1.2。  
+3. 代码原样：`trend_tier_params.py` 内 ETH/XAU ADX 档表；`MAX_REENTRY=1`；`RADAR_ARM_TP1_PCT=0.85`。  
 4. 当面最小资金 LONG：应见 **硬止损1 + 雷达1 + TP限价（满额时 TP1+TP2+TP3；~20U 烟雾常因最小名义只成 TP3）**，钉钉杠杆 **5×**。
 
 ### 三层防线永久共存（核心，不得误解）
 
 | 层 | 规则 |
 |----|------|
-| **① 硬止损（永久防线）** | `dist=\|TV.price−TV.stop_loss\|×buffer`（默认 1.2），挂单=`fill±dist`。无 ATR 地板、无滑点垫。例：1900/1880→**1876**。至 flat：**禁止**收紧/撤销。雷达不碰硬止损。**缺 SL 或距&lt;5 ticks → 拒开仓**。 |
-| **② 雷达止损（独立动态）** | 首动=`TP1×50%~85%`（动态）；步进 + TP 底线 + 阶段二。与硬止损并行。考核窗未达首动 → **仅雷达**收至 TV 原始距；硬不动。 |
+| **① 硬止损（永久防线）** | `dist=\|TV.price−TV.stop_loss\|×buffer`；buffer=ADX 档 **1.1/1.2/1.3**。挂单=`fill±dist`。无 ATR 地板、无滑点垫。例（中档）：1900/1880→**1876**。至 flat：**禁止**收紧/撤销。雷达不碰硬止损。**缺 SL 或距&lt;5 ticks → 拒开仓**。 |
+| **② 雷达止损（骑士守卫）** | **TP1 路径×0.85 才启动**；激活瞬间止损→开仓价±0.5×ATR；之后按档位步长/跟进/呼吸空间被动抬止损。与硬止损并行。启动前仅硬止损保护。 |
 | **③ TP 限价** | TP1/TP2/TP3 **始终** TV 价 **10%/20%/70%**。剩余 70% 上 TP3 与雷达**并行互斥**（谁先成交撤另一条）。 |
 | 部分平仓 | TP 成交后仓位变 90%/70%/0：硬止损与雷达止损**数量同步收缩**，价格不变。 |
 | 归零清理 | 任一止损触发或全部 TP 成交 → 立即撤销其余挂单，不留孤儿单。 |
@@ -135,10 +134,11 @@ TV 入队 → 解析 → ATR 场景 → RISK20×5 算仓 → 市价开
 | 15s 铁律 | OPEN 先到 → 15s 内 CLOSE **丢弃**；CLOSE 先到 → **先平后开**；>15s CLOSE 独立平仓 |
 | 净场 | 开仓前无仓无挂单；平仓后立即撤该 symbol 全部挂单；反手一律先平 |
 | ATR | **优先**交易所原生 1h；失败用 TV atr；雷达/开仓**不用** 90m 合成 |
-| 呼吸 | ETH/XAU 基础 1.2~2.5（再入场档位递进可更宽）；雷达启动=TP1×50%~95%；考核收紧 ETH18/XAU12 采样；阶段一推进不含 coef |
+| 呼吸 / 雷达 | ADX 弱/中/强档；启动=TP1 路径×0.85；激活→entry±0.5ATR；步长/跟进/呼吸见 `trend_tier_params` |
 | TV 图表 | ETH **90m** / XAU **45m**（VPS「1h ATR」仅为波动率 oracle） |
 | 杠杆 | 一律 `FIXED_LEVERAGE=5` |
 | 加仓 | **禁用**；同向亦先平后开 |
+| 重入 | 最多 **1** 次；窗口 ETH 2 根 / XAU 3 根；成功后雷达 +1 档 |
 
 | 生产域名 | [https://twinstar.pro](https://twinstar.pro) |
 |----------|---------------------------------------------|
@@ -164,10 +164,11 @@ services:
   redis:6379
 
 rules:
-  - hard_stop = fill ± (|TV.price−TV.stop_loss| × buffer); buffer default 1.2; NO ATR floor / slip pad
+  - hard_stop = fill ± (|TV.price−TV.stop_loss| × ADX_buffer 1.1/1.2/1.3); NO ATR floor / slip pad
   - missing SL or distance < 5 ticks → reject open
   - TP always 10/20/70 (TP1+TP2+TP3); TP3 ↔ radar mutex
-  - radar first-move = TP1×50%~85%; coexist STOP with hard; hard never moved by radar
+  - radar arm = path TP1×0.85; activate → entry±0.5ATR; then passive trail by ADX tier
+  - max reentry = 1; window ETH 2×90m / XAU 3×45m; reentry loosens radar +1 tier
   - local PendingOrderRegistry tag → refuse place even if book empty (anti 50× LIMIT)
   - OPEN_ORDERS_HARD_CAP=5 → critical + pause symbol opens
   - DAILY_LOSS_CIRCUIT_ENABLED=False in prod (false trips blocked real TV)
@@ -178,9 +179,11 @@ rules:
 
 modules:
   sizing: backend/app/core/tv_entry_sizing.py
+  trend_tiers: backend/app/core/trend_tier_params.py
   hard_sl: backend/app/core/breathing_stop.py::compute_temp_tv_stop
   open_atr: backend/app/core/open_atr_scenario.py
   radar: backend/app/core/adverse_radar_guard.py + breathing_stop.py
+  reentry: backend/app/core/smart_reentry.py + smart_reentry_mixin.py
   tp: backend/app/core/tp_regime_targets.py
   place_guard: backend/app/core/order_place_guard.py
   rate_cool: backend/app/core/ip_rest_cooldown.py

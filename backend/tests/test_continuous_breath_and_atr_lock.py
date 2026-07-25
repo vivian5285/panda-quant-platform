@@ -21,16 +21,16 @@ from app.core.initial_atr_lock import (
 
 
 def test_continuous_ends_and_midpoints():
-    # Floor / ceiling — ETH + XAU both phase2 1.2~2.5 (smart re-entry plan)
-    assert abs(trail_distance_multiplier(0.5, ETH_PROFILE) - 1.2) < 1e-9
+    # Mid-tier whitepaper: ETH 2.0~2.5 / XAU 1.8~2.2
+    assert abs(trail_distance_multiplier(0.5, ETH_PROFILE) - 2.0) < 1e-9
     assert abs(trail_distance_multiplier(2.5, ETH_PROFILE) - 2.5) < 1e-9
-    assert abs(trail_distance_multiplier(0.5, XAU_PROFILE) - 1.2) < 1e-9
-    assert abs(trail_distance_multiplier(2.5, XAU_PROFILE) - 2.5) < 1e-9
-    # Cold start ratio=1.0 → min + (max-min)*0.25 = 1.525 both
-    assert abs(cold_start_multiplier(ETH_PROFILE) - 1.525) < 1e-9
-    assert abs(cold_start_multiplier(XAU_PROFILE) - 1.525) < 1e-9
-    assert abs(get_breathing_coefficient(1.0, "ETHUSDT") - 1.525) < 1e-9
-    assert abs(get_breathing_coefficient(1.0, "XAUUSDT") - 1.525) < 1e-9
+    assert abs(trail_distance_multiplier(0.5, XAU_PROFILE) - 1.8) < 1e-9
+    assert abs(trail_distance_multiplier(2.5, XAU_PROFILE) - 2.2) < 1e-9
+    # Cold start ratio=1.0 → min + (max-min)*0.25
+    assert abs(cold_start_multiplier(ETH_PROFILE) - 2.125) < 1e-9
+    assert abs(cold_start_multiplier(XAU_PROFILE) - 1.9) < 1e-9
+    assert abs(get_breathing_coefficient(1.0, "ETHUSDT") - 2.125) < 1e-9
+    assert abs(get_breathing_coefficient(1.0, "XAUUSDT") - 1.9) < 1e-9
     # Midpoints continuous (no discrete jump)
     eth_07 = get_breathing_coefficient(0.7, "ETHUSDT")
     eth_10 = get_breathing_coefficient(1.0, "ETHUSDT")
@@ -40,23 +40,20 @@ def test_continuous_ends_and_midpoints():
     xau_10 = get_breathing_coefficient(1.0, "XAUUSDT")
     xau_14 = get_breathing_coefficient(1.4, "XAUUSDT")
     assert xau_07 < xau_10 < xau_14
-    # ETH/XAU share phase2 coef band 1.2~2.5 — same ratio → same multiplier
-    for r in (0.6, 1.0, 1.4, 2.0, 2.2):
-        assert abs(
-            get_breathing_coefficient(r, "XAUUSDT") - get_breathing_coefficient(r, "ETHUSDT")
-        ) < 1e-9
+    # ETH/XAU mid-tier bands differ (whitepaper)
+    assert get_breathing_coefficient(1.0, "XAUUSDT") != get_breathing_coefficient(1.0, "ETHUSDT")
 
 
 def test_missing_coef_seed_is_cold_start_not_literal_one():
-    """Idle/missing seed must not use literal 1.0 (clamps ETH→1.2)."""
-    assert abs(resolve_breathing_coef(None, "ETHUSDT") - 1.525) < 1e-9
-    assert abs(resolve_breathing_coef(None, "XAUUSDT") - 1.525) < 1e-9
-    assert abs(load_breathing_coef(None, "ETHUSDT") - 1.525) < 1e-9
-    assert abs(load_breathing_coef(0, "XAUUSDT") - 1.525) < 1e-9
-    assert abs(load_breathing_coef(1.4, "XAUUSDT") - 1.4) < 1e-9
-    # Literal 1.0 below minMult → clamp to 1.2 for both
-    assert abs(resolve_breathing_coef(1.0, "XAUUSDT") - 1.2) < 1e-9
-    assert abs(resolve_breathing_coef(1.0, "ETHUSDT") - 1.2) < 1e-9
+    """Idle/missing seed must not use literal 1.0 (clamps to minMult)."""
+    assert abs(resolve_breathing_coef(None, "ETHUSDT") - 2.125) < 1e-9
+    assert abs(resolve_breathing_coef(None, "XAUUSDT") - 1.9) < 1e-9
+    assert abs(load_breathing_coef(None, "ETHUSDT") - 2.125) < 1e-9
+    assert abs(load_breathing_coef(0, "XAUUSDT") - 1.9) < 1e-9
+    assert abs(load_breathing_coef(1.9, "XAUUSDT") - 1.9) < 1e-9
+    # Literal 1.0 below minMult → clamp to min
+    assert abs(resolve_breathing_coef(1.0, "XAUUSDT") - 1.8) < 1e-9
+    assert abs(resolve_breathing_coef(1.0, "ETHUSDT") - 2.0) < 1e-9
 
 
 def test_smooth_then_interpolate():
@@ -64,7 +61,6 @@ def test_smooth_then_interpolate():
         initial_atr=20.0, atr_1h=13.0, ratio_history=[], symbol="ETHUSDT",
     )
     assert abs(hist[-1] - 0.65) < 1e-9
-    # ratio 0.65 → near floor → ~1.2 + small
     assert abs(coef - get_breathing_coefficient(0.65, "ETHUSDT")) < 1e-9
     coef, hist, smooth = update_breathing_coefficient(
         initial_atr=20.0, atr_1h=20.0, ratio_history=hist, symbol="ETHUSDT",
@@ -79,7 +75,7 @@ def test_smooth_then_interpolate():
 
 def test_init_state_uses_cold_start_coef():
     st = init_breathing_state(1800, "LONG", atr=40)
-    assert abs(st["breathing_coefficient"] - 1.525) < 1e-9
+    assert abs(st["breathing_coefficient"] - 2.125) < 1e-9
 
 
 def test_initial_atr_lock_blocks_overwrite():

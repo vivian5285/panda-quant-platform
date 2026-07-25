@@ -1126,6 +1126,11 @@ class AdverseRadarMixin:
                         tv_entry=tv_entry,
                         initial_atr=atr if atr > 0 else None,
                         symbol=sym,
+                        trend_tier=(
+                            int(self._resolve_trend_tier())
+                            if hasattr(self, "_resolve_trend_tier")
+                            else None
+                        ),
                     )
                     or 0
                 )
@@ -2425,6 +2430,11 @@ class AdverseRadarMixin:
             tv_stop_loss=tv_sl,
             tv_entry=tv_entry,
             symbol=sym,
+            trend_tier=(
+                int(self._resolve_trend_tier())
+                if hasattr(self, "_resolve_trend_tier")
+                else None
+            ),
         )
         log_meta = hard_stop_meta_for_logs(
             fill_entry=fill, tv_stop_loss=tv_sl, tv_entry=tv_entry, symbol=sym,
@@ -2445,6 +2455,11 @@ class AdverseRadarMixin:
             tv_sl,
             tv_entry=tv_entry,
             symbol=sym,
+            trend_tier=(
+                int(self._resolve_trend_tier())
+                if hasattr(self, "_resolve_trend_tier")
+                else None
+            ),
         )
         source = "tv_hard_stop_distance_buffer"
         if temp <= 0:
@@ -2877,9 +2892,12 @@ class AdverseRadarMixin:
         self.best_price = new_best
         self.breakeven_phase = new_phase
         self.breathing_coefficient = float(tick.get("breathing_coefficient") or coef)
+        meta = tick.get("meta") or {}
+        if tick.get("radar_armed") or meta.get("radar_armed") or meta.get("just_activated"):
+            self.radar_activated = True
         if step_count > int(getattr(self, "radar_step_count", 0) or 0):
             self.radar_step_count = step_count
-        if step_count >= 1 or radar_arm_reached(
+        if step_count >= 1 or bool(getattr(self, "radar_activated", False)) or radar_arm_reached(
             side, entry, px, atr,
             smooth_ratio=float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
             symbol=sym,
@@ -3145,6 +3163,9 @@ class AdverseRadarMixin:
         self.best_price = float(tick.get("best_price") or self.best_price)
         self.breakeven_phase = bool(tick.get("breakeven_phase"))
         self.breathing_coefficient = float(tick.get("breathing_coefficient") or coef)
+        meta = tick.get("meta") or {}
+        if tick.get("radar_armed") or meta.get("radar_armed") or meta.get("just_activated"):
+            self.radar_activated = True
         if new_sl > 0:
             # Only improve (never retreat) relative to persisted current_sl
             if side == "LONG":

@@ -1,170 +1,117 @@
-# 智能再入场闭环 · 仓库结构解说（生产权威）
+# 智能再入场闭环 · 白皮书 v2.0（生产权威）
 
-> 同步：2026-07-25 · commit 以 `main` HEAD 为准（部署后三方肉眼同 hash）  
-> 适用：币安多用户 Gemini / 单账户同源执行栈 · ETHUSDT（90m）/ XAUUSDT（45m）
+> 同步：2026-07-25 · whitepaper v2.0 · commit 以 `main` HEAD 为准（部署后三方肉眼同 hash）  
+> 适用：ETHUSDT（90m）/ XAUUSDT（45m）  
+> 凡「5 档递进 / arm 50~95% / buffer 固定 1.2」旧文 **作废**。
 
-本文只解释**代码落点与调用顺序**，方便后期调参与排障。业务理念见根目录 `README.md`「智能再入场闭环」。
+本文解释**代码落点与调用顺序**。业务理念见根目录 `README.md`。
 
 ---
 
 ## 1. 灵魂（三条路径，无第四种）
 
-在两次 TV 信号之间，VPS **不主动认输**：
-
 | 路径 | 触发 | 行为 |
 |------|------|------|
-| ① 理想 | 价格走到 TP1/TP2/(场景二 TP3) | 止盈兑现 → flat → 等下一 TV |
-| ② 核心 | 雷达在保本/微赚区扫出 | 清场 → 双保险限价再入 → 递进档位 → 再冲击 TP |
-| ③ 认输 | 硬止损触发 / 亏损平仓 | **永不重入**，等新 TV |
-
-新 TV（含反向 / CLOSE_*）→ 彻底清场 + 重置档位/标签。
+| ① 理想 | TP1/TP2/TP3 限价成交 | 逐级兑现 → flat → 等下一 TV |
+| ② 核心 | 雷达在保本/微赚区扫出，且在窗口内 | 清场 → 双保险限价再入（最多 1 次）→ 雷达放宽 +1 档 |
+| ③ 认输 | 硬止损 / 亏损 / 窗口过期 / 已重入过 | **永不重入**，等新 TV |
 
 ---
 
-## 2. 模块地图（改哪里找哪里）
+## 2. 模块地图
 
 ```
 TV webhook (:6010)
   → position_supervisor._close_all / OPEN protect
        │
        ├─ flat 成功
-       │    ├─ _maybe_arm_smart_reentry(defer=True)   # 只 plan，不挂单
+       │    ├─ _maybe_arm_smart_reentry(defer=True)   # plan（含窗口/次数）
        │    ├─ purge 净场
        │    └─ _commit_deferred_reentry()             # 净场后再开 worker
        │
        └─ OPEN / 再入成交
             └─ _protect_and_monitor
-                 ├─ 硬止损  compute_temp_tv_stop (fill + 缓冲 + 滑点)
-                 ├─ TP1/TP2 _place_limit_with_retry (+ 本地 tp 标签)
-                 └─ 雷达    _ensure_radar_sl (+ 本地 radar 标签)
+                 ├─ 硬止损  compute_temp_tv_stop(…, trend_tier=ADX档)
+                 ├─ TP1/TP2/TP3 (10/20/70)
+                 └─ 雷达    路径 TP1×0.85 才激活
 ```
 
 | 文件 | 职责 |
 |------|------|
-| `backend/app/core/smart_reentry.py` | 纯策略：5 档表、arm 50/65/80/90/95、双保险价、再入区间、硬/亏拒绝 |
-| `backend/app/core/smart_reentry_mixin.py` | 执行：plan/commit、清场预检、限价 worker、成交后 protect、钉钉 |
-| `backend/app/core/order_place_guard.py` | **本地挂单标签**（防查不到单就风暴挂 50+） |
-| `backend/app/core/breathing_stop.py` | `compute_temp_tv_stop` / `compute_hard_stop_distance`；档位 coef 透传 |
-| `backend/app/core/breathing_profile.py` | ETH/XAU 基础 profile；`trail_distance_multiplier(..., coef_min/max)` |
-| `backend/app/core/position_supervisor.py` | `_close_all` 延迟再入；`_place_limit_with_retry` TP 标签 |
-| `backend/app/core/adverse_radar_guard.py` | 硬止损挂单 + hard 本地标签 |
-| `backend/app/core/binance_smart_defense.py` | 雷达挂单 + radar 本地标签 |
-| `backend/app/core/binance_client.py` | `place_limit_order(..., client_order_id=)` → `newClientOrderId` |
-| `backend/app/config.py` | `SMART_REENTRY_ETH_ENABLED` / `SMART_REENTRY_XAU_ENABLED` |
+| `trend_tier_params.py` | ADX 0/1/2 档参数表（ETH/XAU 完整 knobs） |
+| `smart_reentry.py` | 再入条件、窗口、双保险价、最多 1 次、+1 档放宽 |
+| `smart_reentry_mixin.py` | plan/commit、限价 worker、钉钉 |
+| `breathing_stop.py` | 硬止损 buffer；雷达延迟启动 + 被动跟踪 |
+| `order_place_guard.py` | 本地挂单标签 |
+| `adverse_radar_guard.py` | 双轨 STOP 挂/改 |
 
-测试：`backend/tests/test_smart_reentry.py` · `test_order_place_guard.py`  
-探针：`backend/data/_vps_verify_smart_reentry.py` · `_vps_sync_ready_ding.py`
+参数表镜像：`smart_reentry_tiers.json`（文档/运维对照；运行时以 `trend_tier_params.py` 为准）。
 
 ---
 
-## 3. 闭环时序（必须这个顺序）
+## 3. ADX 档位与关键参数
+
+| 档 | ADX | 硬止损 buffer |
+|----|-----|---------------|
+| 0 弱 | &lt;20 | 1.1 |
+| 1 中 | 20–30 | 1.2 |
+| 2 强 | &gt;30 | 1.3 |
+
+雷达启动：路径 **TP1×0.85**（入场→TP1 路程的 85%，非字面 `TP1*0.85`）。  
+激活瞬间：止损上移至 **开仓价 ± 0.5×ATR**。
+
+| 参数 | ETH 弱/中/强 | XAU 弱/中/强 |
+|------|--------------|--------------|
+| 跟踪步长×ATR | 0.40 / 0.50 / 0.60 | 0.35 / 0.40 / 0.50 |
+| 跟进幅度×ATR | 0.25 / 0.35 / 0.40 | 0.20 / 0.30 / 0.35 |
+| TP1→TP2 呼吸 | 0.80 / 1.20 / 1.50 | 0.70 / 1.00 / 1.30 |
+| TP2→TP3 呼吸 | 1.00 / 1.60 / 2.00 | 0.90 / 1.40 / 1.80 |
+| TP3 后 coef | 1.2~1.5 / 2.0~2.5 / 2.5~3.5 | 1.0~1.3 / 1.8~2.2 / 2.2~3.0 |
+| 重入窗口 | 2 根×90m ≈ 3h | 3 根×45m ≈ 2.25h |
+| 重入区 | 开仓价→开仓+0.5×ATR | 开仓价→开仓+0.3×ATR |
+
+重入成功：雷达系数取 **ADX档+1**（封顶强档）；不影响 TP 价格与数量。
+
+---
+
+## 4. 硬止损
 
 ```
-仓位归零
-  → 识别 stop_track（radar / hard / unknown）
-  → plan：快照 qty / side / tv_px / tv_sl / atr（不启动线程）
-  → clear 本地仓位态 + purge 全部挂单
-  → commit：确认 pos=0 且 open_orders 可读且为空（≤3 轮）
-  → 本地 reentry 标签 try_acquire（失败 → 拒挂 + 钉钉 REENTRY_DUP_BLOCK）
-  → 双保险算价；不优于 TV → 终止
-  → place_limit(clientOrderId) · TTL 5min
-  → 成交 → release 标签 → 恢复 TV SL/ATR → _protect_and_monitor
-  → 钉钉 SMART_REENTRY_PROTECTED（hard/radar/slip 核查）
+tv_stop_distance = |TV.price − TV.stop_loss|
+actual = tv_stop_distance × buffer(ADX档)
+hang = fill ± actual
+缺 SL / ≤0 / 距 < 5 ticks → 拒开仓
+至 flat：禁止收紧/撤销/替换
 ```
 
-**禁止**：在 purge 之前挂再入限价（会被 cancel_all 误杀或竞态叠单）。  
-**禁止**：`get_open_orders` 异常 / `None` 后当作「没有单」继续挂。
+---
+
+## 5. 本地标签与挂单硬帽
+
+同旧：`PendingOrderRegistry` + `OPEN_ORDERS_HARD_CAP=5` + 查单失败 fail-closed。  
+宁可错过，不要做错。
 
 ---
 
-## 4. 价格与硬止损（2026-07-25 · 无 ATR 地板 / 无滑点垫）
-
-再入成交价可能偏离 TV 指导价。硬止损**永远以交易所 fill 为原点**：
-
-```
-dist = |TV.price − TV.stop_loss| × buffer   # buffer 默认 1.2
-hang = fill ± dist                          # 无 ATR 地板、无 fill-slip 垫
-缺 SL 或 dist < 5 ticks → 拒开仓 / 拒保护
-```
-
-实现：`breathing_stop.compute_hard_stop_distance` / `compute_temp_tv_stop`。  
-再入前 mixin 把 `reentry_tv_sl_ref` / `reentry_atr_ref` / `reentry_tv_px` 写回，避免 flat 清态后硬止损算不出来。
-
-开仓后并行挂单（同一保护窗口，非「先开后等几十秒再挂」）：
-
-1. 硬止损（永冻）  
-2. TP1/TP2/TP3 限价（10/20/70；小名义可折叠）  
-3. ATR 就绪后额外挂雷达 STOP（与硬并存；TP3↔雷达互斥）
-
-双保险限价：
-
-- LONG：`min(5m_low+tick, TV×0.997)`（无 5m 用 3m；都无则仅 TV%）
-- SHORT：`max(5m_high−tick, TV×1.003)`
-- 结果必须严格优于 TV，否则本轮终止
-
----
-
-## 5. 档位表（调参只改 smart_reentry.py）
-
-| 档 | arm×TP1 | ETH early/trig/adv · coef | XAU early/trig/adv · coef |
-|----|---------|---------------------------|---------------------------|
-| 1.0 | 50% | 0.50 / 0.75 / 0.40 · 1.2~2.5 | 0.65 / 0.70 / 0.45 · 1.2~2.5 |
-| 2.0 | 65% | 0.65 / 0.90 / 0.46 · 1.4~2.8 | 0.85 / 0.85 / 0.52 · 1.4~2.8 |
-| 3.0 | 80% | 0.85 / 1.10 / 0.52 · 1.6~3.0 | 1.10 / 1.00 / 0.58 · 1.6~3.0 |
-| 4.0 | 90% | 1.05 / 1.25 / 0.58 · 1.8~3.2 | 1.30 / 1.15 / 0.64 · 1.8~3.2 |
-| 5.0 | 95% | 1.30 / 1.40 / 0.64 · 2.0~3.5 | 1.55 / 1.30 / 0.70 · 2.0~3.5 |
-
-- 再入区间：ETH `0.5×ATR` / XAU `0.3×ATR`（`REENTRY_ZONE_ATR`）
-- 最多再入 4 次（满 5.0 再扫出 → 终止）
-- ETH / XAU 状态完全隔离（每 supervisor 一份 mixin 状态）
-
----
-
-## 6. 本地标签（击穿级事故防线）
-
-历史：查不到 TP/止损 → 当「没挂」→ 同价连挂几十笔。
-
-规则（`PendingOrderRegistry`）：
-
-1. 挂单前 `try_acquire(tag)`；已占用 → **绝对拒挂**
-2. 交易所查询失败 / 空视图 → 不得覆盖本地标签结论
-3. 成功或确认在簿 → `release`；超时/None → 可短期 hold tag 防风暴
-4. flat / 新 TV → `clear_all`
-
-种类：`reentry` / `tp` / `hard` / `radar`（同品种同 kind 互斥）。
-
----
-
-## 7. 钉钉事件（实盘复盘口令）
+## 6. 钉钉事件（须含品种标签 + 档位）
 
 | 事件 | 含义 |
 |------|------|
-| `SMART_REENTRY_ARM` | 计划再入，即将/已挂限价 |
-| `REENTRY_LIMIT`（日志） | 限价已挂（含 cid/src） |
-| `SMART_REENTRY_PROTECTED` | 成交后硬+TP+雷达核查 |
-| `REENTRY_DUP_BLOCK` | 本地标签拦截重复挂 |
-| `REENTRY_PREFLIGHT_FAIL` | 清场未通过，拒挂 |
-| `REENTRY_ABORT` / `REENTRY_SKIP` | 终止/跳过（含原因） |
+| 开仓 | 品种/方向/价/量/档位/硬止损/TP123 |
+| 雷达激活 | 激活价、档位、初始止损上移位置 |
+| 止损移动 | 新止损、浮盈、档位 |
+| TP 成交 | TP1/2/3、成交价、剩余比例 |
+| 平仓 | 来源（TP/雷达/硬/反转）、价、盈亏、档位 |
+| `SMART_REENTRY_ARM` | 重入尝试：原因、价、档位、窗口剩余 |
+| `SMART_REENTRY_PROTECTED` | 重入成交后硬+TP+雷达核查 |
+| `REENTRY_ABORT` / `REENTRY_SKIP` | 放弃（窗口/价格不优/已重入/硬止损等） |
 
 ---
 
-## 8. 部署与三方对齐检查
+## 7. 部署探针
 
 ```bash
-# 本地 / GitHub / VPS 三数字必须一致
-git rev-parse --short HEAD
-
-# VPS
-cd /home/panda/panda-quant-platform
-git pull --ff-only origin main
-docker compose build backend && docker compose up -d backend
-curl -sf http://127.0.0.1:6010/health
 docker compose exec -T -e PYTHONPATH=/app backend python /app/data/_vps_verify_smart_reentry.py
-docker compose exec -T -e PYTHONPATH=/app -e GIT_HEAD=$(git rev-parse --short HEAD) \
-  backend python /app/data/_vps_sync_ready_ding.py
 ```
 
-生产必须：`E2E_FORCE_NOTIONAL_USD=0`；日亏损熔断关闭（`DAILY_LOSS_CIRCUIT_ENABLED=False`）。  
-开关：`.env` 可设 `SMART_REENTRY_ETH_ENABLED` / `SMART_REENTRY_XAU_ENABLED`（默认 True）。
-
-**等真实 TV**：不要主动打 E2E 名义；空仓零挂单 + supervisors_ready + 钉钉 READY 即可。
+验收：`MAX_REENTRY==1`、arm=`0.85`、ADX 档 buffer 1.1/1.2/1.3、三方 commit 同数字。

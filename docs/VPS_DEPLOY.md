@@ -48,7 +48,9 @@ docker compose exec -T -e PYTHONPATH=/app -e GIT_HEAD=$(git rev-parse --short HE
   backend python /app/data/_vps_sync_ready_ding.py
 ```
 
-再入场结构解说：`docs/SMART_REENTRY_CLOSED_LOOP.md`。
+再入场结构解说：`docs/SMART_REENTRY_CLOSED_LOOP.md`（白皮书 v2.0）。
+
+部署后探针应确认：`MAX_REENTRY==1`、`RADAR_ARM_TP1_PCT==0.85`、ADX buffer 1.1/1.2/1.3。
 
 ## 部署后人工检查清单
 

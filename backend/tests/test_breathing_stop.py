@@ -16,22 +16,17 @@ from app.core.breathing_stop import (
 
 
 def test_breathing_coefficient_continuous_eth():
-    assert abs(get_breathing_coefficient(0.5) - 1.2) < 1e-9
-    assert abs(get_breathing_coefficient(1.0) - 1.525) < 1e-9
+    # Mid-tier whitepaper ETH coef 2.0~2.5
+    assert abs(get_breathing_coefficient(0.5) - 2.0) < 1e-9
+    # ratio 1.0 → t=(1-0.6)/(2.2-0.6)=0.25 → 2.0+0.25*0.5=2.125
+    assert abs(get_breathing_coefficient(1.0) - 2.125) < 1e-9
     assert abs(get_breathing_coefficient(2.2) - 2.5) < 1e-9
-    # Linear mid: ratio 1.4 → 1.2 + 1.3*(0.8/1.6)=1.85
-    assert abs(get_breathing_coefficient(1.4) - 1.85) < 1e-9
 
 
-def test_breathing_coefficient_continuous_xau_aligned():
-    # Smart re-entry: XAU phase2 coef matches ETH 1.2~2.5
-    assert abs(get_breathing_coefficient(0.5, "XAUUSDT") - 1.2) < 1e-9
-    assert abs(get_breathing_coefficient(1.0, "XAUUSDT") - 1.525) < 1e-9
-    assert abs(get_breathing_coefficient(2.2, "XAUUSDT") - 2.5) < 1e-9
-    for r in (0.5, 0.8, 1.2, 1.75, 2.5):
-        assert abs(
-            get_breathing_coefficient(r, "XAUUSDT") - get_breathing_coefficient(r, "ETHUSDT")
-        ) < 1e-9
+def test_breathing_coefficient_continuous_xau_mid_tier():
+    # Mid-tier XAU coef 1.8~2.2
+    assert abs(get_breathing_coefficient(0.5, "XAUUSDT") - 1.8) < 1e-9
+    assert abs(get_breathing_coefficient(2.2, "XAUUSDT") - 2.2) < 1e-9
 
 
 def test_initial_stop_and_buffer_eth_default():
@@ -41,38 +36,35 @@ def test_initial_stop_and_buffer_eth_default():
     assert apply_stop_order_buffer("SHORT", 1860) == 1860 + STOP_ORDER_BUFFER_USDT
 
 
-def test_xau_buffer_and_steps():
+def test_xau_radar_waits_then_activates():
     assert apply_stop_order_buffer("LONG", 3300, "XAUUSDT") == 3299.5
     assert apply_stop_order_buffer("SHORT", 3300, "XAUUSDT") == 3300.5
     entry, atr = 3300.0, 10.0
-    coef = 1.525
+    coef = 1.9
     initial_stop = compute_initial_stop(entry, "LONG", atr, symbol="XAUUSDT")
     assert abs(initial_stop - (entry - 1.5 * atr)) < 1e-9
-    # Progressive arm 50% + step_trigger 0.70 → arm_dist=7.0; move 2 < arm → no step
+    tp1 = entry + 1.35 * atr
+    # Below arm → waiting (no step)
     stop, high, phase, meta = calculate_stop_long(
         entry + 2, entry, atr, initial_stop, initial_stop, entry, False, coef,
         symbol="XAUUSDT", smooth_ratio=1.0,
-        arm_tp1_pct=0.50, step_trigger_atr=0.70, early_breakeven_atr=0.65, step_advance_atr=0.45,
+        arm_tp1_pct=0.85, tp1_price=tp1, radar_activated=False,
+        step_trigger_atr=0.40, early_breakeven_atr=0.5, step_advance_atr=0.30,
+        breath_tp1_tp2_atr=1.0,
     )
-    assert meta["event"] == "none"
+    assert meta["event"] == "waiting_arm"
     assert abs(stop - initial_stop) < 1e-9
-    # Early BE at 0.65×ATR = 6.5
+    # At arm path 85% → activate to entry+0.5ATR
+    arm_px = entry + 0.85 * (tp1 - entry)
     stop, high, phase, meta = calculate_stop_long(
-        entry + 6.5, entry, atr, initial_stop, initial_stop, entry, False, coef,
+        arm_px, entry, atr, initial_stop, initial_stop, entry, False, coef,
         symbol="XAUUSDT", smooth_ratio=1.0,
-        arm_tp1_pct=0.50, step_trigger_atr=0.70, early_breakeven_atr=0.65, step_advance_atr=0.45,
+        arm_tp1_pct=0.85, tp1_price=tp1, radar_activated=False,
+        step_trigger_atr=0.40, early_breakeven_atr=0.5, step_advance_atr=0.30,
+        breath_tp1_tp2_atr=1.0,
     )
-    assert meta["event"] == "early_breakeven"
-    assert abs(stop - (entry + 0.01)) < 1e-6
-    arm = float(meta.get("radar_arm_dist") or 0)
-    assert abs(arm - 7.0) < 1e-9
-    stop2, high2, _, meta2 = calculate_stop_long(
-        entry + arm + 0.01, entry, atr, initial_stop, stop, high, False, coef,
-        symbol="XAUUSDT", smooth_ratio=1.0,
-        arm_tp1_pct=0.50, step_trigger_atr=0.70, early_breakeven_atr=0.65, step_advance_atr=0.45,
-    )
-    assert meta2["step_count"] >= 1
-    assert stop2 >= stop - 1e-9
+    assert meta.get("just_activated") or meta["event"] == "radar_activate"
+    assert stop >= entry + 0.5 * atr - 1e-9
 
 
 def test_init_state():
@@ -81,5 +73,6 @@ def test_init_state():
     assert st["initial_stop"] == 1740
     assert st["current_sl"] == 1740
     assert st["breakeven_phase"] is False
-    assert abs(st["breathing_coefficient"] - 1.525) < 1e-9
+    # Cold-start coef = mid-tier ETH at ratio 1.0 → 2.125
+    assert abs(st["breathing_coefficient"] - 2.125) < 1e-9
     assert st["remaining_qty_pct"] == 1.0

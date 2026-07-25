@@ -1,8 +1,8 @@
-"""Smart re-entry mixin — progressive radar + idempotent limit reopen after radar BE.
+"""Smart re-entry mixin — whitepaper v2.0 ADX-tier radar + max-1 reentry.
 
 Closed loop (TV window):
-  flat(BE/micro) → purge book → dual-insurance limit → fill → hard+TP12+radar
-  hard/loss → never reenter
+  flat(BE/micro within window) → purge → dual-insurance limit → fill → hard+TP+radar(+1 tier)
+  hard/loss/window-expired → never reenter
   local pending-tag: NEVER place if tag inflight even when book query empty
 """
 
@@ -47,10 +47,21 @@ class SmartReentryMixin:
             self._pending_order_registry = PendingOrderRegistry()
         return self._pending_order_registry
 
+    def _resolve_trend_tier(self) -> int:
+        from app.core.trend_tier_params import adx_to_tier, clamp_tier
+
+        stored = getattr(self, "trend_tier", None)
+        if stored is not None:
+            try:
+                return clamp_tier(int(stored))
+            except (TypeError, ValueError):
+                pass
+        return adx_to_tier(getattr(self, "current_adx", None))
+
     def _smart_reentry_state_dict(self) -> dict[str, Any]:
         return {
             "reentry_attempt": int(getattr(self, "reentry_attempt", 0) or 0),
-            "reentry_arm_tp1_pct": float(getattr(self, "reentry_arm_tp1_pct", 0.5) or 0.5),
+            "reentry_arm_tp1_pct": float(getattr(self, "reentry_arm_tp1_pct", 0.85) or 0.85),
             "reentry_pending": bool(getattr(self, "reentry_pending", False)),
             "reentry_limit_oid": getattr(self, "reentry_limit_oid", None),
             "reentry_limit_deadline": float(getattr(self, "reentry_limit_deadline", 0) or 0),
@@ -63,21 +74,28 @@ class SmartReentryMixin:
             "reentry_client_order_id": getattr(self, "reentry_client_order_id", None),
             "last_close_track": getattr(self, "last_close_track", None),
             "last_close_px": float(getattr(self, "last_close_px", 0) or 0),
+            "radar_flat_ts": float(getattr(self, "radar_flat_ts", 0) or 0),
+            "trend_tier": int(self._resolve_trend_tier()),
+            "radar_tier_boost": int(getattr(self, "radar_tier_boost", 0) or 0),
             "active_early_be_atr": float(getattr(self, "active_early_be_atr", 0) or 0),
             "active_step_trigger_atr": float(getattr(self, "active_step_trigger_atr", 0) or 0),
             "active_step_advance_atr": float(getattr(self, "active_step_advance_atr", 0) or 0),
             "active_coef_min": float(getattr(self, "active_coef_min", 0) or 0),
             "active_coef_max": float(getattr(self, "active_coef_max", 0) or 0),
+            "active_breath_tp1_tp2_atr": float(getattr(self, "active_breath_tp1_tp2_atr", 0) or 0),
+            "active_breath_tp2_tp3_atr": float(getattr(self, "active_breath_tp2_tp3_atr", 0) or 0),
+            "active_hard_buffer": float(getattr(self, "active_hard_buffer", 0) or 0),
             "reentry_tier_label": getattr(self, "reentry_tier_label", None),
             "reentry_abort_reason": getattr(self, "reentry_abort_reason", None),
         }
 
     def _load_smart_reentry_state(self, s: dict[str, Any]) -> None:
         from app.core.smart_reentry import tier_for_attempt
+        from app.core.trend_tier_params import clamp_tier
 
         sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
         self.reentry_attempt = int(s.get("reentry_attempt", 0) or 0)
-        self.reentry_arm_tp1_pct = float(s.get("reentry_arm_tp1_pct", 0.5) or 0.5)
+        self.reentry_arm_tp1_pct = float(s.get("reentry_arm_tp1_pct", 0.85) or 0.85)
         self.reentry_pending = bool(s.get("reentry_pending", False))
         self.reentry_limit_oid = s.get("reentry_limit_oid")
         self.reentry_limit_deadline = float(s.get("reentry_limit_deadline", 0) or 0)
@@ -90,8 +108,11 @@ class SmartReentryMixin:
         self.reentry_client_order_id = s.get("reentry_client_order_id")
         self.last_close_track = s.get("last_close_track")
         self.last_close_px = float(s.get("last_close_px", 0) or 0)
+        self.radar_flat_ts = float(s.get("radar_flat_ts", 0) or 0)
+        self.trend_tier = clamp_tier(s.get("trend_tier", self._resolve_trend_tier()))
+        self.radar_tier_boost = int(s.get("radar_tier_boost", 0) or 0)
         self.reentry_abort_reason = s.get("reentry_abort_reason")
-        tier = tier_for_attempt(self.reentry_attempt, sym)
+        tier = tier_for_attempt(self.reentry_attempt, sym, adx_tier=self.trend_tier)
         self.active_early_be_atr = float(
             s.get("active_early_be_atr") or tier.early_breakeven_atr
         )
@@ -103,13 +124,25 @@ class SmartReentryMixin:
         )
         self.active_coef_min = float(s.get("active_coef_min") or tier.coef_min)
         self.active_coef_max = float(s.get("active_coef_max") or tier.coef_max)
+        self.active_breath_tp1_tp2_atr = float(
+            s.get("active_breath_tp1_tp2_atr") or tier.breath_tp1_tp2_atr
+        )
+        self.active_breath_tp2_tp3_atr = float(
+            s.get("active_breath_tp2_tp3_atr") or tier.breath_tp2_tp3_atr
+        )
+        self.active_hard_buffer = float(s.get("active_hard_buffer") or tier.hard_buffer)
         self.reentry_tier_label = s.get("reentry_tier_label") or tier.tier_label
 
     def _apply_radar_tier(self, attempt: int) -> None:
         from app.core.smart_reentry import apply_tier_to_state
 
         sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
-        st = apply_tier_to_state(self._smart_reentry_state_dict(), attempt, sym)
+        st = apply_tier_to_state(
+            self._smart_reentry_state_dict(),
+            attempt,
+            sym,
+            adx_tier=self._resolve_trend_tier(),
+        )
         for k, v in st.items():
             setattr(self, k, v)
         if hasattr(self, "_save_state"):
@@ -126,7 +159,7 @@ class SmartReentryMixin:
         self._pending_orders().clear_all(reason=reason)
         self._reentry_deferred_plan = None
         sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
-        st = reset_reentry_state(sym)
+        st = reset_reentry_state(sym, adx_tier=self._resolve_trend_tier())
         for k, v in st.items():
             setattr(self, k, v)
         self.reentry_qty_snapshot = 0.0
@@ -134,6 +167,7 @@ class SmartReentryMixin:
         self.reentry_atr_ref = 0.0
         self.reentry_limit_tag = None
         self.reentry_client_order_id = None
+        self.radar_flat_ts = 0.0
         self.reentry_abort_reason = reason
         logger.info(
             "[User %s] reentry reset (%s) symbol=%s",
@@ -150,23 +184,42 @@ class SmartReentryMixin:
             except Exception:
                 pass
 
-    def _breathing_tier_kwargs(self) -> dict[str, float | None]:
-        arm = float(getattr(self, "reentry_arm_tp1_pct", 0.5) or 0.5)
+    def _breathing_tier_kwargs(self) -> dict[str, Any]:
+        from app.core.trend_tier_params import RADAR_ARM_TP1_PCT
+
+        arm = float(getattr(self, "reentry_arm_tp1_pct", 0) or 0)
         if arm <= 0:
-            arm = 0.50
+            arm = float(RADAR_ARM_TP1_PCT)
         st = float(getattr(self, "active_step_trigger_atr", 0) or 0)
         eb = float(getattr(self, "active_early_be_atr", 0) or 0)
         sa = float(getattr(self, "active_step_advance_atr", 0) or 0)
         cmin = float(getattr(self, "active_coef_min", 0) or 0)
         cmax = float(getattr(self, "active_coef_max", 0) or 0)
-        return {
+        b12 = float(getattr(self, "active_breath_tp1_tp2_atr", 0) or 0)
+        b23 = float(getattr(self, "active_breath_tp2_tp3_atr", 0) or 0)
+        kw: dict[str, Any] = {
             "arm_tp1_pct": arm,
             "step_trigger_atr": st if st > 0 else None,
             "early_breakeven_atr": eb if eb > 0 else None,
             "step_advance_atr": sa if sa > 0 else None,
             "coef_min": cmin if cmin > 0 else None,
             "coef_max": cmax if cmax > 0 else None,
+            "breath_tp1_tp2_atr": b12 if b12 > 0 else None,
+            "breath_tp2_tp3_atr": b23 if b23 > 0 else None,
+            "radar_activated": bool(getattr(self, "radar_activated", False)),
         }
+        for key, attr in (
+            ("tp1_price", "tp1_price"),
+            ("tp2_price", "tp2_price"),
+            ("tp3_price", "tp3_price"),
+        ):
+            try:
+                v = float(getattr(self, attr, 0) or 0)
+            except (TypeError, ValueError):
+                v = 0.0
+            if v > 0:
+                kw[key] = v
+        return kw
 
     def _cancel_reentry_limit_order(self) -> None:
         oid = getattr(self, "reentry_limit_oid", None)
@@ -192,15 +245,19 @@ class SmartReentryMixin:
         self.reentry_pending = False
 
     def _seed_tier0_on_open(self, side: str, tv_px: float) -> None:
-        """First market open — attempt 0 coefficients + arm 50%."""
+        """First market open — attempt 0 + ADX-tier radar coeffs; arm TP1 path×0.85."""
+        from app.core.trend_tier_params import adx_to_tier
+
         self._stop_reentry_limit_loop()
         self._cancel_reentry_limit_order()
+        self.trend_tier = adx_to_tier(getattr(self, "current_adx", None))
         self._apply_radar_tier(0)
         self.reentry_pending = False
         self.reentry_tv_side = str(side or "").upper() or None
         self.reentry_tv_px = float(tv_px or getattr(self, "tv_price", 0) or 0)
         self.reentry_abort_reason = None
         self.last_close_track = None
+        self.radar_flat_ts = 0.0
         # Snapshot Pine SL / ATR for any later reentry hard-stop distance
         if hasattr(self, "_pine_stop_loss_ref"):
             self.reentry_tv_sl_ref = float(self._pine_stop_loss_ref() or 0)
@@ -240,6 +297,12 @@ class SmartReentryMixin:
         atr = float(getattr(self, "initial_atr", 0) or getattr(self, "current_atr", 0) or 0)
         self.last_close_track = str(close_track or "")
         self.last_close_px = float(close_px or 0)
+        flat_ts = float(getattr(self, "radar_flat_ts", 0) or 0)
+        if flat_ts <= 0:
+            flat_ts = time.time()
+            self.radar_flat_ts = flat_ts
+        trend_tier = self._resolve_trend_tier()
+        cur = int(getattr(self, "reentry_attempt", 0) or 0)
 
         ok, meta = close_allows_reentry(
             side=side,
@@ -248,6 +311,9 @@ class SmartReentryMixin:
             atr=atr,
             symbol=sym,
             close_track=close_track,
+            flat_ts=flat_ts,
+            adx_tier=trend_tier,
+            reentry_attempt=cur,
         )
         if not ok:
             self.reentry_abort_reason = meta.get("reason")
@@ -261,16 +327,26 @@ class SmartReentryMixin:
                     self._log("REENTRY_SKIP", f"再入场跳过·{meta.get('reason')}", meta)
                 except Exception:
                     pass
+            if hasattr(self, "_alert"):
+                try:
+                    self._alert(
+                        "info",
+                        "REENTRY_ABORT",
+                        "重入放弃",
+                        f"原因={meta.get('reason')} 档位={getattr(self, 'reentry_tier_label', '')}",
+                        meta,
+                    )
+                except Exception:
+                    pass
             return None
 
-        cur = int(getattr(self, "reentry_attempt", 0) or 0)
         if cur >= MAX_REENTRY:
-            self.reentry_abort_reason = "max_reentry_tier5"
+            self.reentry_abort_reason = "max_reentry_once"
             if hasattr(self, "_log"):
                 try:
                     self._log(
                         "REENTRY_SKIP",
-                        "再入场跳过·已达5.0档位后再扫出",
+                        "再入场跳过·已重入过一次",
                         {"attempt": cur},
                     )
                 except Exception:
@@ -307,8 +383,11 @@ class SmartReentryMixin:
             "tv_sl": tv_sl,
             "atr_ref": atr_ref,
             "close_px": float(close_px or 0),
+            "last_entry": entry,
+            "flat_ts": flat_ts,
+            "trend_tier": trend_tier,
             "meta": meta,
-            "prev_arm_tp1_pct": float(getattr(self, "reentry_arm_tp1_pct", 0.5) or 0.5),
+            "prev_arm_tp1_pct": float(getattr(self, "reentry_arm_tp1_pct", 0.85) or 0.85),
         }
         self._reentry_deferred_plan = plan
         return plan
@@ -322,12 +401,15 @@ class SmartReentryMixin:
         next_attempt = int(plan["next_attempt"])
         side = str(plan["side"]).upper()
         qty = float(plan["qty"])
+        if plan.get("trend_tier") is not None:
+            self.trend_tier = int(plan["trend_tier"])
         self._apply_radar_tier(next_attempt)
         self.reentry_tv_side = side
         self.reentry_tv_px = float(plan.get("tv_px") or 0)
         self.reentry_qty_snapshot = qty
         self.reentry_tv_sl_ref = float(plan.get("tv_sl") or 0)
         self.reentry_atr_ref = float(plan.get("atr_ref") or 0)
+        self.radar_flat_ts = float(plan.get("flat_ts") or getattr(self, "radar_flat_ts", 0) or 0)
         self.reentry_pending = True
         self.reentry_abort_reason = None
         # Restore Pine SL / ATR so hard stop on fill uses TV distance + fill slip
@@ -360,6 +442,7 @@ class SmartReentryMixin:
                             "step_advance": self.active_step_advance_atr,
                             "coef_min": self.active_coef_min,
                             "coef_max": self.active_coef_max,
+                            "hard_buffer": getattr(self, "active_hard_buffer", None),
                         },
                     },
                 )
@@ -367,18 +450,26 @@ class SmartReentryMixin:
                 pass
         if hasattr(self, "_alert"):
             try:
+                rem = ""
+                meta = plan.get("meta") or {}
+                if meta.get("remaining_sec") is not None:
+                    rem = f" 窗口剩余={float(meta['remaining_sec']):.0f}s"
                 self._alert(
                     "info",
                     "SMART_REENTRY_ARM",
-                    "智能再入场·限价挂单",
-                    f"tier={self.reentry_tier_label} arm={self.reentry_arm_tp1_pct:.0%} "
-                    f"qty={qty} tv={self.reentry_tv_px}",
-                    {"attempt": next_attempt, "close_px": plan.get("close_px")},
+                    "重入尝试",
+                    f"档位={self.reentry_tier_label} arm={self.reentry_arm_tp1_pct:.0%} "
+                    f"qty={qty} tv={self.reentry_tv_px}{rem}",
+                    {"attempt": next_attempt, "close_px": plan.get("close_px"), **meta},
                 )
             except Exception:
                 pass
 
-        self._start_reentry_limit_loop(side=side, qty=qty)
+        self._start_reentry_limit_loop(
+            side=side,
+            qty=qty,
+            last_entry=float(plan.get("last_entry") or 0),
+        )
         return True
 
     def _maybe_arm_smart_reentry(
@@ -401,15 +492,20 @@ class SmartReentryMixin:
             return True
         return self._commit_deferred_reentry()
 
-    def _start_reentry_limit_loop(self, *, side: str, qty: float) -> None:
+    def _start_reentry_limit_loop(
+        self, *, side: str, qty: float, last_entry: float = 0.0,
+    ) -> None:
         self._stop_reentry_limit_loop()
         self.reentry_pending = True
         self._reentry_loop_stop = threading.Event()
         stop_ev = self._reentry_loop_stop
+        entry_snap = float(last_entry or 0)
 
         def _run() -> None:
             try:
-                self._reentry_limit_worker(side=side, qty=qty, stop_ev=stop_ev)
+                self._reentry_limit_worker(
+                    side=side, qty=qty, stop_ev=stop_ev, last_entry=entry_snap,
+                )
             except Exception as exc:
                 logger.exception(
                     "[User %s] reentry worker crashed: %s",
@@ -494,7 +590,12 @@ class SmartReentryMixin:
         return False, detail
 
     def _reentry_limit_worker(
-        self, *, side: str, qty: float, stop_ev: threading.Event,
+        self,
+        *,
+        side: str,
+        qty: float,
+        stop_ev: threading.Event,
+        last_entry: float = 0.0,
     ) -> None:
         from app.core.order_place_guard import (
             REENTRY_TAG_TTL_SEC,
@@ -655,6 +756,11 @@ class SmartReentryMixin:
                 symbol=getattr(self, "canonical_symbol", None) or symbol,
                 klines_5m=k5,
                 klines_3m=k3,
+                last_entry=float(
+                    last_entry
+                    or getattr(self, "watched_entry", 0)
+                    or 0
+                ),
             )
             if limit_px <= 0:
                 self.reentry_abort_reason = px_meta.get("reason") or "not_better_than_tv"
