@@ -383,14 +383,12 @@ class SmartReentryMixin:
         trend_tier = self._resolve_trend_tier()
         cur = int(getattr(self, "reentry_attempt", 0) or 0)
         consumed = list(getattr(self, "consumed_tp_levels", None) or [])
-        tp1_filled = False
-        for x in consumed:
-            try:
-                if int(x) == 1:
-                    tp1_filled = True
-                    break
-            except (TypeError, ValueError):
-                continue
+        try:
+            from app.core.vps_radar_stages import tp1_filled_from_consumed
+
+            tp1_filled = bool(tp1_filled_from_consumed(consumed))
+        except Exception:
+            tp1_filled = any(int(x) == 1 for x in consumed if str(x).isdigit() or isinstance(x, int))
 
         ok, meta = close_allows_reentry(
             side=side,

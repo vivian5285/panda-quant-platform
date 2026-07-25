@@ -127,47 +127,30 @@ def trail_distance_multiplier(
     return mn + (mx - mn) * (r - lo) / span
 
 
-# Radar first-move arm ratio (replaces fixed 0.75×ATR). Same input as trailDistanceMultiplier.
-RADAR_ARM_RATIO_MIN = 0.50  # weak trend / high vol → early arm
-RADAR_ARM_RATIO_MAX = 0.85  # strong trend / calm → late arm
+# §14 purge: dynamic 0.50~0.85 arm removed — whitepaper fixed first-open 0.85
+RADAR_ARM_RATIO_MIN = 0.85
+RADAR_ARM_RATIO_MAX = 0.85
 
 
 def radar_start_ratio(smooth_ratio: float, profile: BreathingProfile | None = None) -> float:
-    """Dynamic radar first-move fraction of TP1 distance (1.35×ATR).
+    """Fixed first-open arm ratio 0.85 (whitepaper v3). ``smooth_ratio`` ignored."""
+    del smooth_ratio, profile
+    from app.core.trend_tier_params import RADAR_ARM_TP1_PCT
 
-    Shares ``smoothed(realtime_atr/initial_atr)`` with trailDistanceMultiplier,
-    but **inverse** maps: high vol (weak) → 50%, low vol (strong) → 85%.
-    Replaces deleted fixed ``step_trigger_atr`` (0.75) first-move gate.
-    """
-    p = profile or ETH_PROFILE
-    try:
-        r = float(smooth_ratio)
-    except (TypeError, ValueError):
-        r = COLD_START_RATIO
-    if r != r or r <= 0:
-        r = COLD_START_RATIO
-    lo, hi = float(p.ratio_floor), float(p.ratio_ceiling)
-    if r <= lo:
-        return float(RADAR_ARM_RATIO_MAX)
-    if r >= hi:
-        return float(RADAR_ARM_RATIO_MIN)
-    span = hi - lo
-    if span <= 0:
-        return float(RADAR_ARM_RATIO_MAX)
-    t = (r - lo) / span  # 0 at calm → 1 at volatile
-    return float(RADAR_ARM_RATIO_MAX) - t * (
-        float(RADAR_ARM_RATIO_MAX) - float(RADAR_ARM_RATIO_MIN)
-    )
+    return float(RADAR_ARM_TP1_PCT)
 
 
 def radar_arm_distance(initial_atr: float, smooth_ratio: float, profile: BreathingProfile | None = None) -> float:
-    """Favorable move needed before first radar step: TP1_dist × start_ratio (legacy dynamic)."""
+    """ATR-span fallback at fixed 0.85×TP1_atr×ATR (compat only).
+
+    LIVE arm: ``trend_tier_params.radar_arm_trigger_price`` (fill±tv tp1_distance).
+    """
     p = profile or ETH_PROFILE
     atr = float(initial_atr or 0)
     if atr <= 0:
         return 0.0
-    tp1_dist = float(p.tp1_atr) * atr
-    return tp1_dist * radar_start_ratio(smooth_ratio, p)
+    del smooth_ratio
+    return float(p.tp1_atr) * atr * radar_start_ratio(1.0, p)
 
 
 def effective_radar_arm_distance(
@@ -178,10 +161,9 @@ def effective_radar_arm_distance(
     arm_tp1_pct: float | None = None,
     step_trigger_atr: float | None = None,
 ) -> float:
-    """Live first-move gate: TP1×pct path distance when pct given; else dynamic.
+    """Arm distance when ``arm_tp1_pct`` given; else fixed 0.85 ATR-span fallback."""
+    from app.core.trend_tier_params import RADAR_ARM_TP1_PCT
 
-    Whitepaper v3 passes ``arm_tp1_pct=0.85`` (first) or ``1.00`` (reentry).
-    """
     p = profile or ETH_PROFILE
     atr = float(initial_atr or 0)
     if atr <= 0:
@@ -190,16 +172,17 @@ def effective_radar_arm_distance(
         try:
             pct = float(arm_tp1_pct)
         except (TypeError, ValueError):
-            pct = 0.50
+            pct = float(RADAR_ARM_TP1_PCT)
         if pct <= 0:
-            pct = 0.50
+            pct = float(RADAR_ARM_TP1_PCT)
         trig = float(
             step_trigger_atr
             if step_trigger_atr is not None
             else p.step_trigger_atr
         )
         return max(float(p.tp1_atr) * atr * pct, trig * atr)
-    return radar_arm_distance(atr, smooth_ratio, p)
+    del smooth_ratio
+    return radar_arm_distance(atr, 1.0, p)
 
 
 def stagnant_breath_samples(profile: BreathingProfile | None = None) -> int:

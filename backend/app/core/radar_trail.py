@@ -1,11 +1,7 @@
-"""Radar continuous ladder trailing — v6.5.6 (all exchanges).
+"""Radar helpers (path progress / stop clamp) — LIVE trail = breathing_stop.
 
-Activate at 85% path to TP1 → breakeven.
-Then every +0.5×ATR favorable move → raise SL by +0.3×ATR.
-Milestone floors: TP1 → entry+0.5ATR; TP2 → entry+1.5ATR;
-TP3 → pure trail peak−2.0ATR (only favorable).
-
-Old REGIME_RADAR 50/60/70/80 path tables REMOVED.
+§14 purge: continuous-ladder 0.5/0.3 ATR steps and 1.5ATR TP2 floor removed.
+REGIME_RADAR only carries activation=0.85 for TP-ratio merge / poll cadence.
 """
 
 from __future__ import annotations
@@ -15,26 +11,22 @@ from typing import Any
 
 from app.core.symbol_precision import round_price
 
-# --- v6.5.6 continuous ladder params (single source) ---
+# Arm progress along entry→TP1 (path formula — never absolute TP1×0.85)
 RADAR_ARM_PROGRESS = 0.85
-# Checklist shorthand multipliers (docs only — arm uses path formula below)
-LONG_ARM_TP1_MULT = 0.85   # 「tp1 × 0.85」→ path 85% to TP1
-SHORT_ARM_TP1_MULT = 1.15  # 「tp1 × 1.15」→ path 85% to TP1 (NOT literal tp1*1.15)
-RADAR_STEP_ATR = 0.50
-RADAR_LOCK_ATR = 0.30
-RADAR_TP1_FLOOR_ATR = 0.50
-RADAR_TP2_FLOOR_ATR = 1.50
-RADAR_TP3_TRAIL_ATR = 2.00  # LEGACY constant only — LIVE hang uses breathing ADX trail (1.2~2.5)
+LONG_ARM_TP1_MULT = RADAR_ARM_PROGRESS
+SHORT_ARM_TP1_MULT = 1.0 + (1.0 - RADAR_ARM_PROGRESS)  # path shorthand only
+# Purged ladder constants (kept as NaN sentinels so accidental use is obvious)
+RADAR_STEP_ATR = float("nan")  # was 0.50 — LEGACY_PURGED
+RADAR_LOCK_ATR = float("nan")  # was 0.30 — LEGACY_PURGED
+RADAR_TP1_FLOOR_ATR = 0.50  # activate BE uses trend_tier RADAR_ACTIVATE_BE_ATR
+RADAR_TP2_FLOOR_ATR = float("nan")  # was 1.50 — LEGACY_PURGED §14.1.6
+RADAR_TP3_TRAIL_ATR = float("nan")  # was 2.00 — LIVE uses ADX trail coef
 RADAR_BREAKEVEN_TICK_PCT = 0.0003  # ~1 tick slack past entry
 DEFAULT_ATR_ETH = 12.0  # when TV omits atr (ETH 10~15 pts)
 
-# Compat aliases — all regimes share the same ladder (regime key inert)
+# TP-ratio merge only — no move_step / trail_offset (cannot drive SL)
 REGIME_RADAR: dict[int, dict[str, float]] = {
-    r: {
-        "activation": RADAR_ARM_PROGRESS,
-        "move_step": RADAR_STEP_ATR,
-        "trail_offset": RADAR_LOCK_ATR,
-    }
+    r: {"activation": RADAR_ARM_PROGRESS}
     for r in (1, 2, 3, 4)
 }
 
@@ -80,11 +72,17 @@ def regime_radar_activation(regime: int = 3) -> float:
 
 
 def regime_radar_move_step(regime: int = 3) -> float:
-    return float(RADAR_STEP_ATR)
+    del regime
+    raise RuntimeError(
+        "LEGACY_PURGED: regime move_step 0.5ATR removed; use trend_tier_params"
+    )
 
 
 def regime_radar_trail_offset(regime: int = 3) -> float:
-    return float(RADAR_LOCK_ATR)
+    del regime
+    raise RuntimeError(
+        "LEGACY_PURGED: regime trail_offset 0.3ATR removed; use trend_tier_params"
+    )
 
 
 def resolve_atr(atr: float, entry: float = 0.0, symbol: str | None = None) -> float:
@@ -95,9 +93,16 @@ def resolve_atr(atr: float, entry: float = 0.0, symbol: str | None = None) -> fl
 
 
 def tp1_distance(entry: float, tv_tps: list, atr: float) -> float:
+    """Prefer TV TP1 span; fallback uses profile tp1_atr (never hard-coded 1.5)."""
     if tv_tps and float(tv_tps[0] or 0) > 0:
         return abs(float(tv_tps[0]) - float(entry))
-    return max(float(atr or 0) * 1.5, 1.0)
+    try:
+        from app.core.breathing_profile import profile_for_symbol
+
+        mult = float(profile_for_symbol(None).tp1_atr or 1.35)
+    except Exception:
+        mult = 1.35
+    return max(float(atr or 0) * mult, 1.0)
 
 
 def trail_distance(atr: float, trail_mult: float, tp1_dist: float) -> float:
@@ -333,21 +338,13 @@ def atr_floor_sl(entry: float, atr: float, mult: float, side: str | None) -> flo
 
 
 def steps_from_move(move: float, atr: float) -> int:
-    step = max(float(atr or 0) * RADAR_STEP_ATR, 1e-9)
-    if move <= 0:
-        return 0
-    return int(move // step)
+    del move, atr
+    raise RuntimeError("LEGACY_PURGED: 0.5ATR step ladder removed (§14.1.2)")
 
 
 def ladder_raise_from(base_sl: float, steps: int, atr: float, side: str | None) -> float:
-    if steps <= 0 or base_sl <= 0:
-        return float(base_sl or 0)
-    delta = float(steps) * max(float(atr or 0), 0.0) * RADAR_LOCK_ATR
-    if side == "LONG":
-        return round_price(base_sl + delta)
-    if side == "SHORT":
-        return round_price(base_sl - delta)
-    return float(base_sl)
+    del base_sl, steps, atr, side
+    raise RuntimeError("LEGACY_PURGED: 0.3ATR ladder raise removed (§14.1.2)")
 
 
 def apply_radar_sl_direction(old_sl: float, new_sl: float, side: str | None) -> float:
@@ -474,19 +471,11 @@ def compute_radar_sl(
     clamp_fn,
     trail_cap_px: float | None = None,
 ) -> float:
-    """Legacy helper for unit tests — live path uses compute_vps_radar_sl only."""
-    trail = trail_distance(atr, trail_mult, tp1_dist)
-    floor = clamp_fn(
-        breakeven_floor(entry, side, atr, consumed_tp_levels=consumed_tp_levels)
+    """LEGACY_PURGED — LIVE SL = breathing_stop.apply_breathing_tick."""
+    del (
+        side, entry, best_price, atr, trail_mult, tp1_dist,
+        consumed_tp_levels, clamp_fn, trail_cap_px,
     )
-    if side == "LONG":
-        sl = round_price(max(float(best_price) - trail, floor))
-        if trail_cap_px and trail_cap_px > entry:
-            sl = min(sl, round_price(float(trail_cap_px) * 0.995))
-        return sl
-    if side == "SHORT":
-        sl = round_price(min(float(best_price) + trail, floor))
-        if trail_cap_px and 0 < trail_cap_px < entry:
-            sl = max(sl, round_price(float(trail_cap_px) * 1.005))
-        return sl
-    return 0.0
+    raise RuntimeError(
+        "LEGACY_PURGED: compute_radar_sl removed; use breathing_stop (§14)"
+    )

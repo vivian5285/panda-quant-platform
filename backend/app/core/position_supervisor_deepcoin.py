@@ -3691,10 +3691,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             progress = self._radar_activation_progress(curr_px)
             act = 0.70
             if hasattr(self, "_regime_radar_activation"):
-                act = float(self._regime_radar_activation() or 0.70)
+                act = float(self._regime_radar_activation() or 0.85)
             else:
                 row = (self.regime_settings.get(self.regime) or {})
-                act = float(row.get("activation") or 0.70)
+                act = float(row.get("activation") or 0.85)
             if progress + 1e-9 >= max(0.40, act * 0.55):
                 base = SENTINEL_POLL_ARMING
             else:

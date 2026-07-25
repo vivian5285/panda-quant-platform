@@ -169,7 +169,7 @@ class PositionSupervisor(
         self._radar_ws_tick_ts: float = 0.0
         self._radar_ws_bound: bool = False
 
-        # activation / move_step / trail_offset from REGIME_RADAR (radar_trail.py)
+        # TP ratios + activation=0.85 only (ladder move_step/trail_offset purged)
         self.regime_settings = build_regime_settings()
 
         self.regime = 3
@@ -4703,12 +4703,12 @@ class PositionSupervisor(
             base = SENTINEL_POLL_RADAR
         elif curr_px > 0 and self.watched_entry and self.tv_tps:
             progress = self._radar_activation_progress(curr_px)
-            act = 0.70
+            act = 0.85
             if hasattr(self, "_regime_radar_activation"):
-                act = float(self._regime_radar_activation() or 0.70)
+                act = float(self._regime_radar_activation() or 0.85)
             else:
                 row = (self.regime_settings.get(self.regime) or {})
-                act = float(row.get("activation") or 0.70)
+                act = float(row.get("activation") or 0.85)
             # Approaching arm threshold → poll at ~1s + jitter
             if progress + 1e-9 >= max(0.40, act * 0.55):
                 base = SENTINEL_POLL_ARMING

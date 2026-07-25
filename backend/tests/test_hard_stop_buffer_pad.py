@@ -57,11 +57,10 @@ def test_reject_missing_or_tiny_tv_stop():
     assert tiny["reject_reason"] == "tv_stop_distance_too_small"
 
 
-def test_radar_arm_inverse_of_vol_ratio():
-    # Legacy helper retained; live path uses fixed 0.85/1.00 via trend_tier_params
+def test_radar_arm_fixed_085_not_dynamic():
+    # §14 purge: dynamic 0.50~0.85 removed — always first-open 0.85
     assert abs(radar_start_ratio(0.6) - 0.85) < 1e-9
-    assert abs(radar_start_ratio(2.2) - 0.50) < 1e-9
+    assert abs(radar_start_ratio(2.2) - 0.85) < 1e-9
     atr = 10.0
     arm = radar_arm_distance(atr, 1.0)
-    assert 1.35 * atr * 0.50 - 1e-9 <= arm <= 1.35 * atr * 0.85 + 1e-9
-    assert arm > 0.75 * atr
+    assert abs(arm - 1.35 * atr * 0.85) < 1e-9

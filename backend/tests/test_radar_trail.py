@@ -24,22 +24,20 @@ from app.core.radar_trail import (
 
 
 def test_regime_activation_table():
-    """自查清单 §五：R1=50% … R4=80%；move_step / breath ATR per regime."""
-    assert REGIME_RADAR[1]["activation"] == pytest.approx(0.50)
-    assert REGIME_RADAR[2]["activation"] == pytest.approx(0.60)
-    assert REGIME_RADAR[3]["activation"] == pytest.approx(0.70)
-    assert REGIME_RADAR[4]["activation"] == pytest.approx(0.80)
-    assert REGIME_RADAR[4]["move_step"] == pytest.approx(0.20)
-    assert REGIME_RADAR[1]["trail_offset"] == pytest.approx(1.00)
-    assert regime_radar_activation(3) == pytest.approx(0.70)
+    """§14: all regimes share fixed 0.85 arm; no ladder move_step/trail_offset."""
+    for r in (1, 2, 3, 4):
+        assert REGIME_RADAR[r]["activation"] == pytest.approx(0.85)
+        assert "move_step" not in REGIME_RADAR[r]
+        assert "trail_offset" not in REGIME_RADAR[r]
+    assert regime_radar_activation(3) == pytest.approx(0.85)
 
 
 def test_merge_regime_radar_overlays_looser_params():
-    base = {3: {"margin": 0.35, "ratios": [0.18, 0.32, 0.50], "activation": 0.60, "trail_offset": 0.90}}
+    base = {3: {"margin": 0.35, "ratios": [0.18, 0.32, 0.50], "activation": 0.60}}
     merged = merge_regime_radar(base)
     assert merged[3]["activation"] == REGIME_RADAR[3]["activation"]
-    assert merged[3]["trail_offset"] == REGIME_RADAR[3]["trail_offset"]
     assert merged[3]["margin"] == 0.35
+    assert "move_step" not in merged[3]
 
 
 def test_trail_distance_uses_tp1_floor_when_atr_tight():
@@ -62,10 +60,10 @@ def test_radar_may_arm_on_path_ratio():
 
 
 def test_incident_tight_tp1_effective_activation_blocks_early_path():
-    """紧 TP1 → 有效激活抬高；低进度不得秒挂。"""
+    """Fixed 0.85 arm — low progress never arms."""
     entry, tp1, atr = 1845.91, 1849.6471230213, 4.982830695
     eff = radar_effective_activation(1, entry, tp1, atr)
-    assert eff >= 0.85
+    assert eff == pytest.approx(0.85)
     d = evaluate_radar_arm_gate(
         consumed_tp_levels=[],
         progress=0.30,
@@ -78,7 +76,7 @@ def test_incident_tight_tp1_effective_activation_blocks_early_path():
         trade_opened_at=time.time() - 120,
         path_ok_streak=0,
     )
-    assert d["arm"] is False
+    assert d["should_arm"] is False
     px_mid = entry + 0.50 * (tp1 - entry)
     d50 = evaluate_radar_arm_gate(
         consumed_tp_levels=[],
@@ -92,49 +90,29 @@ def test_incident_tight_tp1_effective_activation_blocks_early_path():
         trade_opened_at=time.time() - 120,
         path_ok_streak=RADAR_ARM_CONFIRM_POLLS,
     )
-    # 紧间距时有效激活抬高，50% 路径仍可能不达
-    assert d50["activation_effective"] >= 0.85
+    assert d50["should_arm"] is False
+    assert d50["effective_activation"] == pytest.approx(0.85)
 
 
-def test_path_regime_arms_on_healthy_span():
-    """Healthy TP1 span: R3 arms at 70% path + confirms."""
+def test_path_arms_at_fixed_085_all_regimes():
+    """Whitepaper: fixed 85% path; regime key inert."""
     entry, tp1, atr = 1800.0, 1900.0, 20.0
-    px = entry + 0.70 * (tp1 - entry)
-    d = evaluate_radar_arm_gate(
-        consumed_tp_levels=[],
-        progress=0.70,
-        regime=3,
-        entry=entry,
-        tp1=tp1,
-        atr=atr,
-        curr_px=px,
-        side="LONG",
-        trade_opened_at=time.time() - 120,
-        path_ok_streak=RADAR_ARM_CONFIRM_POLLS,
-    )
-    assert d["arm"] is True
-    assert d["arm_reason"] == "path_effective"
-    assert d["activation_base"] == pytest.approx(0.70)
-    assert d["move_step"] == pytest.approx(0.25)
-    assert d["trail_offset"] == pytest.approx(0.65)
-
-
-def test_r1_arms_earlier_than_r4():
-    """极弱档 50% 先于强势档 80% 激活保本监控。"""
-    entry, tp1, atr = 1800.0, 1900.0, 20.0
-    px = entry + 0.55 * (tp1 - entry)
-    d4 = evaluate_radar_arm_gate(
-        consumed_tp_levels=[], progress=0.55, regime=4,
-        entry=entry, tp1=tp1, atr=atr, curr_px=px, side="LONG",
-        trade_opened_at=time.time() - 120, path_ok_streak=RADAR_ARM_CONFIRM_POLLS,
-    )
-    d1 = evaluate_radar_arm_gate(
-        consumed_tp_levels=[], progress=0.55, regime=1,
-        entry=entry, tp1=tp1, atr=atr, curr_px=px, side="LONG",
-        trade_opened_at=time.time() - 120, path_ok_streak=RADAR_ARM_CONFIRM_POLLS,
-    )
-    assert d1["arm"] is True
-    assert d4["arm"] is False
+    px70 = entry + 0.70 * (tp1 - entry)
+    px85 = entry + 0.85 * (tp1 - entry)
+    for regime in (1, 2, 3, 4):
+        d70 = evaluate_radar_arm_gate(
+            consumed_tp_levels=[], progress=0.70, regime=regime,
+            entry=entry, tp1=tp1, atr=atr, curr_px=px70, side="LONG",
+            trade_opened_at=time.time() - 120, path_ok_streak=RADAR_ARM_CONFIRM_POLLS,
+        )
+        assert d70["should_arm"] is False
+        d85 = evaluate_radar_arm_gate(
+            consumed_tp_levels=[], progress=0.85, regime=regime,
+            entry=entry, tp1=tp1, atr=atr, curr_px=px85, side="LONG",
+            trade_opened_at=time.time() - 120, path_ok_streak=RADAR_ARM_CONFIRM_POLLS,
+        )
+        assert d85["should_arm"] is True
+        assert d85["effective_activation"] == pytest.approx(0.85)
 
 
 def test_tp1_fill_arms_immediately():
@@ -150,8 +128,8 @@ def test_tp1_fill_arms_immediately():
         trade_opened_at=time.time(),
         path_ok_streak=0,
     )
-    assert d["arm"] is True
-    assert d["arm_reason"] == "tp1_filled"
+    assert d["should_arm"] is True
+    assert d["reason"] == "tp_filled"
 
 
 def test_open_grace_blocks_path_arm():
@@ -170,9 +148,9 @@ def test_open_grace_blocks_path_arm():
         path_ok_streak=5,
         now_ts=now,
     )
-    assert d["blocked_grace"] is True
-    assert d["arm"] is False
-    assert RADAR_OPEN_GRACE_SEC >= 20
+    assert d["reason"] == "open_grace"
+    assert d["should_arm"] is False
+    assert RADAR_OPEN_GRACE_SEC >= 15
 
 
 def test_confirm_polls_required_before_arm():
@@ -191,10 +169,9 @@ def test_confirm_polls_required_before_arm():
         now_ts=now,
     )
     d1 = evaluate_radar_arm_gate(path_ok_streak=0, **kwargs)
-    assert d1["building_confirm"] is True
-    assert d1["arm"] is False
+    assert d1["should_arm"] is False
     d2 = evaluate_radar_arm_gate(path_ok_streak=d1["path_ok_streak"], **kwargs)
-    assert d2["arm"] is True
+    assert d2["should_arm"] is True
 
 
 def test_tp_path_progress_reaches_one_at_tp1():
@@ -204,27 +181,26 @@ def test_tp_path_progress_reaches_one_at_tp1():
     assert tp_path_progress(1818.0, 1833.84, 1836.0, "LONG") == pytest.approx(0.88, rel=0.01)
 
 
-def test_path_arm_stage_stays_breakeven_before_tp1():
+def test_path_arm_stage_label_only():
     from app.core.vps_radar_stages import detect_radar_stage, compute_vps_radar_sl
 
     entry, tp1, tp2, tp3 = 1800.0, 1900.0, 1950.0, 2000.0
     curr = entry + 0.70 * (tp1 - entry)
-    assert detect_radar_stage(entry, curr, "LONG", tp1, tp2, tp3, tp1_filled=True) == 1
-    radar = compute_vps_radar_sl(
-        entry=entry, curr_px=curr, best_price=curr, atr=20.0, side="LONG",
-        tp1=tp1, tp2=tp2, tp3=tp3, old_sl=0.0, hard_sl=1700.0,
-        clamp_fn=lambda x: x, tp1_filled=True,
-    )
-    assert radar["armed"] is True
-    assert radar["stage"] == 1
-    assert radar["radar_sl"] == pytest.approx(entry * 1.001, rel=0.001)
+    # tp1_filled → stage 3 (TP1区间), not ladder SL
+    assert detect_radar_stage(entry, curr, "LONG", tp1, tp2, tp3, tp1_filled=True) == 3
+    with pytest.raises(RuntimeError, match="LEGACY_PURGED"):
+        compute_vps_radar_sl(
+            entry=entry, curr_px=curr, best_price=curr, atr=20.0, side="LONG",
+            tp1=tp1, tp2=tp2, tp3=tp3, old_sl=0.0, hard_sl=1700.0,
+            clamp_fn=lambda x: x, tp1_filled=True,
+        )
 
 
-def test_tp2_locks_stage_3():
+def test_tp2_locks_stage_4():
     from app.core.vps_radar_stages import detect_radar_stage
 
     entry, tp1, tp2, tp3 = 1800.0, 1900.0, 1950.0, 2000.0
-    assert detect_radar_stage(entry, tp2, "LONG", tp1, tp2, tp3, tp1_filled=True) == 3
+    assert detect_radar_stage(entry, tp2, "LONG", tp1, tp2, tp3, tp1_filled=True) == 4
 
 
 def test_breakeven_floor_wider_before_tp1():
@@ -237,50 +213,18 @@ def test_breakeven_floor_wider_before_tp1():
     assert before > after
 
 
-def test_compute_radar_sl_long_respects_floor_and_trail():
-    entry = 2000.0
-    tp1_dist = tp1_distance(entry, [2050.0], 30.0)
-    trail = trail_distance(30.0, 1.35, tp1_dist)
-    floor = breakeven_floor(entry, "LONG", 30.0, consumed_tp_levels=[1])
-
-    def clamp(x):
-        return x
-
-    sl = compute_radar_sl(
-        side="LONG",
-        entry=entry,
-        best_price=2040.0,
-        atr=30.0,
-        trail_mult=1.35,
-        tp1_dist=tp1_dist,
-        consumed_tp_levels=[1],
-        clamp_fn=clamp,
-    )
-    assert sl == pytest.approx(max(2040.0 - trail, floor), rel=0.001)
-    assert sl >= floor
-
-
-def test_compute_radar_sl_short_respects_floor_and_trail():
-    entry = 2000.0
-    tp1_dist = tp1_distance(entry, [1950.0], 30.0)
-    trail = trail_distance(30.0, 1.35, tp1_dist)
-    floor = breakeven_floor(entry, "SHORT", 30.0, consumed_tp_levels=[1])
-
-    def clamp(x):
-        return x
-
-    sl = compute_radar_sl(
-        side="SHORT",
-        entry=entry,
-        best_price=1960.0,
-        atr=30.0,
-        trail_mult=1.35,
-        tp1_dist=tp1_dist,
-        consumed_tp_levels=[1],
-        clamp_fn=clamp,
-    )
-    assert sl == pytest.approx(min(1960.0 + trail, floor), rel=0.001)
-    assert sl <= floor
+def test_compute_radar_sl_purged():
+    with pytest.raises(RuntimeError, match="LEGACY_PURGED"):
+        compute_radar_sl(
+            side="LONG",
+            entry=2000.0,
+            best_price=2040.0,
+            atr=30.0,
+            trail_mult=1.35,
+            tp1_dist=50.0,
+            consumed_tp_levels=[1],
+            clamp_fn=lambda x: x,
+        )
 
 
 def test_stop_market_safe_clamp_long_pullback():

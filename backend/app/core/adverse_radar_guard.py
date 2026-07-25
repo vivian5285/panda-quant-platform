@@ -2570,8 +2570,25 @@ class AdverseRadarMixin:
             return out
 
         px = float(curr_px or 0) or entry
-        sr = float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0)
-        if radar_arm_reached(side, entry, px, atr, smooth_ratio=sr, symbol=sym):
+        # Only skip when whitepaper arm already true — never use purged 0.50~0.85 dynamic arm
+        arm_pct = None
+        if hasattr(self, "_breathing_tier_kwargs"):
+            try:
+                arm_pct = (self._breathing_tier_kwargs() or {}).get("arm_tp1_pct")
+            except Exception:
+                arm_pct = None
+        tp1_d = float(getattr(self, "radar_tp1_distance", 0) or 0)
+        tv_e = float(getattr(self, "tv_price", 0) or 0) or None
+        tps = list(getattr(self, "tv_tps", None) or [])
+        tp1_px = float(tps[0] or 0) if tps else 0.0
+        already_armed = bool(getattr(self, "radar_activated", False)) or radar_arm_reached(
+            side, entry, px, atr, symbol=sym,
+            arm_tp1_pct=arm_pct,
+            tp1_dist=tp1_d if tp1_d > 0 else None,
+            tv_entry=tv_e,
+            tp1=tp1_px if tp1_px > 0 else None,
+        )
+        if already_armed:
             self._stagnant_tighten_done = True
             out["reason"] = "radar_already_armed"
             out["applied"] = False
@@ -2897,10 +2914,11 @@ class AdverseRadarMixin:
             self.radar_activated = True
         if step_count > int(getattr(self, "radar_step_count", 0) or 0):
             self.radar_step_count = step_count
-        if step_count >= 1 or bool(getattr(self, "radar_activated", False)) or radar_arm_reached(
-            side, entry, px, atr,
-            smooth_ratio=float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
-            symbol=sym,
+        # Mark stagnant done only from LIVE tick arm — not purged dynamic ratio
+        if (
+            step_count >= 1
+            or bool(getattr(self, "radar_activated", False))
+            or bool(tick.get("radar_armed") or meta.get("radar_armed"))
         ):
             self._stagnant_tighten_done = True
         if improved and new_sl > 0:

@@ -5,6 +5,7 @@ import pytest
 from app.core.tv_entry_sizing import MAX_LEVERAGE, RISK_PCT, compute_tv_entry_qty
 from app.core.vps_radar_stages import compute_ladder_radar_sl, compute_vps_radar_sl
 from app.core.radar_trail import RADAR_ARM_PROGRESS, radar_arm_trigger_price, tp_path_progress
+from app.core.trend_tier_params import radar_arm_trigger_price as wp_arm_trigger
 from app.core.tp_regime_ratios import PLACEABLE_TP_LEVELS, resolve_tp_ratios_from_payload
 from app.services.webhook_payload import normalize_tv_payload
 from app.services.webhook_guard import (
@@ -48,24 +49,17 @@ def test_arm_price_long_short_symmetric():
     assert tp_path_progress(3300, short_arm, 3250, "SHORT") >= RADAR_ARM_PROGRESS - 1e-9
 
 
-def test_stepcount_ladder_monotonic():
-    arm = 1800 + RADAR_ARM_PROGRESS * 40.5 + 0.01
-    raw, stage, meta = compute_ladder_radar_sl(
-        entry=1800, curr_px=arm, best_price=arm, atr=30, side="LONG",
-        tp1=1840.5, tp2=1875, tp3=1908, activated=False, step_count=0,
+def test_legacy_ladder_purged_cannot_fight_breathing():
+    with pytest.raises(RuntimeError, match="LEGACY_PURGED"):
+        compute_ladder_radar_sl(
+            entry=1800, curr_px=1835, best_price=1835, atr=30, side="LONG",
+            tp1=1840.5, tp2=1875, tp3=1908,
+        )
+    # Whitepaper arm still works via trend_tier_params
+    trig = wp_arm_trigger(
+        side="LONG", fill_entry=1900.80, tp1=1925.65, tv_entry=1900.0, arm_pct=0.85,
     )
-    assert meta["activated"] is True
-    assert meta["event"] == "radar_arm"
-    raw2, stage2, meta2 = compute_ladder_radar_sl(
-        entry=1800, curr_px=1835, best_price=1835, atr=30, side="LONG",
-        tp1=1840.5, tp2=1875, tp3=1908, activated=True, step_count=0,
-    )
-    assert meta2["step_count"] >= 2
-    raw3, _, meta3 = compute_ladder_radar_sl(
-        entry=1800, curr_px=1835, best_price=1835, atr=40, side="LONG",
-        tp1=1840.5, tp2=1875, tp3=1908, activated=True, step_count=meta2["step_count"],
-    )
-    assert meta3["step_count"] >= meta2["step_count"]
+    assert abs(trig - 1922.60) < 0.02
 
 
 def test_idempotency_60s_action_symbol_price():
@@ -121,43 +115,10 @@ def test_classify_vps_sl_kind():
     assert classify_vps_sl_kind(activated=True, current_stop=3301, initial_stop=3200, side="LONG") == "CLOSE_SL_BREAKEVEN"
 
 
-def test_continuous_ladder_demo_1800_atr30():
-    """用户演示表：1800 开多 ATR=30，连续阶梯跟进。"""
-    # 路径≥85% 激活；同 tick 可连续推进阶梯（≥保本）
-    arm_px = 1800 + RADAR_ARM_PROGRESS * (1840.5 - 1800) + 0.01
-    raw, _, meta = compute_ladder_radar_sl(
-        entry=1800, curr_px=arm_px, best_price=arm_px, atr=30, side="LONG",
-        tp1=1840.5, tp2=1875, tp3=1908, activated=False, step_count=0,
-    )
-    assert meta["activated"] is True and meta["event"] == "radar_arm"
-    assert raw >= 1800.5
-    # TP1：强制底限 entry+0.5ATR=1815（阶梯可更高）
-    raw_tp1, stage, _ = compute_ladder_radar_sl(
-        entry=1800, curr_px=1840.5, best_price=1840.5, atr=30, side="LONG",
-        tp1=1840.5, tp2=1875, tp3=1908, activated=True, step_count=0,
-    )
-    assert stage == 3 and raw_tp1 >= 1815 - 1e-9
-    # TP2：强制底限 entry+1.5ATR=1845
-    raw_tp2, stage2, _ = compute_ladder_radar_sl(
-        entry=1800, curr_px=1875, best_price=1875, atr=30, side="LONG",
-        tp1=1840.5, tp2=1875, tp3=1908, activated=True, step_count=2,
-    )
-    assert stage2 == 4 and raw_tp2 >= 1845 - 1e-9
-    # TP3：动态追踪 peak-2ATR
-    raw_tp3, stage3, meta3 = compute_ladder_radar_sl(
-        entry=1800, curr_px=1908, best_price=1910, atr=30, side="LONG",
-        tp1=1840.5, tp2=1875, tp3=1908, activated=True, step_count=5,
-    )
-    assert stage3 == 5 and meta3["mode"] == "tp3_trail"
-    assert abs(raw_tp3 - (1910 - 60)) < 0.05
-
-
-def test_vps_radar_pass_state():
-    out = compute_vps_radar_sl(
-        entry=1800, curr_px=1835, best_price=1835, atr=30, side="LONG",
-        tp1=1840.5, tp2=1875, tp3=1908, old_sl=0, hard_sl=1750,
-        clamp_fn=lambda x: x, activated=False, step_count=0,
-    )
-    assert out["activated"] is True
-    assert out["step_count"] >= 1
-    assert out["radar_sl"] > 0
+def test_vps_radar_pass_state_purged():
+    with pytest.raises(RuntimeError, match="LEGACY_PURGED"):
+        compute_vps_radar_sl(
+            entry=1800, curr_px=1835, best_price=1835, atr=30, side="LONG",
+            tp1=1840.5, tp2=1875, tp3=1908, old_sl=0, hard_sl=1750,
+            clamp_fn=lambda x: x, activated=False, step_count=0,
+        )

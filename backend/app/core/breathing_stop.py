@@ -349,15 +349,30 @@ def radar_arm_reached(
     initial_atr: float,
     smooth_ratio: float | None = None,
     symbol: str | None = None,
+    *,
+    arm_tp1_pct: float | None = None,
+    tp1_dist: float | None = None,
+    tv_entry: float | None = None,
+    tp1: float | None = None,
 ) -> bool:
-    """True when favorable move has reached dynamic first-move arm."""
-    p = profile_for_symbol(symbol)
-    atr = resolve_atr(initial_atr)
-    sr = float(smooth_ratio if smooth_ratio is not None else COLD_START_RATIO)
-    arm = radar_arm_distance(atr, sr, p)
-    if arm <= 0:
-        return False
-    return favorable_move(side, entry, price) + 1e-12 >= arm
+    """True when price hits whitepaper arm: fill ± tp1_distance × (0.85|1.00)."""
+    from app.core.trend_tier_params import RADAR_ARM_TP1_PCT, radar_armed_by_price
+
+    del smooth_ratio  # dynamic vol arm purged (§14)
+    pct = float(arm_tp1_pct if arm_tp1_pct is not None else RADAR_ARM_TP1_PCT)
+    return bool(
+        radar_armed_by_price(
+            side=str(side or ""),
+            price=float(price or 0),
+            fill_entry=float(entry or 0),
+            tp1=float(tp1 or 0),
+            tv_entry=tv_entry,
+            tp1_dist=tp1_dist,
+            atr=float(initial_atr or 0),
+            symbol=symbol,
+            arm_pct=pct,
+        )
+    )
 
 
 def apply_stop_order_buffer(
