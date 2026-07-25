@@ -1,5 +1,7 @@
 # Gemini 生产级最终全功能检测 · 就绪报告
 
+> **⚠ 部分过时（2026-07-25）**：下文仍写「仅挂 TP1/TP2 30/30」。现行权威为 README 顶部 + `tp_regime_targets`：**10/20/70 + TP3 限价 + 本地标签幂等 + 硬帽≤5**。三方 commit 以当日 `git rev-parse` 为准，勿再用文内 `896d2a1`。
+
 生成：2026-07-23  
 对照清单：桌面《Gemini生产级最终全功能检测清单.md》
 
@@ -9,9 +11,9 @@
 
 | 位置 | commit | 说明 |
 |---|---|---|
-| 本地 `main` | **`6953763`** | Drop TV qty gate… + 连续插值生产锁 `d5fe10d` 之上 |
-| GitHub `origin/main` | **`6953763`** | 已 push |
-| VPS `/home/panda/...` | **见部署后探针**（目标 `6953763`） | `git reset --hard origin/main` + rebuild |
+| 本地 `main` | **`896d2a1`** | 就绪报告；运行时代码含 `6953763` qty-free |
+| GitHub `origin/main` | **`896d2a1`** | 已 push |
+| VPS `/home/panda/...` | **`896d2a1`**（部署对齐） | health ok · trading on |
 
 前置生产锁：`d5fe10d`（连续插值证据 + XAU 0.5~1.2 + 冷启动种子）。
 

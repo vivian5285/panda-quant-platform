@@ -98,7 +98,7 @@ TV 入队 → 解析 → ATR 场景 → RISK20×5 算仓 → 市价开
 **自查口令（独立于文字汇报）**  
 1. GitHub / 本地 / VPS `git rev-parse --short HEAD` 三数字一致。  
 2. 币安：仓位(0) + 当前委托(0) + 条件委托(0)。  
-3. 代码原样：`breathing_profile.py` 内 `XAU_PROFILE.coef_min=0.5` / `coef_max=1.2`。  
+3. 代码原样：`breathing_profile.py` 内 ETH/XAU 基础 `coef_min=1.2` / `coef_max=2.5`（再入场档位可覆写更宽）；勿再查旧 XAU 0.5~1.2。  
 4. 当面最小资金 LONG：应见 **硬止损1 + 雷达1 + TP限价（满额时 TP1+TP2+TP3；~20U 烟雾常因最小名义只成 TP3）**，钉钉杠杆 **5×**。
 
 ### 三层防线永久共存（核心，不得误解）
@@ -135,7 +135,7 @@ TV 入队 → 解析 → ATR 场景 → RISK20×5 算仓 → 市价开
 | 15s 铁律 | OPEN 先到 → 15s 内 CLOSE **丢弃**；CLOSE 先到 → **先平后开**；>15s CLOSE 独立平仓 |
 | 净场 | 开仓前无仓无挂单；平仓后立即撤该 symbol 全部挂单；反手一律先平 |
 | ATR | **优先**交易所原生 1h；失败用 TV atr；雷达/开仓**不用** 90m 合成 |
-| 呼吸 | ETH 1.2~2.5 / XAU 0.5~1.2；雷达启动=TP1×50%~85%；考核收紧 ETH18/XAU12 采样；阶段一推进不含 coef |
+| 呼吸 | ETH/XAU 基础 1.2~2.5（再入场档位递进可更宽）；雷达启动=TP1×50%~95%；考核收紧 ETH18/XAU12 采样；阶段一推进不含 coef |
 | TV 图表 | ETH **90m** / XAU **45m**（VPS「1h ATR」仅为波动率 oracle） |
 | 杠杆 | 一律 `FIXED_LEVERAGE=5` |
 | 加仓 | **禁用**；同向亦先平后开 |
@@ -347,7 +347,7 @@ panda-quant-platform/
 │   │   ├── breathing_stop.py                # ★ 呼吸止损 + 市价 TP 阶梯
 │   │   ├── adverse_radar_guard.py           # ★ 止损挂/改/触发 + TP后数量收缩
 │   │   ├── market_engine.py / market_indicators.py
-│   │   ├── tp_regime_targets.py             # PLACEABLE_TP_LEVELS={1,2}
+│   │   ├── tp_regime_targets.py             # PLACEABLE_TP_LEVELS={1,2,3} · 10/20/70
 │   │   ├── tp_slice_guard.py / binance_smart_defense.py
 │   │   ├── startup_reconcile.py             # FORCE_ALIGN · 未登记接管 · 旧 schema
 │   │   ├── position_cap_guard.py            # 仅检测，不 trim
@@ -524,9 +524,9 @@ https://twinstar.pro/gemini/webhook
 | `price` | 开仓参考价；与 `stop_loss` 算 TV 隐含止损距（只改仓位） | **否** |
 | `qty` | 三选一候选（须先 × 调整系数） | **否** |
 | `qty1` / `qty2` / `qty3` | **忽略**（TP 数量由 10/20/70 算） | **否** |
-| `stop_loss` | 与 `price` 算硬止损距；**缺则拒开仓** | 距×buffer 挂于 fill |
+| TV `stop_loss` | 与 `price` 算硬止损距；**缺则拒开仓** | 距×buffer 挂于 fill |
 | `tp1` / `tp2` / `tp3` | TP 限价价格（数量固定 10/20/70） | **否** |
-| `tp3` | **不用** | — |
+| `tp3` | **挂限价**（70%）；与雷达互斥 | **否** |
 | `leverage` | **忽略**；实盘固定 5× | — |
 | `atr` / `adx` | **不读**；行情引擎自算 | — |
 | `symbol` | 必填（支持 `.P`）；ETH/XAU 独立 supervisor | — |
@@ -568,13 +568,14 @@ https://twinstar.pro/gemini/webhook
 
 ### 止损价输入（与 TV 挂单价无关）
 
-开仓时：TV `atr` → 冻结 `initialAtr` → `initialStop = entry ± 1.5×initialAtr` → 挂单时再加减执行缓冲（ETH 0.3 / XAU 0.5）。  
+开仓时：TV `atr` → 冻结 `initialAtr` → 呼吸阶梯基准 `initialStop = entry ± 1.5×initialAtr`（**非**交易所硬止损挂单价）。  
+**硬止损挂单** = `fill ± (|TV.price−TV.stop_loss| × buffer)`（默认 1.2；无 ATR 地板 / 无滑点垫）。  
 运行中：`ratio = atr_1h / initialAtr` → SMA(3) → **连续线性插值** `trailDistanceMultiplier`（非离散档）。
 
 | 参数 | ETH | XAU |
 |------|-----|-----|
-| coef 区间 (minMult~maxMult) | 1.2 ~ 2.5 | 0.5 ~ 1.2 |
-| 冷启动（ratio=1.0） | **1.525** | **0.675** |
+| coef 区间 (minMult~maxMult) | 1.2 ~ 2.5 | 1.2 ~ 2.5（再入场档位覆写） |
+| 冷启动（ratio=1.0） | **1.525** | **1.525** |
 | ratioFloor / ratioCeiling | 0.6 / 2.2（共用只读） | 同左 |
 
 ### 必须持久化的状态

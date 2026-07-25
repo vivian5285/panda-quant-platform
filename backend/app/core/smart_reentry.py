@@ -46,21 +46,73 @@ class RadarTier:
         return asdict(self)
 
 
-# (early_be, step_trigger, step_advance, coef_min, coef_max)
-_ETH_TIERS: tuple[tuple[float, float, float, float, float], ...] = (
+# (early_be, step_trigger, step_advance, coef_min, coef_max) — defaults; JSON overrides
+_ETH_TIERS_DEFAULT: tuple[tuple[float, float, float, float, float], ...] = (
     (0.50, 0.75, 0.40, 1.2, 2.5),
     (0.65, 0.90, 0.46, 1.4, 2.8),
     (0.85, 1.10, 0.52, 1.6, 3.0),
     (1.05, 1.25, 0.58, 1.8, 3.2),
     (1.30, 1.40, 0.64, 2.0, 3.5),
 )
-_XAU_TIERS: tuple[tuple[float, float, float, float, float], ...] = (
+_XAU_TIERS_DEFAULT: tuple[tuple[float, float, float, float, float], ...] = (
     (0.65, 0.70, 0.45, 1.2, 2.5),
     (0.85, 0.85, 0.52, 1.4, 2.8),
     (1.10, 1.00, 0.58, 1.6, 3.0),
     (1.30, 1.15, 0.64, 1.8, 3.2),
     (1.55, 1.30, 0.70, 2.0, 3.5),
 )
+
+
+def _load_tier_tables() -> tuple[
+    tuple[tuple[float, float, float, float, float], ...],
+    tuple[tuple[float, float, float, float, float], ...],
+    tuple[float, ...],
+    dict[str, float],
+]:
+    """Load ``smart_reentry_tiers.json`` beside this module; fall back to defaults."""
+    import json
+    from pathlib import Path
+
+    eth = _ETH_TIERS_DEFAULT
+    xau = _XAU_TIERS_DEFAULT
+    arms = ARM_TP1_PCTS
+    zones = dict(REENTRY_ZONE_ATR)
+    path = Path(__file__).with_name("smart_reentry_tiers.json")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return eth, xau, arms, zones
+
+    def _rows(key: str, fallback: tuple) -> tuple:
+        rows = (raw.get("tiers") or {}).get(key) or []
+        out = []
+        for r in rows:
+            out.append(
+                (
+                    float(r["early_be"]),
+                    float(r["step_trigger"]),
+                    float(r["step_advance"]),
+                    float(r["coef_min"]),
+                    float(r["coef_max"]),
+                )
+            )
+        return tuple(out) if len(out) == 5 else fallback
+
+    eth = _rows(CANONICAL_ETH, eth)
+    xau = _rows(CANONICAL_XAU, xau)
+    ap = raw.get("arm_tp1_pcts")
+    if isinstance(ap, list) and len(ap) == 5:
+        arms = tuple(float(x) for x in ap)
+    z = raw.get("reentry_zone_atr") or {}
+    if z:
+        zones = {
+            CANONICAL_ETH: float(z.get(CANONICAL_ETH, zones[CANONICAL_ETH])),
+            CANONICAL_XAU: float(z.get(CANONICAL_XAU, zones[CANONICAL_XAU])),
+        }
+    return eth, xau, arms, zones
+
+
+_ETH_TIERS, _XAU_TIERS, ARM_TP1_PCTS, REENTRY_ZONE_ATR = _load_tier_tables()
 
 
 def _canon(symbol: str | None) -> str:

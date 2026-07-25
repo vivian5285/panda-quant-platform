@@ -3495,7 +3495,7 @@ class AdverseRadarMixin:
             if hasattr(self, "_remember_defense_order_id"):
                 self._remember_defense_order_id("hard", aid)
 
-        # 架构对齐：止损单必须带 quantity，以便 TP1/TP2 后收缩至 70%/40%
+        # 架构对齐：止损单必须带 quantity，以便 TP1/TP2 后收缩至 90%/70%（10/20/70）
         if hasattr(client, "place_stop_market_order") and qty_f > 0:
             order = client.place_stop_market_order(
                 close_side, stop_price, symbol, quantity=qty_f, reduce_only=True,

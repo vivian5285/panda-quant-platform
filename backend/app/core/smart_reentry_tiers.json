@@ -1,0 +1,23 @@
+{
+  "version": "2026-07-25",
+  "arm_tp1_pcts": [0.50, 0.65, 0.80, 0.90, 0.95],
+  "reentry_zone_atr": { "ETHUSDT": 0.5, "XAUUSDT": 0.3 },
+  "limit_improve_pct": 0.003,
+  "max_tier_index": 4,
+  "tiers": {
+    "ETHUSDT": [
+      { "label": "1.0", "early_be": 0.50, "step_trigger": 0.75, "step_advance": 0.40, "coef_min": 1.2, "coef_max": 2.5 },
+      { "label": "2.0", "early_be": 0.65, "step_trigger": 0.90, "step_advance": 0.46, "coef_min": 1.4, "coef_max": 2.8 },
+      { "label": "3.0", "early_be": 0.85, "step_trigger": 1.10, "step_advance": 0.52, "coef_min": 1.6, "coef_max": 3.0 },
+      { "label": "4.0", "early_be": 1.05, "step_trigger": 1.25, "step_advance": 0.58, "coef_min": 1.8, "coef_max": 3.2 },
+      { "label": "5.0", "early_be": 1.30, "step_trigger": 1.40, "step_advance": 0.64, "coef_min": 2.0, "coef_max": 3.5 }
+    ],
+    "XAUUSDT": [
+      { "label": "1.0", "early_be": 0.65, "step_trigger": 0.70, "step_advance": 0.45, "coef_min": 1.2, "coef_max": 2.5 },
+      { "label": "2.0", "early_be": 0.85, "step_trigger": 0.85, "step_advance": 0.52, "coef_min": 1.4, "coef_max": 2.8 },
+      { "label": "3.0", "early_be": 1.10, "step_trigger": 1.00, "step_advance": 0.58, "coef_min": 1.6, "coef_max": 3.0 },
+      { "label": "4.0", "early_be": 1.30, "step_trigger": 1.15, "step_advance": 0.64, "coef_min": 1.8, "coef_max": 3.2 },
+      { "label": "5.0", "early_be": 1.55, "step_trigger": 1.30, "step_advance": 0.70, "coef_min": 2.0, "coef_max": 3.5 }
+    ]
+  }
+}

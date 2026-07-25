@@ -95,7 +95,8 @@ def _host(client: RecordingClient, *, stop_px: float, initial_qty: float, watche
     h.best_price = 1926.0
     h.breakeven_phase = False
     h.consumed_tp_levels = list(consumed or [])
-    h.remaining_qty_pct = 1.0 if not consumed else (0.7 if consumed == [1] else 0.4)
+    # 10/20/70 → after TP1 rem=0.9; after TP1+TP2 rem=0.7
+    h.remaining_qty_pct = 1.0 if not consumed else (0.9 if consumed == [1] else 0.7)
     h.tv_tps = [1925.97, 1940.78, 1955.58]
     h.regime = 3
     h._save_state = MagicMock()
@@ -115,7 +116,13 @@ def _host(client: RecordingClient, *, stop_px: float, initial_qty: float, watche
     h._pull_vps_market_indicators = MagicMock(return_value={"atr": 14.8, "adx": 30.0})
     h._defense_mark_price = lambda: 1928.5
     h._resolve_adverse_live_qty = lambda q: float(q or h.watched_qty or 0)
+    # Exchange hang = logical ± buffer; book/place assertions use hang, not logical.
+    h.canonical_symbol = "ETHUSDT"
     return h
+
+
+def _hang_px(h, logical: float) -> float:
+    return float(h._exchange_hang_stop_px(logical))
 
 
 def _seed_stop(client: RecordingClient, oid: int, qty: float, stop_px: float):
@@ -144,8 +151,9 @@ def test_tp1_fill_stop_qty_resize_via_orchestrate_qty_change(caplog):
     tp1_slice = 0.016
     remaining = round(initial_qty - tp1_slice, 4)  # 0.017
 
-    before_id = _seed_stop(client, 9001, initial_qty, stop_px)
     h = _host(client, stop_px=stop_px, initial_qty=initial_qty, watched_qty=initial_qty)
+    hang_px = _hang_px(h, stop_px)
+    before_id = _seed_stop(client, 9001, initial_qty, hang_px)
     h._pending_adverse_algo_ids = [before_id]
     # Same branch body as when classify returns tp1_filled from resolve_tp_step_fill_level
     h._classify_reduction_cause = lambda old, new, curr_px=None: "tp1_filled"
@@ -168,7 +176,7 @@ def test_tp1_fill_stop_qty_resize_via_orchestrate_qty_change(caplog):
     after = [o for o in client._open if o.get("isAlgoOrder")]
 
     assert orch["change_type"] == "tp1_filled"
-    assert float(h.remaining_qty_pct) == pytest.approx(0.7, abs=1e-9)
+    assert float(h.remaining_qty_pct) == pytest.approx(0.9, abs=1e-9)
     assert cancels, "old stop must be cancelled"
     assert places, "resized stop must be placed"
     assert len(after) == 1
@@ -177,11 +185,11 @@ def test_tp1_fill_stop_qty_resize_via_orchestrate_qty_change(caplog):
     new_px = float(after[0]["stopPrice"])
     assert new_id != before_id
     assert new_qty == pytest.approx(remaining, abs=5e-4)
-    assert new_px == pytest.approx(stop_px, abs=0.05)
+    assert new_px == pytest.approx(hang_px, abs=0.05)
     assert moved is False
     assert race_events == [], f"pause must suppress tick cancel/place, got {race_events}"
 
-    design_qty = round(initial_qty * 0.7, 4)
+    design_qty = round(initial_qty * 0.9, 4)
     from datetime import datetime, timezone
 
     def _iso(ts: float) -> str:
@@ -203,16 +211,17 @@ def test_tp1_fill_stop_qty_resize_via_orchestrate_qty_change(caplog):
             "→ (orchestrate TP branch) second force_replace sync is production code"
         ),
         "touches_live_0_033_position": False,
-        "before": {"stop_order_id": before_id, "stop_qty": initial_qty, "stop_price": stop_px},
+        "before": {"stop_order_id": before_id, "stop_qty": initial_qty, "stop_price": hang_px},
         "tp1": {
             "filled_slice": tp1_slice,
             "remaining_live_qty": remaining,
-            "design_remaining_pct": 0.7,
+            "design_remaining_pct": 0.9,
             "design_qty_if_pct_only": design_qty,
             "actual_remaining_pct_state": float(h.remaining_qty_pct),
             "note": (
                 "resize uses live remaining qty when >0 (here 0.017); "
-                "remaining_qty_pct state becomes 0.7 for subsequent logic"
+                "remaining_qty_pct state becomes 0.9 after TP1 (10/20/70); "
+                "exchange hang = logical ± buffer"
             ),
         },
         "after": {
@@ -256,29 +265,31 @@ def test_tp1_fill_stop_qty_resize_via_orchestrate_qty_change(caplog):
     out.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def test_tp2_fill_stop_qty_forty_percent_path():
+def test_tp2_fill_stop_qty_seventy_percent_path():
+    """After TP1+TP2 under 10/20/70, residual state pct = 0.7 (was 0.4 under 30/30/40)."""
     client = RecordingClient()
     stop_px = 1895.79
     initial_qty = 0.033
     before_qty = 0.017
     remaining = 0.013
-    before_id = _seed_stop(client, 9100, before_qty, stop_px)
     h = _host(
         client, stop_px=stop_px, initial_qty=initial_qty, watched_qty=before_qty, consumed=[1],
     )
+    hang_px = _hang_px(h, stop_px)
+    before_id = _seed_stop(client, 9100, before_qty, hang_px)
     h._pending_adverse_algo_ids = [before_id]
     h._classify_reduction_cause = lambda old, new, curr_px=None: "tp2_filled"
 
     t0 = time.time()
     orch = h._orchestrate_qty_change(before_qty, remaining, 1918.0, 1941.0)
     assert orch["change_type"] == "tp2_filled"
-    assert float(h.remaining_qty_pct) == pytest.approx(0.4, abs=1e-9)
+    assert float(h.remaining_qty_pct) == pytest.approx(0.7, abs=1e-9)
     places = [e for e in client.events if e["kind"] == "place_stop"]
     cancels = [e for e in client.events if e["kind"] == "cancel"]
     assert cancels and places
     assert places[-1]["order_id"] != before_id
     assert places[-1]["quantity"] == pytest.approx(remaining, abs=5e-4)
-    assert places[-1]["stop_price"] == pytest.approx(stop_px, abs=0.05)
+    assert places[-1]["stop_price"] == pytest.approx(hang_px, abs=0.05)
     assert float(h._breath_resize_pause_until) > time.time()
 
     # Append TP2 evidence into the shared report written by TP1 test when both run

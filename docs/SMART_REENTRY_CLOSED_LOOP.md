@@ -77,18 +77,24 @@ TV webhook (:6010)
 
 ---
 
-## 4. 价格与硬止损（再入为什么要带滑点）
+## 4. 价格与硬止损（2026-07-25 · 无 ATR 地板 / 无滑点垫）
 
-再入成交价往往偏离 TV 指导价。硬止损**永远以交易所 fill 为原点**：
+再入成交价可能偏离 TV 指导价。硬止损**永远以交易所 fill 为原点**：
 
 ```
-base = max(|TV.entry − TV.SL| × 1.2, 1.5 × ATR × 1.05)
-slip = |fill − TV.entry| × 2
-hang = fill ± (base + slip)
+dist = |TV.price − TV.stop_loss| × buffer   # buffer 默认 1.2
+hang = fill ± dist                          # 无 ATR 地板、无 fill-slip 垫
+缺 SL 或 dist < 5 ticks → 拒开仓 / 拒保护
 ```
 
 实现：`breathing_stop.compute_hard_stop_distance` / `compute_temp_tv_stop`。  
 再入前 mixin 把 `reentry_tv_sl_ref` / `reentry_atr_ref` / `reentry_tv_px` 写回，避免 flat 清态后硬止损算不出来。
+
+开仓后并行挂单（同一保护窗口，非「先开后等几十秒再挂」）：
+
+1. 硬止损（永冻）  
+2. TP1/TP2/TP3 限价（10/20/70；小名义可折叠）  
+3. ATR 就绪后额外挂雷达 STOP（与硬并存；TP3↔雷达互斥）
 
 双保险限价：
 

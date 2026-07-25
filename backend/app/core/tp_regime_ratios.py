@@ -1,6 +1,6 @@
 """Compat re-export — canonical TP module is ``tp_regime_targets``.
 
-Checklist: fixed 30/30/40 qty split; place TP1+TP2 limits only (TP3 trail via breathing).
+2026-07-25: fixed 10/20/70; TP1+TP2+TP3 always placeable (TP3 ↔ radar mutex).
 Ignore TV qty1/qty2/qty3. Prefer importing from ``tp_regime_targets`` in new code.
 """
 

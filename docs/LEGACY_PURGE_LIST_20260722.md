@@ -17,7 +17,7 @@
 |---|---|
 | 旧雷达 SL 数学 `compute_ladder_radar_sl` / `compute_vps_radar_sl` | 死代码；LIVE 止损 = `breathing_stop` |
 | 加仓 PYRAMID / PROFIT_ADD / `_rebuild_defenses_after_tv_add` | 禁用或零调用；OPEN 一律先平后开 |
-| TP3 限价挂单 | `PLACEABLE_TP_LEVELS={1,2}`，不挂 TP3 |
+| ~~TP3 限价挂单~~ | **已废止（2026-07-25）**：现 `PLACEABLE_TP_LEVELS={1,2,3}` 固定 **10/20/70** 挂 TP3；与雷达互斥 |
 | CAP_ALIGN 主动市价减仓 | detect-only（本轮 stub 加固） |
 | 「中势推升」等旧档位文案 | 仓库无匹配 |
 | Webhook `CLOSE_TP`/`CLOSE_TRAIL`/`CLOSE_SL_*`/`leg` 驱动平仓 | ingress soft-ignore；硬平仅 `CLOSE_QUICK_EXIT`/`CLOSE_RSI_EXIT` |
