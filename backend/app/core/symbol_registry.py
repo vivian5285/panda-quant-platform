@@ -39,7 +39,8 @@ SYMBOL_PRECISION: dict[str, dict[str, Any]] = {
         "price_decimals": 2,
         "qty_decimals": 3,
         "min_qty": 0.001,
-        "min_notional": 20.0,  # Binance USDT-M ETHUSDT MIN_NOTIONAL
+        "min_notional": 20.0,  # Binance USDT-M ETHUSDT MIN_NOTIONAL (open)
+        "min_tp_notional": 5.0,  # per reduce-only TP leg
         "qty_unit": "ETH",
         "label": "ETH 永续",
         "dingtalk_unit": "ETH",
@@ -51,6 +52,7 @@ SYMBOL_PRECISION: dict[str, dict[str, Any]] = {
         "qty_decimals": 3,
         "min_qty": 0.001,
         "min_notional": 5.0,  # Binance USDT-M XAUUSDT MIN_NOTIONAL
+        "min_tp_notional": 5.0,
         "qty_unit": "XAU",
         "label": "XAU 永续",
         "dingtalk_unit": "盎司",

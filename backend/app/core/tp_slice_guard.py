@@ -126,11 +126,15 @@ def compute_tp_slices(
     exclude_levels: set[int] | None = None,
     round_qty_fn=round_quantity,
     min_qty: float = 0.0,
+    min_notional: float = 0.0,
+    ref_price: float = 0.0,
 ) -> list[tuple[int, float, float]]:
     """Regime-ratio slices for live qty; skip consumed levels and re-normalize.
 
     ``min_qty``: exchange lot-size floor.
-    - If qty ≥ N × min_qty: keep all N tiers (floor each, distribute remainder by ratio).
+    ``min_notional`` + ``ref_price``: fold tiers whose notional is below exchange
+    MIN_NOTIONAL into later tiers (critical for ~20U ETH smoke — TP1/TP2 ≈2–4U).
+    - If qty ≥ N × min_qty AND each tier can meet min_notional: keep all N tiers.
     - Else: fold undersized early tiers into later ones so at least one placeable TP remains.
     """
     exclude_levels = exclude_levels or set()
@@ -146,26 +150,41 @@ def compute_tp_slices(
         return []
 
     floor = max(float(min_qty or 0), 0.0)
+    min_n = max(float(min_notional or 0), 0.0)
+    ref = max(float(ref_price or 0), 0.0)
+    # Per-tier qty floor implied by notional (use tier price when available)
+    def _notional_floor_qty(px: float) -> float:
+        if min_n <= 0 or ref <= 0 and px <= 0:
+            return 0.0
+        use = float(px or ref or 0)
+        if use <= 0:
+            return 0.0
+        return float(min_n) / use
+
     total_ratio = sum(r for _, r, _ in active)
     n = len(active)
     qty = float(qty)
 
-    # Prefer full TP123 when position is large enough for every tier ≥ min_qty
-    if floor > 0 and qty + 1e-12 >= n * floor and total_ratio > 0:
-        remainder = max(qty - n * floor, 0.0)
+    # Prefer full TP123 only when every tier can clear lot + notional floors
+    tier_floors = [
+        max(floor, _notional_floor_qty(px)) for _, _, px in active
+    ]
+    need = sum(tier_floors)
+    if need > 0 and qty + 1e-12 >= need and total_ratio > 0:
+        remainder = max(qty - need, 0.0)
         slices: list[tuple[int, float, float]] = []
         allocated = 0.0
         for idx, (level, ratio, price) in enumerate(active):
+            tf = tier_floors[idx]
             if idx == n - 1:
                 part = round_qty_fn(qty - allocated)
             else:
-                part = round_qty_fn(floor + remainder * (ratio / total_ratio))
-                if part + 1e-12 < floor:
-                    part = round_qty_fn(floor)
+                part = round_qty_fn(tf + remainder * (ratio / total_ratio))
+                if part + 1e-12 < tf:
+                    part = round_qty_fn(tf)
                 allocated += part
             if part > 0:
                 slices.append((level, part, price))
-        # Fix float drift: last slice eats remainder
         if slices:
             used = sum(q for _, q, _ in slices[:-1])
             last_lvl, _, last_px = slices[-1]
@@ -174,7 +193,7 @@ def compute_tp_slices(
                 slices[-1] = (last_lvl, last_q, last_px)
             else:
                 slices.pop()
-        return slices
+        return _fold_notional_undersized(slices, min_n, round_qty_fn)
 
     # Small position: ratio-split then fold under-min into next tier
     raw: list[tuple[int, float, float]] = []
@@ -193,7 +212,9 @@ def compute_tp_slices(
         q = round_qty_fn(part_qty + carry)
         carry = 0.0
         is_last = idx == len(raw) - 1
-        if not is_last and floor > 0 and q + 1e-12 < floor:
+        nf = _notional_floor_qty(price)
+        need_q = max(floor, nf)
+        if not is_last and need_q > 0 and q + 1e-12 < need_q:
             carry = q
             continue
         if q > 0:
@@ -206,7 +227,39 @@ def compute_tp_slices(
         q = round_qty_fn(qty)
         if q > 0:
             slices.append((level, q, price))
-    return slices
+    return _fold_notional_undersized(slices, min_n, round_qty_fn)
+
+
+def _fold_notional_undersized(
+    slices: list[tuple[int, float, float]],
+    min_notional: float,
+    round_qty_fn,
+) -> list[tuple[int, float, float]]:
+    """Merge early TP tiers whose notional < min_notional into later tiers."""
+    if not slices or float(min_notional or 0) <= 0:
+        return slices
+    out: list[tuple[int, float, float]] = []
+    carry = 0.0
+    for idx, (level, part_qty, price) in enumerate(slices):
+        q = round_qty_fn(float(part_qty) + carry)
+        carry = 0.0
+        is_last = idx == len(slices) - 1
+        notion = float(q) * float(price or 0)
+        if not is_last and notion + 1e-9 < float(min_notional):
+            carry = float(q)
+            continue
+        if q > 0:
+            out.append((level, q, price))
+    if carry > 0:
+        if out:
+            lvl, q, px = out[-1]
+            out[-1] = (lvl, round_qty_fn(float(q) + carry), px)
+        else:
+            level, _, price = slices[-1]
+            q = round_qty_fn(sum(float(x[1]) for x in slices))
+            if q > 0:
+                out.append((level, q, price))
+    return out
 
 
 def match_qty_reduction_to_tp_level(

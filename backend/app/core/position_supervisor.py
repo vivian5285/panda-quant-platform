@@ -2085,6 +2085,23 @@ class PositionSupervisor(
         row = dict(settings.get(r) or settings.get(3) or {})
         row["ratios"] = pine_tp_ratios_frac()
         settings[r] = row
+        # Per-order TP MIN_NOTIONAL (~5U). Open-size gate may be 20U; do not use that
+        # here or 10%/20% slices at ~20U open would never clear and TP book stays empty.
+        min_notional = 5.0
+        ref_px = 0.0
+        try:
+            from app.core.symbol_registry import symbol_meta
+
+            meta = symbol_meta(getattr(self, "symbol", None))
+            min_notional = float(meta.get("min_tp_notional") or 5.0)
+        except Exception:
+            min_notional = 5.0
+        try:
+            ref_px = float(getattr(self, "entry_price", 0) or 0)
+            if ref_px <= 0 and hasattr(self, "_current_tp_price"):
+                ref_px = float(self._current_tp_price() or 0)
+        except Exception:
+            ref_px = 0.0
         slices = compute_tp_slices(
             qty_f,
             r,
@@ -2093,6 +2110,8 @@ class PositionSupervisor(
             exclude_levels=exclude,
             round_qty_fn=self._round_qty,
             min_qty=float(getattr(self, "min_order_qty", 0) or 0),
+            min_notional=min_notional,
+            ref_price=ref_px,
         )
         return [(lv, q, px) for lv, q, px in slices if lv in placeable]
 
