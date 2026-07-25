@@ -812,7 +812,15 @@ class PositionSupervisor(
             from app.core.tp_regime_targets import remaining_qty_pct_from_consumed
             self.remaining_qty_pct = remaining_qty_pct_from_consumed(self.consumed_tp_levels)
         change = {1: "tp1_filled", 2: "tp2_filled", 3: "tp3_filled"}.get(lvl)
-        live_qty = float(getattr(self, "watched_qty", 0) or 0)
+        # Spec §7.3: always resize stops to *live* exchange qty, never stale watched_qty alone
+        live_qty = 0.0
+        if hasattr(self, "_resolve_adverse_live_qty"):
+            try:
+                live_qty = float(self._resolve_adverse_live_qty(0) or 0)
+            except Exception:
+                live_qty = 0.0
+        if live_qty <= 0:
+            live_qty = float(getattr(self, "watched_qty", 0) or 0)
         if change and hasattr(self, "_boost_radar_after_tp_fill"):
             try:
                 self._boost_radar_after_tp_fill(
@@ -822,13 +830,16 @@ class PositionSupervisor(
                 pass
         elif hasattr(self, "_save_state"):
             self._save_state()
+        if live_qty > 0:
+            self.watched_qty = live_qty
         return {
             "ok": True,
             "sl_bumped": False,
             "remaining_qty_pct": float(self.remaining_qty_pct),
             "leg": leg,
             "stop_resized": True,
-            "note": "breathing stop: TP fill resizes stop qty only",
+            "resize_qty": live_qty,
+            "note": "breathing stop: TP fill resizes stop qty to live headroom",
         }
 
     def _apply_tv_entry_context(self, payload: dict) -> None:
@@ -3974,8 +3985,9 @@ class PositionSupervisor(
             after = set(int(x) for x in (self.consumed_tp_levels or []))
             gained = sorted(after - before)
             if gained and hasattr(self, "_notify_tp_fill_detected"):
-                # notify → bump → boost (once). Do NOT call boost again here.
-                self._notify_tp_fill_detected(gained[0], self.watched_qty or live_qty, live_qty, curr_px)
+                # Update book qty first so bump/boost never see stale watched_qty (§7.3)
+                self.watched_qty = live_qty
+                self._notify_tp_fill_detected(gained[0], live_qty, live_qty, curr_px)
         self.watched_qty = live_qty
         if entry > 0:
             self.watched_entry = entry
@@ -4417,7 +4429,9 @@ class PositionSupervisor(
             logger.info(
                 f"[User {self.user_id}] dust round {round_i + 1}/4: {close_side} {pos['size']}"
             )
-            self.client.place_market_order(close_side, pos["size"], reduce_only=True)
+            self.client.place_market_order(
+                close_side, pos["size"], self.symbol, reduce_only=True,
+            )
             had_market_close = True
             time.sleep(1.0)
         exit_price = self.client.get_current_price(self.symbol)
@@ -5113,8 +5127,16 @@ class PositionSupervisor(
                 closed_successfully = True
                 break
             close_side = "SELL" if float(pos["positionAmt"]) > 0 else "BUY"
+            live_close_qty = abs(float(pos["positionAmt"]))
+            # Spec §7.4 / §10.5: never oversize flatten → reverse open; always reduce-only
+            if live_close_qty <= 0:
+                closed_successfully = True
+                break
             self.client.place_market_order(
-                close_side, abs(float(pos["positionAmt"])), self.symbol
+                close_side,
+                live_close_qty,
+                self.symbol,
+                reduce_only=True,
             )
             time.sleep(1.5)
 

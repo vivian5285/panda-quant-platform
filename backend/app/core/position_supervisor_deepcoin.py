@@ -2828,7 +2828,15 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             from app.core.tp_regime_targets import remaining_qty_pct_from_consumed
             self.remaining_qty_pct = remaining_qty_pct_from_consumed(self.consumed_tp_levels)
         change = {1: "tp1_filled", 2: "tp2_filled", 3: "tp3_filled"}.get(lvl)
-        live_qty = float(getattr(self, "watched_qty", 0) or 0)
+        # Spec §7.3: live exchange qty for stop resize (parity with Binance path)
+        live_qty = 0.0
+        if hasattr(self, "_resolve_adverse_live_qty"):
+            try:
+                live_qty = float(self._resolve_adverse_live_qty(0) or 0)
+            except Exception:
+                live_qty = 0.0
+        if live_qty <= 0:
+            live_qty = float(getattr(self, "watched_qty", 0) or 0)
         if change and hasattr(self, "_boost_radar_after_tp_fill"):
             try:
                 self._boost_radar_after_tp_fill(
@@ -2838,13 +2846,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 pass
         elif hasattr(self, "_save_state"):
             self._save_state()
+        if live_qty > 0:
+            self.watched_qty = live_qty
         return {
             "ok": True,
             "sl_bumped": False,
             "remaining_qty_pct": float(self.remaining_qty_pct),
             "leg": leg,
             "stop_resized": True,
-            "note": "breathing stop: TP fill resizes stop qty only",
+            "resize_qty": live_qty,
+            "note": "breathing stop: TP fill resizes stop qty to live headroom",
         }
 
     def _handle_manual_flat_detected(self, reason, *, skip_eager_purge=False):

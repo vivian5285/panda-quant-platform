@@ -174,26 +174,43 @@ def test_dual_insurance_reentry_price():
 
 def test_close_allows_reentry_zones_and_window():
     ok, m = close_allows_reentry(
-        side="LONG", entry=100, close_px=102, atr=10, symbol="ETHUSDT", close_track="radar",
+        side="LONG", entry=100, close_px=102, atr=10, symbol="ETHUSDT",
+        close_track="radar", adx_tier=2,
     )
     assert ok and m["reason"] == "ok"
     ok, m = close_allows_reentry(
-        side="LONG", entry=100, close_px=99, atr=10, symbol="ETHUSDT", close_track="radar",
+        side="LONG", entry=100, close_px=99, atr=10, symbol="ETHUSDT",
+        close_track="radar", adx_tier=2,
     )
     assert not ok and m["reason"] == "loss_no_reentry"
     ok, m = close_allows_reentry(
-        side="LONG", entry=100, close_px=106, atr=10, symbol="ETHUSDT", close_track="radar",
+        side="LONG", entry=100, close_px=106, atr=10, symbol="ETHUSDT",
+        close_track="radar", adx_tier=2,
     )
     assert not ok and m["reason"] == "outside_reentry_zone"
     ok, m = close_allows_reentry(
-        side="LONG", entry=100, close_px=102, atr=10, symbol="ETHUSDT", close_track="hard",
+        side="LONG", entry=100, close_px=102, atr=10, symbol="ETHUSDT",
+        close_track="hard", adx_tier=2,
     )
     assert not ok and m["reason"] == "hard_stop_no_reentry"
     ok, m = close_allows_reentry(
         side="LONG", entry=100, close_px=102, atr=10, symbol="ETHUSDT",
-        close_track="radar", reentry_attempt=1,
+        close_track="radar", reentry_attempt=1, adx_tier=2,
     )
     assert not ok and m["reason"] == "max_reentry_once"
+
+    # Spec §9.1.5 / §9.1.6 — TP1 filled or non-strong tier block reentry
+    ok, m = close_allows_reentry(
+        side="LONG", entry=100, close_px=102, atr=10, symbol="ETHUSDT",
+        close_track="radar", adx_tier=2, tp1_filled=True,
+    )
+    assert not ok and m["reason"] == "tp1_already_filled_no_reentry"
+    for weak in (0, 1, None):
+        ok, m = close_allows_reentry(
+            side="LONG", entry=100, close_px=102, atr=10, symbol="ETHUSDT",
+            close_track="radar", adx_tier=weak,
+        )
+        assert not ok and m["reason"] == "tier_not_strong_no_reentry"
 
     # Window: ETH 2×90m = 10800s
     import time
@@ -205,16 +222,18 @@ def test_close_allows_reentry_zones_and_window():
 
     ok, m = close_allows_reentry(
         side="LONG", entry=100, close_px=102, atr=10, symbol="ETHUSDT",
-        close_track="radar", flat_ts=now - 20000, now_ts=now,
+        close_track="radar", flat_ts=now - 20000, now_ts=now, adx_tier=2,
     )
     assert not ok and m["reason"] == "window_expired"
 
     ok, _ = close_allows_reentry(
-        side="SHORT", entry=4000, close_px=3997, atr=10, symbol="XAUUSDT", close_track="radar",
+        side="SHORT", entry=4000, close_px=3997, atr=10, symbol="XAUUSDT",
+        close_track="radar", adx_tier=2,
     )
     assert ok
     ok, m = close_allows_reentry(
-        side="SHORT", entry=4000, close_px=3996, atr=10, symbol="XAUUSDT", close_track="radar",
+        side="SHORT", entry=4000, close_px=3996, atr=10, symbol="XAUUSDT",
+        close_track="radar", adx_tier=2,
     )
     assert not ok
 

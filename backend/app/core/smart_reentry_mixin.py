@@ -382,6 +382,15 @@ class SmartReentryMixin:
             self.radar_flat_ts = flat_ts
         trend_tier = self._resolve_trend_tier()
         cur = int(getattr(self, "reentry_attempt", 0) or 0)
+        consumed = list(getattr(self, "consumed_tp_levels", None) or [])
+        tp1_filled = False
+        for x in consumed:
+            try:
+                if int(x) == 1:
+                    tp1_filled = True
+                    break
+            except (TypeError, ValueError):
+                continue
 
         ok, meta = close_allows_reentry(
             side=side,
@@ -393,6 +402,8 @@ class SmartReentryMixin:
             flat_ts=flat_ts,
             adx_tier=trend_tier,
             reentry_attempt=cur,
+            tp1_filled=tp1_filled,
+            require_strong_tier=True,
         )
         if not ok:
             self.reentry_abort_reason = meta.get("reason")

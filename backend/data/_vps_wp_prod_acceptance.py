@@ -279,12 +279,16 @@ ok,_=reentry_within_window(flat_ts=now-100, now_ts=now, symbol="ETHUSDT")
 assert ok
 ok,_=reentry_within_window(flat_ts=now-20000, now_ts=now, symbol="ETHUSDT")
 assert not ok
-ok,m=close_allows_reentry(side="LONG",entry=100,close_px=102,atr=10,symbol="ETHUSDT",close_track="radar")
+ok,m=close_allows_reentry(side="LONG",entry=100,close_px=102,atr=10,symbol="ETHUSDT",close_track="radar",adx_tier=2)
 assert ok
-ok,m=close_allows_reentry(side="LONG",entry=100,close_px=102,atr=10,symbol="ETHUSDT",close_track="hard")
+ok,m=close_allows_reentry(side="LONG",entry=100,close_px=102,atr=10,symbol="ETHUSDT",close_track="hard",adx_tier=2)
 assert not ok and m["reason"]=="hard_stop_no_reentry"
-ok,m=close_allows_reentry(side="LONG",entry=100,close_px=102,atr=10,symbol="ETHUSDT",close_track="radar",reentry_attempt=1)
+ok,m=close_allows_reentry(side="LONG",entry=100,close_px=102,atr=10,symbol="ETHUSDT",close_track="radar",reentry_attempt=1,adx_tier=2)
 assert not ok and m["reason"]=="max_reentry_once"
+ok,m=close_allows_reentry(side="LONG",entry=100,close_px=102,atr=10,symbol="ETHUSDT",close_track="radar",adx_tier=2,tp1_filled=True)
+assert not ok and m["reason"]=="tp1_already_filled_no_reentry"
+ok,m=close_allows_reentry(side="LONG",entry=100,close_px=102,atr=10,symbol="ETHUSDT",close_track="radar",adx_tier=1)
+assert not ok and m["reason"]=="tier_not_strong_no_reentry"
 # Dual insurance
 k5=[[0,"0","2010","1980","2000","0"]]
 px,meta=compute_optimal_reentry_price(side="LONG",tv_px=2000,symbol="ETHUSDT",klines_5m=k5,last_entry=1990)

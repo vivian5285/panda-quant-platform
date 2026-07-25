@@ -14,7 +14,7 @@
 |------|------|------|
 | ① 理想 | TP1/TP2/TP3 限价成交 | 逐级兑现 → flat → 等下一 TV |
 | ② 核心 | 雷达在保本/微赚区扫出，且在窗口内 | 清场 → 双保险限价再入（最多 1 次）→ trail +1 档 + **arm=1.00** |
-| ③ 认输 | 硬止损 / 亏损 / 窗口过期 / 已重入过 | **永不重入**，等新 TV |
+| ③ 认输 | 硬止损 / 亏损 / 窗口过期 / 已重入过 / **该用户TP1已成交** / **档位非强趋势(tier≠2)** | **永不重入**，等新 TV |
 
 ---
 
@@ -80,6 +80,17 @@ tp1_distance = |TV.tp1 − TV.price|
 | 重入区 | 开仓价→开仓+0.5×ATR | 开仓价→开仓+0.3×ATR |
 
 重入成功：雷达 trail 取 **ADX档+1**（封顶强档）；arm 固定 **1.00**；不影响 TP 价格与数量。
+
+### 重入硬闸（Gemini 多用户规格 §9.1 本版新增）
+
+1. **`tp1_filled=True`（该用户本笔已吃过 TP1）→ 禁止重入** — 趋势曾确认后反转，非噪音扫出。
+2. **`adx_tier != 2`（非强趋势）→ 禁止重入** — 弱/中趋势雷达扫出一律不重入；档位按 TV 信号统一，全用户一致。
+
+落点：`smart_reentry.close_allows_reentry(..., tp1_filled=, require_strong_tier=True)`；`smart_reentry_mixin` 从 `consumed_tp_levels` 推导 TP1，并传入 `_resolve_trend_tier()`。
+
+### 切片/部分止盈（规格 §7.3）
+
+TP1/TP2/TP3 可能分批成交 → 实时总头寸变小。每次 TP 对账 / WS 感知成交后，**硬止损+雷达止损数量按当时交易所 live qty 收缩**（价格不变）。`_bump_sl_after_tp_reconcile` / `_boost_radar_after_tp_fill` 禁止仅用陈旧 `watched_qty`。平仓市价一律 `reduce_only` 且 `qty ≤ live`，杜绝反向开仓。空仓后 `_purge_defense_orders_on_flat` 多轮 mop 清幽灵/蚂蚁限价。
 
 ---
 

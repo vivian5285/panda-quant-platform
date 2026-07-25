@@ -383,6 +383,8 @@ def close_allows_reentry(
     now_ts: float | None = None,
     adx_tier: int | None = None,
     reentry_attempt: int = 0,
+    tp1_filled: bool = False,
+    require_strong_tier: bool = True,
 ) -> tuple[bool, dict[str, Any]]:
     meta: dict[str, Any] = {
         "side": str(side or "").upper(),
@@ -393,6 +395,8 @@ def close_allows_reentry(
         "close_track": str(close_track or "").lower(),
         "zone_atr": reentry_zone_atr(symbol),
         "reentry_attempt": int(reentry_attempt or 0),
+        "tp1_filled": bool(tp1_filled),
+        "adx_tier": int(adx_tier) if adx_tier is not None else None,
     }
     if not smart_reentry_enabled_for(symbol):
         meta["reason"] = "disabled"
@@ -409,6 +413,21 @@ def close_allows_reentry(
     if track not in ("radar",):
         meta["reason"] = "not_radar_close"
         return False, meta
+
+    # Spec §9.1.5: TP1 already filled → never reenter (trend confirmed then reversed)
+    if bool(tp1_filled):
+        meta["reason"] = "tp1_already_filled_no_reentry"
+        return False, meta
+
+    # Spec §9.1.6: only strong trend (tier=2) may reenter
+    if require_strong_tier:
+        try:
+            tier_i = int(adx_tier) if adx_tier is not None else -1
+        except (TypeError, ValueError):
+            tier_i = -1
+        if tier_i != 2:
+            meta["reason"] = "tier_not_strong_no_reentry"
+            return False, meta
 
     entry_px = float(entry or 0)
     exit_px = float(close_px or 0)
