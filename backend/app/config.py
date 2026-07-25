@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     WEBHOOK_COALESCE_SEC: float = 15.0
     # 内测专用：>0 时强制名义价值≈该 USD（压到交易所最小名义附近）。生产必须保持 0。
     E2E_FORCE_NOTIONAL_USD: float = 0.0
+    # 日亏损熔断（−5.5% equity UTC 日）— 生产默认关闭，避免误熔断挡真实 TV
+    DAILY_LOSS_CIRCUIT_ENABLED: bool = False
+    DAILY_LOSS_LIMIT_PCT: float = 0.055
     # DB / webhook 日志保留天数（checklist §12.4）
     LOG_RETENTION_DAYS: int = 30
     LOG_RETENTION_INTERVAL_SEC: int = 86400

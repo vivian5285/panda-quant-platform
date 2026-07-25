@@ -1,7 +1,8 @@
 #!/bin/bash
 # Dual-symbol ~20U live smoke: ETH/XAU LONG+SHORT full chain on user6.
 # Evidence under /tmp/dual20_smoke/evidence_*
-# Asserts: hard=fill±(|TV.e−SL|×1.2), TP1+TP2+TP3 limits, dual algo stops.set -u
+# Asserts: hard=fill±(|TV.e−SL|×1.2), TP1+TP2+TP3 limits, dual algo stops.
+set -u
 cd /home/panda/panda-quant-platform
 SECRET="${WEBHOOK_SECRET:-528586}"
 WH=http://127.0.0.1:6010/webhook

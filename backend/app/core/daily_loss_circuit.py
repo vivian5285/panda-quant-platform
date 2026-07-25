@@ -18,9 +18,28 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Kill-switch: must stay False until close PnL bookkeeping is proven correct.
-DAILY_LOSS_CIRCUIT_ENABLED = False
+# Override via Settings.DAILY_LOSS_CIRCUIT_ENABLED / env (default False).
+def _circuit_enabled() -> bool:
+    try:
+        from app.config import get_settings
+
+        return bool(getattr(get_settings(), "DAILY_LOSS_CIRCUIT_ENABLED", False))
+    except Exception:
+        return False
+
+
+DAILY_LOSS_CIRCUIT_ENABLED = False  # module default; runtime uses _circuit_enabled()
 DAILY_LOSS_LIMIT_PCT = 0.055  # 5.5% of equity
 _lock = threading.RLock()
+
+
+def _limit_pct() -> float:
+    try:
+        from app.config import get_settings
+
+        return float(getattr(get_settings(), "DAILY_LOSS_LIMIT_PCT", DAILY_LOSS_LIMIT_PCT) or DAILY_LOSS_LIMIT_PCT)
+    except Exception:
+        return float(DAILY_LOSS_LIMIT_PCT)
 
 
 def _utc_day() -> str:
@@ -87,19 +106,21 @@ def check_allows_open(
     pnl = float(data.get("realized_pnl_usd") or 0)
     ref = float(data.get("equity_ref") or 0) or eq
     loss_pct = (-pnl / ref) if ref > 0 and pnl < 0 else 0.0
+    enabled = _circuit_enabled()
+    limit = _limit_pct()
     meta = {
         "day": data.get("day"),
         "realized_pnl_usd": round(pnl, 4),
         "equity_ref": round(ref, 4),
         "loss_pct": round(loss_pct, 6),
-        "limit_pct": DAILY_LOSS_LIMIT_PCT,
+        "limit_pct": limit,
         "symbol": symbol,
-        "enabled": bool(DAILY_LOSS_CIRCUIT_ENABLED),
+        "enabled": bool(enabled),
     }
-    if not DAILY_LOSS_CIRCUIT_ENABLED:
+    if not enabled:
         meta["bypassed"] = True
         return True, meta
-    if ref > 0 and pnl < 0 and (-pnl / ref) + 1e-12 >= DAILY_LOSS_LIMIT_PCT:
+    if ref > 0 and pnl < 0 and (-pnl / ref) + 1e-12 >= limit:
         meta["error"] = "daily_loss_circuit"
         logger.warning(
             "[User %s] daily loss circuit trip symbol=%s loss_pct=%.2f%% pnl=%.4f",
