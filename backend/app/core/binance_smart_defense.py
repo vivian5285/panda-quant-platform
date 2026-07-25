@@ -1283,7 +1283,11 @@ class BinanceSmartDefenseMixin:
                 from app.core.order_place_guard import STOP_TAG_TTL_SEC, radar_tag
 
                 _radar_reg = self._pending_orders()
-                _radar_tag = radar_tag(getattr(self, "user_id", 0), symbol)
+                _radar_tag = radar_tag(
+                    getattr(self, "user_id", 0),
+                    symbol,
+                    exchange=getattr(self, "exchange_id", None),
+                )
                 ok_acq, acq_reason = _radar_reg.try_acquire(
                     _radar_tag,
                     kind="radar",

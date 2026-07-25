@@ -8,8 +8,7 @@
 
 > **文档同步（2026-07-25 · 白皮书 v3.0 · TP 10/20/70 + 硬止损垫固定1.15 + 雷达 fill±tp1_dist×(0.85/1.00) + 重入最多 1 次）**  
 > 凡与本文冲突的旧描述（「雷达扫出=失败离场」「查不到单就盲补」「硬止损=TV原价」「硬=ATR地板+滑点垫」「仅 TP1/TP2」「5 档递进 1.0→5.0」「arm 50/65/80/90/95」「buffer 1.1/1.2/1.3」「日亏熔断默认开」）**一律作废**。  
-> 权威：TV 窗口内仅硬止损可主动认输；雷达 BE/微赚扫出 → 清场 → 双保险限价再入（最多 1 次）→ `fill±(|TV.e−SL|×1.15)` 硬止损 + **TP1/TP2/TP3(10/20/70)** + 雷达被动跟随（首次 arm=0.85 / 重入 arm=1.00，trail +1 档）。  
-> 结构：`docs/SMART_REENTRY_CLOSED_LOOP.md` · 部署：`docs/VPS_DEPLOY.md` · 速查：`backend/data/_readme_top.md` · 参数表：`backend/app/core/trend_tier_params.py`
+> 权威：`docs/VPS_SYSTEM_SPEC_GEMINI_MULTIUSER.md`（Gemini 多用户完整规格）· `docs/WHITEPAPER_DUAL_RADAR_REENTRY_v3.md` · `docs/SMART_REENTRY_CLOSED_LOOP.md` · 部署：`docs/VPS_DEPLOY.md`
 
 ### 当前实盘一句话
 

@@ -208,16 +208,26 @@ def _price_tick(symbol: str | None) -> float:
 
 
 def _kline_high_low(rows: list | None) -> tuple[float, float]:
+    """High/low of the most recently *closed* candle.
+
+    Exchange kline APIs typically append the still-forming bar as ``rows[-1]``.
+    Spec §9.3: use the latest fully closed bar → prefer ``rows[-2]`` when present.
+    """
     if not rows:
         return 0.0, 0.0
-    row = rows[-1]
-    try:
-        hi = float(row[2])
-        lo = float(row[3])
-        if hi > 0 and lo > 0 and hi >= lo:
-            return hi, lo
-    except (TypeError, ValueError, IndexError):
-        pass
+    # Prefer closed bar; fall back to last row only if a single bar is available
+    candidates = []
+    if len(rows) >= 2:
+        candidates.append(rows[-2])
+    candidates.append(rows[-1])
+    for row in candidates:
+        try:
+            hi = float(row[2])
+            lo = float(row[3])
+            if hi > 0 and lo > 0 and hi >= lo:
+                return hi, lo
+        except (TypeError, ValueError, IndexError):
+            continue
     return 0.0, 0.0
 
 

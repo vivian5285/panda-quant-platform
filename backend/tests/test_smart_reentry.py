@@ -130,6 +130,17 @@ def test_dual_insurance_reentry_price():
     assert abs(px - (1980 + 0.01)) < 1e-9
     assert px < 2000
 
+    # Spec §9.3: prefer most recently closed bar (rows[-2]), not forming rows[-1]
+    k5_closed = [
+        [0, "0", "2010", "1980", "2000", "0"],  # closed
+        [0, "0", "2005", "1999", "2001", "0"],  # forming
+    ]
+    px_c, meta_c = compute_optimal_reentry_price(
+        side="LONG", tv_px=2000, symbol="ETHUSDT", klines_5m=k5_closed,
+    )
+    assert abs(px_c - (1980 + 0.01)) < 1e-9
+    assert abs(float(meta_c["kline_low"]) - 1980) < 1e-9
+
     # Must also beat last entry when provided
     px_bad, m_bad = compute_optimal_reentry_price(
         side="LONG", tv_px=2000, symbol="ETHUSDT", klines_5m=k5, last_entry=1970,

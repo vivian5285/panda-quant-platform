@@ -3490,7 +3490,11 @@ class AdverseRadarMixin:
                 from app.core.order_place_guard import STOP_TAG_TTL_SEC, hard_tag
 
                 _hard_reg = self._pending_orders()
-                _hard_tag = hard_tag(getattr(self, "user_id", 0), symbol)
+                _hard_tag = hard_tag(
+                    getattr(self, "user_id", 0),
+                    symbol,
+                    exchange=getattr(self, "exchange_id", None),
+                )
                 ok_acq, acq_reason = _hard_reg.try_acquire(
                     _hard_tag,
                     kind="hard",

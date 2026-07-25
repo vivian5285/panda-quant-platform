@@ -862,7 +862,12 @@ class SmartReentryMixin:
                 break
 
             attempt = int(getattr(self, "reentry_attempt", 0) or 0)
-            tag = reentry_tag(getattr(self, "user_id", 0), symbol, attempt)
+            tag = reentry_tag(
+                getattr(self, "user_id", 0),
+                symbol,
+                attempt,
+                exchange=getattr(self, "exchange_id", None),
+            )
             cid = make_client_order_id("sr", getattr(self, "user_id", 0), attempt, unfilled)
             ok_acq, acq_reason = reg.try_acquire(
                 tag,

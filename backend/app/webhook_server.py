@@ -107,6 +107,28 @@ def _run_dispatch_async(data: dict, fingerprint: str, webhook_log_id: int | None
     from app.services.signal_admin import record_webhook_hit, run_signal_dispatch
     from app.services.webhook_idempotency import finalize
     from app.services.webhook_receive_log import WebhookLogTimer
+    from app.services.dispatcher import supervisor_pool
+
+    # Spec §8.4: hold new TV until multi-user restart recovery finishes (max 5 min age)
+    recv_ts = float(data.get("_recv_ts") or time.time())
+    wait_deadline = time.time() + 120.0
+    while not bool(getattr(supervisor_pool, "startup_complete", False)):
+        if time.time() - recv_ts > 300.0:
+            logger.warning(
+                "[Webhook] drop signal — startup not ready and age>5m fp=%s",
+                fingerprint[:48],
+            )
+            _update_webhook_log(
+                webhook_log_id,
+                event_status="dropped",
+                response_status="startup_not_ready",
+                error_message="startup_recovery_timeout_drop",
+            )
+            return
+        if time.time() > wait_deadline:
+            logger.warning("[Webhook] startup wait exceeded 120s — dispatch anyway")
+            break
+        time.sleep(0.5)
 
     if webhook_log_id is None:
         webhook_log_id = _persist_webhook_log(
@@ -187,6 +209,7 @@ def webhook():
             response_status="error",
         )
         return jsonify({"status": "error", "message": "Empty payload"}), 400
+    data["_recv_ts"] = time.time()
 
     # Canonical auth field is `secret`; legacy `token` still accepted.
     # Deprecation: remove `token` fallback after all TV alerts are confirmed on

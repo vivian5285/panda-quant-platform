@@ -458,7 +458,38 @@ class SignalDispatcher:
                     results.append({"user_id": uid, "symbol": sym, "status": "error", "message": str(e)})
 
         ok_count = sum(1 for r in results if r.get("status") == "ok")
+        fail_count = len(results) - ok_count
         logger.info(f"Signal dispatched {signal_symbol}: ok={ok_count} total={len(results)}")
+        # Spec §12.2: always emit a batch summary (success + failure)
+        try:
+            lines = [
+                f"品种 {signal_symbol} · action={action}",
+                f"启用账户 {len(results)} · 成功 {ok_count} · 失败 {fail_count}",
+            ]
+            for r in results[:12]:
+                st = r.get("status") or "?"
+                lines.append(f"  u{r.get('user_id')} {r.get('symbol')}: {st}")
+            if len(results) > 12:
+                lines.append(f"  …共 {len(results)} 条")
+            if errors:
+                for e in errors[:6]:
+                    lines.append(f"  FAIL u{e.get('user_id')}: {str(e.get('message') or '')[:80]}")
+            notify_system(
+                "warning" if errors else "info",
+                "DISPATCH_SUMMARY",
+                "TV信号分发汇总",
+                "\n".join(lines),
+                {
+                    "action": action,
+                    "symbol": signal_symbol,
+                    "ok": ok_count,
+                    "fail": fail_count,
+                    "total": len(results),
+                    "errors": errors[:20],
+                },
+            )
+        except Exception as sum_exc:
+            logger.debug("dispatch summary notify failed: %s", sum_exc)
         if errors:
             notify_system(
                 "warning", "DISPATCH_PARTIAL_FAIL",

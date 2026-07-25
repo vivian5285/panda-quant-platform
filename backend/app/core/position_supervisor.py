@@ -2768,7 +2768,13 @@ class PositionSupervisor(
                         tp_tag,
                     )
                     _reg = self._pending_orders()
-                    _tp_tag = tp_tag(self.user_id, self.symbol, label, float(price))
+                    _tp_tag = tp_tag(
+                        self.user_id,
+                        self.symbol,
+                        label,
+                        float(price),
+                        exchange=getattr(self, "exchange_id", None),
+                    )
                     ok_acq, acq_reason = _reg.try_acquire(
                         _tp_tag,
                         kind="tp",

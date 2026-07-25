@@ -4,6 +4,7 @@ from app.core.order_place_guard import (
     PendingOrderRegistry,
     hard_tag,
     make_client_order_id,
+    radar_tag,
     reentry_tag,
     tp_tag,
 )
@@ -11,18 +12,26 @@ from app.core.order_place_guard import (
 
 def test_pending_tag_blocks_second_acquire():
     reg = PendingOrderRegistry()
-    tag = reentry_tag(6, "ETHUSDT", 1)
+    tag = reentry_tag(6, "ETHUSDT", 1, exchange="binance")
+    assert "binance" in tag
     ok1, r1 = reg.try_acquire(tag, kind="reentry", symbol="ETHUSDT", ttl_sec=60)
     assert ok1 and r1 == "acquired"
     ok2, r2 = reg.try_acquire(tag, kind="reentry", symbol="ETHUSDT", ttl_sec=60)
     assert not ok2 and r2 == "local_tag_inflight"
     # Same kind+symbol exclusive
-    tag2 = reentry_tag(6, "ETHUSDT", 2)
+    tag2 = reentry_tag(6, "ETHUSDT", 2, exchange="binance")
     ok3, r3 = reg.try_acquire(tag2, kind="reentry", symbol="ETHUSDT", ttl_sec=60)
     assert not ok3 and "reentry" in r3
     reg.release(tag, reason="test")
     ok4, _ = reg.try_acquire(tag2, kind="reentry", symbol="ETHUSDT", ttl_sec=60)
     assert ok4
+
+
+def test_tags_include_exchange_dimension():
+    assert "okx" in reentry_tag(1, "ETHUSDT", 0, exchange="okx")
+    assert "gate" in hard_tag(1, "XAUUSDT", exchange="gate")
+    assert "binance" in tp_tag(1, "ETHUSDT", "TP1", 2000.0)
+    assert "deepcoin" in radar_tag(2, "ETHUSDT", exchange="deepcoin")
 
 
 def test_tp_and_hard_tags_independent_by_symbol():

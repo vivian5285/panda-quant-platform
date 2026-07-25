@@ -177,18 +177,22 @@ def make_client_order_id(prefix: str, *parts: Any) -> str:
     return out[:36]
 
 
-def reentry_tag(user_id: Any, symbol: str, attempt: int) -> str:
-    return f"reentry:{user_id}:{str(symbol).upper()}:{int(attempt)}"
+def reentry_tag(user_id: Any, symbol: str, attempt: int, exchange: str | None = None) -> str:
+    ex = str(exchange or "binance").lower().strip() or "binance"
+    return f"reentry:{ex}:{user_id}:{str(symbol).upper()}:{int(attempt)}"
 
 
-def tp_tag(user_id: Any, symbol: str, label: str, price: float) -> str:
+def tp_tag(user_id: Any, symbol: str, label: str, price: float, exchange: str | None = None) -> str:
+    ex = str(exchange or "binance").lower().strip() or "binance"
     px = f"{float(price):.4f}".rstrip("0").rstrip(".")
-    return f"tp:{user_id}:{str(symbol).upper()}:{label}:{px}"
+    return f"tp:{ex}:{user_id}:{str(symbol).upper()}:{label}:{px}"
 
 
-def hard_tag(user_id: Any, symbol: str) -> str:
-    return f"hard:{user_id}:{str(symbol).upper()}"
+def hard_tag(user_id: Any, symbol: str, exchange: str | None = None) -> str:
+    ex = str(exchange or "binance").lower().strip() or "binance"
+    return f"hard:{ex}:{user_id}:{str(symbol).upper()}"
 
 
-def radar_tag(user_id: Any, symbol: str) -> str:
-    return f"radar:{user_id}:{str(symbol).upper()}"
+def radar_tag(user_id: Any, symbol: str, exchange: str | None = None) -> str:
+    ex = str(exchange or "binance").lower().strip() or "binance"
+    return f"radar:{ex}:{user_id}:{str(symbol).upper()}"
