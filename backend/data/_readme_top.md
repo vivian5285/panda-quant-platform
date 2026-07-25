@@ -34,7 +34,8 @@ TV 窗口三条路：止盈 / 雷达 BE 再入 / 硬止损认输 — 无第四�
 | 雷达档位 | arm TP1×50/65/80/90/95；ETH/XAU 独立 early_be/step/coef |
 | 再入价 | 双保险 min/max(5m极值±tick, TV×0.997/1.003)；须优于 TV |
 | 再入区 | ETH 0.5×ATR / XAU 0.3×ATR；硬/亏永不重入；最多到 5.0 档 |
-| 挂单幂等 | 本地标签 in-flight 绝对拒挂 + 盘口存在则视为成功 |
+| 挂单硬帽 | 单品种未成交挂单总数 **≤5**；超限 → critical + **暂停该品种开仓** |
+| 退出所有权 | `exit_ownership`: NONE / TP3_LIMIT / RADAR_STOP；先成交锁定，拒挂另一腿 |
 
 ### AI Agent 速查
 

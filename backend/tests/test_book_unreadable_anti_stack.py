@@ -16,7 +16,7 @@ class _T(BinanceSmartDefenseMixin):
         self.symbol = "ETHUSDT"
         self.tv_tps = [1900.0, 1910.0, 0.0]
         self.regime = 3
-        self.regime_settings = {3: {"ratios": [0.3, 0.3, 0.4]}}
+        self.regime_settings = {3: {"ratios": [0.1, 0.2, 0.7]}}
         self._orders = []
         self.client = MagicMock()
         self.logs = []

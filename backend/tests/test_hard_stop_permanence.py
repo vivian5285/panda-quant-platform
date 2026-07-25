@@ -70,7 +70,8 @@ def test_open_atr_scenario_restores_frozen_hard_after_radar_init():
     assert abs(h._frozen_hard_stop_px - expected) < 1e-9
     assert abs(h._tv_hard_sl_price - expected) < 1e-9
     assert abs(detail["frozen_hard"] - expected) < 1e-9
-    assert bool((detail.get("hard_widen") or {}).get("widened")) is True
+    # ATR widen disabled since 2026-07-25 (TV distance × buffer only)
+    assert bool((detail.get("hard_widen") or {}).get("widened")) is False
     assert float(h.current_sl or 0) > 0
 
 

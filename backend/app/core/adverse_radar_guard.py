@@ -58,6 +58,11 @@ ADVERSE_HARD_STOP_PCT = 0.10
 TV_SL_TIER_MARKER = -1.0  # plan tier_pct when stop price comes from TV
 ADVERSE_STOP_TOLERANCE = 2.0
 ADVERSE_REPAIR_COOLDOWN_SEC = 20.0
+# Checklist hard fuse: TOTAL open orders (limits+stops) on one symbol
+OPEN_ORDERS_HARD_CAP = 5
+EXIT_OWNERSHIP_NONE = "NONE"
+EXIT_OWNERSHIP_TP3 = "TP3_LIMIT"
+EXIT_OWNERSHIP_RADAR = "RADAR_STOP"
 ADVERSE_MAX_STOP_ORDERS = 2  # hard + radar coexistence (whitepaper)
 ADVERSE_VERIFY_RETRIES = 6
 ADVERSE_VERIFY_RETRY_DELAY_SEC = 0.5
@@ -357,6 +362,10 @@ class AdverseRadarMixin:
             self.atr_scenario = ATR_SCENARIO_PENDING
         if not hasattr(self, "tp3_limit_active"):
             self.tp3_limit_active = False
+        if not hasattr(self, "exit_ownership"):
+            self.exit_ownership = EXIT_OWNERSHIP_NONE
+        if not hasattr(self, "ownership_locked_at"):
+            self.ownership_locked_at = 0.0
         if not hasattr(self, "_temp_tv_stop_active"):
             self._temp_tv_stop_active = False
         if not hasattr(self, "_breath_samples_since_open"):
@@ -605,6 +614,84 @@ class AdverseRadarMixin:
             k = k[2:]
         return ids.get(k)
 
+    @property
+    def tp3_order_id(self):
+        return self._defense_order_id("3")
+
+    @property
+    def radar_stop_order_id(self):
+        return self._defense_order_id("radar")
+
+    def _set_exit_ownership(self, owner: str) -> dict:
+        """Lock residual exit path. Returns {ok, race, prev, owner}."""
+        self._init_adverse_radar_fields()
+        want = str(owner or EXIT_OWNERSHIP_NONE).upper()
+        if want not in (EXIT_OWNERSHIP_NONE, EXIT_OWNERSHIP_TP3, EXIT_OWNERSHIP_RADAR):
+            want = EXIT_OWNERSHIP_NONE
+        prev = str(getattr(self, "exit_ownership", EXIT_OWNERSHIP_NONE) or EXIT_OWNERSHIP_NONE)
+        if prev not in (EXIT_OWNERSHIP_NONE, "", "NONE") and prev != want:
+            return {"ok": False, "race": True, "prev": prev, "owner": want}
+        self.exit_ownership = want
+        if want == EXIT_OWNERSHIP_NONE:
+            self.ownership_locked_at = 0.0
+        else:
+            self.ownership_locked_at = time.time()
+        return {"ok": True, "race": False, "prev": prev, "owner": want}
+
+    def _exit_leg_blocked(self, leg: str) -> bool:
+        """True if placing/amending this leg is forbidden by ownership lock."""
+        self._init_adverse_radar_fields()
+        own = str(getattr(self, "exit_ownership", EXIT_OWNERSHIP_NONE) or EXIT_OWNERSHIP_NONE)
+        if own in (EXIT_OWNERSHIP_NONE, "", "NONE"):
+            return False
+        leg_u = str(leg or "").upper()
+        if leg_u in ("TP3", "3", EXIT_OWNERSHIP_TP3) and own == EXIT_OWNERSHIP_RADAR:
+            return True
+        if leg_u in ("RADAR", "STOP", EXIT_OWNERSHIP_RADAR) and own == EXIT_OWNERSHIP_TP3:
+            return True
+        return False
+
+    def _enforce_open_orders_hard_cap(self) -> bool:
+        """TOTAL open orders > OPEN_ORDERS_HARD_CAP → critical + pause. Returns True if over."""
+        if not hasattr(self, "_count_raw_exchange_orders"):
+            return False
+        try:
+            n = int(self._count_raw_exchange_orders())
+        except Exception:
+            return False
+        if n < 0:
+            return False  # unread → other fail-closed paths; do not false-pause
+        if n <= OPEN_ORDERS_HARD_CAP:
+            return False
+        detail = {
+            "open_orders": n,
+            "hard_cap": OPEN_ORDERS_HARD_CAP,
+            "symbol": getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None),
+            "tp3_order_id": self.tp3_order_id,
+            "radar_stop_order_id": self.radar_stop_order_id,
+            "exit_ownership": getattr(self, "exit_ownership", EXIT_OWNERSHIP_NONE),
+        }
+        if hasattr(self, "_pause_trading"):
+            try:
+                self._pause_trading(
+                    f"open_orders_gt_{OPEN_ORDERS_HARD_CAP}",
+                    detail,
+                )
+            except Exception:
+                pass
+        elif hasattr(self, "_alert"):
+            try:
+                self._alert(
+                    "critical",
+                    "OPEN_ORDERS_HARD_CAP",
+                    f"挂单超硬帽{OPEN_ORDERS_HARD_CAP}笔·已暂停",
+                    f"{detail['symbol']} open_orders={n} > {OPEN_ORDERS_HARD_CAP}",
+                    detail,
+                )
+            except Exception:
+                pass
+        return True
+
     def _mutex_cancel_tp3_on_radar_exit(
         self,
         *,
@@ -613,15 +700,38 @@ class AdverseRadarMixin:
     ) -> dict:
         """Radar/breath exit first → cancel TP3; race → critical alert + reconcile."""
         self._init_adverse_radar_fields()
+        lock = self._set_exit_ownership(EXIT_OWNERSHIP_RADAR)
         detail: dict[str, Any] = {
             "close_source": str(close_source or "RADAR_STOP"),
             "fill_px": float(fill_px or 0),
             "tp3_oid": self._defense_order_id("3"),
+            "radar_oid": self._defense_order_id("radar"),
+            "exit_ownership": getattr(self, "exit_ownership", EXIT_OWNERSHIP_NONE),
+            "ownership_locked_at": float(getattr(self, "ownership_locked_at", 0) or 0),
             "cancelled": 0,
             "cancel_ok": True,
-            "race": False,
+            "race": bool(lock.get("race")),
             "exch_qty": None,
         }
+        if lock.get("race"):
+            detail["race_reason"] = "exit_ownership_already_tp3"
+            if hasattr(self, "_alert"):
+                try:
+                    self._alert(
+                        "critical",
+                        "TP3_RADAR_RACE",
+                        "双腿几乎同时触发·强制核对持仓",
+                        f"雷达退出时所有权已是 {lock.get('prev')}",
+                        detail,
+                    )
+                except Exception:
+                    pass
+            if hasattr(self, "_purge_defense_orders_on_flat"):
+                try:
+                    self._purge_defense_orders_on_flat("tp3_radar_race", notify=False)
+                except Exception:
+                    pass
+            return detail
         if not bool(getattr(self, "tp3_limit_active", True)):
             detail["skipped"] = "tp3_inactive"
             return detail
@@ -784,6 +894,8 @@ class AdverseRadarMixin:
         self.breath_smooth_ratio = 1.0
         self.atr_scenario = ATR_SCENARIO_PENDING
         self.tp3_limit_active = False
+        self.exit_ownership = EXIT_OWNERSHIP_NONE
+        self.ownership_locked_at = 0.0
         self._temp_tv_stop_active = False
         self._breath_samples_since_open = 0
         self._stagnant_tighten_done = False
@@ -4241,18 +4353,25 @@ class AdverseRadarMixin:
             if level:
                 done.add(int(level))
             logger.info(
-                "[User %s] TP3不挂限价；阶段二由呼吸引擎接管 | remaining=%.2f",
+                "[User %s] TP3限价成交·互斥撤雷达 | remaining=%.2f ownership=%s",
                 getattr(self, "user_id", "?"),
                 float(self.remaining_qty_pct),
+                getattr(self, "exit_ownership", EXIT_OWNERSHIP_NONE),
             )
 
     def _orchestrate_defense_monitoring(self, live_qty: float, curr_px: float) -> None:
         """
-        Unified defense: breathing stop (hard+radar merged) + TP12.
+        Unified defense: breathing stop (hard+radar dual) + TP1/TP2/TP3 (10/20/70).
         All exchanges share one breathing tick; exchange place APIs differ only.
         """
         if curr_px <= 0:
             return
+        # Hard fuse: total open orders > 5 → pause (prevent 50+ LIMIT storms)
+        try:
+            if self._enforce_open_orders_hard_cap():
+                return
+        except Exception:
+            pass
         # Pause price ticks while TP-fill stop qty resize is in flight
         pause_until = float(getattr(self, "_breath_resize_pause_until", 0) or 0)
         if pause_until and time.time() < pause_until:

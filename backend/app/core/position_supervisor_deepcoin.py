@@ -687,6 +687,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "breath_smooth_ratio": float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
                     "atr_scenario": str(getattr(self, "atr_scenario", "") or ""),
                     "tp3_limit_active": bool(getattr(self, "tp3_limit_active", False)),
+                    "exit_ownership": str(getattr(self, "exit_ownership", "NONE") or "NONE"),
+                    "ownership_locked_at": float(getattr(self, "ownership_locked_at", 0) or 0),
+                    "tp3_order_id": (getattr(self, "_defense_order_ids", None) or {}).get("3"),
+                    "radar_stop_order_id": (getattr(self, "_defense_order_ids", None) or {}).get("radar"),
                     "tv_atr_ref": float(getattr(self, "_tv_atr_ref", 0) or 0),
                     "current_adx": float(getattr(self, "current_adx", 25) or 25),
                     "remaining_qty_pct": float(getattr(self, "remaining_qty_pct", 1.0) or 1.0),
@@ -4180,6 +4184,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.breath_smooth_ratio = float(s.get("breath_smooth_ratio", 1.0) or 1.0)
                     self.atr_scenario = str(s.get("atr_scenario") or "pending")
                     self.tp3_limit_active = bool(s.get("tp3_limit_active", False))
+                    own = str(s.get("exit_ownership") or "NONE").upper()
+                    self.exit_ownership = own if own in ("NONE", "TP3_LIMIT", "RADAR_STOP") else "NONE"
+                    self.ownership_locked_at = float(s.get("ownership_locked_at", 0) or 0)
                     self._tv_atr_ref = float(s.get("tv_atr_ref", 0) or 0)
                     self.current_adx = float(s.get("current_adx", 25) or 25)
                     self.remaining_qty_pct = float(s.get("remaining_qty_pct", 1.0) or 1.0)

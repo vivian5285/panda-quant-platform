@@ -91,8 +91,8 @@ def test_demo_table_1800_atr30_milestones():
 
 
 def test_tp3_is_placeable_limit():
-    assert PLACEABLE_TP_LEVELS == frozenset({1, 2})
-    assert 3 not in PLACEABLE_TP_LEVELS
+    assert PLACEABLE_TP_LEVELS == frozenset({1, 2, 3})
+    assert 3 in PLACEABLE_TP_LEVELS
 
 
 def test_short_symmetric_arm_tp1_x_1_15_shorthand():

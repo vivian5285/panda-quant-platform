@@ -460,9 +460,9 @@ def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
             prefix = "（推断）" if confidence in ("inferred", "low") else ""
             return f"{prefix}余仓止盈成交（阶段二），全部平仓，盈亏 {pnl_txt}%"
         if 2 in levels:
-            return f"TP2 止盈成交，剩余仓位 40%，当前止损 {float(stop):.2f}"
+            return f"TP2 止盈成交，剩余仓位 70%，当前止损 {float(stop):.2f}"
         if 1 in levels:
-            return f"TP1 止盈成交，剩余仓位 70%，当前止损 {float(stop):.2f}"
+            return f"TP1 止盈成交，剩余仓位 90%，当前止损 {float(stop):.2f}"
         if origin == "exchange_limit_tp":
             return f"止盈限价成交，盈亏 {pnl_txt}%"
     if confidence in ("insufficient", "low") or origin in ("unknown", "exchange_already_flat"):
@@ -489,12 +489,12 @@ def format_tp_fill_detail_cn(detail: dict, alert_type: str = "") -> str:
             level = 3
     lvl = int(level or 0)
     if lvl == 1:
-        return f"TP1 止盈成交，剩余仓位 70%，当前止损 {stop:.2f}"
+        return f"TP1 止盈成交，剩余仓位 90%，当前止损 {stop:.2f}"
     if lvl == 2:
-        return f"TP2 止盈成交，剩余仓位 40%，当前止损 {stop:.2f}"
+        return f"TP2 止盈成交，剩余仓位 70%，当前止损 {stop:.2f}"
     if lvl == 3:
         pnl_txt = f"{float(pnl):+.2f}" if pnl is not None else "—"
-        return f"余仓止盈成交（阶段二），全部平仓，盈亏 {pnl_txt}%"
+        return f"TP3限价止盈成交，全部平仓，盈亏 {pnl_txt}%"
     rem = detail.get("remaining_qty_pct")
     if rem is not None:
         return f"止盈成交，剩余仓位 {float(rem)*100:.0f}%，当前止损 {stop:.2f}"

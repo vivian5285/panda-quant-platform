@@ -46,6 +46,8 @@
 | 闸 | 规则 |
 |----|------|
 | 本地标签 | `order_place_guard.PendingOrderRegistry`：reentry/tp/hard/radar 任一 in-flight → **禁止再挂**，盘口空也不例外 |
+| 挂单硬帽 | 单品种未成交挂单总数 **≤5**（限价+止损合计）；超限 → critical + 暂停开仓 |
+| 退出所有权 | `exit_ownership`=NONE/TP3_LIMIT/RADAR_STOP；先成交锁定，拒操作另一腿；竞态 → 强制对账 |
 | 查单失败 | open-orders / pos 查询异常或 `None` → **fail-closed 拒挂**（禁止 `except: pass` 后盲挂） |
 | 单周期单挂 | 同一品种同时只允许一笔再入场开仓限价；超时先 `release` 旧标签再新标签 |
 | 延迟启动 | `_close_all` 先 **plan** 快照 → purge → **commit** 启动 worker（避免 cancel_all 误杀刚挂的再入限价） |

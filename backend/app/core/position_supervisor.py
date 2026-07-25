@@ -305,6 +305,18 @@ class PositionSupervisor(
                     "breath_smooth_ratio": float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
                     "atr_scenario": str(getattr(self, "atr_scenario", "") or ""),
                     "tp3_limit_active": bool(getattr(self, "tp3_limit_active", False)),
+                    "exit_ownership": str(
+                        getattr(self, "exit_ownership", "NONE") or "NONE"
+                    ),
+                    "ownership_locked_at": float(
+                        getattr(self, "ownership_locked_at", 0) or 0
+                    ),
+                    "tp3_order_id": (
+                        (getattr(self, "_defense_order_ids", None) or {}).get("3")
+                    ),
+                    "radar_stop_order_id": (
+                        (getattr(self, "_defense_order_ids", None) or {}).get("radar")
+                    ),
                     "tv_atr_ref": float(getattr(self, "_tv_atr_ref", 0) or 0),
                     "current_adx": float(getattr(self, "current_adx", 25) or 25),
                     "remaining_qty_pct": float(getattr(self, "remaining_qty_pct", 1.0) or 1.0),
@@ -388,6 +400,9 @@ class PositionSupervisor(
                     self.breath_smooth_ratio = float(s.get("breath_smooth_ratio", 1.0) or 1.0)
                     self.atr_scenario = str(s.get("atr_scenario") or "pending")
                     self.tp3_limit_active = bool(s.get("tp3_limit_active", False))
+                    own = str(s.get("exit_ownership") or "NONE").upper()
+                    self.exit_ownership = own if own in ("NONE", "TP3_LIMIT", "RADAR_STOP") else "NONE"
+                    self.ownership_locked_at = float(s.get("ownership_locked_at", 0) or 0)
                     self._tv_atr_ref = float(s.get("tv_atr_ref", 0) or 0)
                     self.current_adx = float(s.get("current_adx", 25) or 25)
                     self.remaining_qty_pct = float(s.get("remaining_qty_pct", 1.0) or 1.0)
@@ -463,12 +478,23 @@ class PositionSupervisor(
                             key = str(k).strip().lower()
                             if key.startswith("tp"):
                                 key = key[2:]
-                            if key not in ("1", "2", "3", "sl") or v in (None, ""):
+                            if key not in ("1", "2", "3", "sl", "hard", "radar") or v in (None, ""):
                                 continue
                             try:
                                 cleaned[key] = int(v)
                             except (TypeError, ValueError):
                                 cleaned[key] = str(v)
+                        # Prefer explicit aliases if defense map incomplete
+                        if s.get("tp3_order_id") not in (None, "") and "3" not in cleaned:
+                            try:
+                                cleaned["3"] = int(s.get("tp3_order_id"))
+                            except (TypeError, ValueError):
+                                cleaned["3"] = str(s.get("tp3_order_id"))
+                        if s.get("radar_stop_order_id") not in (None, "") and "radar" not in cleaned:
+                            try:
+                                cleaned["radar"] = int(s.get("radar_stop_order_id"))
+                            except (TypeError, ValueError):
+                                cleaned["radar"] = str(s.get("radar_stop_order_id"))
                         self._defense_order_ids = cleaned
                     else:
                         self._defense_order_ids = {}
@@ -2417,6 +2443,28 @@ class PositionSupervisor(
                 f"| 互斥撤销雷达止损"
             )
             detail["close_source"] = "TP3_LIMIT"
+            lock = (
+                self._set_exit_ownership("TP3_LIMIT")
+                if hasattr(self, "_set_exit_ownership")
+                else {"ok": True, "race": False}
+            )
+            if lock.get("race"):
+                if hasattr(self, "_alert"):
+                    try:
+                        self._alert(
+                            "critical",
+                            "TP3_RADAR_RACE",
+                            "双腿几乎同时触发·强制核对持仓",
+                            f"TP3成交时所有权已是 {lock.get('prev')}",
+                            {**detail, **lock},
+                        )
+                    except Exception:
+                        pass
+                if hasattr(self, "_purge_defense_orders_on_flat"):
+                    try:
+                        self._purge_defense_orders_on_flat("tp3_radar_race", notify=False)
+                    except Exception:
+                        pass
             radar_cancel_ok = True
             if hasattr(self, "_cancel_radar_stop_orders"):
                 try:
@@ -2453,7 +2501,7 @@ class PositionSupervisor(
                         self._purge_defense_orders_on_flat("tp3_radar_race", notify=False)
                     except Exception:
                         pass
-            elif hasattr(self, "_alert"):
+            elif hasattr(self, "_alert") and not lock.get("race"):
                 try:
                     self._alert(
                         "info",
@@ -2664,6 +2712,30 @@ class PositionSupervisor(
                     "qty": round_quantity(qty),
                     "price": round_price(price),
                     "error": "tp_book_saturated_refuse",
+                    "attempt": attempt,
+                }
+            # Ownership lock: radar already claimed residual → refuse TP3 rehang
+            lab_u = str(label or "").upper()
+            if (
+                ("TP3" in lab_u or lab_u.endswith("3") or lab_u == "3")
+                and hasattr(self, "_exit_leg_blocked")
+                and self._exit_leg_blocked("TP3")
+            ):
+                return {
+                    "ok": False,
+                    "label": label,
+                    "qty": round_quantity(qty),
+                    "price": round_price(price),
+                    "error": "exit_ownership_radar_locked",
+                    "attempt": attempt,
+                }
+            if hasattr(self, "_enforce_open_orders_hard_cap") and self._enforce_open_orders_hard_cap():
+                return {
+                    "ok": False,
+                    "label": label,
+                    "qty": round_quantity(qty),
+                    "price": round_price(price),
+                    "error": "open_orders_hard_cap_paused",
                     "attempt": attempt,
                 }
             # Local pending-tag gate — even if book falsely empty, refuse second place

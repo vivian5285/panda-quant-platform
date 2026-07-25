@@ -1273,6 +1273,9 @@ class BinanceSmartDefenseMixin:
         ) else None
         if use_qty is not None and use_qty <= 0:
             use_qty = None
+        if hasattr(self, "_exit_leg_blocked") and self._exit_leg_blocked("RADAR"):
+            self._def_log("✗ 雷达拒挂·退出所有权已锁定TP3", logging.WARNING)
+            return False
         _radar_tag = None
         _radar_reg = None
         if hasattr(self, "_pending_orders"):
@@ -1296,6 +1299,14 @@ class BinanceSmartDefenseMixin:
                     return False
             except Exception as tag_exc:
                 logger.warning("radar local-tag: %s", tag_exc)
+        if hasattr(self, "_enforce_open_orders_hard_cap") and self._enforce_open_orders_hard_cap():
+            self._def_log("✗ 雷达拒挂·挂单硬帽已触发暂停", logging.CRITICAL)
+            if _radar_reg and _radar_tag:
+                try:
+                    _radar_reg.release(_radar_tag)
+                except Exception:
+                    pass
+            return False
         res = self.client.place_stop_market_order(
             close_side, sl, symbol, quantity=use_qty,
         )
