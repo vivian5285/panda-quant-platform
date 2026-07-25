@@ -1229,7 +1229,7 @@ class BinanceSmartDefenseMixin:
                     return True
             else:
                 return True
-        # Dual-track hard cap: never exceed 2 STOPs (hard×1.2 + radar). Not raw TV+×1.2.
+        # Dual-track hard cap: never exceed 2 STOPs (hard×1.15 + radar). Not raw TV SL.
         try:
             live_stops = int(self._count_live_stop_orders()) if hasattr(self, "_count_live_stop_orders") else -1
         except Exception:

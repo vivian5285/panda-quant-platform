@@ -68,6 +68,19 @@ class BinanceClient:
 
     def _can_sym(self) -> str | None:
         return getattr(self, "canonical_symbol", None) or self.trading_symbol
+
+    def _pace_rest(self, symbol: str | None = None) -> None:
+        """Whitepaper §8.3: ≥100ms between REST calls for the same symbol."""
+        try:
+            from app.core.rest_symbol_pace import wait_turn
+
+            wait_turn(
+                exchange="binance",
+                user_id=self.user_id,
+                symbol=self._sym(symbol),
+            )
+        except Exception:
+            pass
     def is_hedge_mode(self) -> bool | None:
         """True=双向持仓, False=单向, None=查询失败。"""
         try:
@@ -511,6 +524,7 @@ class BinanceClient:
     def place_market_order(self, side, quantity, symbol=None, reduce_only=False):
         symbol = self._sym(symbol)
         can = self._can_sym()
+        self._pace_rest(symbol)
         self._last_market_order_error = ""
         self._last_market_order_params = None
         try:
@@ -556,6 +570,7 @@ class BinanceClient:
     ):
         symbol = self._sym(symbol)
         can = self._can_sym()
+        self._pace_rest(symbol)
         try:
             binance_side = "BUY" if side.upper() in ["BUY", "LONG"] else "SELL"
             qty_str = format_quantity(quantity, can)
@@ -604,6 +619,7 @@ class BinanceClient:
     ):
         symbol = self._sym(symbol)
         can = self._can_sym()
+        self._pace_rest(symbol)
         binance_side = "BUY" if side.upper() in ["BUY", "LONG"] else "SELL"
         stop_str = format_price(stop_price, can)
         if float(stop_str) <= 0:
@@ -729,6 +745,7 @@ class BinanceClient:
 
     def cancel_order(self, symbol: str | None, order_id: int) -> bool:
         symbol = self._sym(symbol)
+        self._pace_rest(symbol)
         ok = False
         try:
             self.client.futures_cancel_order(symbol=symbol, orderId=int(order_id))

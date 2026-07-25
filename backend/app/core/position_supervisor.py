@@ -77,13 +77,13 @@ CANCEL_VERIFY_ROUNDS = 5
 HEAL_PLACE_ROUNDS = 2
 SIGNAL_QUEUE_TTL = 120.0
 SIGNAL_LOCK_SLICE = 5.0
-SENTINEL_POLL_NORMAL = 8.0
+SENTINEL_POLL_NORMAL = 30.0  # whitepaper §8.2: REST position reconcile ≤1/30s
 # Near TP1 / TP fill monitor (REST book) — dual-symbol rate-limit safe
-SENTINEL_POLL_ARMING = 2.5
+SENTINEL_POLL_ARMING = 8.0
 # Radar engaged: trail on markPrice WS; REST sentinel slower under IP budget
-SENTINEL_POLL_RADAR = 2.5
+SENTINEL_POLL_RADAR = 8.0
 # Order-book / TP audit REST cadence (fills prefer user-data WS invalidate)
-SENTINEL_ORDER_AUDIT_SEC = 4.0
+SENTINEL_ORDER_AUDIT_SEC = 15.0
 # WS tick → radar evaluate throttle (avoid place/cancel thrash)
 RADAR_WS_TICK_MIN_SEC = 0.45
 SENTINEL_POLL_JITTER_SEC = 0.5

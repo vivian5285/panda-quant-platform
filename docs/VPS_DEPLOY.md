@@ -50,7 +50,9 @@ docker compose exec -T -e PYTHONPATH=/app -e GIT_HEAD=$(git rev-parse --short HE
 
 再入场结构解说：`docs/SMART_REENTRY_CLOSED_LOOP.md`（白皮书 v3.0）。
 
-部署后探针应确认：`MAX_REENTRY==1`、arm `0.85`/`1.00`、`HARD_STOP_BUFFER_FIXED==1.15`、算例 1870.90 / 1922.60。
+部署后探针应确认：`MAX_REENTRY==1`、arm `0.85`/`1.00`、`HARD_STOP_BUFFER_FIXED==1.15`、算例 1870.90 / 1922.60、`rest_symbol_pace.MIN_GAP_SEC==0.1`。
+
+白皮书全文：`docs/WHITEPAPER_DUAL_RADAR_REENTRY_v3.md`。
 
 ## 部署后人工检查清单
 

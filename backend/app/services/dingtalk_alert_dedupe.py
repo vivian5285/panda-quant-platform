@@ -56,6 +56,7 @@ ONCE_TYPES = frozenset({
     "TP_FILL",
     "TP_SKIP_REHANG",
     "RADAR_ARM",
+    "RADAR_ACTIVATE",
     "RADAR_REVOKE",
     "ADVERSE_SL",
     "ADVERSE_SL_DISARM",

@@ -270,7 +270,7 @@ def match_adverse_tier_fill(
 class AdverseRadarMixin:
     """
     Dual-track defense (all exchanges / ETH+XAU) — whitepaper coexistence:
-    - Hard stop: TV stop_loss×1.2 at open, price frozen until flat (qty may shrink)
+    - Hard stop: fill±(|TV.price−TV.stop_loss|×1.15) at open, price frozen until flat (qty may shrink)
     - Radar stop: independent ATR breathing (scenario1=VPS 1h, scenario2=TV atr)
     - TP1/TP2 always; TP3 only scenario2
     """
@@ -384,7 +384,7 @@ class AdverseRadarMixin:
         )
 
     def _frozen_hard_px(self) -> float:
-        """Permanent hard-stop trigger (TV stop_loss × 1.2). Never rewritten by ATR."""
+        """Permanent hard-stop trigger (TV dist×1.15 from fill). Never rewritten by ATR."""
         return float(
             getattr(self, "_frozen_hard_stop_px", 0)
             or getattr(self, "_tv_hard_sl_price", 0)
@@ -3034,6 +3034,60 @@ class AdverseRadarMixin:
 
         meta = dict(tick.get("meta") or {})
         trail_dist_atr = meta.get("trail_dist_atr")
+        # Whitepaper §10.1: radar activate must note first-open vs reentry (0.85 vs 1.00)
+        if (
+            (event == "radar_activate" or meta.get("just_activated"))
+            and not bool(getattr(self, "_radar_arm_dingtalk_sent", False))
+        ):
+            arm_pct = float(
+                meta.get("radar_arm_ratio")
+                or meta.get("arm_tp1_pct")
+                or getattr(self, "reentry_arm_tp1_pct", 0.85)
+                or 0.85
+            )
+            attempt = int(getattr(self, "reentry_attempt", 0) or 0)
+            arm_kind = "reentry" if attempt >= 1 or arm_pct >= 0.999 else "first"
+            arm_kind_cn = "重入开仓" if arm_kind == "reentry" else "首次开仓"
+            tier_lbl = ""
+            try:
+                from app.core.trend_tier_params import params_for_tier, clamp_tier
+
+                t = int(getattr(self, "active_radar_tier", None) or getattr(self, "trend_tier", 1) or 1)
+                tier_lbl = params_for_tier(clamp_tier(t), sym).tier_label
+            except Exception:
+                tier_lbl = ""
+            detail_arm = {
+                "event": "radar_activate",
+                "arm_kind": arm_kind,
+                "arm_kind_cn": arm_kind_cn,
+                "arm_tp1_pct": arm_pct,
+                "radar_arm_trigger": meta.get("radar_arm_trigger"),
+                "radar_arm_dist": meta.get("radar_arm_dist"),
+                "current_sl": sl_px,
+                "hang_sl": hang_px,
+                "new_sl": sl_px,
+                "entry": entry,
+                "curr_px": px,
+                "side": side,
+                "tier_label": tier_lbl,
+                "trend_tier": getattr(self, "trend_tier", None),
+                "reentry_attempt": attempt,
+                "meta": meta,
+            }
+            title = f"雷达激活·{arm_kind_cn}"
+            msg = (
+                f"{arm_kind_cn} | 阈值={arm_pct:.2f} | 触发@"
+                f"{float(meta.get('radar_arm_trigger') or px):.2f} | "
+                f"止损上移@{sl_px:.2f}"
+                + (f" | {tier_lbl}" if tier_lbl else "")
+            )
+            if hasattr(self, "_log"):
+                self._log("RADAR_ACTIVATE", f"{title} @{sl_px:.2f}", detail_arm)
+            if hasattr(self, "_alert"):
+                self._alert("info", "RADAR_ACTIVATE", title, msg, detail_arm)
+            self._radar_arm_dingtalk_sent = True
+            self._last_radar_arm_meta = detail_arm
+
         alert_map = {
             "step": ("BREATH_STEP", "呼吸止损·步进上移"),
             "floor_tp1": ("BREATH_FLOOR", "呼吸止损·TP1底限"),

@@ -71,4 +71,6 @@ modules:
   breathing: backend/app/core/breathing_stop.py
   guard: backend/app/core/adverse_radar_guard.py
   place_guard: backend/app/core/order_place_guard.py
+  rate_cool: backend/app/core/ip_rest_cooldown.py
+  rest_pace: backend/app/core/rest_symbol_pace.py
 ```

@@ -89,7 +89,8 @@
 
 ```
 TV 入队 → 解析 → ATR 场景 → RISK20×5 算仓 → 市价开
-  → 永久硬止损 fill±(|TV.e−SL|×ADX档buffer) + TP1/TP2/TP3(10/20/70) → 雷达武装(TP1×0.85后启动)
+  → 永久硬止损 fill±(|TV.e−SL|×**1.15**) + TP1/TP2/TP3(10/20/70)
+  → 雷达武装(fill±tp1_distance×0.85；重入则×1.00)
 ```
 
 不可读盘口时：**禁止再挂 TP/Stop、禁止 cancel_all、禁止把未知当已保护**。
@@ -97,7 +98,7 @@ TV 入队 → 解析 → ATR 场景 → RISK20×5 算仓 → 市价开
 **自查口令（独立于文字汇报）**  
 1. GitHub / 本地 / VPS `git rev-parse --short HEAD` 三数字一致。  
 2. 币安：仓位(0) + 当前委托(0) + 条件委托(0)。  
-3. 代码原样：`trend_tier_params.py` 内 ETH/XAU ADX 档表；`MAX_REENTRY=1`；`RADAR_ARM_TP1_PCT=0.85`。  
+3. 代码原样：`trend_tier_params.py` 内 ETH/XAU ADX 档表；`MAX_REENTRY=1`；`RADAR_ARM_TP1_PCT=0.85` / `RADAR_ARM_TP1_PCT_REENTRY=1.00`；`HARD_STOP_BUFFER_FIXED=1.15`。  
 4. 当面最小资金 LONG：应见 **硬止损1 + 雷达1 + TP限价（满额时 TP1+TP2+TP3；~20U 烟雾常因最小名义只成 TP3）**，钉钉杠杆 **5×**。
 
 ### 三层防线永久共存（核心，不得误解）
@@ -112,7 +113,7 @@ TV 入队 → 解析 → ATR 场景 → RISK20×5 算仓 → 市价开
 
 #### 开仓瞬间（白皮书详细解说对齐）
 
-1. **挂硬止损**（fill ± TV距×buffer；永冻）— 先于一切，禁止裸奔  
+1. **挂硬止损**（fill ± TV距×**1.15**；永冻）— 先于一切，禁止裸奔  
 2. **挂 TP1+TP2+TP3**（10/20/70）与 **启动 VPS 原生 1h ATR 拉取** 重叠执行  
 3. ATR 结果汇合后仅武装雷达（不改硬、不撤 TP3）；再确认硬止损仍在并**额外**挂雷达  
 
@@ -167,11 +168,12 @@ rules:
   - hard_stop = fill ± (|TV.price−TV.stop_loss| × 1.15); NO ATR floor / slip pad
   - missing SL or distance < 5 ticks → reject open
   - TP always 10/20/70 (TP1+TP2+TP3); TP3 ↔ radar mutex
-  - radar arm = path TP1×0.85; activate → entry±0.5ATR; then passive trail by ADX tier
-  - max reentry = 1; window ETH 2×90m / XAU 3×45m; reentry loosens radar +1 tier
+  - radar arm = fill ± tp1_distance × (0.85 first / 1.00 reentry); activate → entry±0.5ATR; then passive trail by ADX tier
+  - max reentry = 1; window ETH 2×90m / XAU 3×45m; reentry loosens radar +1 tier + arm=1.00
   - local PendingOrderRegistry tag → refuse place even if book empty (anti 50× LIMIT)
   - OPEN_ORDERS_HARD_CAP=5 → critical + pause symbol opens
   - DAILY_LOSS_CIRCUIT_ENABLED=False in prod (false trips blocked real TV)
+  - REST: price/fills via WS; position reconcile ~30s; symbol REST gap ≥100ms; on -1003: ip_rest_cooldown 90s
   - on Binance -1003: ip_rest_cooldown shared 90s; no cancel_all when book unreadable
   - sizing = equity * 0.20 * 5 / price; ignore TV qty
   - E2E_FORCE_NOTIONAL_USD=0 in production; wait real TV
@@ -187,15 +189,19 @@ modules:
   tp: backend/app/core/tp_regime_targets.py
   place_guard: backend/app/core/order_place_guard.py
   rate_cool: backend/app/core/ip_rest_cooldown.py
+  rest_pace: backend/app/core/rest_symbol_pace.py
   daily_loss: backend/app/core/daily_loss_circuit.py
   coalesce: backend/app/services/webhook_symbol_coalesce.py
   supervisor: backend/app/core/position_supervisor.py
 ```
 
-### 交易所 API 限流（Binance −1003）
+### 交易所 API 限流（Binance −1003 · 白皮书 §8）
 
 | 项 | 规则 |
 |----|------|
+| WS vs REST | 价格监控 / 订单成交 → **WebSocket**；下单改撤 + 持仓对账 → REST |
+| 持仓对账 | REST 约 **每 30s**（`SENTINEL_POLL_NORMAL=30`）；近 TP / 雷达期可略密，仍以 WS tick 为主 |
+| 单品种间隔 | `rest_symbol_pace`：同品种连续 REST **≥100ms** |
 | 共享冷静 | `ip_rest_cooldown`：ETH+XAU 共用 IP 级冷却，默认 **90s**；有 `banned until` 则用交易所时间戳 |
 | 触发 | REST 返回 `-1003` / 限流文案 → `note_rate_limit`；哨兵/补挂读 `remaining_sec` 跳过，禁止硬撞 |
 | 盘口不可读 | **禁止** `cancel_all`、禁止盲补 TP/Stop（防误撤 STOP + 加剧限流） |

@@ -89,6 +89,7 @@ ALERT_TYPE_TAGS = {
     "DEFENSE_HEAL_FAIL": "异常告警",
     "TRAIL": "止损移动",
     "RADAR_ARM": "止损移动",
+    "RADAR_ACTIVATE": "雷达激活",
     "RADAR_REVOKE": "止损移动",
     "BREATH_STEP": "止损移动",
     "BREATH_FLOOR": "止损移动",
@@ -222,6 +223,7 @@ ADMIN_DINGTALK_KEY_TYPES = frozenset({
     "CLOSE_ANOMALY",
     "FLAT_UNCONFIRMED",
     "RADAR_ARM",
+    "RADAR_ACTIVATE",
     "RADAR_REVOKE",
 })
 
@@ -396,7 +398,7 @@ def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
 
 
 def format_radar_arm_detail_cn(detail: dict, exchange: str | None = None) -> str:
-    """妈妈版止损移动 / 阶段切换短文案."""
+    """妈妈版止损移动 / 阶段切换 / 雷达激活短文案."""
     event = str(detail.get("event") or "")
     adx = float(detail.get("adx") or detail.get("current_adx") or 0)
     trail = detail.get("trail_dist_atr")
@@ -407,6 +409,19 @@ def format_radar_arm_detail_cn(detail: dict, exchange: str | None = None) -> str
     profit = detail.get("profit_pct") or detail.get("floating_pnl_pct")
     side = str(detail.get("side") or "").upper()
     move = "上移" if side != "SHORT" else "下移"
+
+    if event in ("radar_activate", "RADAR_ACTIVATE") or detail.get("arm_kind"):
+        kind = str(detail.get("arm_kind_cn") or "")
+        if not kind:
+            kind = "重入开仓" if str(detail.get("arm_kind") or "") == "reentry" else "首次开仓"
+        arm_pct = float(detail.get("arm_tp1_pct") or 0)
+        trig = detail.get("radar_arm_trigger") or detail.get("curr_px") or 0
+        tier = detail.get("tier_label") or ""
+        return (
+            f"雷达激活（{kind}·阈值{arm_pct:.2f}）：触发价 {float(trig):.2f}，"
+            f"止损上移至 {float(new_sl):.2f}"
+            + (f"，{tier}" if tier else "")
+        )
 
     if event == "phase2_enter":
         return (
@@ -547,7 +562,7 @@ def format_admin_detail_lines(
         return format_adverse_sl_detail_cn(detail, ex)
     if alert_type in ("CLOSE", "CLOSE_TP3", "CLOSE_PROTECT", "CLOSE_STOPLOSS", "CLOSE_ATTRIBUTION", "CLOSE_BREATH_STOP", "CLOSE_QUICK_EXIT", "CLOSE_RSI_EXIT"):
         return format_close_detail_cn(detail, ex)
-    if alert_type in ("RADAR_ARM", "RADAR_REVOKE", "TRAIL", "BREATH_STEP", "BREATH_FLOOR", "BREATH_PHASE2", "BREATH_TRAIL"):
+    if alert_type in ("RADAR_ARM", "RADAR_ACTIVATE", "RADAR_REVOKE", "TRAIL", "BREATH_STEP", "BREATH_FLOOR", "BREATH_PHASE2", "BREATH_TRAIL"):
         return format_radar_arm_detail_cn(detail, ex)
     if alert_type == "STARTUP":
         return format_startup_detail_cn(detail, ex)

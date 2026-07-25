@@ -16,6 +16,7 @@ from app.core.trend_tier_params import (
     hard_buffer_for_tier,
     radar_arm_trigger_price,
 )
+from app.core.rest_symbol_pace import MIN_GAP_SEC
 from app.config import get_settings
 
 print("ETH trig/adv/coef", ETH_PROFILE.step_trigger_atr, ETH_PROFILE.step_advance_atr,
@@ -26,6 +27,7 @@ assert ETH_PROFILE.early_breakeven_atr == 0.5
 assert XAU_PROFILE.early_breakeven_atr == 0.5
 assert ETH_PROFILE.step_trigger_atr == 0.50
 assert XAU_PROFILE.step_trigger_atr == 0.40
+assert abs(MIN_GAP_SEC - 0.100) < 1e-9
 
 t_mid = tier_for_attempt(0, "ETHUSDT", adx_tier=1)
 t_strong = tier_for_attempt(1, "ETHUSDT", adx_tier=1)  # reentry → +1 trail, arm=1.00
@@ -57,5 +59,5 @@ reg.release(tag)
 s = get_settings()
 assert s.SMART_REENTRY_ETH_ENABLED and s.SMART_REENTRY_XAU_ENABLED
 print("flags ETH", s.SMART_REENTRY_ETH_ENABLED, "XAU", s.SMART_REENTRY_XAU_ENABLED)
-print("guard OK · buffer=1.15 · arm 0.85/1.00 · max_reentry=1")
+print("guard OK · buffer=1.15 · arm 0.85/1.00 · max_reentry=1 · rest_gap=100ms")
 print("OK")

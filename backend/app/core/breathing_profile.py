@@ -31,7 +31,7 @@ class BreathingProfile:
     initial_sl_atr: float = 1.5
     stop_order_buffer: float = 0.3
     early_breakeven_atr: float = 0.5
-    # Deprecated: live first-move uses path TP1×0.85 (whitepaper v2).
+    # Deprecated: live first-move uses fill±tp1_distance×(0.85/1.00) (whitepaper v3).
     # Kept only so historical backtest scripts can rebuild the old 0.75 gate.
     step_trigger_atr: float = 0.75
     step_advance_atr: float = 0.4
@@ -180,7 +180,7 @@ def effective_radar_arm_distance(
 ) -> float:
     """Live first-move gate: TP1×pct path distance when pct given; else dynamic.
 
-    Whitepaper v2 always passes ``arm_tp1_pct=0.85``.
+    Whitepaper v3 passes ``arm_tp1_pct=0.85`` (first) or ``1.00`` (reentry).
     """
     p = profile or ETH_PROFILE
     atr = float(initial_atr or 0)

@@ -4,7 +4,7 @@
 > 适用：ETHUSDT（90m）/ XAUUSDT（45m）  
 > 凡「5 档递进 / arm 50~95% / buffer 1.1/1.2/1.3 / 字面 TP1×0.85」旧文 **作废**。
 
-本文解释**代码落点与调用顺序**。业务理念见根目录 `README.md`。桌面白皮书原文：`双币种雷达重入系统白皮书_v3.md`。
+本文解释**代码落点与调用顺序**。业务理念见根目录 `README.md`。权威白皮书：`docs/WHITEPAPER_DUAL_RADAR_REENTRY_v3.md`（与桌面 `双币种雷达重入系统白皮书_v3.md` 同步）。
 
 ---
 
@@ -43,6 +43,8 @@ TV webhook (:6010)
 | `smart_reentry_mixin.py` | plan/commit、限价 worker、钉钉、持久化 `radar_tp1_distance` |
 | `breathing_stop.py` | 硬止损 buffer；雷达延迟启动 + 被动跟踪 |
 | `order_place_guard.py` | 本地挂单标签 |
+| `rest_symbol_pace.py` | 单品种 REST ≥100ms（白皮书 §8.3） |
+| `ip_rest_cooldown.py` | −1003 共享 90s 冷静 |
 | `adverse_radar_guard.py` | 双轨 STOP 挂/改 |
 
 参数表镜像：`smart_reentry_tiers.json`（文档/运维对照；运行时以 `trend_tier_params.py` 为准）。

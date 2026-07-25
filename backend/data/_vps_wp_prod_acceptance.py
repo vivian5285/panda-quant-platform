@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Whitepaper v2.0 production acceptance — rate-limit friendly.
+"""Whitepaper v3.0 production acceptance — rate-limit friendly.
 
 Phases:
-  A) In-process probes (radar arm / reentry / hard buffer) — zero exchange REST
+  A) In-process probes (radar arm 0.85/1.00 / reentry / hard 1.15 / rest pace)
+     — zero exchange REST
   B) Live webhook cycles: ETH L→S, XAU L→S separately (~22U)
-     Early defense poll at 3/6/10/15/25s — prove hard+TP+radar hang in parallel
+     After coalesce (~18s), sparse polls prove hard+TP hung in parallel at open
+     (radar STOP only after arm path; hard+TP must exist on first readable snap)
   C) Restore E2E=0, flat book, print GO/NO-GO
 
 Evidence: /tmp/wp_prod_accept/evidence_*
@@ -241,14 +243,29 @@ from app.core.smart_reentry import (
     close_allows_reentry, reentry_within_window, compute_optimal_reentry_price,
     tier_for_attempt, MAX_REENTRY as MR2, ARM_TP1_PCTS,
 )
+from app.core.rest_symbol_pace import MIN_GAP_SEC
+from app.core.order_place_guard import PendingOrderRegistry
+from app.core.adverse_radar_guard import OPEN_ORDERS_HARD_CAP
 assert MAX_REENTRY == MR2 == 1
 assert RADAR_ARM_TP1_PCT == 0.85 and RADAR_ARM_TP1_PCT_REENTRY == 1.00
 assert ARM_TP1_PCTS == (0.85, 1.00)
 assert HARD_STOP_BUFFER_FIXED == 1.15
+assert abs(MIN_GAP_SEC - 0.100) < 1e-9
+assert int(OPEN_ORDERS_HARD_CAP) == 5
+reg = PendingOrderRegistry()
+ok1,_ = reg.try_acquire("t-eth-re", kind="reentry", symbol="ETHUSDT")
+ok2,_ = reg.try_acquire("t-eth-re", kind="reentry", symbol="ETHUSDT")
+assert ok1 and not ok2
+reg.release("t-eth-re")
 assert adx_to_tier(15)==0 and adx_to_tier(25)==1 and adx_to_tier(35)==2
 assert hard_buffer_for_tier(0)==hard_buffer_for_tier(1)==hard_buffer_for_tier(2)==1.15
 assert abs(compute_temp_tv_stop(1900.80,"LONG",1874.0,tv_entry=1900.0)-1870.90)<1e-6
 assert abs(radar_arm_trigger_price(side="LONG",fill_entry=1900.80,tp1=1925.65,tv_entry=1900.0,arm_pct=0.85)-1922.60)<0.01
+# Reentry arm must NOT fire at 0.85 path
+trig_re = radar_arm_trigger_price(side="LONG",fill_entry=1900.80,tp1=1925.65,tv_entry=1900.0,arm_pct=1.00)
+mid = 1900.80 + abs(1925.65-1900.0)*0.85
+assert mid + 1e-9 < trig_re
+assert abs(trig_re - (1900.80 + 25.65)) < 1e-6
 # ETH mid params
 e=params_for_tier(1,"ETHUSDT"); x=params_for_tier(1,"XAUUSDT")
 assert e.step_trigger_atr==0.5 and e.reentry_bars==2

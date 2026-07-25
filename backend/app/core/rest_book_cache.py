@@ -116,6 +116,9 @@ def get_cached_position(
             return (hit.get("by_symbol") or {}).get(symbol)
 
     try:
+        from app.core.rest_symbol_pace import wait_turn
+
+        wait_turn(exchange=exchange, user_id=user_id, symbol=symbol)
         rows = list(fetch_all() or [])
     except Exception as e:
         _note_limit_from_exc(exchange, user_id, e)
@@ -169,6 +172,9 @@ def get_cached_open_orders(
             return list((hit.get("by_symbol") or {}).get(symbol) or [])
 
     try:
+        from app.core.rest_symbol_pace import wait_turn
+
+        wait_turn(exchange=exchange, user_id=user_id, symbol=symbol)
         rows = list(fetch_all() or [])
     except Exception as e:
         _note_limit_from_exc(exchange, user_id, e)

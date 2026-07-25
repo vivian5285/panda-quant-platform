@@ -63,7 +63,7 @@ def test_open_atr_scenario_restores_frozen_hard_after_radar_init():
         },
     ), patch("app.core.adverse_radar_guard.refresh_supervisor_breath", return_value={}):
         detail = h._resolve_and_apply_open_atr_scenario(1900.0)
-    # ATR floor may widen hard once (1.5*16*1.05=25.2 > TV×1.2=24 → 1874.8)
+    # ATR floor removed since 2026-07-25 — hard = |TV.e−SL|×1.15 only
     expected = compute_temp_tv_stop(
         1900.0, "LONG", 1880.0, initial_atr=16.0, symbol="ETHUSDT",
     )
