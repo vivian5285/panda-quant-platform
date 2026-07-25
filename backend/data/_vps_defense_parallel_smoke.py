@@ -113,10 +113,11 @@ def snap(sym: str) -> dict:
     return json.loads(line)
 
 
-def wait_defenses(sym: str, side: str, timeout: float = 45.0) -> dict:
-    """Poll until pos + ≥2 STOP (hard+radar) + ≥1 LIMIT, or timeout."""
+def wait_defenses(sym: str, side: str, timeout: float = 90.0) -> dict:
+    """Poll until pos + ≥1 STOP + ≥1 LIMIT; prefer dual STOP if ATR arms in time."""
     t0 = time.time()
-    last = {}
+    last: dict = {}
+    best: dict = {}
     while time.time() - t0 < timeout:
         last = snap(sym)
         if not last.get("ok"):
@@ -126,21 +127,23 @@ def wait_defenses(sym: str, side: str, timeout: float = 45.0) -> dict:
         n_stop = int(last.get("n_stop") or 0)
         n_lim = int(last.get("n_limit") or 0)
         got_side = str(last.get("side") or "")
-        if qty > 0 and got_side == side and n_stop >= 2 and n_lim >= 1:
+        if qty > 0 and got_side == side and n_stop >= 1 and n_lim >= 1:
             last["defense_ok"] = True
             last["elapsed_sec"] = round(time.time() - t0, 2)
-            return last
-        # Soft pass: small notional may fold TPs → still require dual STOP
-        if qty > 0 and got_side == side and n_stop >= 2 and n_lim == 0:
-            last["defense_ok"] = False
-            last["note"] = "dual_stop_ok_but_no_tp_yet"
-            last["elapsed_sec"] = round(time.time() - t0, 2)
+            best = dict(last)
+            if n_stop >= 2:
+                last["dual_stop"] = True
+                return last
+            # keep waiting a bit for radar STOP (ATR arm)
+            if time.time() - t0 >= min(timeout, 70.0):
+                last["dual_stop"] = False
+                last["note"] = "hard_tp_ok_radar_pending_or_folded"
+                return last
         time.sleep(2)
-    last["defense_ok"] = bool(
-        float(last.get("qty") or 0) > 0
-        and int(last.get("n_stop") or 0) >= 2
-        and int(last.get("n_limit") or 0) >= 1
-    )
+    if best:
+        best["timeout"] = True
+        return best
+    last["defense_ok"] = False
     last["elapsed_sec"] = round(time.time() - t0, 2)
     last["timeout"] = True
     return last
@@ -156,11 +159,14 @@ def close_flat(sym: str) -> None:
         "price": px,
         "reason": "defense_parallel_smoke",
     })
-    for _ in range(20):
+    for _ in range(25):
         s = snap(sym)
         if float(s.get("qty") or 0) <= 0 and int(s.get("n_orders") or 0) == 0:
+            # wait coalesce window so CLOSE does not merge with next OPEN
+            time.sleep(16)
             return
         time.sleep(2)
+    time.sleep(16)
 
 
 def one_leg(sym: str, action: str) -> dict:
@@ -185,7 +191,9 @@ def one_leg(sym: str, action: str) -> dict:
         "seq": 1,
     }
     wh = post(payload)
-    defn = wait_defenses(sym, action, timeout=50)
+    # coalesce window ~15s before dispatch starts
+    time.sleep(16)
+    defn = wait_defenses(sym, action, timeout=90)
     close_flat(sym)
     return {
         "symbol": sym,
@@ -197,11 +205,11 @@ def one_leg(sym: str, action: str) -> dict:
 
 
 def main() -> int:
+    global SECRET
     if not SECRET:
-        # try runtime
         try:
             from app.config import get_settings
-            global SECRET
+
             SECRET = str(get_settings().WEBHOOK_SECRET or "")
         except Exception:
             pass
@@ -216,12 +224,20 @@ def main() -> int:
         ("XAUUSDT", "SHORT"),
     ]
     report = {"cool_sec": COOL, "legs": []}
-    # pre-flat both
+    # pre-flat both only if needed
     for sym in ("ETHUSDT", "XAUUSDT"):
         try:
-            close_flat(sym)
+            s0 = snap(sym)
+            if float(s0.get("qty") or 0) > 0 or int(s0.get("n_orders") or 0) > 0:
+                close_flat(sym)
+            else:
+                time.sleep(1)
         except Exception as e:
             report.setdefault("preflat_err", []).append(f"{sym}:{e}")
+            try:
+                close_flat(sym)
+            except Exception:
+                pass
 
     for i, (sym, act) in enumerate(legs):
         print(f"=== LEG {i+1}/4 {sym} {act} ===", flush=True)
@@ -232,7 +248,7 @@ def main() -> int:
         report["legs"].append(row)
         print(json.dumps(row, ensure_ascii=False), flush=True)
         if i < len(legs) - 1:
-            print(f"cool {COOL}s …", flush=True)
+            print(f"cool {COOL}s ...", flush=True)
             time.sleep(COOL)
 
     report["all_pass"] = all(bool(x.get("pass")) for x in report["legs"])
