@@ -70,9 +70,9 @@ class Settings(BaseSettings):
     SMART_REENTRY_XAU_ENABLED: bool = True
 
     # Hard stop = |TV.price−TV.stop_loss| × buffer, hung from fill (no ATR floor / slip pad)
-    HARD_STOP_BUFFER_MULT: float = 1.2
-    HARD_STOP_BUFFER_MULT_ETH: float = 1.2
-    HARD_STOP_BUFFER_MULT_XAU: float = 1.2
+    HARD_STOP_BUFFER_MULT: float = 1.15
+    HARD_STOP_BUFFER_MULT_ETH: float = 1.15
+    HARD_STOP_BUFFER_MULT_XAU: float = 1.15
     HARD_STOP_MIN_TICKS: int = 5
 
     # TP qty fractions (tp3 = 1 − tp1 − tp2); always hang TP1+TP2+TP3 limits

@@ -1,8 +1,8 @@
-"""Dual-symbol smart re-entry — whitepaper v2.0 (2026-07-25).
+"""Dual-symbol smart re-entry — whitepaper v3.0 (2026-07-25).
 
 Max 1 reentry after radar BE/micro-profit flat; ADX tier params;
 dual-insurance limit price; hard-stop / loss closes never re-enter.
-Radar arm fixed at TP1 path ×0.85; reentry success loosens radar +1 tier.
+Radar arm: first 0.85 / reentry 1.00 of tp1_distance; trail loosens +1 tier.
 """
 
 from __future__ import annotations
@@ -15,8 +15,10 @@ from app.core.trend_tier_params import (
     MAX_REENTRY,
     RADAR_ACTIVATE_BE_ATR,
     RADAR_ARM_TP1_PCT,
+    RADAR_ARM_TP1_PCT_REENTRY,
     TrendTierParams,
     adx_to_tier,
+    arm_ratio_for_attempt,
     clamp_tier,
     effective_radar_tier,
     params_for_tier,
@@ -24,8 +26,8 @@ from app.core.trend_tier_params import (
     reentry_zone_atr as _zone_atr,
 )
 
-# Re-export for callers / tests
-ARM_TP1_PCTS: tuple[float, ...] = (RADAR_ARM_TP1_PCT,)
+# Re-export for callers / tests (first-open + reentry ratios)
+ARM_TP1_PCTS: tuple[float, ...] = (RADAR_ARM_TP1_PCT, RADAR_ARM_TP1_PCT_REENTRY)
 LIMIT_IMPROVE_PCT = 0.003
 MAX_TIER_INDEX = 2  # ADX tiers 0..2
 LIMIT_TTL_SEC = 300
@@ -78,13 +80,15 @@ def smart_reentry_enabled_for(symbol: str | None) -> bool:
         return True
 
 
-def arm_tp1_pct_for_attempt(_attempt: int = 0) -> float:
-    return float(RADAR_ARM_TP1_PCT)
+def arm_tp1_pct_for_attempt(attempt: int = 0) -> float:
+    """First open 0.85; after reentry 1.00 (whitepaper v3)."""
+    return float(arm_ratio_for_attempt(attempt))
 
 
 def next_attempt_arm_pct(_prev_pct: float = 0.0) -> float:
-    """Compat: arm is fixed 0.85 under whitepaper v2."""
-    return float(RADAR_ARM_TP1_PCT)
+    """Compat: next (reentry) arm is always 1.00 under whitepaper v3."""
+    _ = _prev_pct
+    return float(RADAR_ARM_TP1_PCT_REENTRY)
 
 
 def tier_for_attempt(
@@ -95,8 +99,8 @@ def tier_for_attempt(
 ) -> RadarTier:
     """Map open/reentry attempt → radar params.
 
-    attempt 0: radar_tier = adx_tier
-    attempt ≥1: radar_tier = min(adx_tier+1, 2)  (one step looser)
+    attempt 0: radar_tier = adx_tier, arm = 0.85
+    attempt ≥1: radar_tier = min(adx_tier+1, 2), arm = 1.00
     """
     base = clamp_tier(adx_tier if adx_tier is not None else 1)
     att = max(0, int(attempt))
@@ -123,7 +127,7 @@ def _params_to_radar_tier(p: TrendTierParams, *, attempt: int, adx_tier: int) ->
         early_breakeven_atr=float(RADAR_ACTIVATE_BE_ATR),
         step_trigger_atr=float(p.step_trigger_atr),
         step_advance_atr=float(p.step_advance_atr),
-        arm_tp1_pct=float(RADAR_ARM_TP1_PCT),
+        arm_tp1_pct=float(arm_ratio_for_attempt(attempt)),
         coef_min=float(p.trail_coef_min),
         coef_max=float(p.trail_coef_max),
         breath_tp1_tp2_atr=float(p.breath_tp1_tp2_atr),
@@ -149,28 +153,35 @@ def arm_distance(
     step_trigger_atr: float | None = None,
     tp1: float | None = None,
     entry: float | None = None,
+    tv_entry: float | None = None,
+    tp1_dist: float | None = None,
     adx_tier: int | None = None,
 ) -> float:
-    """Favorable move to arm radar = path 85% to TP1 (or profile TP1×pct)."""
+    """Favorable move to arm radar = tp1_distance × activation_ratio."""
     from app.core.breathing_profile import profile_for_symbol
     from app.core.trend_tier_params import radar_arm_trigger_price
 
     a = float(atr or 0)
-    e = float(entry or 0)
+    fill = float(entry or 0)
     t1 = float(tp1 or 0)
-    pct = float(arm_tp1_pct if arm_tp1_pct is not None else RADAR_ARM_TP1_PCT)
-    if e > 0 and t1 > 0:
+    pct = float(arm_tp1_pct if arm_tp1_pct is not None else arm_ratio_for_attempt(attempt))
+    if fill > 0 and (t1 > 0 or float(tp1_dist or 0) > 0 or float(tv_entry or 0) > 0):
         trig = radar_arm_trigger_price(
-            side="LONG", entry=e, tp1=t1, atr=a, symbol=symbol, arm_pct=pct,
+            side="LONG",
+            fill_entry=fill,
+            tp1=t1,
+            tv_entry=tv_entry,
+            tp1_dist=tp1_dist,
+            atr=a,
+            symbol=symbol,
+            arm_pct=pct,
         )
-        return abs(trig - e)
+        return abs(trig - fill)
     p = profile_for_symbol(symbol)
     if a <= 0:
         return 0.0
-    tier = tier_for_attempt(attempt, symbol, adx_tier=adx_tier)
-    # Path distance ≈ TP1_atr × ATR × pct (no max with step_trigger — whitepaper is pure TP1×0.85)
-    _ = step_trigger_atr  # unused; kept for call-site compat
-    return float(p.tp1_atr) * a * float(tier.arm_tp1_pct if arm_tp1_pct is None else pct)
+    _ = (step_trigger_atr, adx_tier)
+    return float(p.tp1_atr) * a * pct
 
 
 def limit_reentry_price(side: str, tv_px: float) -> float:

@@ -1,7 +1,8 @@
-"""Smart re-entry mixin — whitepaper v2.0 ADX-tier radar + max-1 reentry.
+"""Smart re-entry mixin — whitepaper v3.0 ADX-tier radar + max-1 reentry.
 
 Closed loop (TV window):
-  flat(BE/micro within window) → purge → dual-insurance limit → fill → hard+TP+radar(+1 tier)
+  flat(BE/micro within window) → purge → dual-insurance limit → fill
+  → hard+TP+radar(arm=1.00, trail +1 tier)
   hard/loss/window-expired → never reenter
   local pending-tag: NEVER place if tag inflight even when book query empty
 """
@@ -38,6 +39,10 @@ class SmartReentryMixin:
         self.reentry_client_order_id = None
         if not isinstance(getattr(self, "_pending_order_registry", None), PendingOrderRegistry):
             self._pending_order_registry = PendingOrderRegistry()
+        if not hasattr(self, "radar_tp1_distance"):
+            self.radar_tp1_distance = 0.0
+        if not hasattr(self, "radar_tv_entry"):
+            self.radar_tv_entry = 0.0
 
     def _pending_orders(self):
         from app.core.order_place_guard import PendingOrderRegistry
@@ -48,7 +53,7 @@ class SmartReentryMixin:
         return self._pending_order_registry
 
     def _resolve_trend_tier(self) -> int:
-        from app.core.trend_tier_params import adx_to_tier, clamp_tier
+        from app.core.trend_tier_params import clamp_tier, resolve_tier_from_payload
 
         stored = getattr(self, "trend_tier", None)
         if stored is not None:
@@ -56,6 +61,20 @@ class SmartReentryMixin:
                 return clamp_tier(int(stored))
             except (TypeError, ValueError):
                 pass
+        payload = getattr(self, "_last_tv_payload", None) or getattr(self, "_tv_entry_fields", None)
+        if isinstance(payload, dict):
+            tv_sl = float(getattr(self, "reentry_tv_sl_ref", 0) or 0)
+            tv_px = float(getattr(self, "tv_price", 0) or 0)
+            atr = float(getattr(self, "initial_atr", 0) or getattr(self, "_tv_atr_ref", 0) or 0)
+            dist = abs(tv_px - tv_sl) if tv_px > 0 and tv_sl > 0 else None
+            return resolve_tier_from_payload(
+                payload,
+                adx=getattr(self, "current_adx", None),
+                tv_stop_distance=dist,
+                atr=atr,
+            )
+        from app.core.trend_tier_params import adx_to_tier
+
         return adx_to_tier(getattr(self, "current_adx", None))
 
     def _smart_reentry_state_dict(self) -> dict[str, Any]:
@@ -87,6 +106,8 @@ class SmartReentryMixin:
             "active_hard_buffer": float(getattr(self, "active_hard_buffer", 0) or 0),
             "reentry_tier_label": getattr(self, "reentry_tier_label", None),
             "reentry_abort_reason": getattr(self, "reentry_abort_reason", None),
+            "radar_tp1_distance": float(getattr(self, "radar_tp1_distance", 0) or 0),
+            "radar_tv_entry": float(getattr(self, "radar_tv_entry", 0) or 0),
         }
 
     def _load_smart_reentry_state(self, s: dict[str, Any]) -> None:
@@ -112,6 +133,8 @@ class SmartReentryMixin:
         self.trend_tier = clamp_tier(s.get("trend_tier", self._resolve_trend_tier()))
         self.radar_tier_boost = int(s.get("radar_tier_boost", 0) or 0)
         self.reentry_abort_reason = s.get("reentry_abort_reason")
+        self.radar_tp1_distance = float(s.get("radar_tp1_distance", 0) or 0)
+        self.radar_tv_entry = float(s.get("radar_tv_entry", 0) or 0)
         tier = tier_for_attempt(self.reentry_attempt, sym, adx_tier=self.trend_tier)
         self.active_early_be_atr = float(
             s.get("active_early_be_atr") or tier.early_breakeven_atr
@@ -132,7 +155,10 @@ class SmartReentryMixin:
         )
         self.active_hard_buffer = float(s.get("active_hard_buffer") or tier.hard_buffer)
         self.reentry_tier_label = s.get("reentry_tier_label") or tier.tier_label
-
+        # Re-sync arm ratio from attempt (v3: 0.85 vs 1.00)
+        self.reentry_arm_tp1_pct = float(
+            s.get("reentry_arm_tp1_pct") or tier.arm_tp1_pct
+        )
     def _apply_radar_tier(self, attempt: int) -> None:
         from app.core.smart_reentry import apply_tier_to_state
 
@@ -208,6 +234,13 @@ class SmartReentryMixin:
             "breath_tp2_tp3_atr": b23 if b23 > 0 else None,
             "radar_activated": bool(getattr(self, "radar_activated", False)),
         }
+        tv_e = float(getattr(self, "radar_tv_entry", 0) or getattr(self, "tv_price", 0) or 0)
+        if tv_e > 0:
+            kw["tv_entry"] = tv_e
+        tp1_d = float(getattr(self, "radar_tp1_distance", 0) or 0)
+        if tp1_d > 0:
+            kw["tp1_dist"] = tp1_d
+            kw["radar_tp1_distance"] = tp1_d
         for key, attr in (
             ("tp1_price", "tp1_price"),
             ("tp2_price", "tp2_price"),
@@ -219,8 +252,41 @@ class SmartReentryMixin:
                 v = 0.0
             if v > 0:
                 kw[key] = v
+        # Fallback: tv_tps[0/1/2]
+        if "tp1_price" not in kw or not kw.get("tp1_price"):
+            tps = list(getattr(self, "tv_tps", None) or [])
+            for i, key in enumerate(("tp1_price", "tp2_price", "tp3_price")):
+                if key in kw and float(kw.get(key) or 0) > 0:
+                    continue
+                if i < len(tps):
+                    try:
+                        v = float(tps[i] or 0)
+                    except (TypeError, ValueError):
+                        v = 0.0
+                    if v > 0:
+                        kw[key] = v
         return kw
 
+    def _seed_radar_tp1_distance(self, *, tv_px: float | None = None, tp1: float | None = None) -> float:
+        """Persist |TV.tp1 − TV.price| for arm formula across reentry fills."""
+        from app.core.trend_tier_params import tp1_distance
+
+        e = float(tv_px if tv_px is not None else (getattr(self, "tv_price", 0) or 0))
+        t1 = float(tp1 or 0)
+        if t1 <= 0:
+            t1 = float(getattr(self, "tp1_price", 0) or 0)
+        if t1 <= 0:
+            tps = list(getattr(self, "tv_tps", None) or [])
+            if tps:
+                try:
+                    t1 = float(tps[0] or 0)
+                except (TypeError, ValueError, IndexError):
+                    t1 = 0.0
+        dist = tp1_distance(e, t1)
+        if dist > 0:
+            self.radar_tp1_distance = dist
+            self.radar_tv_entry = e
+        return float(getattr(self, "radar_tp1_distance", 0) or 0)
     def _cancel_reentry_limit_order(self) -> None:
         oid = getattr(self, "reentry_limit_oid", None)
         tag = getattr(self, "reentry_limit_tag", None)
@@ -245,19 +311,32 @@ class SmartReentryMixin:
         self.reentry_pending = False
 
     def _seed_tier0_on_open(self, side: str, tv_px: float) -> None:
-        """First market open — attempt 0 + ADX-tier radar coeffs; arm TP1 path×0.85."""
-        from app.core.trend_tier_params import adx_to_tier
+        """First market open — attempt 0, arm=0.85 of tp1_distance; trail at ADX tier."""
+        from app.core.trend_tier_params import resolve_tier_from_payload
 
         self._stop_reentry_limit_loop()
         self._cancel_reentry_limit_order()
-        self.trend_tier = adx_to_tier(getattr(self, "current_adx", None))
+        payload = getattr(self, "_last_tv_payload", None) or getattr(self, "_tv_entry_fields", None)
+        tv_sl = 0.0
+        if hasattr(self, "_pine_stop_loss_ref"):
+            tv_sl = float(self._pine_stop_loss_ref() or 0)
+        atr = float(getattr(self, "initial_atr", 0) or getattr(self, "_tv_atr_ref", 0) or 0)
+        px = float(tv_px or getattr(self, "tv_price", 0) or 0)
+        dist = abs(px - tv_sl) if px > 0 and tv_sl > 0 else None
+        self.trend_tier = resolve_tier_from_payload(
+            payload if isinstance(payload, dict) else None,
+            adx=getattr(self, "current_adx", None),
+            tv_stop_distance=dist,
+            atr=atr,
+        )
         self._apply_radar_tier(0)
         self.reentry_pending = False
         self.reentry_tv_side = str(side or "").upper() or None
-        self.reentry_tv_px = float(tv_px or getattr(self, "tv_price", 0) or 0)
+        self.reentry_tv_px = px
         self.reentry_abort_reason = None
         self.last_close_track = None
         self.radar_flat_ts = 0.0
+        self._seed_radar_tp1_distance(tv_px=px)
         # Snapshot Pine SL / ATR for any later reentry hard-stop distance
         if hasattr(self, "_pine_stop_loss_ref"):
             self.reentry_tv_sl_ref = float(self._pine_stop_loss_ref() or 0)
@@ -458,9 +537,16 @@ class SmartReentryMixin:
                     "info",
                     "SMART_REENTRY_ARM",
                     "重入尝试",
-                    f"档位={self.reentry_tier_label} arm={self.reentry_arm_tp1_pct:.0%} "
+                    f"档位={self.reentry_tier_label} "
+                    f"arm=1.00(重入)/trail+1档 "
                     f"qty={qty} tv={self.reentry_tv_px}{rem}",
-                    {"attempt": next_attempt, "close_px": plan.get("close_px"), **meta},
+                    {
+                        "attempt": next_attempt,
+                        "close_px": plan.get("close_px"),
+                        "arm_tp1_pct": self.reentry_arm_tp1_pct,
+                        "arm_kind": "reentry",
+                        **meta,
+                    },
                 )
             except Exception:
                 pass

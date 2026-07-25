@@ -106,7 +106,7 @@ def _price_tick(symbol: str | None) -> float:
         return 0.01
 
 
-TEMP_TV_STOP_BUFFER = 1.2  # default buffer_multiplier (overridable via Settings)
+TEMP_TV_STOP_BUFFER = 1.15  # whitepaper v3 fixed breathing pad (not tiered)
 # Deprecated — radar floor / slip no longer widen hard stop (2026-07-25 TV sync).
 HARD_VS_RADAR_FLOOR = 1.05  # retained for tests/compat imports only
 HARD_SLIP_MULT = 0.0  # slip pad removed; hard = |TV.e−SL| × buffer from fill
@@ -137,23 +137,18 @@ def hard_stop_buffer_mult(
     *,
     trend_tier: int | None = None,
 ) -> float:
-    """Whitepaper v2: ADX tier buffer 1.1/1.2/1.3; Settings as fallback."""
-    if trend_tier is not None:
-        try:
-            from app.core.trend_tier_params import hard_buffer_for_tier
-
-            return float(hard_buffer_for_tier(int(trend_tier), symbol))
-        except Exception:
-            pass
+    """Whitepaper v3: fixed 1.15 for ETH/XAU all tiers."""
+    _ = (symbol, trend_tier)
     try:
+        from app.core.trend_tier_params import HARD_STOP_BUFFER_FIXED
         from app.config import get_settings
-        from app.core.symbol_registry import CANONICAL_XAU, normalize_canonical_symbol
 
         s = get_settings()
-        can = normalize_canonical_symbol(symbol) or ""
-        if can == CANONICAL_XAU:
-            return float(getattr(s, "HARD_STOP_BUFFER_MULT_XAU", None) or getattr(s, "HARD_STOP_BUFFER_MULT", TEMP_TV_STOP_BUFFER) or TEMP_TV_STOP_BUFFER)
-        return float(getattr(s, "HARD_STOP_BUFFER_MULT_ETH", None) or getattr(s, "HARD_STOP_BUFFER_MULT", TEMP_TV_STOP_BUFFER) or TEMP_TV_STOP_BUFFER)
+        return float(
+            getattr(s, "HARD_STOP_BUFFER_MULT", None)
+            or HARD_STOP_BUFFER_FIXED
+            or TEMP_TV_STOP_BUFFER
+        )
     except Exception:
         return float(TEMP_TV_STOP_BUFFER)
 
@@ -178,10 +173,10 @@ def compute_hard_stop_distance(
     buffer_mult: float | None = None,
     trend_tier: int | None = None,
 ) -> dict[str, float]:
-    """Hard-stop distance from TV (whitepaper v2).
+    """Hard-stop distance from TV (whitepaper v3).
 
     tv_stop_distance = |TV.price − TV.stop_loss|
-    actual = tv_stop_distance × buffer_multiplier (ADX tier 1.1/1.2/1.3)
+    actual = tv_stop_distance × 1.15  (fixed; not ADX-tiered)
     Hang = fill ± actual  (no ATR floor, no fill-slip pad).
 
     ``initial_atr`` / ``slip_mult`` kept for call-site compat; ignored.
@@ -434,6 +429,8 @@ def init_breathing_state(
 
 def _tier_overrides(legacy: dict[str, Any], profile) -> dict[str, float | None]:
     """Pull ADX-tier / reentry overrides from kwargs (None = use profile)."""
+    _ = profile
+
     def _f(key: str) -> float | None:
         if key not in legacy or legacy.get(key) is None:
             return None
@@ -442,6 +439,11 @@ def _tier_overrides(legacy: dict[str, Any], profile) -> dict[str, float | None]:
         except (TypeError, ValueError):
             return None
         return v if v > 0 else None
+
+    # Prefer explicit tp1_dist; accept radar_tp1_distance alias from persisted state
+    tp1_d = _f("tp1_dist")
+    if tp1_d is None:
+        tp1_d = _f("radar_tp1_distance")
 
     return {
         "arm_tp1_pct": _f("arm_tp1_pct"),
@@ -455,6 +457,8 @@ def _tier_overrides(legacy: dict[str, Any], profile) -> dict[str, float | None]:
         "tp1_price": _f("tp1_price"),
         "tp2_price": _f("tp2_price"),
         "tp3_price": _f("tp3_price"),
+        "tv_entry": _f("tv_entry"),
+        "tp1_dist": tp1_d,
         "radar_activated": legacy.get("radar_activated"),
     }
 
@@ -487,7 +491,7 @@ def calculate_stop_long(
     smooth_ratio: float | None = None,
     **_legacy: Any,
 ) -> tuple[float, float, bool, dict[str, Any]]:
-    """Whitepaper v2: wait until TP1 path×0.85; activate entry+0.5ATR; then passive trail."""
+    """Whitepaper v3: arm at fill±tp1_distance×ratio; activate entry+0.5ATR; then trail."""
     from app.core.trend_tier_params import (
         RADAR_ACTIVATE_BE_ATR,
         RADAR_ARM_TP1_PCT,
@@ -505,6 +509,8 @@ def calculate_stop_long(
     cmax = ov["coef_max"]
     breath12 = float(ov["breath_tp1_tp2_atr"] or 1.2)
     breath23 = float(ov["breath_tp2_tp3_atr"] or 1.6)
+    tv_e = float(ov["tv_entry"] or 0)
+    tp1_d = float(ov["tp1_dist"] or 0)
 
     price = float(price or 0)
     entry_price = float(entry_price or 0)
@@ -535,20 +541,27 @@ def calculate_stop_long(
         "coef_max": float(cmax if cmax is not None else p.coef_max),
         "breath_tp1_tp2_atr": breath12,
         "breath_tp2_tp3_atr": breath23,
+        "tv_entry": tv_e,
+        "tp1_dist": tp1_d,
     }
 
-    arm_trig = radar_arm_trigger_price(
-        side="LONG", entry=entry_price, tp1=tp1, atr=initial_atr, symbol=symbol, arm_pct=arm_pct,
+    arm_kw = dict(
+        side="LONG",
+        fill_entry=entry_price,
+        tp1=tp1,
+        tv_entry=tv_e if tv_e > 0 else None,
+        tp1_dist=tp1_d if tp1_d > 0 else None,
+        atr=initial_atr,
+        symbol=symbol,
+        arm_pct=arm_pct,
     )
+    arm_trig = radar_arm_trigger_price(**arm_kw)
     arm_dist = abs(arm_trig - entry_price) if arm_trig > 0 else 0.0
     meta["radar_arm_dist"] = arm_dist
     meta["radar_arm_trigger"] = arm_trig
     meta["radar_arm_ratio"] = arm_pct
     already = bool(ov.get("radar_activated"))
-    armed = already or radar_armed_by_price(
-        side="LONG", price=price, entry=entry_price, tp1=tp1,
-        atr=initial_atr, symbol=symbol, arm_pct=arm_pct,
-    )
+    armed = already or radar_armed_by_price(price=price, **arm_kw)
     meta["radar_armed"] = armed
 
     if not armed:
@@ -624,7 +637,7 @@ def calculate_stop_short(
     smooth_ratio: float | None = None,
     **_legacy: Any,
 ) -> tuple[float, float, bool, dict[str, Any]]:
-    """Whitepaper v2 short: symmetric to long (arm at path 85% to TP1)."""
+    """Whitepaper v3 short: symmetric (fill − tp1_distance × ratio)."""
     from app.core.trend_tier_params import (
         RADAR_ACTIVATE_BE_ATR,
         RADAR_ARM_TP1_PCT,
@@ -642,6 +655,8 @@ def calculate_stop_short(
     cmax = ov["coef_max"]
     breath12 = float(ov["breath_tp1_tp2_atr"] or 1.0)
     breath23 = float(ov["breath_tp2_tp3_atr"] or 1.4)
+    tv_e = float(ov["tv_entry"] or 0)
+    tp1_d = float(ov["tp1_dist"] or 0)
 
     price = float(price or 0)
     entry_price = float(entry_price or 0)
@@ -675,20 +690,27 @@ def calculate_stop_short(
         "coef_max": float(cmax if cmax is not None else p.coef_max),
         "breath_tp1_tp2_atr": breath12,
         "breath_tp2_tp3_atr": breath23,
+        "tv_entry": tv_e,
+        "tp1_dist": tp1_d,
     }
 
-    arm_trig = radar_arm_trigger_price(
-        side="SHORT", entry=entry_price, tp1=tp1, atr=initial_atr, symbol=symbol, arm_pct=arm_pct,
+    arm_kw = dict(
+        side="SHORT",
+        fill_entry=entry_price,
+        tp1=tp1,
+        tv_entry=tv_e if tv_e > 0 else None,
+        tp1_dist=tp1_d if tp1_d > 0 else None,
+        atr=initial_atr,
+        symbol=symbol,
+        arm_pct=arm_pct,
     )
+    arm_trig = radar_arm_trigger_price(**arm_kw)
     arm_dist = abs(entry_price - arm_trig) if arm_trig > 0 else 0.0
     meta["radar_arm_dist"] = arm_dist
     meta["radar_arm_trigger"] = arm_trig
     meta["radar_arm_ratio"] = arm_pct
     already = bool(ov.get("radar_activated"))
-    armed = already or radar_armed_by_price(
-        side="SHORT", price=price, entry=entry_price, tp1=tp1,
-        atr=initial_atr, symbol=symbol, arm_pct=arm_pct,
-    )
+    armed = already or radar_armed_by_price(price=price, **arm_kw)
     meta["radar_armed"] = armed
 
     if not armed:
@@ -780,6 +802,9 @@ def apply_breathing_tick(
     tp2_price: float | None = None,
     tp3_price: float | None = None,
     radar_activated: bool | None = None,
+    tv_entry: float | None = None,
+    tp1_dist: float | None = None,
+    radar_tp1_distance: float | None = None,
 ) -> dict[str, Any]:
     from app.core.breathing_profile import trail_distance_multiplier
 
@@ -792,6 +817,7 @@ def apply_breathing_tick(
     else:
         coef = resolve_breathing_coef(breathing_coefficient, symbol)
     side_u = str(side or "").upper()
+    dist = tp1_dist if tp1_dist is not None else radar_tp1_distance
     tier_kw = {
         "arm_tp1_pct": arm_tp1_pct,
         "step_trigger_atr": step_trigger_atr,
@@ -805,6 +831,8 @@ def apply_breathing_tick(
         "tp2_price": tp2_price,
         "tp3_price": tp3_price,
         "radar_activated": radar_activated,
+        "tv_entry": tv_entry,
+        "tp1_dist": dist,
     }
     if side_u == "LONG":
         new_stop, peak, phase, meta = calculate_stop_long(
@@ -872,8 +900,8 @@ def format_breathing_legend(symbol: str | None = None) -> str:
     p = profile_for_symbol(symbol)
     mid = params_for_tier(1, symbol)
     return (
-        f"[{p.symbol_tag}] 硬止损ADX垫1.1/1.2/1.3"
-        f" · 雷达启动=TP1路径×0.85→entry±0.5ATR"
+        f"[{p.symbol_tag}] 硬止损呼吸垫固定1.15"
+        f" · 雷达启动=fill±tp1_dist×(0.85首次/1.00重入)→entry±0.5ATR"
         f" · 步进{mid.step_trigger_atr}/{mid.step_advance_atr}×ATR(中档)"
         f" · 追踪{mid.trail_coef_min}~{mid.trail_coef_max}×ATR"
         f" · 重入最多1次/{mid.reentry_bars}根K"

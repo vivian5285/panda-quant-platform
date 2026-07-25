@@ -232,26 +232,30 @@ def phase_a_probes() -> dict:
         r"""
 import json, time
 from app.core.trend_tier_params import (
-    MAX_REENTRY, RADAR_ARM_TP1_PCT, adx_to_tier, hard_buffer_for_tier,
+    MAX_REENTRY, RADAR_ARM_TP1_PCT, RADAR_ARM_TP1_PCT_REENTRY,
+    HARD_STOP_BUFFER_FIXED, adx_to_tier, hard_buffer_for_tier,
     radar_arm_trigger_price, params_for_tier,
 )
 from app.core.breathing_stop import compute_temp_tv_stop, apply_breathing_tick
 from app.core.smart_reentry import (
     close_allows_reentry, reentry_within_window, compute_optimal_reentry_price,
-    tier_for_attempt, MAX_REENTRY as MR2,
+    tier_for_attempt, MAX_REENTRY as MR2, ARM_TP1_PCTS,
 )
 assert MAX_REENTRY == MR2 == 1
-assert RADAR_ARM_TP1_PCT == 0.85
+assert RADAR_ARM_TP1_PCT == 0.85 and RADAR_ARM_TP1_PCT_REENTRY == 1.00
+assert ARM_TP1_PCTS == (0.85, 1.00)
+assert HARD_STOP_BUFFER_FIXED == 1.15
 assert adx_to_tier(15)==0 and adx_to_tier(25)==1 and adx_to_tier(35)==2
-assert hard_buffer_for_tier(0)==1.1 and hard_buffer_for_tier(1)==1.2 and hard_buffer_for_tier(2)==1.3
-assert abs(compute_temp_tv_stop(1900,"LONG",1880,tv_entry=1900,trend_tier=1)-1876)<1e-9
+assert hard_buffer_for_tier(0)==hard_buffer_for_tier(1)==hard_buffer_for_tier(2)==1.15
+assert abs(compute_temp_tv_stop(1900.80,"LONG",1874.0,tv_entry=1900.0)-1870.90)<1e-6
+assert abs(radar_arm_trigger_price(side="LONG",fill_entry=1900.80,tp1=1925.65,tv_entry=1900.0,arm_pct=0.85)-1922.60)<0.01
 # ETH mid params
 e=params_for_tier(1,"ETHUSDT"); x=params_for_tier(1,"XAUUSDT")
 assert e.step_trigger_atr==0.5 and e.reentry_bars==2
 assert x.step_trigger_atr==0.4 and x.reentry_bars==3
-# Reentry after success loosens +1
+# Reentry after success: trail +1 AND arm=1.00
 t=tier_for_attempt(1,"ETHUSDT",adx_tier=1)
-assert t.radar_tier==2
+assert t.radar_tier==2 and t.arm_tp1_pct==1.00
 # Window
 now=time.time()
 ok,_=reentry_within_window(flat_ts=now-100, now_ts=now, symbol="ETHUSDT")

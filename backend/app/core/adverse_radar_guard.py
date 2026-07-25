@@ -2488,7 +2488,7 @@ class AdverseRadarMixin:
             "tv_stop_loss": tv_sl,
             "tv_stop_distance": float(dist_meta.get("tv_stop_distance") or 0),
             "actual_stop_distance": float(dist_meta.get("final_dist") or 0),
-            "buffer_mult": float(dist_meta.get("buffer_mult") or 1.2),
+            "buffer_mult": float(dist_meta.get("buffer_mult") or 1.15),
             "frozen": True,
         }
         if hasattr(self, "_log"):

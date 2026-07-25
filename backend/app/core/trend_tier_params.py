@@ -1,7 +1,12 @@
-"""ADX trend-tier parameters — whitepaper v2.0 (2026-07-25).
+"""ADX trend-tier parameters — whitepaper v3.0 (2026-07-25).
 
 Tier 0 weak (ADX < 20), tier 1 mid (20–30), tier 2 strong (ADX > 30).
-ETH 90m / XAU 45m; radar arms at path 85% to TP1; reentry max once.
+ETH 90m / XAU 45m.
+
+v3 corrections vs v2:
+  - hard-stop buffer FIXED 1.15 (no ADX tier split)
+  - radar arm = fill ± tp1_distance × ratio (first 0.85 / reentry 1.00)
+  - reentry still loosens trail params +1 ADX tier
 """
 
 from __future__ import annotations
@@ -14,17 +19,19 @@ from app.core.symbol_registry import CANONICAL_ETH, CANONICAL_XAU, normalize_can
 ADX_WEAK = 20.0
 ADX_STRONG = 30.0
 DEFAULT_TREND_TIER = 1  # mid when ADX missing
-RADAR_ARM_TP1_PCT = 0.85
+RADAR_ARM_TP1_PCT = 0.85  # first open
+RADAR_ARM_TP1_PCT_REENTRY = 1.00  # after reentry (v3)
 RADAR_ACTIVATE_BE_ATR = 0.5  # on arm: stop → entry ± 0.5×ATR
 MAX_REENTRY = 1
+HARD_STOP_BUFFER_FIXED = 1.15  # v3: unified, not tiered
 
 
 @dataclass(frozen=True)
 class TrendTierParams:
-    """Per-symbol × ADX-tier radar / hard-stop / reentry knobs."""
+    """Per-symbol × ADX-tier radar trail / reentry knobs (hard buffer is global)."""
 
     tier: int
-    hard_buffer: float
+    hard_buffer: float  # always HARD_STOP_BUFFER_FIXED (kept for compat dumps)
     step_trigger_atr: float
     step_advance_atr: float
     breath_tp1_tp2_atr: float
@@ -52,25 +59,50 @@ class TrendTierParams:
         return d
 
 
-# ETHUSDT.P — whitepaper §2.2
+def _tier_row(
+    *,
+    tier: int,
+    step_trigger_atr: float,
+    step_advance_atr: float,
+    breath_tp1_tp2_atr: float,
+    breath_tp2_tp3_atr: float,
+    trail_coef_min: float,
+    trail_coef_max: float,
+    reentry_bars: int,
+    reentry_zone_atr: float,
+    chart_tf_min: float,
+) -> TrendTierParams:
+    return TrendTierParams(
+        tier=tier,
+        hard_buffer=HARD_STOP_BUFFER_FIXED,
+        step_trigger_atr=step_trigger_atr,
+        step_advance_atr=step_advance_atr,
+        breath_tp1_tp2_atr=breath_tp1_tp2_atr,
+        breath_tp2_tp3_atr=breath_tp2_tp3_atr,
+        trail_coef_min=trail_coef_min,
+        trail_coef_max=trail_coef_max,
+        reentry_bars=reentry_bars,
+        reentry_zone_atr=reentry_zone_atr,
+        chart_tf_min=chart_tf_min,
+    )
+
+
+# ETHUSDT.P — whitepaper §2.2 (trail knobs only; hard buffer unified)
 _ETH: tuple[TrendTierParams, ...] = (
-    TrendTierParams(
-        tier=0, hard_buffer=1.1,
-        step_trigger_atr=0.40, step_advance_atr=0.25,
+    _tier_row(
+        tier=0, step_trigger_atr=0.40, step_advance_atr=0.25,
         breath_tp1_tp2_atr=0.80, breath_tp2_tp3_atr=1.00,
         trail_coef_min=1.2, trail_coef_max=1.5,
         reentry_bars=2, reentry_zone_atr=0.5, chart_tf_min=90.0,
     ),
-    TrendTierParams(
-        tier=1, hard_buffer=1.2,
-        step_trigger_atr=0.50, step_advance_atr=0.35,
+    _tier_row(
+        tier=1, step_trigger_atr=0.50, step_advance_atr=0.35,
         breath_tp1_tp2_atr=1.20, breath_tp2_tp3_atr=1.60,
         trail_coef_min=2.0, trail_coef_max=2.5,
         reentry_bars=2, reentry_zone_atr=0.5, chart_tf_min=90.0,
     ),
-    TrendTierParams(
-        tier=2, hard_buffer=1.3,
-        step_trigger_atr=0.60, step_advance_atr=0.40,
+    _tier_row(
+        tier=2, step_trigger_atr=0.60, step_advance_atr=0.40,
         breath_tp1_tp2_atr=1.50, breath_tp2_tp3_atr=2.00,
         trail_coef_min=2.5, trail_coef_max=3.5,
         reentry_bars=2, reentry_zone_atr=0.5, chart_tf_min=90.0,
@@ -79,23 +111,20 @@ _ETH: tuple[TrendTierParams, ...] = (
 
 # XAUUSDT.P — whitepaper §2.3
 _XAU: tuple[TrendTierParams, ...] = (
-    TrendTierParams(
-        tier=0, hard_buffer=1.1,
-        step_trigger_atr=0.35, step_advance_atr=0.20,
+    _tier_row(
+        tier=0, step_trigger_atr=0.35, step_advance_atr=0.20,
         breath_tp1_tp2_atr=0.70, breath_tp2_tp3_atr=0.90,
         trail_coef_min=1.0, trail_coef_max=1.3,
         reentry_bars=3, reentry_zone_atr=0.3, chart_tf_min=45.0,
     ),
-    TrendTierParams(
-        tier=1, hard_buffer=1.2,
-        step_trigger_atr=0.40, step_advance_atr=0.30,
+    _tier_row(
+        tier=1, step_trigger_atr=0.40, step_advance_atr=0.30,
         breath_tp1_tp2_atr=1.00, breath_tp2_tp3_atr=1.40,
         trail_coef_min=1.8, trail_coef_max=2.2,
         reentry_bars=3, reentry_zone_atr=0.3, chart_tf_min=45.0,
     ),
-    TrendTierParams(
-        tier=2, hard_buffer=1.3,
-        step_trigger_atr=0.50, step_advance_atr=0.35,
+    _tier_row(
+        tier=2, step_trigger_atr=0.50, step_advance_atr=0.35,
         breath_tp1_tp2_atr=1.30, breath_tp2_tp3_atr=1.80,
         trail_coef_min=2.2, trail_coef_max=3.0,
         reentry_bars=3, reentry_zone_atr=0.3, chart_tf_min=45.0,
@@ -130,8 +159,46 @@ def clamp_tier(tier: int | None) -> int:
     return max(0, min(2, t))
 
 
+def resolve_tier_from_payload(
+    payload: dict[str, Any] | None = None,
+    *,
+    adx: float | None = None,
+    tv_stop_distance: float | None = None,
+    atr: float | None = None,
+) -> int:
+    """Prefer webhook ``tier`` (0/1/2); else ADX; else tv_stop_distance/atr heuristic."""
+    if payload:
+        raw = payload.get("tier", payload.get("trend_tier"))
+        if raw is not None and str(raw).strip() != "":
+            try:
+                return clamp_tier(int(raw))
+            except (TypeError, ValueError):
+                pass
+        if adx is None:
+            try:
+                adx = float(payload.get("adx") or 0) or None
+            except (TypeError, ValueError):
+                adx = None
+    if adx is not None:
+        return adx_to_tier(adx)
+    # Transition heuristic (§3.5): distance / ATR
+    try:
+        dist = float(tv_stop_distance or 0)
+        a = float(atr or 0)
+    except (TypeError, ValueError):
+        return DEFAULT_TREND_TIER
+    if dist > 0 and a > 0:
+        ratio = dist / a
+        if ratio < 1.2:
+            return 0
+        if ratio > 1.8:
+            return 2
+        return 1
+    return DEFAULT_TREND_TIER
+
+
 def effective_radar_tier(adx_tier: int, boost: int = 0) -> int:
-    """Reentry success loosens radar by +1 tier (cap 2); TP prices unchanged."""
+    """Reentry success loosens trail params by +1 tier (cap 2); TP prices unchanged."""
     return clamp_tier(clamp_tier(adx_tier) + max(0, int(boost or 0)))
 
 
@@ -145,12 +212,18 @@ def params_for_adx(adx: float | None, symbol: str | None = None, *, boost: int =
     return params_for_tier(effective_radar_tier(adx_to_tier(adx), boost), symbol)
 
 
-def hard_buffer_for_tier(tier: int, symbol: str | None = None) -> float:
-    return float(params_for_tier(tier, symbol).hard_buffer)
+def hard_buffer_for_tier(_tier: int | None = None, symbol: str | None = None) -> float:
+    """v3: always 1.15 — tier/symbol ignored (compat signature retained)."""
+    _ = (_tier, symbol)
+    return float(HARD_STOP_BUFFER_FIXED)
+
+
+def arm_ratio_for_attempt(attempt: int = 0) -> float:
+    """First open 0.85; after reentry 1.00 (whitepaper v3 §4.1 / §5.4)."""
+    return float(RADAR_ARM_TP1_PCT_REENTRY if int(attempt or 0) >= 1 else RADAR_ARM_TP1_PCT)
 
 
 def reentry_zone_atr(symbol: str | None = None) -> float:
-    # Zone is symbol-constant across tiers in whitepaper
     return float(params_for_tier(1, symbol).reentry_zone_atr)
 
 
@@ -158,50 +231,87 @@ def reentry_window_sec(symbol: str | None = None, tier: int | None = None) -> fl
     return float(params_for_tier(clamp_tier(tier if tier is not None else 1), symbol).reentry_window_sec)
 
 
+def tp1_distance(tv_entry: float, tp1: float) -> float:
+    """|webhook.tp1 − webhook.price| — distance, never absolute TP1×ratio."""
+    e = float(tv_entry or 0)
+    t1 = float(tp1 or 0)
+    if e <= 0 or t1 <= 0:
+        return 0.0
+    return abs(t1 - e)
+
+
 def radar_arm_trigger_price(
     *,
     side: str,
-    entry: float,
-    tp1: float,
+    entry: float | None = None,
+    fill_entry: float | None = None,
+    tp1: float = 0.0,
+    tv_entry: float | None = None,
+    tp1_dist: float | None = None,
     atr: float = 0.0,
     symbol: str | None = None,
     arm_pct: float = RADAR_ARM_TP1_PCT,
 ) -> float:
-    """Path 85% to TP1 (whitepaper 「TP1×0.85」= near TP1, not literal price×0.85)."""
+    """v3: fill ± tp1_distance × activation_ratio.
+
+    tp1_distance = |TV.tp1 − TV.price| (prefer explicit ``tp1_dist`` / ``tv_entry``).
+    Never compute ``TP1_absolute × 0.85``.
+    """
     from app.core.breathing_profile import profile_for_symbol
 
     side_u = str(side or "").upper()
-    e = float(entry or 0)
-    t1 = float(tp1 or 0)
+    fill = float(fill_entry if fill_entry is not None else (entry or 0))
     pct = float(arm_pct) if arm_pct and arm_pct > 0 else RADAR_ARM_TP1_PCT
-    if e <= 0 or side_u not in ("LONG", "SHORT"):
+    if fill <= 0 or side_u not in ("LONG", "SHORT"):
         return 0.0
-    if t1 <= 0:
-        # Fallback: profile TP1 ATR distance
-        p = profile_for_symbol(symbol)
-        a = float(atr or 0)
-        if a <= 0:
-            return 0.0
-        dist = float(p.tp1_atr) * a * pct
-        return e + dist if side_u == "LONG" else e - dist
+
+    dist = float(tp1_dist or 0)
+    if dist <= 0:
+        tv_e = float(tv_entry or 0)
+        t1 = float(tp1 or 0)
+        if tv_e > 0 and t1 > 0:
+            dist = abs(t1 - tv_e)
+        elif t1 > 0 and fill > 0:
+            # Last resort: treat tp1 vs fill (less accurate if fill slipped)
+            dist = abs(t1 - fill)
+        else:
+            p = profile_for_symbol(symbol)
+            a = float(atr or 0)
+            if a <= 0:
+                return 0.0
+            dist = float(p.tp1_atr) * a
+
+    if dist <= 0:
+        return 0.0
     if side_u == "LONG":
-        return e + pct * (t1 - e)
-    return e - pct * (e - t1)
+        return fill + dist * pct
+    return fill - dist * pct
 
 
 def radar_armed_by_price(
     *,
     side: str,
     price: float,
-    entry: float,
-    tp1: float,
+    entry: float | None = None,
+    fill_entry: float | None = None,
+    tp1: float = 0.0,
+    tv_entry: float | None = None,
+    tp1_dist: float | None = None,
     atr: float = 0.0,
     symbol: str | None = None,
     arm_pct: float = RADAR_ARM_TP1_PCT,
 ) -> bool:
     px = float(price or 0)
     trig = radar_arm_trigger_price(
-        side=side, entry=entry, tp1=tp1, atr=atr, symbol=symbol, arm_pct=arm_pct,
+        side=side,
+        entry=entry,
+        fill_entry=fill_entry,
+        tp1=tp1,
+        tv_entry=tv_entry,
+        tp1_dist=tp1_dist,
+        atr=atr,
+        symbol=symbol,
+        arm_pct=arm_pct,
     )
     if px <= 0 or trig <= 0:
         return False

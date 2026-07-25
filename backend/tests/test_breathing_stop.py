@@ -44,11 +44,11 @@ def test_xau_radar_waits_then_activates():
     initial_stop = compute_initial_stop(entry, "LONG", atr, symbol="XAUUSDT")
     assert abs(initial_stop - (entry - 1.5 * atr)) < 1e-9
     tp1 = entry + 1.35 * atr
-    # Below arm → waiting (no step)
+    # Whitepaper v3: fill ± |TV.tp1−TV.price| × 0.85 (pass tv_entry)
     stop, high, phase, meta = calculate_stop_long(
         entry + 2, entry, atr, initial_stop, initial_stop, entry, False, coef,
         symbol="XAUUSDT", smooth_ratio=1.0,
-        arm_tp1_pct=0.85, tp1_price=tp1, radar_activated=False,
+        arm_tp1_pct=0.85, tp1_price=tp1, tv_entry=entry, radar_activated=False,
         step_trigger_atr=0.40, early_breakeven_atr=0.5, step_advance_atr=0.30,
         breath_tp1_tp2_atr=1.0,
     )
@@ -59,7 +59,7 @@ def test_xau_radar_waits_then_activates():
     stop, high, phase, meta = calculate_stop_long(
         arm_px, entry, atr, initial_stop, initial_stop, entry, False, coef,
         symbol="XAUUSDT", smooth_ratio=1.0,
-        arm_tp1_pct=0.85, tp1_price=tp1, radar_activated=False,
+        arm_tp1_pct=0.85, tp1_price=tp1, tv_entry=entry, radar_activated=False,
         step_trigger_atr=0.40, early_breakeven_atr=0.5, step_advance_atr=0.30,
         breath_tp1_tp2_atr=1.0,
     )

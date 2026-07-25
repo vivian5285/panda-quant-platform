@@ -277,6 +277,6 @@ def profile_as_dict(profile: BreathingProfile) -> dict[str, Any]:
         "chart_tf_min": profile.chart_tf_min,
         "stagnant_window_min": profile.stagnant_window_min,
         "stagnant_breath_samples": stagnant_breath_samples(profile),
-        "radar_arm": "TP1路径×0.85（白皮书v2）",
+        "radar_arm": "fill±tp1_distance×(0.85首次/1.00重入)（白皮书v3）",
         "trail_tighten": 1.0,  # removed — always 1.0 (tightness in min/max)
     }

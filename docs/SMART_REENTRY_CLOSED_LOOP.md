@@ -1,10 +1,10 @@
-# 智能再入场闭环 · 白皮书 v2.0（生产权威）
+# 智能再入场闭环 · 白皮书 v3.0（生产权威）
 
-> 同步：2026-07-25 · whitepaper v2.0 · commit 以 `main` HEAD 为准（部署后三方肉眼同 hash）  
+> 同步：2026-07-25 · whitepaper v3.0 · commit 以 `main` HEAD 为准（部署后三方肉眼同 hash）  
 > 适用：ETHUSDT（90m）/ XAUUSDT（45m）  
-> 凡「5 档递进 / arm 50~95% / buffer 固定 1.2」旧文 **作废**。
+> 凡「5 档递进 / arm 50~95% / buffer 1.1/1.2/1.3 / 字面 TP1×0.85」旧文 **作废**。
 
-本文解释**代码落点与调用顺序**。业务理念见根目录 `README.md`。
+本文解释**代码落点与调用顺序**。业务理念见根目录 `README.md`。桌面白皮书原文：`双币种雷达重入系统白皮书_v3.md`。
 
 ---
 
@@ -13,7 +13,7 @@
 | 路径 | 触发 | 行为 |
 |------|------|------|
 | ① 理想 | TP1/TP2/TP3 限价成交 | 逐级兑现 → flat → 等下一 TV |
-| ② 核心 | 雷达在保本/微赚区扫出，且在窗口内 | 清场 → 双保险限价再入（最多 1 次）→ 雷达放宽 +1 档 |
+| ② 核心 | 雷达在保本/微赚区扫出，且在窗口内 | 清场 → 双保险限价再入（最多 1 次）→ trail +1 档 + **arm=1.00** |
 | ③ 认输 | 硬止损 / 亏损 / 窗口过期 / 已重入过 | **永不重入**，等新 TV |
 
 ---
@@ -31,16 +31,16 @@ TV webhook (:6010)
        │
        └─ OPEN / 再入成交
             └─ _protect_and_monitor
-                 ├─ 硬止损  compute_temp_tv_stop(…, trend_tier=ADX档)
+                 ├─ 硬止损  compute_temp_tv_stop(…, buffer=1.15 固定)
                  ├─ TP1/TP2/TP3 (10/20/70)
-                 └─ 雷达    路径 TP1×0.85 才激活
+                 └─ 雷达    fill ± tp1_distance × (0.85|1.00)
 ```
 
 | 文件 | 职责 |
 |------|------|
-| `trend_tier_params.py` | ADX 0/1/2 档参数表（ETH/XAU 完整 knobs） |
-| `smart_reentry.py` | 再入条件、窗口、双保险价、最多 1 次、+1 档放宽 |
-| `smart_reentry_mixin.py` | plan/commit、限价 worker、钉钉 |
+| `trend_tier_params.py` | ADX 0/1/2 档参数表；arm 公式；固定 hard buffer |
+| `smart_reentry.py` | 再入条件、窗口、双保险价、最多 1 次、arm 0.85→1.00、trail +1 |
+| `smart_reentry_mixin.py` | plan/commit、限价 worker、钉钉、持久化 `radar_tp1_distance` |
 | `breathing_stop.py` | 硬止损 buffer；雷达延迟启动 + 被动跟踪 |
 | `order_place_guard.py` | 本地挂单标签 |
 | `adverse_radar_guard.py` | 双轨 STOP 挂/改 |
@@ -53,11 +53,18 @@ TV webhook (:6010)
 
 | 档 | ADX | 硬止损 buffer |
 |----|-----|---------------|
-| 0 弱 | &lt;20 | 1.1 |
-| 1 中 | 20–30 | 1.2 |
-| 2 强 | &gt;30 | 1.3 |
+| 0 弱 | &lt;20 | **1.15（统一）** |
+| 1 中 | 20–30 | **1.15（统一）** |
+| 2 强 | &gt;30 | **1.15（统一）** |
 
-雷达启动：路径 **TP1×0.85**（入场→TP1 路程的 85%，非字面 `TP1*0.85`）。  
+可选：webhook 传 `tier`（0/1/2）；否则 ADX；再否则 `tv_stop_distance/atr` 启发式。
+
+雷达启动（距离，非绝对价）：
+```
+tp1_distance = |TV.tp1 − TV.price|
+首次：fill ± tp1_distance × 0.85
+重入：fill ± tp1_distance × 1.00
+```
 激活瞬间：止损上移至 **开仓价 ± 0.5×ATR**。
 
 | 参数 | ETH 弱/中/强 | XAU 弱/中/强 |
@@ -70,7 +77,7 @@ TV webhook (:6010)
 | 重入窗口 | 2 根×90m ≈ 3h | 3 根×45m ≈ 2.25h |
 | 重入区 | 开仓价→开仓+0.5×ATR | 开仓价→开仓+0.3×ATR |
 
-重入成功：雷达系数取 **ADX档+1**（封顶强档）；不影响 TP 价格与数量。
+重入成功：雷达 trail 取 **ADX档+1**（封顶强档）；arm 固定 **1.00**；不影响 TP 价格与数量。
 
 ---
 
@@ -78,40 +85,23 @@ TV webhook (:6010)
 
 ```
 tv_stop_distance = |TV.price − TV.stop_loss|
-actual = tv_stop_distance × buffer(ADX档)
-hang = fill ± actual
-缺 SL / ≤0 / 距 < 5 ticks → 拒开仓
-至 flat：禁止收紧/撤销/替换
+actual_stop_distance = tv_stop_distance × 1.15
+多：硬止损 = fill − actual；空：fill + actual
 ```
 
----
-
-## 5. 本地标签与挂单硬帽
-
-同旧：`PendingOrderRegistry` + `OPEN_ORDERS_HARD_CAP=5` + 查单失败 fail-closed。  
-宁可错过，不要做错。
+算例：TV 1900 / SL 1874 → dist 26 × 1.15 = 29.90；fill 1900.80 → **1870.90**。
 
 ---
 
-## 6. 钉钉事件（须含品种标签 + 档位）
+## 5. 验收探针
 
-| 事件 | 含义 |
-|------|------|
-| 开仓 | 品种/方向/价/量/档位/硬止损/TP123 |
-| 雷达激活 | 激活价、档位、初始止损上移位置 |
-| 止损移动 | 新止损、浮盈、档位 |
-| TP 成交 | TP1/2/3、成交价、剩余比例 |
-| 平仓 | 来源（TP/雷达/硬/反转）、价、盈亏、档位 |
-| `SMART_REENTRY_ARM` | 重入尝试：原因、价、档位、窗口剩余 |
-| `SMART_REENTRY_PROTECTED` | 重入成交后硬+TP+雷达核查 |
-| `REENTRY_ABORT` / `REENTRY_SKIP` | 放弃（窗口/价格不优/已重入/硬止损等） |
-
----
-
-## 7. 部署探针
-
-```bash
-docker compose exec -T -e PYTHONPATH=/app backend python /app/data/_vps_verify_smart_reentry.py
+```
+MAX_REENTRY == 1
+RADAR_ARM_TP1_PCT == 0.85
+RADAR_ARM_TP1_PCT_REENTRY == 1.00
+HARD_STOP_BUFFER_FIXED == 1.15
+compute_temp_tv_stop(1900.80, LONG, 1874, tv_entry=1900) == 1870.90
+radar_arm_trigger_price(fill=1900.80, tp1=1925.65, tv_entry=1900, 0.85) == 1922.60
 ```
 
-验收：`MAX_REENTRY==1`、arm=`0.85`、ADX 档 buffer 1.1/1.2/1.3、三方 commit 同数字。
+三方 commit 同数字；`E2E_FORCE_NOTIONAL_USD=0`。
