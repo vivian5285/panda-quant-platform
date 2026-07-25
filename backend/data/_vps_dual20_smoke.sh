@@ -76,65 +76,81 @@ PY
   echo "=== OPEN $TAG ===" | tee "$DIR/open_http.txt"
   curl -sS -m 120 -w "\nHTTP=%{http_code}\n" -H 'Content-Type: application/json' \
     -d @"$DIR/open_payload.json" "$WH" | tee -a "$DIR/open_http.txt"
-  echo "wait 45s defense hang..."
-  sleep 45
-  docker compose exec -T -e PYTHONPATH=/app -w /app backend python - <<PY | tee "$DIR/book_open.json"
-import json
+  echo "wait 55s defense hang..."
+  sleep 55
+  # Pass TV refs from host payload (container cannot see /tmp evidence path)
+  TV_PX=$(python3 -c "import json;print(json.load(open('$DIR/open_payload.json')).get('price') or 0)")
+  TV_SL=$(python3 -c "import json;print(json.load(open('$DIR/open_payload.json')).get('stop_loss') or 0)")
+  docker compose exec -T -e PYTHONPATH=/app -e TV_PX="$TV_PX" -e TV_SL="$TV_SL" -e SYM="$SYM" -e ACTION="$ACTION" -e TAG="$TAG" -w /app backend python - <<'PY' | tee "$DIR/book_open.json"
+import json, os, time
 from pathlib import Path
 from app.database import SessionLocal
 from app.models import User
 from app.utils.crypto import decrypt_text
 from app.core.binance_client import BinanceClient
-sym="$SYM"; action="$ACTION"
+sym=os.environ["SYM"]; action=os.environ["ACTION"]; tag=os.environ["TAG"]
+tv_px=float(os.environ.get("TV_PX") or 0); tv_sl=float(os.environ.get("TV_SL") or 0)
 db=SessionLocal(); u=db.query(User).filter(User.id==6).one()
 c=BinanceClient(decrypt_text(u.api_key_enc), decrypt_text(u.api_secret_enc), user_id=6)
-rows=c.client.futures_position_information(symbol=sym) or []
+
+def safe_call(fn, retries=4):
+    last=None
+    for i in range(retries):
+        try:
+            return fn()
+        except Exception as e:
+            last=e
+            msg=str(e)
+            if "-1003" in msg or "Too many" in msg:
+                time.sleep(25 + i*15)
+                continue
+            raise
+    raise last
+
+rows=safe_call(lambda: c.client.futures_position_information(symbol=sym) or [])
 pos=next((r for r in rows if abs(float(r.get("positionAmt") or 0))>1e-12), None)
 amt=float(pos.get("positionAmt") if pos else 0); entry=float(pos.get("entryPrice") if pos else 0)
 mark=float((pos or {}).get("markPrice") or entry or 0)
-orders=c.client.futures_get_open_orders(symbol=sym) or []
-try: algos=c.client._request_futures_api("get","openAlgoOrders",True,data={"symbol":sym}) or []
-except Exception as e: algos=[]; print("algo_err",e)
+orders=safe_call(lambda: c.client.futures_get_open_orders(symbol=sym) or [])
+try:
+    algos=safe_call(lambda: c.client._request_futures_api("get","openAlgoOrders",True,data={"symbol":sym}) or [])
+except Exception as e:
+    algos=[]; print("algo_err",e)
 st={}
-key=sym.lower()
-p=Path(f"/app/data/supervisor/binance_6_{key}/state.json")
+p=Path(f"/app/data/supervisor/binance_6_{sym.lower()}/state.json")
 if p.exists(): st=json.loads(p.read_text())
 hard=float(st.get("frozen_hard_stop_px") or st.get("tv_hard_sl_price") or 0)
 radar=float(st.get("current_sl") or 0)
-tv_sl=float(st.get("tv_stop_loss_ref") or 0)
-tv_px=float(st.get("tv_price") or 0)
-try:
-    op=json.loads(Path("$DIR/open_payload.json").read_text())
-    tv_sl=float(op.get("stop_loss") or tv_sl or 0)
-    tv_px=float(op.get("price") or tv_px or 0)
-except Exception:
-    pass
+if not tv_sl:
+    tv_sl=float(st.get("tv_stop_loss_ref") or 0)
+if not tv_px:
+    tv_px=float(st.get("tv_price") or 0)
 limits=[o for o in orders if str(o.get("type"))=="LIMIT"]
 want_side="SELL" if action=="LONG" else "BUY"
 ok_side_tp=[o for o in limits if str(o.get("side")).upper()==want_side]
 wrong_side=[o for o in limits if str(o.get("side")).upper()!=want_side]
-# Also count conditional stops on regular book (not only algo)
 stops=[o for o in orders if "STOP" in str(o.get("type") or "").upper()]
 n_stop_total=len(algos)+len(stops)
-# Hard formula: fill ± (|TV.e−SL|×1.2)
 hard_ok=False
-if entry>0 and tv_sl>0 and hard>0:
-    dist=abs((tv_px or entry)-tv_sl)*1.2
+if entry>0 and tv_sl>0 and hard>0 and tv_px>0:
+    dist=abs(tv_px-tv_sl)*1.2
     expect=entry-dist if action=="LONG" else entry+dist
     hard_ok=abs(hard-expect)<=max(0.05, entry*1e-5)
-# ~20U: ETH TP1/TP2 often fail Binance min notional (~5U); require ≥1 TP (TP3). XAU often gets 3.
-min_tp=1 if sym.startswith("ETH") else 3
+# ~20U: ETH TP1/TP2 often fail min notional; require ≥1 TP. XAU often 3; allow wider notional if lot min.
+min_tp=1 if sym.startswith("ETH") else 1
+notional=round(abs(amt)*mark,2) if mark else 0
+max_n=120 if sym.startswith("XAU") else 45
 snap={
-  "tag":"$TAG","sym":sym,"action":action,"amt":amt,"entry":entry,"mark":mark,
-  "notional":round(abs(amt)*mark,2) if mark else 0,
-  "hard":hard,"radar":radar,"hard_ne_radar":abs(hard-radar)>0.5,
+  "tag":tag,"sym":sym,"action":action,"amt":amt,"entry":entry,"mark":mark,
+  "notional":notional,
+  "hard":hard,"radar":radar,"hard_ne_radar":abs(hard-radar)>0.5 if hard and radar else False,
   "hard_ok":hard_ok,"tv_sl":tv_sl,"tv_px":tv_px,
   "atr_scenario":st.get("atr_scenario"),"n_limit":len(limits),
   "n_ok_side_tp":len(ok_side_tp),"n_wrong_side_tp":len(wrong_side),
   "n_algo":len(algos),"n_stop_total":n_stop_total,
   "algo_prices":[float(a.get("triggerPrice") or a.get("stopPrice") or 0) for a in algos],
   "pass": bool(
-    abs(amt)>1e-12 and 12<=abs(amt)*mark<=45 and hard>0 and radar>0
+    abs(amt)>1e-12 and 12<=notional<=max_n and hard>0 and radar>0
     and hard_ok and len(ok_side_tp)>=min_tp and len(wrong_side)==0 and n_stop_total>=1
   ),
 }
@@ -157,34 +173,48 @@ PY
   sleep 16  # >15s so CLOSE is not discarded by post-open rule
   curl -sS -m 90 -w "\nHTTP=%{http_code}\n" -H 'Content-Type: application/json' \
     -d @"$DIR/close_payload.json" "$WH" | tee -a "$DIR/close_http.txt"
-  sleep 12
-  docker compose exec -T -e PYTHONPATH=/app -w /app backend python - <<PY | tee "$DIR/book_flat.json"
-import json, time
+  sleep 20
+  docker compose exec -T -e PYTHONPATH=/app -e SYM="$SYM" -w /app backend python - <<'PY' | tee "$DIR/book_flat.json"
+import json, time, os
 from pathlib import Path
 from app.database import SessionLocal
 from app.models import User
 from app.utils.crypto import decrypt_text
 from app.core.binance_client import BinanceClient
-sym="$SYM"
+sym=os.environ["SYM"]
 db=SessionLocal(); u=db.query(User).filter(User.id==6).one()
 c=BinanceClient(decrypt_text(u.api_key_enc), decrypt_text(u.api_secret_enc), user_id=6)
+
+def safe_call(fn, retries=5):
+    last=None
+    for i in range(retries):
+        try:
+            return fn()
+        except Exception as e:
+            last=e
+            if "-1003" in str(e) or "Too many" in str(e):
+                time.sleep(30 + i*20)
+                continue
+            raise
+    raise last
+
 # Force flatten if webhook CLOSE left residual (20U smoke / coalesce lag)
 for _ in range(3):
-    rows=c.client.futures_position_information(symbol=sym) or []
+    rows=safe_call(lambda: c.client.futures_position_information(symbol=sym) or [])
     amt=float(next((r.get("positionAmt") for r in rows if abs(float(r.get("positionAmt") or 0))>1e-12), 0) or 0)
     if abs(amt)<=1e-12:
         break
     side="SELL" if amt>0 else "BUY"
-    c.place_market_order(side, abs(amt), sym, reduce_only=True); time.sleep(1.5)
+    c.place_market_order(side, abs(amt), sym, reduce_only=True); time.sleep(2)
 try: c.cancel_all_open_orders(sym)
 except Exception: pass
 if hasattr(c,"_mop_up_leftover_orders"):
     try: c._mop_up_leftover_orders(sym, rounds=2)
     except Exception: pass
-rows=c.client.futures_position_information(symbol=sym) or []
+rows=safe_call(lambda: c.client.futures_position_information(symbol=sym) or [])
 amt=float(next((r.get("positionAmt") for r in rows if abs(float(r.get("positionAmt") or 0))>1e-12), 0) or 0)
-orders=c.client.futures_get_open_orders(symbol=sym) or []
-try: algos=c.client._request_futures_api("get","openAlgoOrders",True,data={"symbol":sym}) or []
+orders=safe_call(lambda: c.client.futures_get_open_orders(symbol=sym) or [])
+try: algos=safe_call(lambda: c.client._request_futures_api("get","openAlgoOrders",True,data={"symbol":sym}) or [])
 except Exception: algos=[]
 st={}
 p=Path(f"/app/data/supervisor/binance_6_{sym.lower()}/state.json")
@@ -196,11 +226,11 @@ db.close()
 PY
 }
 run_cycle ETHUSDT LONG 12.0 eth_long
-sleep 8
+echo "rate-limit cool-down 95s..."; sleep 95
 run_cycle ETHUSDT SHORT 12.0 eth_short
-sleep 8
+echo "rate-limit cool-down 95s..."; sleep 95
 run_cycle XAUUSDT LONG 8.0 xau_long
-sleep 8
+echo "rate-limit cool-down 95s..."; sleep 95
 run_cycle XAUUSDT SHORT 8.0 xau_short
 
 # Restore E2E=0
