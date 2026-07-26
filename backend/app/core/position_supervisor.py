@@ -1181,12 +1181,15 @@ class PositionSupervisor(
             return -1
         return int(n)
 
-    def _count_raw_exchange_orders(self) -> int:
+    def _count_raw_exchange_orders(self, *, force_refresh: bool = False) -> int:
         """ALL working/conditional orders on this symbol. Flat-before-open requires 0.
 
         Returns -1 on fetch failure (fail-closed: treat as dirty).
         During IP cool-down, rest_book_cache may serve a stale >5 snapshot — that must
         NOT trip open_orders_gt_5 forever. Return -1 so hard-cap skips fresh pause.
+
+        force_refresh=True: invalidate cache (pre-open / mop only).
+        Default False: honor ORDER_TTL — WS hard-cap must NOT burn weight-40 every tick.
         """
         symbol = getattr(self, "symbol", None)
         client = getattr(self, "client", None)
@@ -1208,7 +1211,7 @@ class PositionSupervisor(
             pass
         rows: list = []
         try:
-            if hasattr(client, "_invalidate_book_cache"):
+            if force_refresh and hasattr(client, "_invalidate_book_cache"):
                 try:
                     client._invalidate_book_cache("pre_open_raw_count")
                 except Exception:
@@ -1219,12 +1222,13 @@ class PositionSupervisor(
             if not isinstance(got, (list, tuple)):
                 return -1
             rows.extend(got)
-            # Binance: get_open_orders already merges algo; still mop-count if available
-            if hasattr(client, "_mop_up_leftover_orders") and not rows:
-                # cheap re-list only — do not cancel here
-                pass
-            if hasattr(client, "get_open_algo_orders") and getattr(self, "exchange_id", "") == "binance":
-                # Extra pass when get_open_orders might omit algo under lag
+            # Binance get_open_orders already merges algo. Extra algo list only on
+            # force_refresh (pre-open) to mop lag — never on WS hard-cap ticks.
+            if (
+                force_refresh
+                and hasattr(client, "get_open_algo_orders")
+                and getattr(self, "exchange_id", "") == "binance"
+            ):
                 try:
                     algo = client.get_open_algo_orders(symbol=symbol) or []
                     if isinstance(algo, (list, tuple)):
@@ -1243,7 +1247,6 @@ class PositionSupervisor(
                             if oid is not None:
                                 seen.add(oid)
                 except Exception:
-                    # Algo list failure with empty regular → unknown
                     if not rows:
                         return -1
             return len(rows)
@@ -1266,7 +1269,7 @@ class PositionSupervisor(
             "ok": False,
         }
         detail["orders_before"] = self._count_open_book_orders()
-        detail["raw_before"] = self._count_raw_exchange_orders()
+        detail["raw_before"] = self._count_raw_exchange_orders(force_refresh=True)
         for round_i in range(3):
             detail["rounds"] = round_i + 1
             if hasattr(self, "_purge_defense_orders_on_flat"):
@@ -1285,7 +1288,7 @@ class PositionSupervisor(
             if hasattr(self, "radar_latched"):
                 self.radar_latched = False
             time.sleep(0.35 + round_i * 0.15)
-            raw = self._count_raw_exchange_orders()
+            raw = self._count_raw_exchange_orders(force_refresh=True)
             filtered = self._count_open_book_orders()
             leftover_meta = (
                 int(cancel_meta.get("leftover"))
@@ -1784,7 +1787,7 @@ class PositionSupervisor(
             else None
         )
         raw_left = (
-            self._count_raw_exchange_orders()
+            self._count_raw_exchange_orders(force_refresh=True)
             if hasattr(self, "_count_raw_exchange_orders")
             else -1
         )
@@ -1795,7 +1798,7 @@ class PositionSupervisor(
                 except Exception:
                     leftover = -1
                 time.sleep(0.3)
-                raw_left = self._count_raw_exchange_orders()
+                raw_left = self._count_raw_exchange_orders(force_refresh=True)
             if raw_left != 0 or (leftover is not None and leftover != 0):
                 self._log(
                     "ERROR",
@@ -4018,9 +4021,31 @@ class PositionSupervisor(
         """
         Lightweight WS-driven radar: sync TP fills + arm/trail on remaining qty.
         Skips CAP/heavy heal — sentinel still does those on slower cadence.
+
+        Under IP cool-down: trail on watched_qty only — never REST position/orders
+        (that was the ETH+XAU × 0.45s → -1003 storm).
         """
         if curr_px <= 0 or not self.monitoring:
             return
+        cooling = self._position_query_ban_remaining_sec() > 0
+        if cooling:
+            live_qty = float(getattr(self, "watched_qty", 0) or 0)
+            if live_qty <= 0:
+                return
+            entry = float(getattr(self, "watched_entry", 0) or 0)
+            if self.current_side == "LONG":
+                self.best_price = max(float(self.best_price or entry or 0), curr_px)
+            elif self.current_side == "SHORT":
+                bp = float(self.best_price or entry or 0)
+                self.best_price = min(bp, curr_px) if bp > 0 else curr_px
+            # Breath trail may amend stops; skip hard-cap REST while cooling.
+            if hasattr(self, "_process_radar_trailing"):
+                try:
+                    self._process_radar_trailing(live_qty, curr_px)
+                except Exception as exc:
+                    logger.debug("[User %s] cool WS trail: %s", self.user_id, exc)
+            return
+
         pos = self._get_active_position()
         if not pos or float(pos.get("size") or 0) <= 0:
             return
@@ -4118,6 +4143,28 @@ class PositionSupervisor(
             err,
         )
         if already:
+            return
+        # -1003 / IP cool-down is expected under dual-symbol load — log only.
+        # Critical DingTalk/TG "查不到仓位" storms made the outage worse (user noise)
+        # without helping recovery (sentinel already backs off 60s).
+        is_rate = False
+        if isinstance(err, ExchangeTransientError):
+            code = getattr(err, "code", None)
+            if code in (-1003, "-1003", 1003, "1003") or getattr(err, "is_ip_ban", False):
+                is_rate = True
+        err_s = str(err)
+        if (
+            "cool-down" in err_s.lower()
+            or "Too many requests" in err_s
+            or "banned until" in err_s.lower()
+        ):
+            is_rate = True
+        if is_rate:
+            logger.warning(
+                "[User %s] RATE_LIMIT_COOL — skip EXCHANGE_QUERY_FAIL alert | %s",
+                self.user_id,
+                err_s[:200],
+            )
             return
         if hasattr(self, "_alert"):
             self._alert(

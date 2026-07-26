@@ -3,10 +3,12 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+from app.core.ip_rest_cooldown import reset_for_tests
 from app.core.position_supervisor import PositionSupervisor
 
 
 def _sup():
+    reset_for_tests()
     client = MagicMock()
     client.get_open_orders.return_value = []
     client.cancel_all_open_orders.return_value = {"leftover": 0, "errors": []}

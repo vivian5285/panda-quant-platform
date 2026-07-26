@@ -22,15 +22,21 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-POS_TTL_SEC = 3.0
-ORDER_TTL_SEC = 5.0
-ALGO_TTL_SEC = 5.0
+# Dual ETH+XAU supervisors share one IP budget (~2400/min). Longer TTL +
+# single-flight prevents markPrice WS (~0.45s) from weight-storming openOrders(~40).
+POS_TTL_SEC = 5.0
+ORDER_TTL_SEC = 10.0
+ALGO_TTL_SEC = 10.0
 
 _lock = threading.RLock()
 # key = f"{exchange}:{user_id}"
 _pos: dict[str, dict[str, Any]] = {}
 _orders: dict[str, dict[str, Any]] = {}
 _algo: dict[str, dict[str, Any]] = {}
+# In-flight fetch barriers — ETH+XAU must not double-hit the same all-account REST.
+_pos_flight: dict[str, threading.Event] = {}
+_orders_flight: dict[str, threading.Event] = {}
+_algo_flight: dict[str, threading.Event] = {}
 
 
 def _key(exchange: str, user_id: int | str) -> str:
@@ -60,6 +66,27 @@ def reset_for_tests() -> None:
         _pos.clear()
         _orders.clear()
         _algo.clear()
+        _pos_flight.clear()
+        _orders_flight.clear()
+        _algo_flight.clear()
+
+
+def _begin_flight(store: dict[str, threading.Event], k: str) -> tuple[bool, threading.Event]:
+    """Return (is_leader, event). Followers wait on event then re-read cache."""
+    with _lock:
+        ev = store.get(k)
+        if ev is not None:
+            return False, ev
+        ev = threading.Event()
+        store[k] = ev
+        return True, ev
+
+
+def _end_flight(store: dict[str, threading.Event], k: str, ev: threading.Event) -> None:
+    with _lock:
+        if store.get(k) is ev:
+            store.pop(k, None)
+    ev.set()
 
 
 def _cool_left(exchange: str, user_id: int | str) -> float:
@@ -115,11 +142,31 @@ def get_cached_position(
         if hit and (now - float(hit.get("fetched_at") or 0)) < ttl:
             return (hit.get("by_symbol") or {}).get(symbol)
 
+    leader, ev = _begin_flight(_pos_flight, k)
+    if not leader:
+        ev.wait(timeout=8.0)
+        with _lock:
+            hit = _pos.get(k)
+            if hit is not None:
+                return (hit.get("by_symbol") or {}).get(symbol)
+        raise_if_cooling(exchange=exchange, user_id=user_id, op="get_position")
+
     try:
         from app.core.rest_symbol_pace import wait_turn
 
-        wait_turn(exchange=exchange, user_id=user_id, symbol=symbol)
+        # Shared all-account endpoint — pace by user, not per-symbol.
+        wait_turn(exchange=exchange, user_id=user_id, symbol="_all_positions")
         rows = list(fetch_all() or [])
+        by_sym: dict[str, dict] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            sym = str(row.get("symbol") or "")
+            if sym:
+                by_sym[sym] = row
+        with _lock:
+            _pos[k] = {"fetched_at": time.time(), "by_symbol": by_sym}
+        return by_sym.get(symbol)
     except Exception as e:
         _note_limit_from_exc(exchange, user_id, e)
         # Prefer stale over raise when we still have a snapshot
@@ -132,17 +179,8 @@ def get_cached_position(
                 )
                 return (hit.get("by_symbol") or {}).get(symbol)
         raise
-
-    by_sym: dict[str, dict] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        sym = str(row.get("symbol") or "")
-        if sym:
-            by_sym[sym] = row
-    with _lock:
-        _pos[k] = {"fetched_at": now, "by_symbol": by_sym}
-    return by_sym.get(symbol)
+    finally:
+        _end_flight(_pos_flight, k, ev)
 
 
 def get_cached_open_orders(
@@ -163,7 +201,8 @@ def get_cached_open_orders(
             hit = _orders.get(k)
             if hit is not None:
                 return list((hit.get("by_symbol") or {}).get(symbol) or [])
-        raise_if_cooling(exchange=exchange, user_id=user_id, op="get_open_orders")
+        # No snapshot yet under cool-down: empty book (callers treat -1/unknown separately)
+        return []
 
     now = time.time()
     with _lock:
@@ -171,11 +210,31 @@ def get_cached_open_orders(
         if hit and (now - float(hit.get("fetched_at") or 0)) < ttl:
             return list((hit.get("by_symbol") or {}).get(symbol) or [])
 
+    leader, ev = _begin_flight(_orders_flight, k)
+    if not leader:
+        ev.wait(timeout=8.0)
+        with _lock:
+            hit = _orders.get(k)
+            if hit is not None:
+                return list((hit.get("by_symbol") or {}).get(symbol) or [])
+        return []
+
     try:
         from app.core.rest_symbol_pace import wait_turn
 
-        wait_turn(exchange=exchange, user_id=user_id, symbol=symbol)
+        wait_turn(exchange=exchange, user_id=user_id, symbol="_all_orders")
         rows = list(fetch_all() or [])
+        by_sym: dict[str, list[dict]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            sym = str(row.get("symbol") or "")
+            if not sym:
+                continue
+            by_sym.setdefault(sym, []).append(row)
+        with _lock:
+            _orders[k] = {"fetched_at": time.time(), "by_symbol": by_sym}
+        return list(by_sym.get(symbol) or [])
     except Exception as e:
         _note_limit_from_exc(exchange, user_id, e)
         with _lock:
@@ -187,18 +246,8 @@ def get_cached_open_orders(
                 )
                 return list((hit.get("by_symbol") or {}).get(symbol) or [])
         raise
-
-    by_sym: dict[str, list[dict]] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        sym = str(row.get("symbol") or "")
-        if not sym:
-            continue
-        by_sym.setdefault(sym, []).append(row)
-    with _lock:
-        _orders[k] = {"fetched_at": now, "by_symbol": by_sym}
-    return list(by_sym.get(symbol) or [])
+    finally:
+        _end_flight(_orders_flight, k, ev)
 
 
 def get_cached_algo_orders(
@@ -211,8 +260,6 @@ def get_cached_algo_orders(
     ttl: float = ALGO_TTL_SEC,
 ) -> list[dict]:
     """Refresh algo books for all configured symbols in one cache window."""
-    from app.core.ip_rest_cooldown import raise_if_cooling
-
     k = _key(exchange, user_id)
     left = _cool_left(exchange, user_id)
     if left > 0:
@@ -220,7 +267,7 @@ def get_cached_algo_orders(
             hit = _algo.get(k)
             if hit is not None:
                 return list((hit.get("by_symbol") or {}).get(symbol) or [])
-        raise_if_cooling(exchange=exchange, user_id=user_id, op="get_algo_orders")
+        return []
 
     now = time.time()
     with _lock:
@@ -228,8 +275,20 @@ def get_cached_algo_orders(
         if hit and (now - float(hit.get("fetched_at") or 0)) < ttl:
             return list((hit.get("by_symbol") or {}).get(symbol) or [])
 
+    leader, ev = _begin_flight(_algo_flight, k)
+    if not leader:
+        ev.wait(timeout=8.0)
+        with _lock:
+            hit = _algo.get(k)
+            if hit is not None:
+                return list((hit.get("by_symbol") or {}).get(symbol) or [])
+        return []
+
     try:
         by_sym = dict(fetch_for_symbols(list(symbols)) or {})
+        with _lock:
+            _algo[k] = {"fetched_at": time.time(), "by_symbol": by_sym}
+        return list(by_sym.get(symbol) or [])
     except Exception as e:
         _note_limit_from_exc(exchange, user_id, e)
         with _lock:
@@ -241,7 +300,5 @@ def get_cached_algo_orders(
                 )
                 return list((hit.get("by_symbol") or {}).get(symbol) or [])
         raise
-
-    with _lock:
-        _algo[k] = {"fetched_at": now, "by_symbol": by_sym}
-    return list(by_sym.get(symbol) or [])
+    finally:
+        _end_flight(_algo_flight, k, ev)

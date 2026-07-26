@@ -662,14 +662,25 @@ class AdverseRadarMixin:
 
         Already-paused hard-cap stays latched (block defense) but must not re-alert.
         Unreadable / cool-down stale counts (n < 0) never trip a fresh pause.
+        Throttled to SENTINEL_ORDER_AUDIT_SEC so WS ticks do not weight-storm.
         """
         self._init_adverse_radar_fields()
         reason = f"open_orders_gt_{OPEN_ORDERS_HARD_CAP}"
         if bool(self.trading_paused) and str(self.trading_pause_reason or "") == reason:
             return True
+        # Throttle REST hard-cap — WS path calls orchestrate ~0.45s
+        gap = 15.0  # align SENTINEL_ORDER_AUDIT_SEC; avoid circular import
+        now = time.time()
+        last = float(getattr(self, "_hard_cap_checked_at", 0) or 0)
+        if last and (now - last) < gap:
+            return False
+        self._hard_cap_checked_at = now
         if not hasattr(self, "_count_raw_exchange_orders"):
             return False
         try:
+            n = int(self._count_raw_exchange_orders(force_refresh=False))
+        except TypeError:
+            # Older monkeypatches without force_refresh kw
             n = int(self._count_raw_exchange_orders())
         except Exception:
             return False
@@ -1429,7 +1440,8 @@ class AdverseRadarMixin:
                 if o and isinstance(o, dict) and _is_stop_market_like(o):
                     _add(o)
 
-        if hasattr(client, "get_open_algo_orders"):
+        if hasattr(client, "get_open_algo_orders") and getattr(self, "exchange_id", "") != "binance":
+            # Binance get_open_orders already merges algo — skip duplicate list.
             try:
                 for o in client.get_open_algo_orders(symbol=symbol) or []:
                     if isinstance(o, dict) and _is_stop_market_like(o):

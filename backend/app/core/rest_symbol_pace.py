@@ -2,6 +2,9 @@
 
 Single-symbol REST gap must be ≥100ms. Also respects shared IP cool-down
 after -1003 (see ``ip_rest_cooldown``).
+
+Shared all-account endpoints (``_all_orders`` / ``_all_positions``) use a
+longer gap so dual ETH+XAU supervisors cannot double-hit weight-40 openOrders.
 """
 
 from __future__ import annotations
@@ -11,6 +14,8 @@ import time
 from typing import Any
 
 MIN_GAP_SEC = 0.100  # whitepaper §8.3
+# Shared all-account endpoints (openOrders ~weight 40) need stronger pacing.
+SHARED_ACCOUNT_GAP_SEC = 1.0
 
 _lock = threading.RLock()
 # key -> last_request_monotonic
@@ -36,14 +41,20 @@ def wait_turn(
     exchange: str | None = "binance",
     user_id: int | str | None = None,
     symbol: str | None = None,
-    min_gap_sec: float = MIN_GAP_SEC,
+    min_gap_sec: float | None = None,
 ) -> float:
     """Sleep so consecutive REST for this symbol stay ≥min_gap apart.
 
     IP cool-down (-1003) is handled by ``ip_rest_cooldown`` — callers check that
     separately. Returns seconds slept (0 if no wait).
     """
-    gap = max(0.0, float(min_gap_sec if min_gap_sec is not None else MIN_GAP_SEC))
+    sym = str(symbol or "")
+    if min_gap_sec is not None:
+        gap = max(0.0, float(min_gap_sec))
+    elif sym.startswith("_all_"):
+        gap = SHARED_ACCOUNT_GAP_SEC
+    else:
+        gap = MIN_GAP_SEC
     k = _key(exchange=exchange, user_id=user_id, symbol=symbol)
     slept = 0.0
     with _lock:

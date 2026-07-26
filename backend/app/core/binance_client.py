@@ -808,8 +808,19 @@ class BinanceClient:
         """Cancel any remaining regular/algo orders one-by-one; return final leftover count.
 
         Returns -1 when the book cannot be listed (FAIL CLOSED — never claim clean).
+        Under IP cool-down: do not hammer REST — return -1 (fail-closed).
         """
         symbol = self._sym(symbol)
+        try:
+            from app.core.ip_rest_cooldown import remaining_sec
+
+            if float(remaining_sec(exchange="binance", user_id=self.user_id) or 0) > 0:
+                logger.warning(
+                    "[User %s] mop-up skipped under IP cool-down", self.user_id
+                )
+                return -1
+        except Exception:
+            pass
         last = 0
         list_failed = False
         for _ in range(max(1, int(rounds))):
