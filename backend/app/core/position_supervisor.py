@@ -248,7 +248,14 @@ class PositionSupervisor(
         try:
             from app.core.pipeline_officers import CommunicationsOfficer
 
-            if not CommunicationsOfficer.allow_notify(self, alert_type, severity):
+            stash = {
+                "severity": severity,
+                "alert_type": alert_type,
+                "title": title,
+                "message": message,
+                "detail": dict(detail or {}),
+            }
+            if not CommunicationsOfficer.allow_notify(self, alert_type, severity, stash=stash):
                 logger.info(
                     "[User %s] notify held by CommunicationsOfficer type=%s sev=%s",
                     self.user_id,
@@ -2744,6 +2751,12 @@ class PositionSupervisor(
             title = f"止盈TP{level}成交（VPS监控）{note}"
             msg = f"{self.current_side} {old_qty}→{new_qty} @ {curr_px or '—'} | 已成交档 {detail['consumed_tp_levels']}"
         self._alert("info", "TP_FILLED", title, msg, detail)
+        try:
+            from app.core.pipeline_officers import ChiefAuditor
+
+            ChiefAuditor.recheck_live(self, reason="tp_fill")
+        except Exception:
+            pass
 
     def _reconcile_radar_context(self, recovery: dict | None) -> dict:
         """重启：开仓日志 + 最新 TV + DB 交易 三方核实雷达参数。"""
@@ -4629,12 +4642,11 @@ class PositionSupervisor(
 
             led = ledger_for(self)
             led.advance(TradePhase.FLAT, reason=trigger, force=True)
-            # 空仓后自动清 pause（督察/账本一致）— 仅当 pause 原因为审计类
+            # 空仓后自动清 pause（督察/账本一致）— 审计/硬帽/脏盘/ATR/方向类
             reason = str(getattr(self, "trading_pause_reason", "") or "")
-            if bool(getattr(self, "trading_paused", False)) and reason in (
-                "chief_auditor_fail",
-                "open_orders_gt_5",
-            ):
+            from app.core.pipeline_officers import should_auto_unpause_on_flat
+
+            if bool(getattr(self, "trading_paused", False)) and should_auto_unpause_on_flat(reason):
                 self.trading_paused = False
                 self.trading_pause_reason = ""
                 led.note_event("AUTO_UNPAUSE_ON_FLAT", {"was": reason})
@@ -5095,7 +5107,9 @@ class PositionSupervisor(
                 paused = bool(getattr(self, "trading_paused", False))
                 try:
                     from app.core.rest_throttle_valve import sentinel_may_rest
+                    from app.core.pipeline_officers import check_phase_stall
 
+                    check_phase_stall(self)
                     may, why = sentinel_may_rest(
                         exchange=getattr(self, "exchange_id", None),
                         user_id=getattr(self, "user_id", None),

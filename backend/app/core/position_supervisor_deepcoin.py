@@ -359,7 +359,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         try:
             from app.core.pipeline_officers import CommunicationsOfficer
 
-            if not CommunicationsOfficer.allow_notify(self, alert_type, severity):
+            stash = {
+                "severity": severity,
+                "alert_type": alert_type,
+                "title": title,
+                "message": message,
+                "detail": dict(detail or {}),
+            }
+            if not CommunicationsOfficer.allow_notify(self, alert_type, severity, stash=stash):
                 logger.info(
                     "notify held by CommunicationsOfficer type=%s sev=%s",
                     alert_type,
@@ -3054,10 +3061,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             led = ledger_for(self)
             led.advance(TradePhase.FLAT, reason=str(reason or "manual_flat")[:80], force=True)
             pause_reason = str(getattr(self, "trading_pause_reason", "") or "")
-            if bool(getattr(self, "trading_paused", False)) and pause_reason in (
-                "chief_auditor_fail",
-                "open_orders_gt_5",
-            ):
+            from app.core.pipeline_officers import should_auto_unpause_on_flat
+
+            if bool(getattr(self, "trading_paused", False)) and should_auto_unpause_on_flat(pause_reason):
                 self.trading_paused = False
                 self.trading_pause_reason = ""
                 led.note_event("AUTO_UNPAUSE_ON_FLAT", {"was": pause_reason})
@@ -3819,6 +3825,28 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             )
             if armed:
                 verify_note += f" | {sl_label}已核实 @{shield.get('stop_price', 0):.2f}"
+            # 督察官结案后再发 OPEN（通讯官门禁）；避免 DeepCoin 抢跑钉钉
+            try:
+                from app.core.pipeline_officers import ExecutionOfficer, run_post_open_pipeline
+
+                ExecutionOfficer.mark_entry_confirmed(
+                    self,
+                    qty=float(getattr(self, "watched_qty", 0) or qty or 0),
+                    entry=float(getattr(self, "watched_entry", 0) or entry_price or 0),
+                    side=str(getattr(self, "current_side", "") or ""),
+                )
+                slices = []
+                if hasattr(self, "_compute_tp_slices"):
+                    try:
+                        slices = self._compute_tp_slices(
+                            float(getattr(self, "initial_qty", 0) or getattr(self, "watched_qty", 0) or 0),
+                            exclude_levels={3},
+                        )
+                    except Exception:
+                        slices = []
+                run_post_open_pipeline(self, slices)
+            except Exception as e:
+                logger.warning("DeepCoin post-open pipeline: %s", e)
             self._record_open_log(
                 self.current_side, live_qty, entry, source="open",
             )
@@ -3866,27 +3894,6 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             return out
 
         self._save_state()
-        try:
-            from app.core.pipeline_officers import ExecutionOfficer, run_post_open_pipeline
-
-            ExecutionOfficer.mark_entry_confirmed(
-                self,
-                qty=float(getattr(self, "watched_qty", 0) or qty or 0),
-                entry=float(getattr(self, "watched_entry", 0) or entry_price or 0),
-                side=str(getattr(self, "current_side", "") or ""),
-            )
-            slices = []
-            if hasattr(self, "_compute_tp_slices"):
-                try:
-                    slices = self._compute_tp_slices(
-                        float(getattr(self, "initial_qty", 0) or getattr(self, "watched_qty", 0) or 0),
-                        exclude_levels={3},
-                    )
-                except Exception:
-                    slices = []
-            run_post_open_pipeline(self, slices)
-        except Exception as e:
-            logger.warning("DeepCoin post-open pipeline: %s", e)
         threading.Thread(target=self._sentinel_loop, daemon=True).start()
         out = {
             "ok": True,
@@ -4072,7 +4079,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 paused = bool(getattr(self, "trading_paused", False))
                 try:
                     from app.core.rest_throttle_valve import sentinel_may_rest
+                    from app.core.pipeline_officers import check_phase_stall
 
+                    check_phase_stall(self)
                     may, why = sentinel_may_rest(
                         exchange=getattr(self, "exchange_id", None) or "deepcoin",
                         user_id=getattr(self, "user_id", None),

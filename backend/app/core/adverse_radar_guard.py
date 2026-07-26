@@ -4574,9 +4574,18 @@ class AdverseRadarMixin:
         resize_qty = float(live_qty or 0)
         if resize_qty <= 0 and hasattr(self, "_resolve_adverse_live_qty"):
             resize_qty = float(self._resolve_adverse_live_qty(0) or 0)
+        # Prefer ledger/watched qty over formula shadow (pipeline: radar follows ledger)
+        if resize_qty <= 0:
+            resize_qty = float(getattr(self, "watched_qty", 0) or 0)
         if resize_qty <= 0:
             init_q = float(getattr(self, "initial_qty", 0) or 0)
             resize_qty = init_q * float(self.remaining_qty_pct or 0)
+            if resize_qty > 0:
+                logger.warning(
+                    "[User %s] radar resize using formula shadow qty=%.6f (book unread)",
+                    getattr(self, "user_id", "?"),
+                    resize_qty,
+                )
 
         stop_px = float(getattr(self, "current_sl", 0) or 0)
         if resize_qty > 0 and stop_px > 0:

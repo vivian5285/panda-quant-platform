@@ -10,7 +10,7 @@
 
 | 日期 | 标签 | 一句话 | 状态 |
 |------|------|--------|------|
-| 2026-07-27 | `pipeline-ledger-v1` | 统一 TradeLedger+岗位流水线+督察+REST阀门（全交易所） | 已修 · §9 |
+| 2026-07-27 | `pipeline-ledger-v1` | 统一 TradeLedger+岗位流水线+督察+REST阀门；补相位卡住/持仓再督察/硬止损公式/FLAT清pause | 已修 · §9 |
 | 2026-07-26 | `open_orders_gt_5` + `-1003` + TG 风暴 | 雷达 thrash + stale book + 暂停重复告警 → 硬帽熔断刷屏 | 已修 · 对照下方 §1 |
 | 2026-07-26 | `initial_qty` 压扁 | 监控中把开仓基线压成余仓 → TP 对账错乱 | 已修 · §2 |
 | 2026-07-26 | IP REST 冷却 / `_GLOBAL` | `-1003` 后哨兵/巡检继续打 REST；ETH/XAU 未同停 | 已修 · §3 |
@@ -318,19 +318,25 @@
 | 模块 | 行为 |
 |------|------|
 | `trade_ledger.py` | 用户-交易所-品种账本；状态机 SIGNAL→…→VERIFIED→REPORTED / FLAT / FAILED |
-| `pipeline_officers.py` | 信号/准入/稽查/执行(TP≈30%自检)/督察/通讯门禁 |
-| `rest_throttle_valve.py` | 账户维 REST 预算 + cool；`sentinel_may_rest` |
-| Binance/OKX/Gate + DeepCoin | 开仓链路挂账；挂单后 `run_post_open_pipeline`；flat 自动清审计类 pause |
+| `pipeline_officers.py` | 信号/准入/稽查/执行(TP≈30%自检)/督察(硬止损1.15公式+持仓再查)/通讯门禁+held flush |
+| `check_phase_stall` | 阶段超阈 → `PIPELINE_STALL` critical |
+| `should_auto_unpause_on_flat` | 空仓清审计/硬帽/脏盘/ATR应急/方向/先平后开 pause |
+| `rest_throttle_valve.py` | 账户维 REST 预算 + cool；`sentinel_may_rest`；空闲巡检同闸 |
+| Binance/OKX/Gate + DeepCoin | 开仓链路挂账；**DeepCoin 先督察再 OPEN**；TP fill 再督察 |
 | `rest_book_cache.py` | 刷新前 `acquire_rest_permit`，拒绝则 stale |
 | `dispatcher.py` | `AdmissionOfficer.admit` |
+| 雷达缩量 | 优先 watched/实盘，公式影子最后手段 |
 
 ### 复查点
 
 - [ ] 开仓后 `data/supervisor/ledgers/ledger_*.json` 相位到 VERIFIED/REPORTED  
 - [ ] TP1+TP2 自检失败 → 拒挂 + 督察 FAIL 暂停  
-- [ ] cool/pause 下哨兵无新 REST；账本优先  
-- [ ] OPEN/DEFENSE 钉钉在 VERIFIED 前被 CommunicationsOfficer 拦截（critical 放行）  
-- [ ] 本地 = GitHub = VPS 同 commit
+- [ ] cool/pause 下哨兵+空闲巡检无新 REST  
+- [ ] OPEN/DEFENSE 钉钉在 VERIFIED 前被拦截；DeepCoin 不抢跑  
+- [ ] 空仓后 `open_book_dirty`/ATR pause 自动清  
+- [ ] 相位卡住发出 `PIPELINE_STALL`  
+- [ ] 本地 = GitHub = VPS 同 commit  
+- [ ] `pytest tests/test_pipeline_workflow.py` 全绿
 
 ---
 

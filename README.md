@@ -18,6 +18,58 @@
 **两次 TV 只有三条路**：①TP1/TP2 止盈（+雷达兑现剩余）②雷达 BE/微赚扫出→更优价再入（≤1 次）③硬止损认输不重入。  
 验收必须以：交易所空仓零挂单 + 本地/GitHub/VPS **三方 commit 同数字** + 日志/订单 JSON / 钉钉为准。
 
+### 生产流水线验收清单（pipeline-ledger-v1 · 防今日复现）
+
+> 对照桌面《全域生产级工作流架构方案》+ `docs/SYSTEM_ISSUE_FIX_LOG.md` §9。  
+> 模块：`trade_ledger.py` · `pipeline_officers.py` · `rest_throttle_valve.py`（Binance/OKX/Gate + DeepCoin 同编制）。
+
+#### A. 今日事故 → 闸门（必须全绿）
+
+| 今日问题 | 闸门 | 代码锚点 |
+|----------|------|----------|
+| TP1+TP2 吞整仓 | 执行官 `self_check_tp_slices` ≈30% 拒挂；督察再验 | `_compute_tp_slices` / `ExecutionOfficer` |
+| 假 TP3 drift | `PLACEABLE_TP_LEVELS={1,2}`；consumed 不含 3 | `tp_regime_targets` / consumed 同步 |
+| `initial_qty` 压扁 | `_set_open_qty_baseline` 监控中只升不降；持仓督察查压缩 | `adverse_radar_guard` / `ChiefAuditor.recheck_live` |
+| 限流后仍 REST | `sentinel_may_rest` + `acquire_rest_permit` + cool **180s** `_GLOBAL` | `rest_throttle_valve` / `ip_rest_cooldown` / book cache |
+| 空仓后仍暂停 | FLAT 自动清：`chief_auditor_fail` / `open_orders_gt_5` / `open_book_dirty` / ATR应急 / 方向 / 先平后开失败 | `should_auto_unpause_on_flat` |
+| 雷达余仓量不对 | 缩量优先 `watched_qty`/实盘，公式影子最后手段 | `_boost_radar_after_tp_fill` |
+| OPEN 抢跑钉钉 | 通讯官门禁；DeepCoin **先督察再 OPEN**；held 可 flush | `CommunicationsOfficer` |
+
+#### B. 岗位交接（状态机）
+
+```
+SIGNAL_RECEIVED → PENDING_CLEAR → CLEARED → ENTRY_SUBMITTED
+  → ENTRY_CONFIRMED → ORDERS_PLACED → VERIFIED → REPORTED → (hold) → FLAT
+失败 → FAILED（暂停新开）  卡住超阈 → PIPELINE_STALL critical
+```
+
+| 检查项 | 期望 |
+|--------|------|
+| 账本键 | `用户-交易所-品种` → `data/supervisor/ledgers/ledger_*.json` |
+| 禁止跳步 | `TradeLedger.advance` 无 `force` 时不可越级 |
+| 阶段卡住 | `PHASE_STALL_SEC`；哨兵 `check_phase_stall` → `PIPELINE_STALL` |
+| 开仓后督察 | `run_post_open_pipeline` → VERIFIED 才 REPORTED |
+| 持仓再督察 | TP 成交后 `ChiefAuditor.recheck_live`（硬止损公式 / 基线压缩 / 双TP后≈70%余仓） |
+| 硬止损复查 | `fill±(|TV.e−SL|×1.15)` 容差内 **或** 已 hung |
+| 准入官 | dispatcher：`api_status=active` 且有密钥，否则不进流水线 |
+
+#### C. 上线前自检口令
+
+1. `git rev-parse --short HEAD` 本地 = GitHub `main` = VPS **同数字**  
+2. `pytest backend/tests/test_pipeline_workflow.py` 全绿  
+3. 币安/OKX/Gate/DeepCoin：空仓 + 挂单 0；无 `trading_paused` 残留  
+4. 当面最小资金 LONG：硬1 + 雷达1 + TP 仅 1/2；账本相位到 `REPORTED`；钉钉 OPEN 在督察后  
+5. 人为 cool / pause：哨兵与空闲巡检 **无新 REST**  
+6. TP 自检故意算错：拒挂 + `CHIEF_AUDITOR_FAIL` 暂停  
+
+#### D. 已知残余风险（勿当已灭）
+
+| 项 | 说明 |
+|----|------|
+| 全路径 REST 阀门 | book cache / 哨兵 / 空闲巡检已收口；个别对账仍可直打 REST（限流时依赖 cool） |
+| 通讯官 | 仅闸 `OPEN/DEFENSE/ENTRY/PIPELINE_REPORT`；`TP_FILLED`/`TRAIL` 仍可发（靠既有去重） |
+| 雷达 | 实盘 qty 优先；书不可读时仍可能短暂公式影子（已打 warning） |
+
 ### 生产代码锚点
 
 | 项 | 值 |
@@ -182,11 +234,13 @@ rules:
   - local PendingOrderRegistry tag → refuse place even if book empty (anti 50× LIMIT)
   - OPEN_ORDERS_HARD_CAP=5 → critical + pause symbol opens
   - DAILY_LOSS_CIRCUIT_ENABLED=False in prod (false trips blocked real TV)
-  - REST: price/fills via WS; position reconcile ~30s; symbol REST gap ≥100ms; on -1003: ip_rest_cooldown 90s
-  - on Binance -1003: ip_rest_cooldown shared 90s; no cancel_all when book unreadable
+  - REST: price/fills via WS; position reconcile ~30s; symbol REST gap ≥100ms; on -1003: ip_rest_cooldown **180s** + `_GLOBAL`
+  - on Binance -1003: ip_rest_cooldown shared **180s**; no cancel_all when book unreadable
   - sizing = equity * margin_pct * leverage / price; default 0.20×5; admin per-user override; ignore TV qty
   - admin_sizing: /admin → user detail → margin% + leverage (next open)
   - pipeline: Signal→Admission→Auditor→Execution(TP≈30% self-check)→ChiefAuditor→Comms; ledger under data/supervisor/ledgers/
+  - pipeline_stall: PHASE_STALL_SEC → critical PIPELINE_STALL; mid-trade ChiefAuditor.recheck_live on TP fill
+  - flat_auto_unpause: chief_auditor_fail / open_orders_gt_5 / open_book_dirty / ATR应急 / 方向 / 先平后开失败
   - REST valve: rest_throttle_valve; sentinel_may_rest blocks pause/cool; book cache prefers stale
   - E2E_FORCE_NOTIONAL_USD=0 in production; wait real TV
   - three-way commit: local = GitHub = VPS
@@ -217,7 +271,7 @@ modules:
 | WS vs REST | 价格监控 / 订单成交 → **WebSocket**；下单改撤 + 持仓对账 → REST |
 | 持仓对账 | REST 约 **每 30s**（`SENTINEL_POLL_NORMAL=30`）；近 TP / 雷达期可略密，仍以 WS tick 为主 |
 | 单品种间隔 | `rest_symbol_pace`：同品种连续 REST **≥100ms** |
-| 共享冷静 | `ip_rest_cooldown`：ETH+XAU 共用 IP 级冷却，默认 **90s**；有 `banned until` 则用交易所时间戳 |
+| 共享冷静 | `ip_rest_cooldown`：ETH+XAU 共用 IP 级冷却，默认 **180s** + `_GLOBAL`；有 `banned until` 则用交易所时间戳 |
 | 触发 | REST 返回 `-1003` / 限流文案 → `note_rate_limit`；哨兵/补挂读 `remaining_sec` 跳过，禁止硬撞 |
 | 盘口不可读 | **禁止** `cancel_all`、禁止盲补 TP/Stop（防误撤 STOP + 加剧限流） |
 | 钉钉 | 限流抖动去重，避免刷屏 |

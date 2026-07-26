@@ -1237,6 +1237,18 @@ class StartupReconcileMixin:
         # Rate-limit cool-down / trading pause: idle patrol must not keep hitting REST
         if bool(getattr(self, "trading_paused", False)):
             return
+        try:
+            from app.core.rest_throttle_valve import sentinel_may_rest
+
+            may, _why = sentinel_may_rest(
+                exchange=getattr(self, "exchange_id", None),
+                user_id=getattr(self, "user_id", None),
+                trading_paused=False,
+            )
+            if not may:
+                return
+        except Exception:
+            pass
         ban_left = 0.0
         if hasattr(self, "_position_query_ban_remaining_sec"):
             try:
