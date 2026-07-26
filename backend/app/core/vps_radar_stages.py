@@ -32,7 +32,8 @@ TP_LIMIT_TIMEOUT_SEC = 300.0
 
 _LEGACY_PURGE_MSG = (
     "LEGACY_PURGED: continuous-ladder SL (0.5/0.3 ATR / 1.5ATR floor) removed. "
-    "LIVE path = breathing_stop.apply_breathing_tick (fill±tp1_distance×0.85|1.00)."
+    "LIVE path = breathing_stop.apply_breathing_tick "
+    "(arm=(TP1+TP2)/2 first | TP2 reentry)."
 )
 
 

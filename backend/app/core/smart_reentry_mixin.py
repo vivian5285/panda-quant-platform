@@ -223,6 +223,7 @@ class SmartReentryMixin:
         cmax = float(getattr(self, "active_coef_max", 0) or 0)
         b12 = float(getattr(self, "active_breath_tp1_tp2_atr", 0) or 0)
         b23 = float(getattr(self, "active_breath_tp2_tp3_atr", 0) or 0)
+        attempt = int(getattr(self, "reentry_attempt", 0) or 0)
         kw: dict[str, Any] = {
             "arm_tp1_pct": arm,
             "step_trigger_atr": st if st > 0 else None,
@@ -233,6 +234,8 @@ class SmartReentryMixin:
             "breath_tp1_tp2_atr": b12 if b12 > 0 else None,
             "breath_tp2_tp3_atr": b23 if b23 > 0 else None,
             "radar_activated": bool(getattr(self, "radar_activated", False)),
+            "is_reentry": attempt >= 1,
+            "reentry_attempt": attempt,
         }
         tv_e = float(getattr(self, "radar_tv_entry", 0) or getattr(self, "tv_price", 0) or 0)
         if tv_e > 0:

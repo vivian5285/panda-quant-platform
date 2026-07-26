@@ -44,26 +44,29 @@ def test_xau_radar_waits_then_activates():
     initial_stop = compute_initial_stop(entry, "LONG", atr, symbol="XAUUSDT")
     assert abs(initial_stop - (entry - 1.5 * atr)) < 1e-9
     tp1 = entry + 1.35 * atr
-    # Whitepaper v3: fill ± |TV.tp1−TV.price| × 0.85 (pass tv_entry)
+    tp2 = entry + 2.70 * atr
+    mid = (tp1 + tp2) / 2.0
+    # §6.1 first open: arm at (TP1+TP2)/2 — not fill±tp1_dist×0.85
     stop, high, phase, meta = calculate_stop_long(
         entry + 2, entry, atr, initial_stop, initial_stop, entry, False, coef,
         symbol="XAUUSDT", smooth_ratio=1.0,
-        arm_tp1_pct=0.85, tp1_price=tp1, tv_entry=entry, radar_activated=False,
+        tp1_price=tp1, tp2_price=tp2, tv_entry=entry, radar_activated=False,
+        is_reentry=False,
         step_trigger_atr=0.40, early_breakeven_atr=0.5, step_advance_atr=0.30,
         breath_tp1_tp2_atr=1.0,
     )
     assert meta["event"] == "waiting_arm"
     assert abs(stop - initial_stop) < 1e-9
-    # At arm path 85% → activate to entry+0.5ATR
-    arm_px = entry + 0.85 * (tp1 - entry)
     stop, high, phase, meta = calculate_stop_long(
-        arm_px, entry, atr, initial_stop, initial_stop, entry, False, coef,
+        mid, entry, atr, initial_stop, initial_stop, entry, False, coef,
         symbol="XAUUSDT", smooth_ratio=1.0,
-        arm_tp1_pct=0.85, tp1_price=tp1, tv_entry=entry, radar_activated=False,
+        tp1_price=tp1, tp2_price=tp2, tv_entry=entry, radar_activated=False,
+        is_reentry=False,
         step_trigger_atr=0.40, early_breakeven_atr=0.5, step_advance_atr=0.30,
         breath_tp1_tp2_atr=1.0,
     )
     assert meta.get("just_activated") or meta["event"] == "radar_activate"
+    assert meta.get("radar_arm_mode") == "tp1_tp2_mid"
     assert stop >= entry + 0.5 * atr - 1e-9
 
 

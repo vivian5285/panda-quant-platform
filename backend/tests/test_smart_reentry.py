@@ -274,8 +274,9 @@ def test_profile_mid_tier_defaults():
 def test_radar_waits_until_tp1_path_then_activates():
     entry, atr = 2000.0, 20.0
     tp1 = entry + 1.35 * atr  # 2027
+    tp2 = entry + 2.0 * (tp1 - entry)
     initial_stop = entry - 1.5 * atr
-    # Below arm → waiting
+    # Below midpoint → waiting
     tick = apply_breathing_tick(
         side="LONG",
         price=entry + 5,
@@ -286,9 +287,10 @@ def test_radar_waits_until_tp1_path_then_activates():
         best_price=entry + 5,
         breakeven_phase=False,
         symbol="ETHUSDT",
-        arm_tp1_pct=0.85,
         tp1_price=tp1,
+        tp2_price=tp2,
         tv_entry=entry,
+        is_reentry=False,
         radar_activated=False,
         breath_tp1_tp2_atr=1.2,
         step_trigger_atr=0.50,
@@ -300,20 +302,21 @@ def test_radar_waits_until_tp1_path_then_activates():
     assert tick["meta"]["event"] == "waiting_arm"
     assert abs(tick["current_sl"] - initial_stop) < 1e-9
 
-    arm_px = entry + 0.85 * (tp1 - entry)
+    mid = (tp1 + tp2) / 2.0
     tick2 = apply_breathing_tick(
         side="LONG",
-        price=arm_px,
+        price=mid,
         entry_price=entry,
         initial_atr=atr,
         initial_stop=initial_stop,
         current_stop=initial_stop,
-        best_price=arm_px,
+        best_price=mid,
         breakeven_phase=False,
         symbol="ETHUSDT",
-        arm_tp1_pct=0.85,
         tp1_price=tp1,
+        tp2_price=tp2,
         tv_entry=entry,
+        is_reentry=False,
         radar_activated=False,
         breath_tp1_tp2_atr=1.2,
         step_trigger_atr=0.50,
@@ -327,24 +330,25 @@ def test_radar_waits_until_tp1_path_then_activates():
 
 
 def test_reentry_arm_ratio_100_later_than_first():
-    """Reentry fill must reach full tp1_distance before radar arms."""
-    fill, tv_e, tp1 = 1895.0, 1900.0, 1925.65
-    dist = abs(tp1 - tv_e)
-    first_arm = fill + dist * 0.85
-    re_arm = fill + dist * 1.00
-    assert re_arm > first_arm
+    """§6.1: reentry arms at TP2 — past midpoint still waiting_arm."""
+    fill, tv_e, tp1, tp2 = 1895.0, 1900.0, 1925.65, 1955.00
+    mid = (tp1 + tp2) / 2.0
+    assert mid < tp2
     tick_early = apply_breathing_tick(
-        side="LONG", price=first_arm, entry_price=fill, initial_atr=20,
-        initial_stop=fill - 30, current_stop=fill - 30, best_price=first_arm,
+        side="LONG", price=mid + 1.0, entry_price=fill, initial_atr=20,
+        initial_stop=fill - 30, current_stop=fill - 30, best_price=mid + 1.0,
         breakeven_phase=False, symbol="ETHUSDT",
-        arm_tp1_pct=1.00, tp1_price=tp1, tv_entry=tv_e, radar_activated=False,
+        tp1_price=tp1, tp2_price=tp2, tv_entry=tv_e,
+        is_reentry=True, radar_activated=False,
     )
     assert tick_early["meta"]["event"] == "waiting_arm"
+    assert tick_early["meta"].get("radar_arm_mode") == "tp2"
     tick_full = apply_breathing_tick(
-        side="LONG", price=re_arm, entry_price=fill, initial_atr=20,
-        initial_stop=fill - 30, current_stop=fill - 30, best_price=re_arm,
+        side="LONG", price=tp2, entry_price=fill, initial_atr=20,
+        initial_stop=fill - 30, current_stop=fill - 30, best_price=tp2,
         breakeven_phase=False, symbol="ETHUSDT",
-        arm_tp1_pct=1.00, tp1_price=tp1, tv_entry=tv_e, radar_activated=False,
+        tp1_price=tp1, tp2_price=tp2, tv_entry=tv_e,
+        is_reentry=True, radar_activated=False,
     )
     assert tick_full["meta"].get("just_activated") or tick_full["event"] == "radar_activate"
 

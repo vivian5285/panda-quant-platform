@@ -1,12 +1,12 @@
-"""ADX trend-tier parameters — whitepaper v3.0 (2026-07-25).
+"""ADX trend-tier parameters — Gemini multi-user spec §6.1 (2026-07-26).
 
 Tier 0 weak (ADX < 20), tier 1 mid (20–30), tier 2 strong (ADX > 30).
 ETH 90m / XAU 45m.
 
-v3 corrections vs v2:
-  - hard-stop buffer FIXED 1.15 (no ADX tier split)
-  - radar arm = fill ± tp1_distance × ratio (first 0.85 / reentry 1.00)
-  - reentry still loosens trail params +1 ADX tier
+Radar arm (absolute TP prices, shared across users):
+  - first open: (TP1 + TP2) / 2
+  - reentry: TP2
+Hard-stop buffer FIXED 1.15; reentry still loosens trail params +1 ADX tier.
 """
 
 from __future__ import annotations
@@ -19,11 +19,14 @@ from app.core.symbol_registry import CANONICAL_ETH, CANONICAL_XAU, normalize_can
 ADX_WEAK = 20.0
 ADX_STRONG = 30.0
 DEFAULT_TREND_TIER = 1  # mid when ADX missing
-RADAR_ARM_TP1_PCT = 0.85  # first open
-RADAR_ARM_TP1_PCT_REENTRY = 1.00  # after reentry (v3)
+# Compat aliases — LIVE arm uses absolute TP midpoint / TP2 (§6.1), not these ratios.
+RADAR_ARM_TP1_PCT = 0.85  # legacy fill±tp1_dist fallback only
+RADAR_ARM_TP1_PCT_REENTRY = 1.00  # legacy / is_reentry hint when tp2 missing
 RADAR_ACTIVATE_BE_ATR = 0.5  # on arm: stop → entry ± 0.5×ATR
 MAX_REENTRY = 1
 HARD_STOP_BUFFER_FIXED = 1.15  # v3: unified, not tiered
+RADAR_ARM_MODE_FIRST = "tp1_tp2_mid"
+RADAR_ARM_MODE_REENTRY = "tp2"
 
 
 @dataclass(frozen=True)
@@ -219,8 +222,25 @@ def hard_buffer_for_tier(_tier: int | None = None, symbol: str | None = None) ->
 
 
 def arm_ratio_for_attempt(attempt: int = 0) -> float:
-    """First open 0.85; after reentry 1.00 (whitepaper v3 §4.1 / §5.4)."""
+    """Legacy ratio hint: first 0.85 / reentry 1.00. LIVE arm prefers absolute TP."""
     return float(RADAR_ARM_TP1_PCT_REENTRY if int(attempt or 0) >= 1 else RADAR_ARM_TP1_PCT)
+
+
+def is_reentry_attempt(attempt: int = 0, *, is_reentry: bool | None = None) -> bool:
+    if is_reentry is not None:
+        return bool(is_reentry)
+    return int(attempt or 0) >= 1
+
+
+def radar_arm_absolute_trigger(tp1: float, tp2: float, *, is_reentry: bool) -> float:
+    """§6.1: first=(TP1+TP2)/2, reentry=TP2. Returns 0 if TPs unusable."""
+    t1 = float(tp1 or 0)
+    t2 = float(tp2 or 0)
+    if t1 <= 0 or t2 <= 0:
+        return 0.0
+    if is_reentry:
+        return t2
+    return (t1 + t2) / 2.0
 
 
 def reentry_zone_atr(symbol: str | None = None) -> float:
@@ -246,20 +266,32 @@ def radar_arm_trigger_price(
     entry: float | None = None,
     fill_entry: float | None = None,
     tp1: float = 0.0,
+    tp2: float = 0.0,
     tv_entry: float | None = None,
     tp1_dist: float | None = None,
     atr: float = 0.0,
     symbol: str | None = None,
     arm_pct: float = RADAR_ARM_TP1_PCT,
+    is_reentry: bool | None = None,
+    attempt: int | None = None,
 ) -> float:
-    """v3: fill ± tp1_distance × activation_ratio.
+    """Gemini §6.1: absolute TP arm — first=(TP1+TP2)/2, reentry=TP2.
 
-    tp1_distance = |TV.tp1 − TV.price| (prefer explicit ``tp1_dist`` / ``tv_entry``).
-    Never compute ``TP1_absolute × 0.85``.
+    Fallback (tests / missing TP2): fill ± tp1_distance × arm_pct.
     """
     from app.core.breathing_profile import profile_for_symbol
 
     side_u = str(side or "").upper()
+    reentry = is_reentry_attempt(
+        int(attempt or 0),
+        is_reentry=is_reentry if is_reentry is not None else (
+            True if float(arm_pct or 0) >= 0.999 else None
+        ),
+    )
+    abs_trig = radar_arm_absolute_trigger(tp1, tp2, is_reentry=reentry)
+    if abs_trig > 0:
+        return abs_trig
+
     fill = float(fill_entry if fill_entry is not None else (entry or 0))
     pct = float(arm_pct) if arm_pct and arm_pct > 0 else RADAR_ARM_TP1_PCT
     if fill <= 0 or side_u not in ("LONG", "SHORT"):
@@ -272,7 +304,6 @@ def radar_arm_trigger_price(
         if tv_e > 0 and t1 > 0:
             dist = abs(t1 - tv_e)
         elif t1 > 0 and fill > 0:
-            # Last resort: treat tp1 vs fill (less accurate if fill slipped)
             dist = abs(t1 - fill)
         else:
             p = profile_for_symbol(symbol)
@@ -295,11 +326,14 @@ def radar_armed_by_price(
     entry: float | None = None,
     fill_entry: float | None = None,
     tp1: float = 0.0,
+    tp2: float = 0.0,
     tv_entry: float | None = None,
     tp1_dist: float | None = None,
     atr: float = 0.0,
     symbol: str | None = None,
     arm_pct: float = RADAR_ARM_TP1_PCT,
+    is_reentry: bool | None = None,
+    attempt: int | None = None,
 ) -> bool:
     px = float(price or 0)
     trig = radar_arm_trigger_price(
@@ -307,11 +341,14 @@ def radar_armed_by_price(
         entry=entry,
         fill_entry=fill_entry,
         tp1=tp1,
+        tp2=tp2,
         tv_entry=tv_entry,
         tp1_dist=tp1_dist,
         atr=atr,
         symbol=symbol,
         arm_pct=arm_pct,
+        is_reentry=is_reentry,
+        attempt=attempt,
     )
     if px <= 0 or trig <= 0:
         return False
