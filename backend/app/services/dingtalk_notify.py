@@ -45,7 +45,7 @@ def _post_dingtalk(title: str, body: str) -> bool:
         "msgtype": "markdown",
         "markdown": {
             "title": title[:128],
-            "text": f"### {title}\n\n{body}\n\n*双子星AI量化 · GEMINI AI · 管理员通知*",
+            "text": f"### {title}\n\n{body}\n\n*【双子星量化】管理员重要告警（钉钉通道）*",
         },
     }
     resp = requests.post(url, json=payload, timeout=6)
@@ -71,7 +71,7 @@ def _post_wecom(title: str, body: str) -> bool:
     payload = {
         "msgtype": "markdown",
         "markdown": {
-            "content": f"### {title}\n{body}\n\n> 双子星AI量化 · 钉钉备用通道",
+            "content": f"### {title}\n{body}\n\n> 【双子星量化】钉钉备用通道",
         },
     }
     resp = requests.post(webhook, json=payload, timeout=6)
@@ -188,7 +188,7 @@ class _DingTalkBatcher:
             lines = [f"**共 {len(items)} 条通知**（攒批防限流）\n"]
             for i, it in enumerate(items, 1):
                 lines.append(f"---\n**[{i}] {it.title}**\n\n{it.body}\n")
-            title = f"GEMINI 通知汇总 ({len(items)}条)"
+            title = f"【双子星量化】重要告警汇总 ({len(items)}条)"
             ok = _send_with_retry(title, "\n".join(lines))
         with self._lock:
             if ok:
@@ -196,12 +196,12 @@ class _DingTalkBatcher:
             else:
                 self._sent_fail += 1
             logger.info(
-                "[DingTalk] batch size=%s ok=%s pending=%s success_rate≈%s/%s",
+                "[DingTalk] channel=dingtalk result=%s batch=%s pending=%s ok/fail=%s/%s",
+                "ok" if ok else "fail",
                 len(items),
-                ok,
                 len(self._queue),
                 self._sent_ok,
-                self._sent_ok + self._sent_fail,
+                self._sent_fail,
             )
 
 
@@ -210,12 +210,22 @@ _batcher = _DingTalkBatcher()
 
 def push_dingtalk(title: str, body: str, *, immediate: bool = False) -> None:
     """
-    管理员钉钉推送。默认攒批（条数/秒数阈值），immediate=True 立即发送（带重试）。
+    管理员钉钉推送（重要告警）。默认攒批；immediate=True 立即发送（带重试）。
+    失败只记日志，不抛给交易主流程。
     """
-    if immediate:
-        _send_with_retry(title, body)
-        return
-    _batcher.enqueue(title, body)
+    try:
+        # Ensure brand prefix for distinction vs 币安单系统
+        branded = title if "双子星" in str(title) else f"【双子星量化】{title}"
+        if immediate:
+            ok = _send_with_retry(branded, body)
+            logger.info(
+                "[DingTalk] channel=dingtalk immediate result=%s title=%s",
+                "ok" if ok else "fail", branded[:80],
+            )
+            return
+        _batcher.enqueue(branded, body)
+    except Exception as e:
+        logger.error("[DingTalk] push_dingtalk failed (non-fatal): %s", e)
 
 
 def flush_dingtalk_batch() -> None:

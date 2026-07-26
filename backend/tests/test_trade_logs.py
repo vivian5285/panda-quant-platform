@@ -5,14 +5,16 @@ from app.services.trade_display_status import resolve_trade_display_status
 
 
 def test_dingtalk_only_key_actions():
-    assert should_push_trading_dingtalk("OPEN", "info") is True
-    assert should_push_trading_dingtalk("CLOSE", "info") is True
+    # DingTalk = critical only; routine ops → Telegram
+    assert should_push_trading_dingtalk("OPEN", "info") is False
+    assert should_push_trading_dingtalk("CLOSE", "info") is False
     assert should_push_trading_dingtalk("DEFENSE_HEAL_FAIL", "critical") is True
-    assert should_push_trading_dingtalk("TRAIL", "info") is True
-    assert should_push_trading_dingtalk("BREATH_STEP", "info") is True
-    assert should_push_trading_dingtalk("BREATH_PHASE2", "info") is True
-    assert should_push_trading_dingtalk("ADVERSE_SL", "warning") is True
-    assert should_push_trading_dingtalk("CLOSE_BREATH_STOP", "info") is True
+    assert should_push_trading_dingtalk("TRAIL", "info") is False
+    assert should_push_trading_dingtalk("BREATH_STEP", "info") is False
+    assert should_push_trading_dingtalk("BREATH_PHASE2", "info") is False
+    assert should_push_trading_dingtalk("ADVERSE_SL", "warning") is False
+    assert should_push_trading_dingtalk("CLOSE_BREATH_STOP", "info") is False
+    assert should_push_trading_dingtalk("CLOSE_SL_INITIAL", "info") is True
     assert should_push_trading_dingtalk("DEFENSE_HEAL", "warning") is False
     assert should_push_trading_dingtalk("DEFENSE_HEAL_OK", "info") is False
     assert should_push_trading_dingtalk("DEFENSE_AUDIT", "info") is False

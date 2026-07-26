@@ -1,4 +1,4 @@
-"""DingTalk trading alerts — per-exchange GEMINI themes + 管理员中文可读通知."""
+"""Trading alerts — Telegram (all) + DingTalk (critical only); brand 双子星量化."""
 
 from __future__ import annotations
 
@@ -13,50 +13,50 @@ settings = get_settings()
 # Leverage always FIXED_LEVERAGE — themes must not seed a second source
 _FIXED_LEV = int(FIXED_LEVERAGE)
 
-# GEMINI 量化：各交易所独立 UI 主题（leverage/tag 由 resolve_exchange_theme 注入 FIXED）
+# 双子星量化：各交易所独立 UI 主题（与 VPS 币安单系统钉钉区分）
 EXCHANGE_THEMES: dict[str, dict] = {
     "binance": {
         "label": "币安",
         "symbol": "ETHUSDT",
         "leverage": _FIXED_LEV,
-        "brand": "GEMINI量化 · 币安合约实盘引擎",
-        "tag": f"#币安{_FIXED_LEV}x",
+        "brand": "双子星量化 · 币安合约实盘引擎",
+        "tag": f"#双子星·币安{_FIXED_LEV}x",
         "accent": "🔷",
         "palette": "靛蓝",
-        "header": "━━ 🔷 GEMINI量化 · 币安 ━━",
+        "header": "━━ 🔷 双子星量化 · 币安 ━━",
         "qty_unit": "ETH",
     },
     "deepcoin": {
         "label": "深币",
         "symbol": "ETH-USDT-SWAP",
         "leverage": _FIXED_LEV,
-        "brand": "GEMINI量化 · 深币 SWAP 实盘引擎",
-        "tag": f"#深币{_FIXED_LEV}x",
+        "brand": "双子星量化 · 深币 SWAP 实盘引擎",
+        "tag": f"#双子星·深币{_FIXED_LEV}x",
         "accent": "🟢",
         "palette": "翡翠绿",
-        "header": "━━ 🟢 GEMINI量化 · 深币 ━━",
+        "header": "━━ 🟢 双子星量化 · 深币 ━━",
         "qty_unit": "张",
     },
     "okx": {
         "label": "OKX",
         "symbol": "ETH-USDT-SWAP",
         "leverage": _FIXED_LEV,
-        "brand": "GEMINI量化 · OKX 合约实盘引擎",
-        "tag": f"#OKX{_FIXED_LEV}x",
+        "brand": "双子星量化 · OKX 合约实盘引擎",
+        "tag": f"#双子星·OKX{_FIXED_LEV}x",
         "accent": "🟣",
         "palette": "紫罗兰",
-        "header": "━━ 🟣 GEMINI量化 · OKX ━━",
+        "header": "━━ 🟣 双子星量化 · OKX ━━",
         "qty_unit": "ETH",
     },
     "gate": {
         "label": "Gate.io",
         "symbol": "ETH_USDT",
         "leverage": _FIXED_LEV,
-        "brand": "GEMINI量化 · Gate 合约实盘引擎",
-        "tag": f"#Gate{_FIXED_LEV}x",
+        "brand": "双子星量化 · Gate 合约实盘引擎",
+        "tag": f"#双子星·Gate{_FIXED_LEV}x",
         "accent": "🟠",
         "palette": "琥珀橙",
-        "header": "━━ 🟠 GEMINI量化 · Gate.io ━━",
+        "header": "━━ 🟠 双子星量化 · Gate.io ━━",
         "qty_unit": "ETH",
     },
 }
@@ -147,86 +147,62 @@ ALERT_TYPE_TAGS = {
     "API_OFFLINE": "异常告警",
 }
 
-ADMIN_DINGTALK_KEY_TYPES = frozenset({
-    "OPEN",
-    "CLOSE",
-    "CLOSE_TP",
-    "CLOSE_TRAIL",
+# Level-2：钉钉 + TG（重要告警，控钉钉额度）
+DINGTALK_CRITICAL_TYPES = frozenset({
+    # 硬止损 / 保护缺失
     "CLOSE_SL_INITIAL",
-    "CLOSE_SL_BREAKEVEN",
-    "CLOSE_TP3",
-    "CLOSE_QUICK_EXIT",
-    "CLOSE_RSI_EXIT",
+    "HARD_SL_MISSING",
+    "CLOSE_PROTECT_EMPTY",
+    # 订单失败 / 重试耗尽
     "CLOSE_FAIL",
-    "CLOSE_DEFER",
-    "STARTUP",
     "STARTUP_FAIL",
     "DEFENSE_HEAL_FAIL",
+    "TP_RETRY_FAIL",
+    "SL_RETRY_FAIL",
+    "INSUFFICIENT_BALANCE",
+    "NOTIONAL_CAP",
+    "LOCK_TIMEOUT",
+    "FLIP_CLEAN_ABORT",
+    "REENTRY_PREFLIGHT_FAIL",
+    "REENTRY_DUP_BLOCK",
+    # 对账 / 持仓异常
     "FORCE_ALIGN",
     "TRADING_PAUSED",
     "POSITION_SIDE_FLIP",
     "TP_OVER_COMMIT",
-    "IDLE_WATCH",
     "MANUAL_FLAT_TP_PURGE",
     "TP_ORPHAN_PURGE",
     "ADJUST",
     "MANUAL_ADJUST",
-    "INSUFFICIENT_BALANCE",
-    "NOTIONAL_CAP",
-    "LOCK_TIMEOUT",
-    "SAME_DIR_TP_REFRESH",
-    "SAME_DIR_REOPEN",
-    "SENTINEL_ERROR",
-    "TP_RETRY_FAIL",
-    "SL_RETRY_FAIL",
+    "FALSE_FLAT",
+    "POSITION_RECONCILE",
+    "POSITION_QTY_CHANGE",
+    "ADVERSE_SL_MISALIGN",
+    "CLOSE_ANOMALY",
+    "FLAT_UNCONFIRMED",
+    "TP_SKIP_REHANG",
+    # API / 限流 / 查询失败
     "API_OFFLINE",
     "EXCHANGE_QUERY_FAIL",
-    "EXCHANGE_QUERY_OK",
-    "CAP_ALIGN",
+    "SENTINEL_ERROR",
+    # 叠仓对齐失败类
     "CAP_ALIGN_BLOCKED",
     "CAP_ALIGN_FAIL",
     "CAP_ALIGN_OVERTRIM",
-    "UPDATE_SL",
-    "UPDATE_TP",
-    "BREATH_STEP",
-    "BREATH_FLOOR",
-    "BREATH_PHASE2",
-    "BREATH_TRAIL",
-    "CLOSE_BREATH_STOP",
-    "ADVERSE_SL",
-    "ADVERSE_SL_HIT",
-    "ADVERSE_SL_MISALIGN",
-    "FALSE_FLAT",
-    "CLOSE_ATTRIBUTION",
-    "POSITION_RECONCILE",
-    "TP_FILLED",
-    "TP_FILL",
-    "TP_SKIP_REHANG",
-    "POSITION_QTY_CHANGE",
-    "FLIP_CLEAN",
-    "FLIP_CLEAN_ABORT",
-    "TRAIL",
+    # 系统启动 / 重启
+    "STARTUP",
+    "SYSTEM_RESTART",
+    "SYSTEM_INIT_FAIL",
+    "DEPLOY_READY",
+    # ATR 拒开 / 异常
     "ATR_ANOMALY",
     "ATR_INVALID",
-    "ATR_MISMATCH",
-    "ATR_FALLBACK",
-    "STALE_BAR_TIME",
-    "HARD_SL_MISSING",
-    "CLOSE_PROTECT_EMPTY",
-    # Fill / shield lifecycle (info-level must still reach DingTalk)
-    "TP1_FILL",
-    "TP2_FILL",
-    "TP3_FILL",
-    "ADVERSE_SL_DISARM",
-    "SIGNAL_RECV",
-    "COALESCE_WINDOW",
-    "CLOSE_ANOMALY",
-    "FLAT_UNCONFIRMED",
-    "RADAR_ARM",
-    "RADAR_ACTIVATE",
-    "RADAR_REVOKE",
 })
 
+# Compat alias — historical name now means "钉钉关键白名单"
+ADMIN_DINGTALK_KEY_TYPES = DINGTALK_CRITICAL_TYPES
+
+# 过噪事件：TG/钉钉均跳过（内部 heal 成功等）
 DINGTALK_VERBOSE_EXCLUDED = frozenset({
     "DEFENSE_HEAL",
     "DEFENSE_HEAL_OK",
@@ -237,6 +213,7 @@ DINGTALK_VERBOSE_EXCLUDED = frozenset({
     "SIGNAL",
     "ADVERSE_SL_REPAIR",
     "RECOVERY",
+    "EXCHANGE_QUERY_OK",
 })
 
 
@@ -277,10 +254,11 @@ def resolve_exchange_theme(
     base["symbol_label"] = label_for_symbol(can)
     tag_sym = "ETH" if can.startswith("ETH") else ("XAU" if "XAU" in can else can[:3])
     base["symbol_tag"] = f"[{tag_sym}]"
+    # 前缀「双子星」与 VPS 币安单系统钉钉区分
     if prefix == "OKX":
-        base["tag"] = f"#OKX{lev}x·{tag_sym}"
+        base["tag"] = f"#双子星·OKX{lev}x·{tag_sym}"
     else:
-        base["tag"] = f"#{prefix}{lev}x·{tag_sym}"
+        base["tag"] = f"#双子星·{prefix}{lev}x·{tag_sym}"
     return base
 
 
@@ -679,7 +657,8 @@ def format_trading_alert_body(
     )
     if detail_block:
         body += f"\n**核实明细**\n{detail_block}\n"
-    body += f"\n*{theme['brand']} · GEMINI VPS 实盘*"
+    brand = str(getattr(get_settings(), "NOTIFY_BRAND", "") or "双子星量化")
+    body += f"\n*{theme['brand']} · {brand} VPS 实盘*"
     return body
 
 
@@ -693,7 +672,11 @@ def push_trading_alert(
     message: str,
     detail: dict | None = None,
     exchange: str | None = None,
+    *,
+    to_telegram: bool | None = None,
+    to_dingtalk: bool | None = None,
 ) -> None:
+    """Route: TG=all ops (default), DingTalk=critical only (default)."""
     ex = exchange or (detail or {}).get("exchange") or (detail or {}).get("exchange_id")
     sym = (detail or {}).get("symbol") or (detail or {}).get("canonical_symbol")
     theme = resolve_exchange_theme(ex, sym, leverage=(detail or {}).get("leverage"))
@@ -712,12 +695,41 @@ def push_trading_alert(
     type_label = ALERT_TYPE_TAGS.get(alert_type, alert_type)
     sym_tag = theme.get("symbol_tag") or ""
     titled = title if (not sym_tag or str(title).startswith(sym_tag)) else f"{sym_tag} {title}"
-    push_dingtalk(f"{theme['tag']} [{type_label}] {titled}", body)
+    ding_title = f"{theme['tag']} [{type_label}] {titled}"
+
+    send_tg = should_push_trading_telegram(alert_type, severity) if to_telegram is None else bool(to_telegram)
+    send_ding = should_push_trading_dingtalk(alert_type, severity) if to_dingtalk is None else bool(to_dingtalk)
+
+    if send_tg:
+        try:
+            from app.services.telegram_notify import send_telegram
+
+            send_telegram(body, title=ding_title)
+        except Exception as e:
+            # Never block trading / DingTalk on TG failure
+            import logging
+            logging.getLogger(__name__).error("[Telegram] trading alert route failed: %s", e)
+
+    if send_ding:
+        try:
+            push_dingtalk(ding_title, body, immediate=(severity == "critical"))
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("[DingTalk] trading alert route failed: %s", e)
+
+
+def should_push_trading_telegram(alert_type: str, severity: str) -> bool:
+    """Level-1：TG 接收全部业务事件（排除过噪内部类型）。"""
+    del severity  # reserved
+    if alert_type in DINGTALK_VERBOSE_EXCLUDED:
+        return False
+    return True
 
 
 def should_push_trading_dingtalk(alert_type: str, severity: str) -> bool:
+    """Level-2：钉钉仅重要告警（+ severity=critical）。"""
     if alert_type in DINGTALK_VERBOSE_EXCLUDED:
         return False
-    if alert_type in ADMIN_DINGTALK_KEY_TYPES:
+    if alert_type in DINGTALK_CRITICAL_TYPES:
         return True
     return severity == "critical"

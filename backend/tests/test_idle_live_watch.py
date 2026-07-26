@@ -95,4 +95,4 @@ def test_idle_watch_reconciles_stale_book_flat():
 
 
 def test_idle_watch_dingtalk_push():
-    assert should_push_trading_dingtalk("IDLE_WATCH", "info") is True
+    assert should_push_trading_dingtalk("IDLE_WATCH", "info") is False  # TG only

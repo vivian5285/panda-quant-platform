@@ -48,14 +48,21 @@ def notify_admin(
         logger.debug("[UserEvent][%s] detail=%s", alert_type, detail)
 
     try:
-        from app.services.trading_alerts import push_trading_alert, should_push_trading_dingtalk
+        from app.services.trading_alerts import (
+            push_trading_alert,
+            should_push_trading_dingtalk,
+            should_push_trading_telegram,
+        )
         from app.database import SessionLocal
         from app.models import User
 
-        if not should_push_trading_dingtalk(alert_type, severity):
+        to_tg = should_push_trading_telegram(alert_type, severity)
+        to_ding = should_push_trading_dingtalk(alert_type, severity)
+        if not to_tg and not to_ding:
             return
         from app.services.dingtalk_alert_dedupe import allow_trading_dingtalk
 
+        # Dedupe applies to both channels (same event fingerprint)
         if not allow_trading_dingtalk(user_id, alert_type, title, message, detail):
             return
         db = SessionLocal()
@@ -76,9 +83,11 @@ def notify_admin(
             message,
             detail,
             exchange=exchange,
+            to_telegram=to_tg,
+            to_dingtalk=to_ding,
         )
     except Exception as e:
-        logger.warning("Trading DingTalk push skipped: %s", e)
+        logger.warning("Trading notify push skipped: %s", e)
 
 
 def notify_system(
@@ -110,6 +119,22 @@ def notify_system(
         else:
             logger.info(log_line)
 
+        # System alerts: always TG; DingTalk only for allow-listed / critical
+        try:
+            from app.services.telegram_notify import send_telegram
+
+            brand = "双子星量化"
+            try:
+                from app.config import get_settings
+                brand = str(getattr(get_settings(), "NOTIFY_BRAND", "") or brand)
+            except Exception:
+                pass
+            send_telegram(
+                f"**类型**: {alert_type}\n**说明**: {message}",
+                title=f"【{brand}】系统 · {title}",
+            )
+        except Exception as te:
+            logger.warning("System Telegram push skipped: %s", te)
         if _should_push_system_dingtalk(severity, alert_type):
             push_system_alert(alert_type, severity, title, message, detail)
     except Exception as e:

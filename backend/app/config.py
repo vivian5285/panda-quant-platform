@@ -200,6 +200,16 @@ class Settings(BaseSettings):
     # 钉钉重试耗尽后的备用渠道（企业微信群机器人 webhook，可选）
     WECOM_WEBHOOK: str = ""
 
+    # Telegram — 全量事件；钉钉仅关键告警（见 trading_alerts.DINGTALK_CRITICAL_TYPES）
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_CHAT_ID: str = ""
+    TELEGRAM_ENABLED: bool = True
+    TELEGRAM_RETRY_MAX: int = 3
+    TELEGRAM_RETRY_SEC: float = 3.0
+    TELEGRAM_PARSE_MODE: str = ""  # empty = plain text; optional HTML/Markdown
+    # 与 VPS 其他项目（币安单系统等）区分
+    NOTIFY_BRAND: str = "双子星量化"
+
     EMAIL_DEV_MODE: bool = True
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587

@@ -14,9 +14,9 @@ from app.services.trading_alerts import (
 def test_binance_theme_5x():
     theme = resolve_exchange_theme("binance")
     assert theme["leverage"] == 5
-    assert theme["tag"].startswith("#币安5x")
+    assert theme["tag"].startswith("#双子星·币安5x")
     assert "ETH" in theme["tag"]
-    assert "GEMINI量化" in theme["brand"]
+    assert "双子星量化" in theme["brand"]
     assert "黄金" not in theme["brand"]
 
 
@@ -32,11 +32,11 @@ def test_exchange_themes_distinct_palettes():
 
 def test_resolve_gateio_alias():
     tag = resolve_exchange_theme("gateio")["tag"]
-    assert tag.startswith("#Gate5x")
+    assert tag.startswith("#双子星·Gate5x")
     assert "ETH" in tag
 
 
-def test_alert_body_includes_gemini_header_and_exchange_accent():
+def test_alert_body_includes_brand_header_and_exchange_accent():
     theme = resolve_exchange_theme("okx")
     body = format_trading_alert_body(
         theme=theme,
@@ -48,19 +48,26 @@ def test_alert_body_includes_gemini_header_and_exchange_accent():
         uid="U001",
         display="test@example.com",
     )
-    assert "GEMINI量化 · OKX" in body
-    assert "#OKX5x" in body
+    assert "双子星量化 · OKX" in body
+    assert "#双子星·OKX5x" in body or "#双子星·OKX5x·ETH" in body
     assert "5×" in body
     assert "ETH-USDT-SWAP" in body
 
 
-def test_should_push_open_but_not_trail():
-    assert should_push_trading_dingtalk("OPEN", "info") is True
-    assert should_push_trading_dingtalk("TRAIL", "info") is True
+def test_dingtalk_critical_only_open_and_trail_go_tg_not_ding():
+    from app.services.trading_alerts import should_push_trading_telegram
+
+    assert should_push_trading_dingtalk("OPEN", "info") is False
+    assert should_push_trading_dingtalk("TRAIL", "info") is False
+    assert should_push_trading_telegram("OPEN", "info") is True
+    assert should_push_trading_telegram("TRAIL", "info") is True
+    assert should_push_trading_dingtalk("CLOSE_SL_INITIAL", "info") is True
+    assert should_push_trading_dingtalk("HARD_SL_MISSING", "warning") is True
 
 
-def test_should_push_cap_align_to_admin():
-    assert should_push_trading_dingtalk("CAP_ALIGN", "critical") is True
+def test_should_push_cap_align_fail_to_dingtalk():
+    assert should_push_trading_dingtalk("CAP_ALIGN", "info") is False
+    assert should_push_trading_dingtalk("CAP_ALIGN", "critical") is True  # severity gate
     assert should_push_trading_dingtalk("CAP_ALIGN_BLOCKED", "critical") is True
 
 
