@@ -2491,6 +2491,18 @@ class AdverseRadarMixin:
             "buffer_mult": float(dist_meta.get("buffer_mult") or 1.15),
             "frozen": True,
         }
+        # Persist inactive radar immediately after hard SL arm (shrink restart race window).
+        self.radar_activated = False
+        if hasattr(self, "_save_state"):
+            try:
+                self._save_state()
+            except Exception:
+                logger.warning(
+                    "%s [User %s] HARD_SL_ARM 后立即落盘失败（radar_activated=False）",
+                    self._symbol_tag(),
+                    getattr(self, "user_id", "?"),
+                    exc_info=True,
+                )
         if hasattr(self, "_log"):
             try:
                 self._log(
@@ -3196,10 +3208,11 @@ class AdverseRadarMixin:
         return stop
 
     def _refresh_breathing_state_on_recover(self, curr_px: float, entry: float) -> None:
-        """Restart: restore breathing SL from persisted state + one tick at mark.
+        """Restart: restore breathing SL from persisted phase — never assume armed.
 
-        Never retreats stop. initial_atr stays frozen; 1h ATR refreshes coefficient.
-        Never keeps a persisted/merged SL that is already hit at mark (false flat).
+        Phase A (radar_activated False/missing): keep initial radar stop; do not
+        lift to entry±0.5ATR. Phase B (explicit True): restore last SL + one tick.
+        Never keeps a stop that is already hit at mark (false flat).
         """
         if curr_px <= 0 or not entry:
             return
@@ -3219,6 +3232,18 @@ class AdverseRadarMixin:
             self.initial_atr = atr
         elif float(getattr(self, "initial_atr", 0) or 0) <= 0:
             self.initial_atr = atr
+
+        # Guide: missing/unclear activation → safest default = not activated.
+        persisted_activated = getattr(self, "radar_activated", None)
+        if persisted_activated is None:
+            logger.warning(
+                "%s [User %s] 重启恢复：radar_activated 缺失 → 默认未激活（维持硬/初始雷达止损）",
+                self._symbol_tag(),
+                getattr(self, "user_id", "?"),
+            )
+            was_activated = False
+        else:
+            was_activated = bool(persisted_activated)
 
         sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
         initial_stop = float(getattr(self, "initial_stop", 0) or 0)
@@ -3250,12 +3275,41 @@ class AdverseRadarMixin:
             )
         if current_sl <= 0:
             current_sl = float(initial_stop or 0)
-            self.current_sl = current_sl
 
         if side not in ("LONG", "SHORT") or initial_stop <= 0:
+            self.radar_activated = False
+            self.current_sl = float(current_sl or 0)
             return
 
+        # Phase A: not armed — do not run activation lift (entry±0.5ATR).
+        if not was_activated:
+            self.current_sl = float(initial_stop or current_sl or 0)
+            self.radar_activated = False
+            # Keep latch as persisted; do not force True.
+            self.remaining_qty_pct = self._remaining_qty_pct_from_consumed(
+                getattr(self, "consumed_tp_levels", None)
+            )
+            if not self._uses_dual_stop_track() and float(self.current_sl or 0) > 0:
+                # Single-track only: radar identity; dual-track hard stays frozen.
+                pass
+            logger.info(
+                "%s [User %s] 呼吸止损重启恢复: phase=1(未激活) best=%.2f SL=%.2f atr=%.4f frozen=%.2f",
+                self._symbol_tag(),
+                getattr(self, "user_id", "?"),
+                float(self.best_price),
+                float(self.current_sl or 0),
+                atr,
+                float(self._frozen_hard_px() or 0),
+            )
+            return
+
+        # Phase B: explicitly activated — restore last trail SL + one improve tick.
+        self.radar_activated = True
         coef = resolve_breathing_coef(getattr(self, "breathing_coefficient", None), sym)
+        tier_kw = {}
+        if hasattr(self, "_breathing_tier_kwargs"):
+            tier_kw = dict(self._breathing_tier_kwargs() or {})
+        tier_kw["radar_activated"] = True
         tick = apply_breathing_tick(
             side=side,
             price=float(curr_px),
@@ -3268,7 +3322,7 @@ class AdverseRadarMixin:
             breathing_coefficient=coef,
             symbol=sym,
             smooth_ratio=float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
-            **(self._breathing_tier_kwargs() if hasattr(self, "_breathing_tier_kwargs") else {}),
+            **tier_kw,
         )
         new_sl = float(tick.get("current_sl") or current_sl)
         new_sl = self._recover_stop_usable(
@@ -3277,12 +3331,7 @@ class AdverseRadarMixin:
         self.best_price = float(tick.get("best_price") or self.best_price)
         self.breakeven_phase = bool(tick.get("breakeven_phase"))
         self.breathing_coefficient = float(tick.get("breathing_coefficient") or coef)
-        meta = tick.get("meta") or {}
-        if tick.get("radar_armed") or meta.get("radar_armed") or meta.get("just_activated"):
-            self.radar_activated = True
         if new_sl > 0 or current_sl > 0:
-            # Only improve (never retreat) relative to persisted current_sl,
-            # but never adopt a candidate that is already hit at mark.
             if side == "LONG":
                 merged = max(current_sl, new_sl) if (current_sl > 0 and new_sl > 0) else (new_sl or current_sl)
             else:
@@ -3291,18 +3340,17 @@ class AdverseRadarMixin:
                 str(side), float(curr_px), float(merged or 0), label="merged_sl",
             )
             if merged <= 0:
-                merged = float(initial_stop or 0)
+                merged = float(current_sl or initial_stop or 0)
             self.current_sl = float(merged or 0)
-            # Dual track: radar recover must never overwrite frozen hard identity.
             if not self._uses_dual_stop_track():
                 self._tv_hard_sl_price = float(self.current_sl)
-        self.radar_latched = True
-        self.radar_activated = True
+        else:
+            self.current_sl = float(initial_stop or 0)
         self.remaining_qty_pct = self._remaining_qty_pct_from_consumed(
             getattr(self, "consumed_tp_levels", None)
         )
         logger.info(
-            "%s [User %s] 呼吸止损重启恢复: phase=%s best=%.2f SL=%.2f atr=%.4f coef=%.2f frozen=%.2f",
+            "%s [User %s] 呼吸止损重启恢复: phase=%s(已激活) best=%.2f SL=%.2f atr=%.4f coef=%.2f frozen=%.2f",
             self._symbol_tag(),
             getattr(self, "user_id", "?"),
             "2" if self.breakeven_phase else "1",

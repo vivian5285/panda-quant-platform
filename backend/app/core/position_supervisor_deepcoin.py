@@ -4254,7 +4254,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         self._tv_entry_fields = dict(saved_fields)
                     self.adopted_manual = bool(s.get("adopted_manual", False))
                     self.radar_latched = bool(s.get("radar_latched", False))
-                    self.radar_activated = bool(s.get("radar_activated", False) or s.get("radar_latched", False))
+                    # Do NOT treat radar_latched as activated (TP1-fill latch ≠ arm).
+                    # Missing radar_activated → False (safest default on restart).
+                    if "radar_activated" in s:
+                        self.radar_activated = bool(s.get("radar_activated"))
+                    else:
+                        self.radar_activated = False
+                        logger.warning(
+                            "[User %s] state missing radar_activated → default False",
+                            self.user_id,
+                        )
                     self.radar_step_count = max(int(s.get("radar_step_count", 0) or 0), 0)
                     self._breath_samples_since_open = max(
                         int(s.get("breath_samples_since_open", 0) or 0), 0

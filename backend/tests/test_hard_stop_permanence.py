@@ -120,14 +120,55 @@ def test_refresh_breathing_recover_discards_long_sl_already_hit():
     h.initial_stop = entry - 1.5 * atr
     h.current_sl = stale_sl
     h.best_price = entry
+    h.radar_activated = False
     with patch("app.core.adverse_radar_guard.refresh_supervisor_breath", return_value={}):
         h._refresh_breathing_state_on_recover(entry, entry)
     assert float(h.current_sl) < entry
     assert float(h.current_sl) > 0
+    assert h.radar_activated is False
     from app.core.breathing_stop import stop_hit
 
     assert not stop_hit("LONG", entry, float(h.current_sl))
     assert abs(h._frozen_hard_stop_px - hard) < 1e-9
+    # Must stay at initial radar stop — not entry+0.5ATR activate lift
+    assert abs(float(h.current_sl) - float(h.initial_stop)) < 1e-6
+
+
+def test_recover_missing_activated_defaults_inactive():
+    entry = 1882.52
+    atr = 5.7553
+    h = _make_host(entry=entry, side="LONG", tv_sl=1874.23, atr=atr)
+    h._frozen_hard_stop_px = 1872.99
+    h._tv_hard_sl_price = 1872.99
+    h.initial_atr = atr
+    h.initial_stop = entry - 1.5 * atr
+    h.current_sl = entry + 0.5 * atr
+    h.best_price = entry
+    h.radar_activated = None  # persist gap
+    with patch("app.core.adverse_radar_guard.refresh_supervisor_breath", return_value={}):
+        h._refresh_breathing_state_on_recover(entry, entry)
+    assert h.radar_activated is False
+    assert abs(float(h.current_sl) - float(h.initial_stop)) < 1e-6
+
+
+def test_recover_activated_keeps_trailed_sl_not_reactivate_formula():
+    entry = 1900.0
+    atr = 15.0
+    trailed = 1908.0  # already stepped above entry after real arm
+    h = _make_host(entry=entry, side="LONG", tv_sl=1880.0, atr=atr)
+    h._frozen_hard_stop_px = 1876.0
+    h._tv_hard_sl_price = 1876.0
+    h.initial_atr = atr
+    h.initial_stop = entry - 1.5 * atr
+    h.current_sl = trailed
+    h.best_price = 1920.0
+    h.radar_activated = True
+    h.tv_tps = [1920.0, 1940.0, 1960.0]
+    with patch("app.core.adverse_radar_guard.refresh_supervisor_breath", return_value={}):
+        h._refresh_breathing_state_on_recover(1922.0, entry)
+    assert h.radar_activated is True
+    assert float(h.current_sl) >= trailed - 1e-9
+    assert abs(h._frozen_hard_stop_px - 1876.0) < 1e-9
 
 
 def test_recovery_helper_restores_frozen_hard():
