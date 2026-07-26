@@ -3169,10 +3169,37 @@ class AdverseRadarMixin:
                 self._save_state()
         return bool(improved)
 
+    def _recover_stop_usable(
+        self,
+        side: str,
+        mark: float,
+        stop: float,
+        *,
+        label: str,
+    ) -> float:
+        """Drop restart SL that would already fire at mark (stale / wrong-side)."""
+        stop = float(stop or 0)
+        mark = float(mark or 0)
+        if stop <= 0 or mark <= 0:
+            return 0.0
+        if stop_hit(side, mark, stop) or stop_would_trigger_immediately(stop, mark, side):
+            logger.warning(
+                "%s [User %s] 重启恢复丢弃无效%s SL=%.4f mark=%.4f side=%s（会立刻触发）",
+                self._symbol_tag(),
+                getattr(self, "user_id", "?"),
+                label,
+                stop,
+                mark,
+                side,
+            )
+            return 0.0
+        return stop
+
     def _refresh_breathing_state_on_recover(self, curr_px: float, entry: float) -> None:
         """Restart: restore breathing SL from persisted state + one tick at mark.
 
         Never retreats stop. initial_atr stays frozen; 1h ATR refreshes coefficient.
+        Never keeps a persisted/merged SL that is already hit at mark (false flat).
         """
         if curr_px <= 0 or not entry:
             return
@@ -3193,11 +3220,20 @@ class AdverseRadarMixin:
         elif float(getattr(self, "initial_atr", 0) or 0) <= 0:
             self.initial_atr = atr
 
+        sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
         initial_stop = float(getattr(self, "initial_stop", 0) or 0)
-        if initial_stop <= 0 and side in ("LONG", "SHORT"):
-            sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
-            initial_stop = compute_initial_stop(float(entry), str(side), atr, symbol=sym)
-            self.initial_stop = initial_stop
+        if side in ("LONG", "SHORT"):
+            initial_stop = self._recover_stop_usable(
+                str(side), float(curr_px), initial_stop, label="initial_stop",
+            )
+            if initial_stop <= 0:
+                initial_stop = compute_initial_stop(
+                    float(entry), str(side), atr, symbol=sym,
+                )
+                initial_stop = self._recover_stop_usable(
+                    str(side), float(curr_px), initial_stop, label="recomputed_initial",
+                )
+            self.initial_stop = float(initial_stop or 0)
 
         if float(getattr(self, "best_price", 0) or 0) <= 0:
             self.best_price = float(entry)
@@ -3208,6 +3244,10 @@ class AdverseRadarMixin:
             self.best_price = min(bp, float(curr_px)) if bp > 0 else float(curr_px)
 
         current_sl = float(getattr(self, "current_sl", 0) or 0)
+        if side in ("LONG", "SHORT"):
+            current_sl = self._recover_stop_usable(
+                str(side), float(curr_px), current_sl, label="persisted_sl",
+            )
         if current_sl <= 0:
             current_sl = float(initial_stop or 0)
             self.current_sl = current_sl
@@ -3215,7 +3255,6 @@ class AdverseRadarMixin:
         if side not in ("LONG", "SHORT") or initial_stop <= 0:
             return
 
-        sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
         coef = resolve_breathing_coef(getattr(self, "breathing_coefficient", None), sym)
         tick = apply_breathing_tick(
             side=side,
@@ -3232,18 +3271,28 @@ class AdverseRadarMixin:
             **(self._breathing_tier_kwargs() if hasattr(self, "_breathing_tier_kwargs") else {}),
         )
         new_sl = float(tick.get("current_sl") or current_sl)
+        new_sl = self._recover_stop_usable(
+            str(side), float(curr_px), new_sl, label="tick_sl",
+        )
         self.best_price = float(tick.get("best_price") or self.best_price)
         self.breakeven_phase = bool(tick.get("breakeven_phase"))
         self.breathing_coefficient = float(tick.get("breathing_coefficient") or coef)
         meta = tick.get("meta") or {}
         if tick.get("radar_armed") or meta.get("radar_armed") or meta.get("just_activated"):
             self.radar_activated = True
-        if new_sl > 0:
-            # Only improve (never retreat) relative to persisted current_sl
+        if new_sl > 0 or current_sl > 0:
+            # Only improve (never retreat) relative to persisted current_sl,
+            # but never adopt a candidate that is already hit at mark.
             if side == "LONG":
-                self.current_sl = max(current_sl, new_sl) if current_sl > 0 else new_sl
+                merged = max(current_sl, new_sl) if (current_sl > 0 and new_sl > 0) else (new_sl or current_sl)
             else:
-                self.current_sl = min(current_sl, new_sl) if current_sl > 0 else new_sl
+                merged = min(current_sl, new_sl) if (current_sl > 0 and new_sl > 0) else (new_sl or current_sl)
+            merged = self._recover_stop_usable(
+                str(side), float(curr_px), float(merged or 0), label="merged_sl",
+            )
+            if merged <= 0:
+                merged = float(initial_stop or 0)
+            self.current_sl = float(merged or 0)
             # Dual track: radar recover must never overwrite frozen hard identity.
             if not self._uses_dual_stop_track():
                 self._tv_hard_sl_price = float(self.current_sl)

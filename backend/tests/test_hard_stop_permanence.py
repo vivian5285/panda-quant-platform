@@ -107,6 +107,29 @@ def test_refresh_breathing_recover_does_not_pollute_hard():
     assert abs(h._tv_hard_sl_price - hard) < 1e-9
 
 
+def test_refresh_breathing_recover_discards_long_sl_already_hit():
+    """Incident 2026-07-26: stale SL≈entry+0.5ATR survived never-retreat → false flat."""
+    entry = 1882.52
+    atr = 5.755332211296584
+    stale_sl = entry + 0.5 * atr  # ~1885.40, already above mark for LONG
+    h = _make_host(entry=entry, side="LONG", tv_sl=1874.23, atr=atr)
+    hard = 1872.99
+    h._frozen_hard_stop_px = hard
+    h._tv_hard_sl_price = hard
+    h.initial_atr = atr
+    h.initial_stop = entry - 1.5 * atr
+    h.current_sl = stale_sl
+    h.best_price = entry
+    with patch("app.core.adverse_radar_guard.refresh_supervisor_breath", return_value={}):
+        h._refresh_breathing_state_on_recover(entry, entry)
+    assert float(h.current_sl) < entry
+    assert float(h.current_sl) > 0
+    from app.core.breathing_stop import stop_hit
+
+    assert not stop_hit("LONG", entry, float(h.current_sl))
+    assert abs(h._frozen_hard_stop_px - hard) < 1e-9
+
+
 def test_recovery_helper_restores_frozen_hard():
     h = _make_host()
     hard = 1876.0
