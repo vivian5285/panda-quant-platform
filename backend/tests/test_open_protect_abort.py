@@ -56,7 +56,7 @@ def test_protect_returns_aborted_when_hard_sl_fails():
         out = sup._protect_and_monitor(1.0, 2000.0)
     assert out["aborted"] is True
     assert out["ok"] is False
-    assert out["reason"] == "hard_sl_fail_abort"
+    assert out["reason"] == "temp_hard_sl_fail_abort"
     sup._close_all.assert_called_once()
     assert sup.monitoring is False
 

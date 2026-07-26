@@ -2458,7 +2458,12 @@ class AdverseRadarMixin:
         # Hard floor is frozen here — radar uses current_sl / initial_stop separately
         self._frozen_hard_stop_px = float(temp)
         self._tv_hard_sl_price = float(temp)
-        self.tv_sl = float(temp) if float(getattr(self, "tv_sl", 0) or 0) <= 0 else float(self.tv_sl)
+        # Keep self.tv_sl / pine refs as TradingView stop_loss — never overwrite with hang.
+        pine = float(tv_sl or 0)
+        if pine > 0:
+            self._tv_stop_loss_ref = pine
+            self._pending_open_tv_sl = pine
+            self.tv_sl = pine
         self._temp_tv_stop_active = True
         self.atr_scenario = ATR_SCENARIO_PENDING
         # Spec §7: TP3 never hung as limit — radar manages residual 70%

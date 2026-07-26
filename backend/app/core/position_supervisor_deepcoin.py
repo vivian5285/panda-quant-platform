@@ -2167,7 +2167,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             if dynamic_sl:
                 time.sleep(0.6)
                 self._ensure_radar_sl(live_qty, dynamic_sl)
-            time.sleep(1.0)
+            if hasattr(self, "client") and hasattr(self.client, "_invalidate_book_cache"):
+                try:
+                    self.client._invalidate_book_cache("tp_rebuild_verify")
+                except Exception:
+                    pass
+            time.sleep(2.0)
             last_audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
             ok_sl = bool(dynamic_sl)
             if self._defenses_fully_ok(
@@ -2175,10 +2180,26 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             ):
                 logger.info(f"☢️ 核武重挂成功: {self._format_audit_summary(last_audit)}")
                 return last_audit
+            if placed > 0 and int(last_audit.get("matched_full") or 0) == 0:
+                logger.warning(
+                    f"☢️ 核武轮 {r + 1} 刚挂{placed}笔但审计0命中 → 再等一次再判"
+                )
+                if hasattr(self, "client") and hasattr(self.client, "_invalidate_book_cache"):
+                    try:
+                        self.client._invalidate_book_cache("tp_rebuild_retry_read")
+                    except Exception:
+                        pass
+                time.sleep(2.5)
+                last_audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
+                if self._defenses_fully_ok(
+                    live_qty, dynamic_sl, curr_px=curr_px, require_sl=ok_sl,
+                ):
+                    logger.info(f"☢️ 核武重挂成功(延迟确认): {self._format_audit_summary(last_audit)}")
+                    return last_audit
             logger.warning(
                 f"☢️ 核武轮 {r + 1} 仍未对齐: {self._format_audit_summary(last_audit)}"
             )
-            time.sleep(1.5)
+            time.sleep(2.0)
         return last_audit
 
     def _full_rebuild_tp_loop(self, live_qty, entry, dynamic_sl=None):
@@ -3360,6 +3381,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 pending_tv_atr = 0.0
         if pending_tv_atr <= 0:
             pending_tv_atr = float(getattr(self, "current_atr", 0) or 0)
+        pending_pine_sl = float(
+            getattr(self, "_tv_stop_loss_ref", 0)
+            or getattr(self, "_pending_open_tv_sl", 0)
+            or 0
+        )
+        pending_tv_price = float(getattr(self, "tv_price", 0) or 0)
 
         self._reset_adverse_radar(keep_tv_sl=False)
         if pending_tv_atr > 0:
@@ -3368,6 +3395,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             fields = getattr(self, "_tv_entry_fields", None)
             if isinstance(fields, dict):
                 fields["atr"] = pending_tv_atr
+        if pending_pine_sl > 0:
+            self._tv_stop_loss_ref = pending_pine_sl
+            self._pending_open_tv_sl = pending_pine_sl
+            self.tv_sl = pending_pine_sl
+        if pending_tv_price > 0:
+            self.tv_price = pending_tv_price
         self.tp3_limit_active = False
         self.atr_scenario = "pending"
         tp_pxs = self.tv_tps

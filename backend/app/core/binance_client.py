@@ -602,6 +602,9 @@ class BinanceClient:
                 f"[User {self.user_id}] limit {side} {qty_str} @ {price_str} {symbol} "
                 f"tif={tif} reduce={reduce_only} cid={params.get('newClientOrderId')}"
             )
+            # Must invalidate: cancel→fetch-empty caches for ORDER_TTL_SEC; without
+            # this, open-init audit sees stale empty book and nuclear-cancels live TPs.
+            self._invalidate_book_cache("limit_place")
             return order
         except Exception as e:
             logger.error(
@@ -736,6 +739,7 @@ class BinanceClient:
                 f"[User {self.user_id}] stop-limit {side} qty={qty_str} {symbol} "
                 f"trigger={stop_str} limit={limit_str}"
             )
+            self._invalidate_book_cache("stop_limit_place")
             return order
         except Exception as e:
             logger.error(

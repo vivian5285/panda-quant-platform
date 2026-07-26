@@ -1563,16 +1563,40 @@ class BinanceSmartDefenseMixin:
             if dynamic_sl:
                 time.sleep(0.6)
                 self._ensure_radar_sl(dynamic_sl, live_qty)
-            time.sleep(1.0)
+            # Place does not share cancel's invalidate window — wait past ORDER_TTL
+            # and force-refresh so audit cannot see stale empty book (TP thrash).
+            if hasattr(self, "client") and hasattr(self.client, "_invalidate_book_cache"):
+                try:
+                    self.client._invalidate_book_cache("tp_rebuild_verify")
+                except Exception:
+                    pass
+            time.sleep(2.0)
             last_audit = self._audit_tp_levels(live_qty)
             if self._defenses_fully_ok(live_qty, dynamic_sl, require_sl=bool(dynamic_sl)):
                 self._def_log(f"{mark} {tag}成功: {self._format_audit_summary(last_audit)}")
                 return last_audit
+            # If we just placed and book still looks empty, wait once more before
+            # another cancel round (rate-limit / cache race).
+            if placed > 0 and int(last_audit.get("matched_full") or 0) == 0:
+                self._def_log(
+                    f"{mark} {tag}轮 {r + 1} 刚挂{placed}笔但审计0命中 → 再等一次再判",
+                    logging.WARNING,
+                )
+                if hasattr(self, "client") and hasattr(self.client, "_invalidate_book_cache"):
+                    try:
+                        self.client._invalidate_book_cache("tp_rebuild_retry_read")
+                    except Exception:
+                        pass
+                time.sleep(2.5)
+                last_audit = self._audit_tp_levels(live_qty)
+                if self._defenses_fully_ok(live_qty, dynamic_sl, require_sl=bool(dynamic_sl)):
+                    self._def_log(f"{mark} {tag}成功(延迟确认): {self._format_audit_summary(last_audit)}")
+                    return last_audit
             self._def_log(
                 f"{mark} {tag}轮 {r + 1} 仍未对齐: {self._format_audit_summary(last_audit)}",
                 logging.WARNING,
             )
-            time.sleep(1.5)
+            time.sleep(2.0)
         return last_audit
 
     def _wait_tp_hung(self, tp_pxs, live_qty=None, retries: int = 5, delay: float = 0.8):

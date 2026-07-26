@@ -3657,8 +3657,8 @@ class PositionSupervisor(
         开仓后：硬止损(fill±TV距×buffer) → TP1/TP2(10/20) → TV atr 武装雷达（TP3=70%雷达管理）。
         返回 {ok, aborted, defense, shield}；硬止损挂失败则撤仓并 aborted=True（禁止裸奔）。
         """
-        # Preserve TV atr across radar reset — wipe used to zero _tv_atr_ref and
-        # abort open with no_atr_for_breath (dispatch #263 / 2026-07-26).
+        # Preserve TV atr + pine stop_loss across radar reset (wipe used to zero
+        # both and abort / hang hard at wrong distance).
         pending_tv_atr = float(getattr(self, "_tv_atr_ref", 0) or 0)
         if pending_tv_atr <= 0:
             try:
@@ -3669,6 +3669,12 @@ class PositionSupervisor(
                 pending_tv_atr = 0.0
         if pending_tv_atr <= 0:
             pending_tv_atr = float(getattr(self, "current_atr", 0) or 0)
+        pending_pine_sl = float(
+            getattr(self, "_tv_stop_loss_ref", 0)
+            or getattr(self, "_pending_open_tv_sl", 0)
+            or 0
+        )
+        pending_tv_price = float(getattr(self, "tv_price", 0) or 0)
 
         self._reset_adverse_radar(keep_tv_sl=False)
         if pending_tv_atr > 0:
@@ -3677,6 +3683,12 @@ class PositionSupervisor(
             fields = getattr(self, "_tv_entry_fields", None)
             if isinstance(fields, dict):
                 fields["atr"] = pending_tv_atr
+        if pending_pine_sl > 0:
+            self._tv_stop_loss_ref = pending_pine_sl
+            self._pending_open_tv_sl = pending_pine_sl
+            self.tv_sl = pending_pine_sl
+        if pending_tv_price > 0:
+            self.tv_price = pending_tv_price
         self.tp3_limit_active = False
         self.atr_scenario = "pending"
         self.best_price = entry_price
