@@ -399,7 +399,8 @@ class PositionSupervisor(
                     self.atr_1h = float(s.get("atr_1h", 0) or 0)
                     self.breath_smooth_ratio = float(s.get("breath_smooth_ratio", 1.0) or 1.0)
                     self.atr_scenario = str(s.get("atr_scenario") or "pending")
-                    self.tp3_limit_active = bool(s.get("tp3_limit_active", False))
+                    # Spec §7: never place TP3 limits (ignore legacy True in state)
+                    self.tp3_limit_active = False
                     own = str(s.get("exit_ownership") or "NONE").upper()
                     self.exit_ownership = own if own in ("NONE", "TP3_LIMIT", "RADAR_STOP") else "NONE"
                     self.ownership_locked_at = float(s.get("ownership_locked_at", 0) or 0)
@@ -3647,11 +3648,11 @@ class PositionSupervisor(
 
     def _protect_and_monitor(self, qty: float, entry_price: float) -> dict:
         """
-        开仓后：硬止损(fill±TV距×buffer) → TP1/TP2/TP3(10/20/70) → VPS 1h ATR武装雷达。
+        开仓后：硬止损(fill±TV距×buffer) → TP1/TP2(10/20) → TV atr 武装雷达（TP3=70%雷达管理）。
         返回 {ok, aborted, defense, shield}；硬止损挂失败则撤仓并 aborted=True（禁止裸奔）。
         """
         self._reset_adverse_radar(keep_tv_sl=False)
-        self.tp3_limit_active = True
+        self.tp3_limit_active = False
         self.atr_scenario = "pending"
         self.best_price = entry_price
         self.watched_qty = qty
@@ -3717,73 +3718,73 @@ class PositionSupervisor(
                 self._last_protect_result = out
                 return out
 
-            # ②+③ 白皮书：硬止损已挂后，TP1/TP2 与 VPS 1h ATR 拉取同步推进（重叠执行）
-            from concurrent.futures import ThreadPoolExecutor
-
-            atr_ex = ThreadPoolExecutor(max_workers=1)
-            atr_fut = atr_ex.submit(
-                self._resolve_and_apply_open_atr_scenario, pos["entry_price"]
+            # ② TP1/TP2 限价 + ③ TV atr 武装雷达（无 VPS ATR 拉取）
+            result = self._smart_realign_defenses(
+                pos["size"],
+                pos["entry_price"],
+                dynamic_sl=None,
+                reason="开仓后智能防线对齐·TP1/TP2",
             )
-            try:
-                result = self._smart_realign_defenses(
-                    pos["size"],
-                    pos["entry_price"],
-                    dynamic_sl=None,
-                    reason="开仓后智能防线对齐·TP1/TP2",
-                )
-                if (
-                    result.get("expected", 0) > 0
-                    and result.get("matched", 0) < result.get("expected", 0)
-                    and hasattr(self, "_nuclear_realign_tp")
-                ):
-                    self._log(
-                        "DEFENSE",
-                        f"开仓TP未齐 {result.get('matched')}/{result.get('expected')} → 再补挂一轮",
-                    )
-                    self._defense_open_init_logs = True
-                    try:
-                        audit = self._nuclear_realign_tp(
-                            pos["size"], pos["entry_price"], dynamic_sl=None, rounds=2,
-                        )
-                    finally:
-                        self._defense_open_init_logs = False
-                    result = {
-                        **result,
-                        "matched": audit.get("matched_full", result.get("matched")),
-                        "expected": audit.get("expected", result.get("expected")),
-                        "audit": audit,
-                        "nuclear_retry": True,
-                        "summary": self._format_audit_summary(audit),
-                    }
-                self._last_defense_result = result
-                summary = self._format_audit_summary(result.get("audit") or {})
+            if (
+                result.get("expected", 0) > 0
+                and result.get("matched", 0) < result.get("expected", 0)
+                and hasattr(self, "_nuclear_realign_tp")
+            ):
                 self._log(
                     "DEFENSE",
-                    f"🛡️ 开仓防线核查 {result.get('matched')}/{result.get('expected')} | {summary}",
+                    f"开仓TP未齐 {result.get('matched')}/{result.get('expected')} → 再补挂一轮",
+                )
+                self._defense_open_init_logs = True
+                try:
+                    audit = self._nuclear_realign_tp(
+                        pos["size"], pos["entry_price"], dynamic_sl=None, rounds=2,
+                    )
+                finally:
+                    self._defense_open_init_logs = False
+                result = {
+                    **result,
+                    "matched": audit.get("matched_full", result.get("matched")),
+                    "expected": audit.get("expected", result.get("expected")),
+                    "audit": audit,
+                    "nuclear_retry": True,
+                    "summary": self._format_audit_summary(audit),
+                }
+            self._last_defense_result = result
+            summary = self._format_audit_summary(result.get("audit") or {})
+            self._log(
+                "DEFENSE",
+                f"🛡️ 开仓防线核查 {result.get('matched')}/{result.get('expected')} | {summary}",
+                result,
+            )
+            if result.get("expected", 0) > 0 and result.get("matched", 0) < result.get("expected", 0):
+                self._alert(
+                    "warning",
+                    "DEFENSE",
+                    "开仓后限价止盈未全部挂上",
+                    f"{self.current_side} {pos['size']} {getattr(self, 'qty_unit', 'ETH')} | "
+                    f"仅 {result.get('matched')}/{result.get('expected')} 档 | {summary}",
                     result,
                 )
-                if result.get("expected", 0) > 0 and result.get("matched", 0) < result.get("expected", 0):
-                    self._alert(
-                        "warning",
-                        "DEFENSE",
-                        "开仓后限价止盈未全部挂上",
-                        f"{self.current_side} {pos['size']} {getattr(self, 'qty_unit', 'ETH')} | "
-                        f"仅 {result.get('matched')}/{result.get('expected')} 档 | {summary}",
-                        result,
-                    )
-            finally:
+            # Purge any leftover TP3 limits from older code paths
+            if hasattr(self, "_cancel_tp_orders_at_levels"):
                 try:
-                    scenario_detail = atr_fut.result(timeout=60) or {}
-                except Exception as atr_exc:
-                    scenario_detail = {"ok": False, "error": str(atr_exc)[:200]}
-                atr_ex.shutdown(wait=False)
+                    self._cancel_tp_orders_at_levels([3])
+                except Exception:
+                    pass
+            self.tp3_limit_active = False
 
-            # ③ ATR 场景结果（与 TP 重叠拉取后在此汇合）
+            try:
+                scenario_detail = self._resolve_and_apply_open_atr_scenario(
+                    pos["entry_price"]
+                ) or {}
+            except Exception as atr_exc:
+                scenario_detail = {"ok": False, "error": str(atr_exc)[:200]}
+
             if not scenario_detail.get("ok"):
                 self._alert(
                     "critical",
                     "ATR_SCENARIO",
-                    "开仓ATR场景失败·立即撤仓",
+                    "开仓ATR不可用·立即撤仓",
                     f"{scenario_detail}",
                     scenario_detail,
                 )
@@ -3811,18 +3812,7 @@ class PositionSupervisor(
                 self._last_protect_result = out
                 return out
 
-            # 确认 TP1/TP2/TP3 均在（10/20/70；ATR 场景不再门禁 TP3）
-            if bool(getattr(self, "tp3_limit_active", True)):
-                result = self._smart_realign_defenses(
-                    pos["size"],
-                    pos["entry_price"],
-                    dynamic_sl=None,
-                    reason="确认TP1/TP2/TP3限价·10/20/70",
-                )
-                self._last_defense_result = result
-
             # ④ 确认硬止损仍在（永冻价）+ 独立挂雷达止损
-            # ATR 场景若 widen 了硬止损，必须 force_replace 把新价写到交易所
             hard_widened = bool((scenario_detail.get("hard_widen") or {}).get("widened"))
             shield = self._sync_tv_hard_stop(
                 pos["size"],

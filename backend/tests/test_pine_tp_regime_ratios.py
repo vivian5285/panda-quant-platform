@@ -1,4 +1,4 @@
-"""TP qty ratios — fixed 10/20/70; TP1+TP2+TP3 always placeable (2026-07-25)."""
+"""TP qty ratios — fixed 10/20/70; TP1+TP2 placeable only (TP3 radar-managed)."""
 
 from unittest.mock import MagicMock
 
@@ -18,7 +18,7 @@ from app.core.tp_regime_targets import (
 
 def test_fixed_tp_percent_all_regimes():
     assert FIXED_TP_QTY_PERCENT == (10, 20, 70)
-    assert PLACEABLE_TP_LEVELS == frozenset({1, 2, 3})
+    assert PLACEABLE_TP_LEVELS == frozenset({1, 2})
     for regime in (1, 2, 3, 4):
         assert PINE_TP_QTY_PERCENT[regime] == (10, 20, 70)
 
@@ -58,8 +58,8 @@ def test_enrich_tp_alert_detail_for_dingtalk():
     assert detail["tp_ratios_pct"] == "10/20/70"
     assert detail["regime"] == 1
     assert detail["tp_ratios"] == [0.1, 0.2, 0.7]
-    assert detail["tp3_limit_placed"] is True
-    assert detail["tp_placeable_levels"] == [1, 2, 3]
+    assert detail["tp3_limit_placed"] is False
+    assert detail["tp_placeable_levels"] == [1, 2]
 
 
 def test_format_tp_ratio_label():

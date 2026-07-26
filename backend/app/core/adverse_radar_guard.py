@@ -29,8 +29,6 @@ from app.core.initial_atr_lock import InitialAtrDescriptor
 from app.core.open_atr_scenario import (
     ATR_SCENARIO_PENDING,
     ATR_SCENARIO_TV,
-    ATR_SCENARIO_VPS,
-    fetch_vps_1h_atr_fresh,
     maybe_retry_vps_atr_on_tick,
     resolve_open_atr,
 )
@@ -732,10 +730,7 @@ class AdverseRadarMixin:
                 except Exception:
                     pass
             return detail
-        if not bool(getattr(self, "tp3_limit_active", True)):
-            detail["skipped"] = "tp3_inactive"
-            return detail
-
+        # Always attempt cancel of leftover TP3 limits (legacy cleanup); never place new ones.
         had_tp3_on_book = False
         try:
             tps = list(getattr(self, "tv_tps", None) or [])
@@ -1035,7 +1030,7 @@ class AdverseRadarMixin:
         if payload:
             entry = float(payload.get("price") or entry or 0)
 
-        # Prefer VPS native 1h ATR; TV atr only as scenario-2 fallback (never 90m).
+        # Spec §7 / §14.12: ATR always from TV webhook (no VPS fetch).
         atr = 0.0
         atr_source = "none"
         tv_atr_payload = 0.0
@@ -1046,18 +1041,7 @@ class AdverseRadarMixin:
                 tv_atr_payload = 0.0
             if tv_atr_payload > 0:
                 self._tv_atr_ref = tv_atr_payload
-        try:
-            atr_1h, ok_1h = fetch_vps_1h_atr_fresh(
-                client=getattr(self, "client", None),
-                symbol=getattr(self, "canonical_symbol", None)
-                or getattr(self, "symbol", None),
-            )
-            if ok_1h and atr_1h > 0:
-                atr = float(atr_1h)
-                atr_source = "vps_1h"
-        except Exception:
-            atr = 0.0
-        if atr <= 0 and tv_atr_payload > 0:
+        if tv_atr_payload > 0:
             atr = tv_atr_payload
             atr_source = "tv_webhook"
         if atr <= 0:
@@ -1180,7 +1164,8 @@ class AdverseRadarMixin:
                 entry, side_u, atr, atr_source, stop, hang,
                 float(self._frozen_hard_px() or 0), meta,
             )
-            self._maybe_alert_atr_mismatch(entry, tv_sl_ref, atr)
+            # ATR mismatch vs VPS purged — single TV source only
+            _ = (entry, tv_sl_ref)
         else:
             self._vps_hard_sl_meta = meta
             live_open = (
@@ -2476,8 +2461,8 @@ class AdverseRadarMixin:
         self.tv_sl = float(temp) if float(getattr(self, "tv_sl", 0) or 0) <= 0 else float(self.tv_sl)
         self._temp_tv_stop_active = True
         self.atr_scenario = ATR_SCENARIO_PENDING
-        # Always place TP3 limit (10/20/70); ATR scenario only selects radar ATR source
-        self.tp3_limit_active = True
+        # Spec §7: TP3 never hung as limit — radar manages residual 70%
+        self.tp3_limit_active = False
         self._stamp_radar_open_clock()
         self._vps_hard_sl_meta = {
             "source": source,
@@ -2693,48 +2678,34 @@ class AdverseRadarMixin:
         }
 
     def _resolve_and_apply_open_atr_scenario(self, entry: float) -> dict[str, Any]:
-        """After hard stop + TP limits: pick VPS 1h ATR or TV atr for radar only.
+        """After hard stop + TP1/TP2: arm radar with TV webhook atr only (§7 / §14.12).
 
-        Never rewrites frozen hard stop. TP3 limit always stays (10/20/70).
+        Never rewrites frozen hard stop. TP3 never hung as limit.
         """
         self._init_adverse_radar_fields()
         tv_atr = float(getattr(self, "_tv_atr_ref", 0) or 0)
-        client = getattr(self, "client", None)
-        sym = (
-            getattr(self, "canonical_symbol", None)
-            or getattr(self, "symbol", None)
-            or "ETHUSDT"
-        )
-        decision = resolve_open_atr(client=client, symbol=sym, tv_atr=tv_atr)
-        scenario = str(decision.get("scenario") or ATR_SCENARIO_TV)
-        atr_v = float(decision.get("initial_atr") or 0)
-        if atr_v <= 0 and tv_atr > 0:
-            atr_v = tv_atr
-            scenario = ATR_SCENARIO_TV
-            decision["tp3_limit_active"] = True
-            decision["atr_source"] = "tv_webhook"
+        decision = resolve_open_atr(tv_atr=tv_atr)
+        scenario = ATR_SCENARIO_TV
+        atr_v = float(decision.get("initial_atr") or 0) or tv_atr
         if atr_v <= 0:
             return {"ok": False, "reason": "no_atr_for_breath", **decision}
 
         frozen = self._frozen_hard_px()
-        # Clear lock so init can set the chosen atr once (radar track only)
+        # Clear lock so init can set TV atr once (radar track only)
         self.initial_atr = 0.0
         self._init_breathing_on_open(entry, atr=atr_v)
-        # Restore frozen hard — breathing init must not steal hard price
         if frozen > 0:
             self._frozen_hard_stop_px = frozen
             self._tv_hard_sl_price = frozen
-        # ATR known: hard is TV-distance only (widen no-op)
         widen = self._widen_frozen_hard_with_atr(float(entry or 0), atr_v)
         self.atr_scenario = scenario
-        # Always keep TP3 limit active (10/20/70) — ATR scenario does not gate TP3
-        self.tp3_limit_active = True
+        self.tp3_limit_active = False
         self._temp_tv_stop_active = False
-        atr_src = str(decision.get("atr_source") or "")
+        atr_src = "tv_webhook"
         meta = dict(getattr(self, "_vps_hard_sl_meta", None) or {})
         meta["atr_source"] = atr_src
         meta["atr_scenario"] = scenario
-        meta["tp3_limit_active"] = True
+        meta["tp3_limit_active"] = False
         meta["frozen_hard"] = float(self._frozen_hard_px() or 0)
         meta["hard_widen"] = widen
         self._vps_hard_sl_meta = meta
@@ -2746,28 +2717,16 @@ class AdverseRadarMixin:
             "initial_stop": float(getattr(self, "initial_stop", 0) or 0),
             "radar_sl": float(getattr(self, "current_sl", 0) or 0),
             "frozen_hard": float(self._frozen_hard_px() or 0),
-            "atr_1h": float(decision.get("atr_1h") or 0),
+            "atr_1h": 0.0,
             "tv_atr": tv_atr,
-            "tp3_limit_active": True,
+            "tp3_limit_active": False,
             "atr_source": atr_src,
             "hard_widen": widen,
         }
         if hasattr(self, "_log"):
             self._log(
                 "ATR_SCENARIO",
-                (
-                    "场景一·VPS真实ATR武装雷达（硬止损永冻·TP1/2/3限价常挂）"
-                    if scenario == ATR_SCENARIO_VPS
-                    else "场景二·TV理论ATR武装雷达（硬止损永冻·TP1/2/3限价常挂）"
-                ),
-                detail,
-            )
-        if scenario == ATR_SCENARIO_TV and hasattr(self, "_alert"):
-            self._alert(
-                "info",
-                "ATR_SCENARIO",
-                "本次VPS真实ATR获取失败·已用TV理论ATR继续",
-                "雷达用TV atr；TP1/2/3限价仍按10/20/70挂出",
+                "TV webhook atr 武装雷达（硬止损永冻·仅TP1/TP2限价·TP3雷达管理）",
                 detail,
             )
         return detail
@@ -2781,8 +2740,8 @@ class AdverseRadarMixin:
     ) -> dict:
         """Initialize breathing-stop state at position open.
 
-        ``atr`` is VPS 1h (scenario 1) or TV webhook atr (scenario 2).
-        Breathing coefficient seeded from Binance 1h ATR when available.
+        ``atr`` is always TV webhook atr (§7). Breathing coef uses cold-start
+        (no VPS 1h fetch).
         """
         self._init_adverse_radar_fields()
         side = getattr(self, "current_side", None) or ""
@@ -2793,11 +2752,11 @@ class AdverseRadarMixin:
 
         self.initial_atr = atr_v
         self.current_atr = atr_v
-        # Seed 1h breathing coefficient
+        # Seed breathing coefficient from TV atr only (no exchange kline fetch)
         try:
             refresh_supervisor_breath(self, force=True)
         except Exception as exc:
-            logger.warning("1h breath seed failed: %s", exc)
+            logger.warning("breath seed failed: %s", exc)
         sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
         coef = resolve_breathing_coef(
             breathing_coefficient
@@ -2826,7 +2785,7 @@ class AdverseRadarMixin:
         if adx is not None:
             self.current_adx = resolve_adx(adx)
         hang = apply_stop_order_buffer(side, float(st["initial_stop"]), sym)
-        atr_source = "vps_1h" if str(getattr(self, "atr_scenario", "")) == ATR_SCENARIO_VPS else (
+        atr_source = (
             "tv_webhook" if float(getattr(self, "_tv_atr_ref", 0) or 0) > 0 else "fallback"
         )
         self._vps_hard_sl_meta = {
@@ -2851,12 +2810,12 @@ class AdverseRadarMixin:
         if pause_until and time.time() < pause_until:
             return False
         self._init_adverse_radar_fields()
-        # Scenario 2: retry VPS 1h ATR → upgrade radar ATR only (keep TP3)
+        # LEGACY_PURGED: no VPS ATR retry (§14.12)
         try:
             maybe_retry_vps_atr_on_tick(self, live_qty=float(live_qty or 0))
         except Exception:
             pass
-        # Soft-refresh 1h ATR → breathing coefficient (+ stagnant sample clock)
+        # Soft-refresh breathing coefficient from locked TV atr (+ stagnant sample clock)
         breath_refreshed = False
         try:
             breath_meta = refresh_supervisor_breath(self, force=False) or {}

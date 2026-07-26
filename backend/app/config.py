@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     HARD_STOP_BUFFER_MULT_XAU: float = 1.15
     HARD_STOP_MIN_TICKS: int = 5
 
-    # TP qty fractions (tp3 = 1 − tp1 − tp2); always hang TP1+TP2+TP3 limits
+    # TP qty fractions (tp3 = 1 − tp1 − tp2); hang TP1+TP2 only — TP3 is radar-managed
     TP1_QTY_PCT: float = 0.10
     TP2_QTY_PCT: float = 0.20
     TP1_QTY_PCT_ETH: float = 0.10

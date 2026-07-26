@@ -43,7 +43,7 @@ def test_whitepaper_arm_path_not_absolute_tp1():
 
 
 def test_placeable_tp_and_timers():
-    assert PLACEABLE_TP_LEVELS == frozenset({1, 2, 3})
+    assert PLACEABLE_TP_LEVELS == frozenset({1, 2})
     assert ATR_REFRESH_SEC == 300.0
     assert TP_LIMIT_TIMEOUT_SEC == 300.0
     assert RADAR_ARM_TP1_PCT == 0.85

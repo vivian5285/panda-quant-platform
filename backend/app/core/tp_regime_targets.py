@@ -1,7 +1,7 @@
-"""TP slice ratios — fixed 10/20/70; TP1/TP2/TP3 limits always placed.
+"""TP slice ratios — fixed 10/20/70; only TP1/TP2 hang as limits.
 
-2026-07-25 TV sync: residual 70% has both TP3 limit and radar (mutual cancel on fill).
-ATR scenario no longer gates TP3 placement (still used for radar ATR source only).
+Gemini multi-user spec §7 (final): TP3 (70%) never hangs a limit — radar-only.
+ATR always from TV webhook ``atr`` (no VPS fetch / scenario gate on TP3).
 """
 
 from __future__ import annotations
@@ -12,8 +12,9 @@ from app.core.radar_trail import merge_regime_radar
 
 # Defaults; overridden by Settings TP1_QTY_PCT / TP2_QTY_PCT when available
 FIXED_TP_QTY_PERCENT: tuple[int, int, int] = (10, 20, 70)
-PLACEABLE_TP_LEVELS: frozenset[int] = frozenset({1, 2, 3})
-PLACEABLE_TP_LEVELS_WITH_TP3: frozenset[int] = frozenset({1, 2, 3})
+# Spec §7 / §14.4: TP3 never placed as limit (reverse of mid-whitepaper mistake).
+PLACEABLE_TP_LEVELS: frozenset[int] = frozenset({1, 2})
+PLACEABLE_TP_LEVELS_WITH_TP3: frozenset[int] = frozenset({1, 2})  # legacy alias = no TP3
 
 PINE_TP_QTY_PERCENT: dict[int, tuple[int, int, int]] = {
     1: FIXED_TP_QTY_PERCENT,
@@ -40,9 +41,10 @@ def _ratios_from_settings() -> tuple[int, int, int]:
         return FIXED_TP_QTY_PERCENT
 
 
-def placeable_tp_levels(*, tp3_limit_active: bool = True) -> frozenset[int]:
-    """Always place TP1+TP2+TP3 (tp3_limit_active kept for call-site compat)."""
-    return PLACEABLE_TP_LEVELS_WITH_TP3
+def placeable_tp_levels(*, tp3_limit_active: bool = False) -> frozenset[int]:
+    """TP1+TP2 only. ``tp3_limit_active`` ignored (compat); TP3 never hung."""
+    _ = tp3_limit_active
+    return PLACEABLE_TP_LEVELS
 
 
 def clamp_regime(regime: int) -> int:
@@ -61,7 +63,7 @@ def format_tp_ratio_pct(regime: int = 3) -> str:
 
 
 def remaining_qty_pct_from_consumed(consumed: list | None) -> float:
-    """Residual fraction after TP fills (10/20/70 → 0.9 / 0.7 / 0)."""
+    """Residual after TP1/TP2 fills (10/20/70 → 0.9 / 0.7). Level-3 consume → 0."""
     levels = {int(x) for x in (consumed or []) if int(x) in (1, 2, 3)}
     ratios = pine_tp_ratios_frac()
     rem = 1.0
@@ -89,9 +91,10 @@ def enrich_tp_alert_detail(
     out["regime"] = clamp_regime(regime)
     out["tp_ratios_pct"] = format_tp_ratio_pct()
     out["tp_ratios"] = pine_tp_ratios_frac()
-    placed = True if tp3_limit_placed is None else bool(tp3_limit_placed)
-    out["tp3_limit_placed"] = placed
-    out["tp_placeable_levels"] = sorted(placeable_tp_levels(tp3_limit_active=placed))
+    # Spec: TP3 never placed — force False even if caller passes True
+    out["tp3_limit_placed"] = False
+    out["tp_placeable_levels"] = sorted(PLACEABLE_TP_LEVELS)
+    _ = tp3_limit_placed
     return out
 
 

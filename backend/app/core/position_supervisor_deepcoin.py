@@ -3341,11 +3341,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
     def _protect_and_monitor(self, qty, entry_price):
         """
-        开仓后：硬止损(fill±TV距×buffer) → TP1/TP2/TP3(10/20/70) → VPS 1h ATR武装雷达。
+        开仓后：硬止损(fill±TV距×buffer) → TP1/TP2(10/20) → TV atr 武装雷达（TP3=70%雷达管理）。
         返回 {ok, aborted, defense, shield}。
         """
         self._reset_adverse_radar(keep_tv_sl=False)
-        self.tp3_limit_active = True
+        self.tp3_limit_active = False
         self.atr_scenario = "pending"
         tp_pxs = self.tv_tps
         self.best_price = entry_price
@@ -3428,11 +3428,19 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     f"{self._format_audit_summary(audit)}",
                 )
 
-            # ③ ATR 场景
+            # Purge leftover TP3 limits from older code paths
+            if hasattr(self, "_cancel_tp_orders_at_levels"):
+                try:
+                    self._cancel_tp_orders_at_levels([3])
+                except Exception:
+                    pass
+            self.tp3_limit_active = False
+
+            # ③ TV atr 武装雷达（无 VPS ATR / 场景切换）
             scenario_detail = self._resolve_and_apply_open_atr_scenario(entry)
             if not scenario_detail.get("ok"):
                 self._dt.report_system_alert(
-                    "开仓ATR场景失败·立即撤仓",
+                    "开仓ATR不可用·立即撤仓",
                     f"{scenario_detail}",
                 )
                 try:
@@ -3454,16 +3462,6 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 }
                 self._last_protect_result = out
                 return out
-
-            if bool(getattr(self, "tp3_limit_active", True)):
-                result = self._smart_realign_defenses(
-                    live_qty, entry,
-                    dynamic_sl=None,
-                    reason="确认TP1/TP2/TP3限价·10/20/70",
-                )
-                self._last_defense_result = result
-                matched, expected = result.get("matched", 0), result.get("expected", 0)
-                audit = result.get("audit") or {}
 
             # ④ 确认硬止损仍在（永冻价）+ 独立挂雷达止损
             shield = self._sync_tv_hard_stop(
@@ -4194,7 +4192,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.atr_1h = float(s.get("atr_1h", 0) or 0)
                     self.breath_smooth_ratio = float(s.get("breath_smooth_ratio", 1.0) or 1.0)
                     self.atr_scenario = str(s.get("atr_scenario") or "pending")
-                    self.tp3_limit_active = bool(s.get("tp3_limit_active", False))
+                    self.tp3_limit_active = False  # Spec §7: never place TP3 limits
                     own = str(s.get("exit_ownership") or "NONE").upper()
                     self.exit_ownership = own if own in ("NONE", "TP3_LIMIT", "RADAR_STOP") else "NONE"
                     self.ownership_locked_at = float(s.get("ownership_locked_at", 0) or 0)

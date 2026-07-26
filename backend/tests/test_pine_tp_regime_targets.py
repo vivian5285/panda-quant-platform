@@ -1,4 +1,4 @@
-"""TP qty ratios — fixed 10/20/70; TP1/TP2/TP3 always placeable."""
+"""TP qty ratios — fixed 10/20/70; only TP1/TP2 hung as limits."""
 
 from app.core.tp_regime_targets import (
     PLACEABLE_TP_LEVELS,
@@ -33,10 +33,12 @@ def test_enrich_and_format():
     detail = enrich_tp_alert_detail({}, tp3_limit_placed=True)
     assert detail["tp_ratios_pct"] == "10/20/70"
     assert detail["tp_ratios"] == [0.1, 0.2, 0.7]
-    assert detail["tp_placeable_levels"] == [1, 2, 3]
+    assert detail["tp_placeable_levels"] == [1, 2]
+    assert detail["tp3_limit_placed"] is False
     assert format_tp_ratio_pct(3) == "10/20/70"
-    assert PLACEABLE_TP_LEVELS == frozenset({1, 2, 3})
-    assert placeable_tp_levels(tp3_limit_active=False) == frozenset({1, 2, 3})
+    assert PLACEABLE_TP_LEVELS == frozenset({1, 2})
+    assert placeable_tp_levels(tp3_limit_active=False) == frozenset({1, 2})
+    assert placeable_tp_levels(tp3_limit_active=True) == frozenset({1, 2})
 
 
 def test_remaining_qty_pct_from_consumed():

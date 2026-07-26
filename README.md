@@ -6,14 +6,14 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-07-25 · 白皮书 v3.0 · TP 10/20/70 + 硬止损垫固定1.15 + 雷达 fill±tp1_dist×(0.85/1.00) + 重入最多 1 次）**  
-> 凡与本文冲突的旧描述（「雷达扫出=失败离场」「查不到单就盲补」「硬止损=TV原价」「硬=ATR地板+滑点垫」「仅 TP1/TP2」「5 档递进 1.0→5.0」「arm 50/65/80/90/95」「buffer 1.1/1.2/1.3」「日亏熔断默认开」）**一律作废**。  
-> 权威：`docs/VPS_SYSTEM_SPEC_GEMINI_MULTIUSER.md`（Gemini 多用户完整规格）· `docs/WHITEPAPER_DUAL_RADAR_REENTRY_v3.md` · `docs/SMART_REENTRY_CLOSED_LOOP.md` · 部署：`docs/VPS_DEPLOY.md`
+> **文档同步（2026-07-26 · Gemini 多用户规格最终修正 · TP1/TP2 限价 + TP3 雷达管理 + ATR 仅用 TV）**  
+> 凡与本文冲突的旧描述（「TP3 挂限价并与雷达互斥」「VPS 独立拉 1h ATR / 场景切换」「雷达扫出=失败离场」「查不到单就盲补」「硬止损=TV原价」「硬=ATR地板+滑点垫」「日亏熔断默认开」）**一律作废**。  
+> 权威：`docs/VPS_SYSTEM_SPEC_GEMINI_MULTIUSER.md`（与桌面《VPS完整系统规格_Gemini多用户版》同步）· `docs/SMART_REENTRY_CLOSED_LOOP.md` · 部署：`docs/VPS_DEPLOY.md`
 
 ### 当前实盘一句话
 
-**硬止损是底线，雷达是骑士。** TP1 之前硬止损独自守护；价格走到 `fill±tp1_distance×0.85`（重入则×1.00）后雷达接管跟随。弱趋势收紧、强趋势放宽（ADX 0/1/2，可选 webhook `tier`）。重入最多一次，有窗口期，价格须优于上次开仓价。TP3 与雷达互斥。本地挂单标签 + 挂单硬帽≤5 + ETH/XAU 隔离。  
-**两次 TV 只有三条路**：①TP 止盈 ②雷达 BE/微赚扫出→更优价再入（≤1 次）③硬止损认输不重入。  
+**硬止损是底线，雷达是骑士。** TP1/TP2 限价兑现 10%/20%；**TP3（70%）永不挂限价**，全程雷达管理、无价格天花板。ATR **一律用 webhook `atr`（TV）**，VPS 不再独立拉取交易所 ATR。雷达首次激活用 (TP1+TP2)/2，重入用 TP2。重入最多一次。本地挂单标签 + 挂单硬帽≤5 + ETH/XAU 隔离。  
+**两次 TV 只有三条路**：①TP1/TP2 止盈（+雷达兑现剩余）②雷达 BE/微赚扫出→更优价再入（≤1 次）③硬止损认输不重入。  
 验收必须以：交易所空仓零挂单 + 本地/GitHub/VPS **三方 commit 同数字** + 日志/订单 JSON / 钉钉为准。
 
 ### 生产代码锚点
@@ -38,7 +38,7 @@
 | ② 重入判断 | 仅雷达轨 + 平仓价在保本~微赚区（ETH 0.5×ATR / XAU 0.3×ATR）+ **窗口内**（ETH 2×90m / XAU 3×45m）+ 累计重入=0。硬止损/亏损 → 永不重入 |
 | ③ 双保险价 | 多 `min(5m低+tick, TV×0.997)`；空 `max(5m高−tick, TV×1.003)`；须优于 TV **且** 优于上次开仓价 → 否则终止 |
 | ④ 挂限价 | **先查本地标签**；标签占用 → 绝对拒挂。`newClientOrderId` 幂等。TTL 5min |
-| ⑤ 成交保护 | fill 为原点：硬止损=`fill±(|TV.e−TV.SL|×**1.15**)` + TP1/TP2/TP3(10/20/70) + 雷达（**arm=1.00** + trail **+1 档**）。钉钉 `SMART_REENTRY_PROTECTED` |
+| ⑤ 成交保护 | fill 为原点：硬止损=`fill±(|TV.e−TV.SL|×**1.15**)` + **仅 TP1/TP2** 限价(10/20) + 雷达（ATR=`TV.atr`；arm=中点/TP2）。钉钉 `SMART_REENTRY_PROTECTED` |
 | ⑥ 档位 | ADX 弱/中/强（0/1/2，可选 webhook `tier`）；重入成功雷达 trail +1 档（封顶 2）、arm 改为 1.00；**最多重入 1 次** |
 | ⑦ 新 TV | 先清场归零，重置档位/标签/计数器，再开新方向 |
 
@@ -87,9 +87,9 @@
 #### 开仓链路（ETH / XAU 同一套）
 
 ```
-TV 入队 → 解析 → ATR 场景 → RISK20×5 算仓 → 市价开
-  → 永久硬止损 fill±(|TV.e−SL|×**1.15**) + TP1/TP2/TP3(10/20/70)
-  → 雷达武装(fill±tp1_distance×0.85；重入则×1.00)
+TV 入队 → 解析 → ATR=webhook.atr → RISK20×5 算仓 → 市价开
+  → 永久硬止损 fill±(|TV.e−SL|×**1.15**) + TP1/TP2(10/20)（TP3 不挂限价）
+  → 雷达武装(TV atr；首次 arm=(TP1+TP2)/2；重入 arm=TP2)
 ```
 
 不可读盘口时：**禁止再挂 TP/Stop、禁止 cancel_all、禁止把未知当已保护**。
@@ -97,24 +97,24 @@ TV 入队 → 解析 → ATR 场景 → RISK20×5 算仓 → 市价开
 **自查口令（独立于文字汇报）**  
 1. GitHub / 本地 / VPS `git rev-parse --short HEAD` 三数字一致。  
 2. 币安：仓位(0) + 当前委托(0) + 条件委托(0)。  
-3. 代码原样：`trend_tier_params.py` 内 ETH/XAU ADX 档表；`MAX_REENTRY=1`；`RADAR_ARM_TP1_PCT=0.85` / `RADAR_ARM_TP1_PCT_REENTRY=1.00`；`HARD_STOP_BUFFER_FIXED=1.15`。  
-4. 当面最小资金 LONG：应见 **硬止损1 + 雷达1 + TP限价（满额时 TP1+TP2+TP3；~20U 烟雾常因最小名义只成 TP3）**，钉钉杠杆 **5×**。
+3. 代码原样：`PLACEABLE_TP_LEVELS={1,2}`；`resolve_open_atr` 恒用 TV atr；`MAX_REENTRY=1`；`HARD_STOP_BUFFER_FIXED=1.15`。  
+4. 当面最小资金 LONG：应见 **硬止损1 + 雷达1 + TP限价仅 TP1+TP2（无 TP3 限价）**，钉钉杠杆 **5×**。
 
 ### 三层防线永久共存（核心，不得误解）
 
 | 层 | 规则 |
 |----|------|
-| **① 硬止损（永久防线）** | `dist=\|TV.price−TV.stop_loss\|×**1.15**`（全品种全档位固定）。挂单=`fill±dist`。无 ATR 地板、无滑点垫。例：1900/1874→fill 1900.80→**1870.90**。至 flat：**禁止**收紧/撤销。雷达不碰硬止损。**缺 SL 或距&lt;5 ticks → 拒开仓**。 |
-| **② 雷达止损（骑士守卫）** | `tp1_distance=\|TV.tp1−TV.price\|`；首次 `fill±dist×0.85`、重入 `fill±dist×1.00` 才启动；激活瞬间止损→开仓价±0.5×ATR；之后按档位步长/跟进/呼吸空间被动抬止损。与硬止损并行。启动前仅硬止损保护。 |
-| **③ TP 限价** | TP1/TP2/TP3 **始终** TV 价 **10%/20%/70%**。剩余 70% 上 TP3 与雷达**并行互斥**（谁先成交撤另一条）。 |
+| **① 硬止损（永久防线）** | `dist=\|TV.price−TV.stop_loss\|×**1.15**`（全品种全档位固定）。挂单=`fill±dist`。无 ATR 地板、无滑点垫。至 flat：**禁止**收紧/撤销。雷达不碰硬止损。**缺 SL 或距&lt;5 ticks → 拒开仓**。 |
+| **② 雷达止损（骑士守卫）** | ATR **仅用 TV webhook `atr`**。首次 `(TP1+TP2)/2`、重入 `TP2` 绝对价才启动；激活瞬间止损→开仓价±0.5×ATR；之后按档位步长/跟进/呼吸空间被动抬止损。与硬止损并行。启动前仅硬止损保护。 |
+| **③ TP 限价** | **仅 TP1/TP2** 挂 TV 价 **10%/20%**。**TP3（70%）永不挂限价**，完全交雷达管理（无价格天花板）。历史若曾挂过 TP3，开仓/退出路径必须撤掉遗留单。 |
 | 部分平仓 | TP 成交后仓位变 90%/70%/0：硬止损与雷达止损**数量同步收缩**，价格不变。 |
 | 归零清理 | 任一止损触发或全部 TP 成交 → 立即撤销其余挂单，不留孤儿单。 |
 
-#### 开仓瞬间（白皮书详细解说对齐）
+#### 开仓瞬间（规格最终修正对齐）
 
 1. **挂硬止损**（fill ± TV距×**1.15**；永冻）— 先于一切，禁止裸奔  
-2. **挂 TP1+TP2+TP3**（10/20/70）与 **启动 VPS 原生 1h ATR 拉取** 重叠执行  
-3. ATR 结果汇合后仅武装雷达（不改硬、不撤 TP3）；再确认硬止损仍在并**额外**挂雷达  
+2. **挂 TP1+TP2**（10/20）；若盘口仍有旧 TP3 限价 → **立刻撤掉**  
+3. **用 TV atr 武装雷达**（不拉交易所 ATR、无场景切换）；再确认硬止损仍在并**额外**挂雷达  
 
 #### Cursor 最易犯的错误（代码已闸）
 
@@ -355,7 +355,7 @@ panda-quant-platform/
 │   │   ├── breathing_stop.py                # ★ 呼吸止损 + 市价 TP 阶梯
 │   │   ├── adverse_radar_guard.py           # ★ 止损挂/改/触发 + TP后数量收缩
 │   │   ├── market_engine.py / market_indicators.py
-│   │   ├── tp_regime_targets.py             # PLACEABLE_TP_LEVELS={1,2,3} · 10/20/70
+│   │   ├── tp_regime_targets.py             # PLACEABLE_TP_LEVELS={1,2} · 10/20 + TP3雷达
 │   │   ├── tp_slice_guard.py / binance_smart_defense.py
 │   │   ├── startup_reconcile.py             # FORCE_ALIGN · 未登记接管 · 旧 schema
 │   │   ├── position_cap_guard.py            # 仅检测，不 trim
@@ -473,7 +473,7 @@ initialStop = 开仓价 ± 1.5 × VPS_ATR         # 仅挂止损，不算仓
 | 类别 | 删除项 |
 |------|--------|
 | 算仓 | 用 TV.qty / 止损距反推仓位当权威 |
-| 止盈 | 旧 30/30/40、仅 TP1/TP2、场景一撤 TP3 |
+| 止盈 | 旧「TP3 挂限价/与雷达互斥」、VPS 拉 ATR 场景切换（已反转为：TP3 永不挂限价、ATR 仅 TV） |
 | 硬止损 | ATR 地板 + 滑点垫公式 |
 | 旧雷达 | `activated`、0.85×TP1 激活、0.5/0.3 步进、固定 2.0×ATR 挂单价 |
 | 加仓 | PYRAMID / PROFIT_ADD / 加权均价重挂 |

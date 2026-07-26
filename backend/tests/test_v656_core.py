@@ -37,7 +37,7 @@ def test_sizing_checklist():
 def test_qty_ratios_from_payload():
     r = resolve_tp_ratios_from_payload({"qty1": 3, "qty2": 3, "qty3": 6})
     assert r == [0.1, 0.2, 0.7]
-    assert PLACEABLE_TP_LEVELS == frozenset({1, 2, 3})
+    assert PLACEABLE_TP_LEVELS == frozenset({1, 2})
 
 
 def test_arm_price_long_short_symmetric():
