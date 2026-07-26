@@ -153,9 +153,25 @@ def get_cached_position(
 
     try:
         from app.core.rest_symbol_pace import wait_turn
+        from app.core.rest_throttle_valve import ThrottleDenied, acquire_rest_permit
 
         # Shared all-account endpoint — pace by user, not per-symbol.
         wait_turn(exchange=exchange, user_id=user_id, symbol="_all_positions")
+        try:
+            acquire_rest_permit(
+                exchange=exchange, user_id=user_id, op="get_position",
+            )
+        except ThrottleDenied as td:
+            with _lock:
+                hit = _pos.get(k)
+                if hit is not None:
+                    logger.warning(
+                        "get_position throttle denied — serving stale (%s)",
+                        str(td)[:160],
+                    )
+                    return (hit.get("by_symbol") or {}).get(symbol)
+            raise_if_cooling(exchange=exchange, user_id=user_id, op="get_position")
+            raise
         rows = list(fetch_all() or [])
         by_sym: dict[str, dict] = {}
         for row in rows:
@@ -221,8 +237,23 @@ def get_cached_open_orders(
 
     try:
         from app.core.rest_symbol_pace import wait_turn
+        from app.core.rest_throttle_valve import ThrottleDenied, acquire_rest_permit
 
         wait_turn(exchange=exchange, user_id=user_id, symbol="_all_orders")
+        try:
+            acquire_rest_permit(
+                exchange=exchange, user_id=user_id, op="get_open_orders",
+            )
+        except ThrottleDenied as td:
+            with _lock:
+                hit = _orders.get(k)
+                if hit is not None:
+                    logger.warning(
+                        "get_open_orders throttle denied — serving stale (%s)",
+                        str(td)[:160],
+                    )
+                    return list((hit.get("by_symbol") or {}).get(symbol) or [])
+            return []
         rows = list(fetch_all() or [])
         by_sym: dict[str, list[dict]] = {}
         for row in rows:
@@ -285,6 +316,22 @@ def get_cached_algo_orders(
         return []
 
     try:
+        from app.core.rest_throttle_valve import ThrottleDenied, acquire_rest_permit
+
+        try:
+            acquire_rest_permit(
+                exchange=exchange, user_id=user_id, op="get_algo_orders",
+            )
+        except ThrottleDenied as td:
+            with _lock:
+                hit = _algo.get(k)
+                if hit is not None:
+                    logger.warning(
+                        "get_algo_orders throttle denied — serving stale (%s)",
+                        str(td)[:160],
+                    )
+                    return list((hit.get("by_symbol") or {}).get(symbol) or [])
+            return []
         by_sym = dict(fetch_for_symbols(list(symbols)) or {})
         with _lock:
             _algo[k] = {"fetched_at": time.time(), "by_symbol": by_sym}

@@ -245,6 +245,19 @@ class PositionSupervisor(
         self.on_log(self.user_id, event_type, msg, payload, self.current_trade_id)
 
     def _alert(self, severity: str, alert_type: str, title: str, message: str, detail: dict | None = None):
+        try:
+            from app.core.pipeline_officers import CommunicationsOfficer
+
+            if not CommunicationsOfficer.allow_notify(self, alert_type, severity):
+                logger.info(
+                    "[User %s] notify held by CommunicationsOfficer type=%s sev=%s",
+                    self.user_id,
+                    alert_type,
+                    severity,
+                )
+                return
+        except Exception:
+            pass
         payload = dict(detail or {})
         can = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
         if can:
@@ -628,6 +641,12 @@ class PositionSupervisor(
             f"TV → {payload.get('action')} bar={payload.get('bar_index')} seq={payload.get('seq')}",
             signal_detail,
         )
+        try:
+            from app.core.pipeline_officers import SignalOfficer
+
+            SignalOfficer.receive(self, payload)
+        except Exception:
+            pass
         raw_action = str(payload.get("action", "")).upper()
 
         # UPDATE_TP before mutating regime/atr/tv_sl — only replaces TP limits.
@@ -1937,6 +1956,15 @@ class PositionSupervisor(
         entry_meta = self._place_tv_entry_order(action, qty, limit_px)
         sizing_meta["entry_order"] = entry_meta
         sizing_meta["order_qty"] = float(qty)
+        try:
+            from app.core.pipeline_officers import ExecutionOfficer, PositionAuditor
+
+            PositionAuditor.request_clear(self)
+            if not PositionAuditor.needs_exchange_verify(self):
+                PositionAuditor.mark_cleared(self, reason="ledger_flat")
+            ExecutionOfficer.mark_entry_submitted(self)
+        except Exception:
+            pass
         time.sleep(1.2)
 
         pos = self.position_manager.get_position(self.symbol)
@@ -1947,7 +1975,19 @@ class PositionSupervisor(
             # 开仓宽限：禁止立刻 CAP 市价减仓；trade_opened_at 先打点供 grace 判定
             self.trade_opened_at = time.time()
             self.base_qty = real_qty
-            self.initial_qty = real_qty
+            if hasattr(self, "_set_open_qty_baseline"):
+                self._set_open_qty_baseline(real_qty, reason="tv_open")
+            else:
+                self.initial_qty = real_qty
+            try:
+                from app.core.pipeline_officers import ExecutionOfficer, PositionAuditor
+
+                PositionAuditor.mark_cleared(self, reason="entry_fill")
+                ExecutionOfficer.mark_entry_confirmed(
+                    self, qty=real_qty, entry=entry_price, side=action,
+                )
+            except Exception:
+                pass
             self.add_count = 0
             self.consumed_tp_levels = []
             if hasattr(self, "_seed_tier0_on_open"):
@@ -2227,6 +2267,21 @@ class PositionSupervisor(
                 qty_f,
             )
             return []
+        # ExecutionOfficer self-check: TP1+TP2 must be ≈30% of open baseline
+        try:
+            from app.core.pipeline_officers import ExecutionOfficer
+
+            anchor = float(getattr(self, "initial_qty", 0) or qty_f or 0)
+            ok, detail = ExecutionOfficer.self_check_tp_slices(anchor if anchor > 0 else qty_f, out)
+            if not ok and out:
+                logger.error(
+                    "[User %s] TP slice self-check refuse: %s",
+                    getattr(self, "user_id", "?"),
+                    detail,
+                )
+                return []
+        except Exception:
+            pass
         return out
 
     def _open_tp_prices_on_book(self) -> list[float]:
@@ -4052,6 +4107,21 @@ class PositionSupervisor(
                 self._last_protect_result = out
                 return out
         self._save_state()
+        try:
+            from app.core.pipeline_officers import run_post_open_pipeline
+
+            slices = []
+            if hasattr(self, "_compute_tp_slices"):
+                try:
+                    slices = self._compute_tp_slices(
+                        float(getattr(self, "initial_qty", 0) or getattr(self, "watched_qty", 0) or 0),
+                        exclude_levels={3},
+                    )
+                except Exception:
+                    slices = []
+            run_post_open_pipeline(self, slices)
+        except Exception as e:
+            logger.warning("[User %s] post-open pipeline: %s", self.user_id, e)
         threading.Thread(target=self._sentinel_loop, daemon=True).start()
         out = {
             "ok": True,
@@ -4554,6 +4624,23 @@ class PositionSupervisor(
         self, trigger: str = "sentinel_zero", *, skip_eager_purge: bool = False,
     ) -> bool:
         """Confirm flat, attribute cause, book-close, and detect false-flat / sync issues."""
+        try:
+            from app.core.trade_ledger import TradePhase, ledger_for
+
+            led = ledger_for(self)
+            led.advance(TradePhase.FLAT, reason=trigger, force=True)
+            # 空仓后自动清 pause（督察/账本一致）— 仅当 pause 原因为审计类
+            reason = str(getattr(self, "trading_pause_reason", "") or "")
+            if bool(getattr(self, "trading_paused", False)) and reason in (
+                "chief_auditor_fail",
+                "open_orders_gt_5",
+            ):
+                self.trading_paused = False
+                self.trading_pause_reason = ""
+                led.note_event("AUTO_UNPAUSE_ON_FLAT", {"was": reason})
+                led.persist()
+        except Exception:
+            pass
         # If TP3 still tracked, treat flat as possible radar-first and mutex-cancel TP3
         if (
             not skip_eager_purge
@@ -5006,6 +5093,19 @@ class PositionSupervisor(
             try:
                 ban_left = self._position_query_ban_remaining_sec()
                 paused = bool(getattr(self, "trading_paused", False))
+                try:
+                    from app.core.rest_throttle_valve import sentinel_may_rest
+
+                    may, why = sentinel_may_rest(
+                        exchange=getattr(self, "exchange_id", None),
+                        user_id=getattr(self, "user_id", None),
+                        trading_paused=paused,
+                    )
+                    if not may:
+                        ban_left = max(ban_left, 5.0)
+                        paused = paused or why == "trading_paused"
+                except Exception:
+                    pass
                 if ban_left > 0 or paused:
                     # Cool-down / trading pause: no REST position or gap-fill.
                     # Breath on last-known qty + WS px only (币安单系 v16.4.1/2).

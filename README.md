@@ -6,14 +6,15 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-07-27 · 管理员可按用户调保证金占比/杠杆 · Gemini 多用户规格最终修正）**  
+> **文档同步（2026-07-27 · 生产流水线账本 pipeline-ledger-v1 · 管理员可按用户调保证金占比/杠杆）**  
 > 凡与本文冲突的旧描述（「TP3 挂限价并与雷达互斥」「VPS 独立拉 1h ATR / 场景切换」「雷达扫出=失败离场」「查不到单就盲补」「硬止损=TV原价」「硬=ATR地板+滑点垫」「日亏熔断默认开」「杠杆/仓位永远硬编码不可改」）**一律作废**。  
 > 权威：`docs/VPS_SYSTEM_SPEC_GEMINI_MULTIUSER.md`（与桌面《VPS完整系统规格_Gemini多用户版》同步）· `docs/SMART_REENTRY_CLOSED_LOOP.md` · 部署：`docs/VPS_DEPLOY.md`  
-> **事故对照（优先）**：`docs/SYSTEM_ISSUE_FIX_LOG.md` — 现象→根因→修复→复查点；含 **v16.4.2-incident-harden**（基线不压扁 / IP cool 180s+_GLOBAL / placeable 30% 对账 / pause·cool 停 REST）。
+> **事故对照（优先）**：`docs/SYSTEM_ISSUE_FIX_LOG.md` — 现象→根因→修复→复查点；含 **v16.4.2-incident-harden** + **pipeline-ledger-v1**（TradeLedger 状态机 / 岗位交接 / 督察官 / REST 阀门）。
 
 ### 当前实盘一句话
 
 **硬止损是底线，雷达是骑士。** TP1/TP2 限价兑现 10%/20%；**TP3（70%）永不挂限价**，全程雷达管理、无价格天花板。ATR **一律用 webhook `atr`（TV）**，VPS 不再独立拉取交易所 ATR。雷达首次激活用 (TP1+TP2)/2，重入用 TP2。重入最多一次。本地挂单标签 + 挂单硬帽≤5 + ETH/XAU 隔离。  
+开仓链路按 **流水线岗位** 交接：信号官 → 准入官 → 仓位稽查 → 执行官（TP 自检≈30%）→ 督察官（VERIFIED）→ 通讯官（钉钉）；账本 `data/supervisor/ledgers/`。暂停/冷却时哨兵**禁止 REST**，优先读账本/缓存。  
 **两次 TV 只有三条路**：①TP1/TP2 止盈（+雷达兑现剩余）②雷达 BE/微赚扫出→更优价再入（≤1 次）③硬止损认输不重入。  
 验收必须以：交易所空仓零挂单 + 本地/GitHub/VPS **三方 commit 同数字** + 日志/订单 JSON / 钉钉为准。
 
@@ -185,11 +186,16 @@ rules:
   - on Binance -1003: ip_rest_cooldown shared 90s; no cancel_all when book unreadable
   - sizing = equity * margin_pct * leverage / price; default 0.20×5; admin per-user override; ignore TV qty
   - admin_sizing: /admin → user detail → margin% + leverage (next open)
+  - pipeline: Signal→Admission→Auditor→Execution(TP≈30% self-check)→ChiefAuditor→Comms; ledger under data/supervisor/ledgers/
+  - REST valve: rest_throttle_valve; sentinel_may_rest blocks pause/cool; book cache prefers stale
   - E2E_FORCE_NOTIONAL_USD=0 in production; wait real TV
   - three-way commit: local = GitHub = VPS
 
 modules:
   sizing: backend/app/core/tv_entry_sizing.py
+  ledger: backend/app/core/trade_ledger.py
+  officers: backend/app/core/pipeline_officers.py
+  rest_valve: backend/app/core/rest_throttle_valve.py
   trend_tiers: backend/app/core/trend_tier_params.py
   hard_sl: backend/app/core/breathing_stop.py::compute_temp_tv_stop
   open_atr: backend/app/core/open_atr_scenario.py

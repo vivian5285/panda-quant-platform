@@ -373,6 +373,20 @@ class SignalDispatcher:
                         "reason": "api_inactive",
                     })
                     continue
+                try:
+                    from app.core.pipeline_officers import AdmissionOfficer
+
+                    ok_admit, admit_reason = AdmissionOfficer.admit(user)
+                    if not ok_admit:
+                        results.append({
+                            "user_id": s.user_id,
+                            "symbol": signal_symbol,
+                            "status": "risk_blocked",
+                            "reason": admit_reason,
+                        })
+                        continue
+                except Exception:
+                    pass
                 if not is_exchange_enabled(user_exchange(user)):
                     results.append({
                         "user_id": s.user_id,

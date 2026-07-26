@@ -10,6 +10,7 @@
 
 | 日期 | 标签 | 一句话 | 状态 |
 |------|------|--------|------|
+| 2026-07-27 | `pipeline-ledger-v1` | 统一 TradeLedger+岗位流水线+督察+REST阀门（全交易所） | 已修 · §9 |
 | 2026-07-26 | `open_orders_gt_5` + `-1003` + TG 风暴 | 雷达 thrash + stale book + 暂停重复告警 → 硬帽熔断刷屏 | 已修 · 对照下方 §1 |
 | 2026-07-26 | `initial_qty` 压扁 | 监控中把开仓基线压成余仓 → TP 对账错乱 | 已修 · §2 |
 | 2026-07-26 | IP REST 冷却 / `_GLOBAL` | `-1003` 后哨兵/巡检继续打 REST；ETH/XAU 未同停 | 已修 · §3 |
@@ -302,14 +303,45 @@
 
 ---
 
+## §9 · pipeline-ledger-v1（全域生产级流水线 · 2026-07-27）
+
+### 现象
+
+今日实盘多点故障（TP 切片吞仓、限流螺旋、暂停不生效、OPEN 钉钉抢跑）同源：各模块凭本地记忆判断，无统一交接状态。
+
+### 根因
+
+无「总账本 + 岗位边界 + 督察结案」。通讯在 VERIFIED 前即发 OPEN；哨兵在 cool/pause 下仍可打 REST；TP 自检不统一。
+
+### 修复
+
+| 模块 | 行为 |
+|------|------|
+| `trade_ledger.py` | 用户-交易所-品种账本；状态机 SIGNAL→…→VERIFIED→REPORTED / FLAT / FAILED |
+| `pipeline_officers.py` | 信号/准入/稽查/执行(TP≈30%自检)/督察/通讯门禁 |
+| `rest_throttle_valve.py` | 账户维 REST 预算 + cool；`sentinel_may_rest` |
+| Binance/OKX/Gate + DeepCoin | 开仓链路挂账；挂单后 `run_post_open_pipeline`；flat 自动清审计类 pause |
+| `rest_book_cache.py` | 刷新前 `acquire_rest_permit`，拒绝则 stale |
+| `dispatcher.py` | `AdmissionOfficer.admit` |
+
+### 复查点
+
+- [ ] 开仓后 `data/supervisor/ledgers/ledger_*.json` 相位到 VERIFIED/REPORTED  
+- [ ] TP1+TP2 自检失败 → 拒挂 + 督察 FAIL 暂停  
+- [ ] cool/pause 下哨兵无新 REST；账本优先  
+- [ ] OPEN/DEFENSE 钉钉在 VERIFIED 前被 CommunicationsOfficer 拦截（critical 放行）  
+- [ ] 本地 = GitHub = VPS 同 commit
+
+---
+
 ## 版本与部署对照
 
 | 项 | 说明 |
 |----|------|
-| 标签 | `v16.4.2-incident-harden` + 雷达 qty 贴合 |
+| 标签 | `pipeline-ledger-v1` + `v16.4.2-incident-harden` |
 | 三方同步 | 本地 = GitHub `main` = VPS `git rev-parse --short HEAD` **同数字** |
 | VPS | `/home/panda/panda-quant-platform` · `docker compose` backend |
-| 部署后最小验证 | ① pause 幂等 ② cool 180+_GLOBAL ③ TP1/TP2 后基线不降 ④ consumed 无 3 ⑤ pause/cool 无 REST ⑥ 雷达 qty=余仓 |
+| 部署后最小验证 | ① 账本相位 ② TP 自检 ③ pause/cool 无 REST ④ 通讯门禁 ⑤ 全交易所同行为 |
 
 ---
 

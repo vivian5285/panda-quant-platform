@@ -356,6 +356,18 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         message: str,
         detail: dict | None = None,
     ):
+        try:
+            from app.core.pipeline_officers import CommunicationsOfficer
+
+            if not CommunicationsOfficer.allow_notify(self, alert_type, severity):
+                logger.info(
+                    "notify held by CommunicationsOfficer type=%s sev=%s",
+                    alert_type,
+                    severity,
+                )
+                return
+        except Exception:
+            pass
         payload = dict(detail or {})
         can = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
         if can:
@@ -1293,6 +1305,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 qty_f,
             )
             return []
+        try:
+            from app.core.pipeline_officers import ExecutionOfficer
+
+            anchor = float(self._safe_qty(getattr(self, "initial_qty", 0) or qty_f) or 0)
+            ok, detail = ExecutionOfficer.self_check_tp_slices(anchor if anchor > 0 else qty_f, out)
+            if not ok and out:
+                logger.error("DeepCoin TP slice self-check refuse: %s", detail)
+                return []
+        except Exception:
+            pass
         return out
 
     def _sync_consumed_tp_levels(self, live_qty, curr_px):
@@ -2753,6 +2775,13 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if blocked:
             return blocked
 
+        try:
+            from app.core.pipeline_officers import SignalOfficer
+
+            SignalOfficer.receive(self, payload)
+        except Exception:
+            pass
+
         # UPDATE_TP before mutating regime/atr/tv_sl — only replaces TP limits.
         if raw_action == "UPDATE_TP":
             if not self._lock.acquire(timeout=120.0):
@@ -3019,6 +3048,22 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
     def _handle_manual_flat_detected(self, reason, *, skip_eager_purge=False):
         """人工全平 / 止盈吃满：立即撤 TP123 并智能复位账本"""
         logger.info(f"📭 感知空仓: {reason}")
+        try:
+            from app.core.trade_ledger import TradePhase, ledger_for
+
+            led = ledger_for(self)
+            led.advance(TradePhase.FLAT, reason=str(reason or "manual_flat")[:80], force=True)
+            pause_reason = str(getattr(self, "trading_pause_reason", "") or "")
+            if bool(getattr(self, "trading_paused", False)) and pause_reason in (
+                "chief_auditor_fail",
+                "open_orders_gt_5",
+            ):
+                self.trading_paused = False
+                self.trading_pause_reason = ""
+                led.note_event("AUTO_UNPAUSE_ON_FLAT", {"was": pause_reason})
+                led.persist()
+        except Exception:
+            pass
         if not skip_eager_purge:
             self._purge_defense_orders_on_flat("manual_flat", notify=True)
         self.monitoring = False
@@ -3490,6 +3535,15 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self._last_open_sizing_meta["leverage"] = leverage
         entry_meta = self._place_tv_entry_order(action, qty, limit_px)
         self._last_open_sizing_meta["entry_order"] = entry_meta
+        try:
+            from app.core.pipeline_officers import ExecutionOfficer, PositionAuditor
+
+            PositionAuditor.request_clear(self)
+            if not PositionAuditor.needs_exchange_verify(self):
+                PositionAuditor.mark_cleared(self, reason="ledger_flat")
+            ExecutionOfficer.mark_entry_submitted(self)
+        except Exception:
+            pass
         time.sleep(1.2)
 
         pos = self._get_active_position()
@@ -3504,6 +3558,15 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 self._set_open_qty_baseline(real_qty, reason="tv_open")
             else:
                 self.initial_qty = real_qty
+            try:
+                from app.core.pipeline_officers import ExecutionOfficer, PositionAuditor
+
+                PositionAuditor.mark_cleared(self, reason="entry_fill")
+                ExecutionOfficer.mark_entry_confirmed(
+                    self, qty=real_qty, entry=entry_price, side=action,
+                )
+            except Exception:
+                pass
             self.add_count = 0
             self.consumed_tp_levels = []
             self._tp_fill_dingtalk_levels = set()
@@ -3803,6 +3866,27 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             return out
 
         self._save_state()
+        try:
+            from app.core.pipeline_officers import ExecutionOfficer, run_post_open_pipeline
+
+            ExecutionOfficer.mark_entry_confirmed(
+                self,
+                qty=float(getattr(self, "watched_qty", 0) or qty or 0),
+                entry=float(getattr(self, "watched_entry", 0) or entry_price or 0),
+                side=str(getattr(self, "current_side", "") or ""),
+            )
+            slices = []
+            if hasattr(self, "_compute_tp_slices"):
+                try:
+                    slices = self._compute_tp_slices(
+                        float(getattr(self, "initial_qty", 0) or getattr(self, "watched_qty", 0) or 0),
+                        exclude_levels={3},
+                    )
+                except Exception:
+                    slices = []
+            run_post_open_pipeline(self, slices)
+        except Exception as e:
+            logger.warning("DeepCoin post-open pipeline: %s", e)
         threading.Thread(target=self._sentinel_loop, daemon=True).start()
         out = {
             "ok": True,
@@ -3986,6 +4070,19 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             try:
                 ban_left = self._position_query_ban_remaining_sec()
                 paused = bool(getattr(self, "trading_paused", False))
+                try:
+                    from app.core.rest_throttle_valve import sentinel_may_rest
+
+                    may, why = sentinel_may_rest(
+                        exchange=getattr(self, "exchange_id", None) or "deepcoin",
+                        user_id=getattr(self, "user_id", None),
+                        trading_paused=paused,
+                    )
+                    if not may:
+                        ban_left = max(ban_left, 5.0)
+                        paused = paused or why == "trading_paused"
+                except Exception:
+                    pass
                 if ban_left > 0 or paused:
                     # Cool-down / trading pause: no REST position (Binance parity).
                     self._ensure_price_ws()
