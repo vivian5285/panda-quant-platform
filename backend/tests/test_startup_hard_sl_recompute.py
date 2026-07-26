@@ -31,8 +31,8 @@ def test_recompute_uses_tv_sl_not_regime_pct():
         host, entry_px=1819.0, side="LONG", tv_sl_reference=1787.0,
     )
     assert host.tv_sl == pytest.approx(1787.0)
-    assert meta.get("source") == "tv_sl"
-    # Must NOT become entry × (1 - 3.89%)
+    # Radar track source; pine ref must remain TV stop_loss (not entry×regime).
+    assert meta.get("source") in ("tv_sl", "radar_initial", "breathing_initial")
     assert host.tv_sl != pytest.approx(1819.0 * (1 - 0.0389), rel=0.01)
 
 

@@ -76,3 +76,44 @@ def test_arm_heals_polluted_tv_sl_hang_back_to_pine():
     assert abs(float(h.tv_sl) - pine) < 1e-6
     assert abs(float(h._tv_stop_loss_ref) - pine) < 1e-6
     assert float(h._frozen_hard_stop_px) < pine
+
+
+def test_recovery_does_not_seed_pine_from_hang():
+    """Restart must not treat frozen hang as TradingView stop_loss."""
+    from app.core.startup_reconcile import recompute_vps_hard_sl_on_recovery
+
+    class Sup:
+        watched_entry = 1886.3
+        tv_price = 1885.13
+        current_side = "LONG"
+        adopted_manual = False
+        tv_sl = 1874.6410889946649
+        _tv_stop_loss_ref = 1874.6410889946649
+        _pending_open_tv_sl = 0.0
+        _frozen_hard_stop_px = 1874.6410889946649
+        _tv_hard_sl_price = 1874.6410889946649
+        current_atr = 7.8
+        regime = 3
+        last_tv_signal = None
+        last_payload = None
+
+        def _uses_dual_stop_track(self):
+            return True
+
+        def _recompute_vps_hard_sl(self, entry_px=None, *, payload=None, side=None):
+            self.last_payload = dict(payload or {})
+            return {"stop_price": 1870.0}
+
+    sup = Sup()
+    recompute_vps_hard_sl_on_recovery(sup)
+    payload = sup.last_payload or {}
+    assert "stop_loss" not in payload
+    assert "tv_sl" not in payload
+
+    pine = 1874.9918165171
+    recompute_vps_hard_sl_on_recovery(sup, tv_sl_reference=pine)
+    payload2 = sup.last_payload or {}
+    assert abs(float(payload2.get("stop_loss")) - pine) < 1e-6
+    assert abs(float(sup._frozen_hard_stop_px) - 1874.6410889946649) < 1e-6
+    assert abs(float(sup.tv_sl) - pine) < 1e-6
+    assert abs(float(sup._tv_stop_loss_ref) - pine) < 1e-6

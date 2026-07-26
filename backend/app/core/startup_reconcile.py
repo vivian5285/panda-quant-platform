@@ -89,13 +89,33 @@ def recompute_vps_hard_sl_on_recovery(
     adopted = bool(getattr(supervisor, "adopted_manual", False))
     ref = 0.0 if adopted else float(tv_sl_reference or 0)
     if not adopted:
+        # Pine only — never seed from hang (_tv_hard_sl_price / frozen).
+        def _is_pine(cand: float) -> bool:
+            if cand <= 0:
+                return False
+            # Identical to frozen hard ⇒ hang pollution, not TradingView stop_loss.
+            if frozen_before > 0 and abs(cand - frozen_before) <= 1e-6:
+                return False
+            return True
+
+        if not _is_pine(ref):
+            ref = 0.0
         if ref <= 0:
-            ref = float(getattr(supervisor, "_tv_hard_sl_price", 0) or 0)
+            for key in ("_tv_stop_loss_ref", "_pending_open_tv_sl"):
+                cand = float(getattr(supervisor, key, 0) or 0)
+                if _is_pine(cand):
+                    ref = cand
+                    break
+        if ref <= 0:
+            cand = float(getattr(supervisor, "tv_sl", 0) or 0)
+            if _is_pine(cand):
+                ref = cand
         if ref <= 0:
             ref = extract_tv_sl_reference(
                 getattr(supervisor, "last_tv_signal", None),
-                {"tv_sl": getattr(supervisor, "tv_sl", 0)},
             )
+            if not _is_pine(ref):
+                ref = 0.0
     payload: dict = {
         "regime": int(getattr(supervisor, "regime", 3) or 3),
         "atr": float(getattr(supervisor, "current_atr", 0) or 30.0),
@@ -104,8 +124,12 @@ def recompute_vps_hard_sl_on_recovery(
         payload["tv_sl"] = ref
         payload["stop_loss"] = ref
         # Dual: keep Pine ref only; frozen hard restored below (never ATR as hard).
-        if hasattr(supervisor, "tv_sl") and float(getattr(supervisor, "tv_sl", 0) or 0) <= 0:
+        if hasattr(supervisor, "tv_sl"):
             supervisor.tv_sl = ref
+            if hasattr(supervisor, "_tv_stop_loss_ref"):
+                supervisor._tv_stop_loss_ref = ref
+            if hasattr(supervisor, "_pending_open_tv_sl"):
+                supervisor._pending_open_tv_sl = ref
     meta = supervisor._recompute_vps_hard_sl(entry_px=entry, side=side_u, payload=payload)
     # Permanence: restore pre-recovery frozen hard if recompute tried to drift identity.
     dual = bool(
@@ -117,11 +141,11 @@ def recompute_vps_hard_sl_on_recovery(
         if isinstance(meta, dict):
             meta["frozen_hard"] = frozen_before
             meta["hard_restored_on_recovery"] = True
-    new_sl = float(meta.get("stop_price") or 0)
-    if prev_sl > 0 and new_sl > 0:
+    new_sl = float(meta.get("stop_price") or 0) if isinstance(meta, dict) else 0.0
+    if prev_sl > 0 and new_sl > 0 and isinstance(meta, dict):
         meta["prev_sl"] = prev_sl
         meta["sl_changed"] = abs(new_sl - prev_sl) > ADVERSE_STOP_TOLERANCE
-    return meta
+    return meta if isinstance(meta, dict) else {}
 
 
 def live_matches_tv_direction(reconcile: dict | None, live_side: str | None) -> bool:
