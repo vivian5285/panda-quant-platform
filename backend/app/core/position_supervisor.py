@@ -1185,11 +1185,27 @@ class PositionSupervisor(
         """ALL working/conditional orders on this symbol. Flat-before-open requires 0.
 
         Returns -1 on fetch failure (fail-closed: treat as dirty).
+        During IP cool-down, rest_book_cache may serve a stale >5 snapshot — that must
+        NOT trip open_orders_gt_5 forever. Return -1 so hard-cap skips fresh pause.
         """
         symbol = getattr(self, "symbol", None)
         client = getattr(self, "client", None)
         if not symbol or not client:
             return -1
+        try:
+            from app.core.ip_rest_cooldown import remaining_sec
+
+            cool = float(
+                remaining_sec(
+                    exchange=str(getattr(self, "exchange_id", None) or "binance"),
+                    user_id=getattr(self, "user_id", 0),
+                )
+                or 0
+            )
+            if cool > 0:
+                return -1
+        except Exception:
+            pass
         rows: list = []
         try:
             if hasattr(client, "_invalidate_book_cache"):

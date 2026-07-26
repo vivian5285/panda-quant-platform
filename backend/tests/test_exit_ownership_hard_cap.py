@@ -13,8 +13,10 @@ class _H(AdverseRadarMixin):
     user_id = 6
     symbol = "ETHUSDT"
     canonical_symbol = "ETHUSDT"
-    alerts = []
-    paused = []
+
+    def __init__(self):
+        self.alerts = []
+        self.paused = []
 
     def _alert(self, sev, typ, title, msg, detail=None):
         self.alerts.append((sev, typ, title))
@@ -49,3 +51,34 @@ def test_open_orders_hard_cap_pauses():
     h2._init_adverse_radar_fields()
     h2._count_raw_exchange_orders = lambda: OPEN_ORDERS_HARD_CAP
     assert h2._enforce_open_orders_hard_cap() is False
+
+
+def test_pause_trading_idempotent_no_realert():
+    """Same pause reason must not alert every breath tick (TG storm)."""
+    h = _H()
+    h.trading_paused = False
+    h.trading_pause_reason = ""
+    AdverseRadarMixin._pause_trading(h, "open_orders_gt_5", {"n": 6})
+    assert h.trading_paused is True
+    assert len(h.alerts) == 1
+    AdverseRadarMixin._pause_trading(h, "open_orders_gt_5", {"n": 6})
+    assert len(h.alerts) == 1
+    AdverseRadarMixin._pause_trading(h, "other_reason", {})
+    assert len(h.alerts) == 2
+
+
+def test_hard_cap_already_paused_no_recount_storm():
+    h = _H()
+    h._init_adverse_radar_fields()
+    h.trading_paused = True
+    h.trading_pause_reason = f"open_orders_gt_{OPEN_ORDERS_HARD_CAP}"
+    calls = {"n": 0}
+
+    def _count():
+        calls["n"] += 1
+        return 99
+
+    h._count_raw_exchange_orders = _count
+    assert h._enforce_open_orders_hard_cap() is True
+    assert calls["n"] == 0
+    assert h.paused == []

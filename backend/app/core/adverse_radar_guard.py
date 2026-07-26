@@ -507,15 +507,23 @@ class AdverseRadarMixin:
                 pass
 
     def _pause_trading(self, reason: str, detail: dict | None = None) -> None:
-        """Checklist §七: missing persist / direction mismatch → alert + pause opens."""
+        """Checklist §七: missing persist / direction mismatch → alert + pause opens.
+
+        Idempotent: already paused with the same reason must NOT re-alert every tick
+        (TG/DingTalk storm when hard-cap keeps firing on stale book).
+        """
         self._init_adverse_radar_fields()
+        reason_s = str(reason or "paused")
+        already = bool(self.trading_paused) and str(self.trading_pause_reason or "") == reason_s
         self.trading_paused = True
-        self.trading_pause_reason = str(reason or "paused")
+        self.trading_pause_reason = reason_s
         if hasattr(self, "_save_state"):
             try:
                 self._save_state()
             except Exception:
                 pass
+        if already:
+            return
         if hasattr(self, "_alert"):
             try:
                 self._alert(
@@ -650,7 +658,15 @@ class AdverseRadarMixin:
         return False
 
     def _enforce_open_orders_hard_cap(self) -> bool:
-        """TOTAL open orders > OPEN_ORDERS_HARD_CAP → critical + pause. Returns True if over."""
+        """TOTAL open orders > OPEN_ORDERS_HARD_CAP → critical + pause. Returns True if over.
+
+        Already-paused hard-cap stays latched (block defense) but must not re-alert.
+        Unreadable / cool-down stale counts (n < 0) never trip a fresh pause.
+        """
+        self._init_adverse_radar_fields()
+        reason = f"open_orders_gt_{OPEN_ORDERS_HARD_CAP}"
+        if bool(self.trading_paused) and str(self.trading_pause_reason or "") == reason:
+            return True
         if not hasattr(self, "_count_raw_exchange_orders"):
             return False
         try:
@@ -671,10 +687,7 @@ class AdverseRadarMixin:
         }
         if hasattr(self, "_pause_trading"):
             try:
-                self._pause_trading(
-                    f"open_orders_gt_{OPEN_ORDERS_HARD_CAP}",
-                    detail,
-                )
+                self._pause_trading(reason, detail)
             except Exception:
                 pass
         elif hasattr(self, "_alert"):
