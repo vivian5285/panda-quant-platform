@@ -2180,26 +2180,39 @@ class PositionSupervisor(
     def _sync_consumed_tp_levels(self, live_qty: float, curr_px: float) -> list[int]:
         """Exchange-first: qty+book+price evidence merge (never mark TP1 on full open).
 
-        Also mark contiguous tiers already past by mark/peak so restart never
-        rehangs TP1 when price already through (only TP2/TP3 + radar).
+        Also mark contiguous placeable tiers past by mark/peak so restart never
+        rehangs TP1 when price already through (TP2 + radar; TP3 never hung).
+
+        Placeable-only past/consume: mark through TV tp3 must NOT invent
+        consumed=[…,3] / false TP3 drift (币安单系 v16.4.2 · TP1+TP2≈30% 对账).
         """
         from app.core.tp_slice_guard import compute_tp_slices, levels_past_by_mark
+        from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
 
         anchor = float(self.initial_qty or live_qty)
         live = float(live_qty or 0)
         is_dc = self.exchange_id == "deepcoin"
         tol = tp_slice_qty_tolerance(anchor, is_contracts=is_dc)
+        # Fill accounting uses placeable slices only (10%+20%=30%); TP3 is radar residual.
         slices = compute_tp_slices(
-            anchor, self.regime, self.tv_tps, self.regime_settings, exclude_levels=set(),
+            anchor,
+            self.regime,
+            self.tv_tps,
+            self.regime_settings,
+            exclude_levels={3} - set(PLACEABLE_TP_LEVELS),
         )
         reduced = abs(anchor - live)
         tp1_slice = float(slices[0][1]) if slices else 0.0
-        past_early = levels_past_by_mark(
-            float(curr_px or 0),
-            self.current_side,
-            list(self.tv_tps or []),
-            peak_px=float(getattr(self, "best_price", 0) or 0),
-        )
+        past_early = {
+            int(x)
+            for x in levels_past_by_mark(
+                float(curr_px or 0),
+                self.current_side,
+                list(self.tv_tps or []),
+                peak_px=float(getattr(self, "best_price", 0) or 0),
+            )
+            if int(x) in PLACEABLE_TP_LEVELS
+        }
         # 仅「真·误记账」才清 consumed：仓位仍满仓 + 现价未过 TP + 盘口上该档限价仍在。
         # 禁止在「TP 5min 超时撤单后 live==anchor」时清空 — 那会立刻触发核武重挂，
         # 与「超时移交·禁止重挂」铁律冲突，并在撤单滞后时叠出重复 TP。
@@ -2259,12 +2272,13 @@ class PositionSupervisor(
             peak_px=float(getattr(self, "best_price", 0) or 0),
         )
         past = past_early
-        # 只增不减：哨兵已确认的档位不被盘口延迟/短暂回挂抹掉
-        prev = {int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3)}
+        # 只增不减；仅 placeable 档（TP1/TP2）进入 consumed — 禁止假 TP3
+        placeable = set(PLACEABLE_TP_LEVELS)
+        prev = {int(x) for x in (self.consumed_tp_levels or []) if int(x) in placeable}
         merged = sorted(
             prev
-            | {int(x) for x in inferred if int(x) in (1, 2, 3)}
-            | {int(x) for x in past if int(x) in (1, 2, 3)}
+            | {int(x) for x in inferred if int(x) in placeable}
+            | {int(x) for x in past if int(x) in placeable}
         )
         if merged != sorted(self.consumed_tp_levels or []):
             logger.info(
@@ -2279,6 +2293,7 @@ class PositionSupervisor(
     def _infer_filled_tp_levels(self, qty: float, curr_px: float) -> set[int]:
         """推断已成交 TP 档位（state 记录 + 开仓量对比 + 价格越过且无挂单）。"""
         from app.core.tp_slice_guard import levels_past_by_mark
+        from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
 
         anchor = float(self.initial_qty or qty)
         tol = tp_slice_qty_tolerance(anchor, is_contracts=self.exchange_id == "deepcoin")
@@ -2296,13 +2311,17 @@ class PositionSupervisor(
             is_contracts=self.exchange_id == "deepcoin",
             peak_px=float(getattr(self, "best_price", 0) or 0),
         )
-        past = levels_past_by_mark(
-            float(curr_px or 0),
-            self.current_side,
-            list(self.tv_tps or []),
-            peak_px=float(getattr(self, "best_price", 0) or 0),
-        )
-        return set(filled) | set(past)
+        past = {
+            int(x)
+            for x in levels_past_by_mark(
+                float(curr_px or 0),
+                self.current_side,
+                list(self.tv_tps or []),
+                peak_px=float(getattr(self, "best_price", 0) or 0),
+            )
+            if int(x) in PLACEABLE_TP_LEVELS
+        }
+        return {int(x) for x in filled if int(x) in PLACEABLE_TP_LEVELS} | past
 
     def _active_tp_exclude_levels(self, qty: float, curr_px: float) -> set[int]:
         """Exclude filled + mark-past levels; only PLACEABLE_TP_LEVELS hung."""
@@ -4111,12 +4130,12 @@ class PositionSupervisor(
                 until = note_rate_limit(
                     exchange=getattr(self, "exchange_id", None) or "binance",
                     user_id=getattr(self, "user_id", None),
-                    cool_sec=90.0,
+                    cool_sec=180.0,
                 )
                 self._position_query_ban_until_ms = int(until * 1000)
                 ban_ms = self._position_query_ban_until_ms
             except Exception:
-                self._position_query_ban_until_ms = int((time.time() + 90.0) * 1000)
+                self._position_query_ban_until_ms = int((time.time() + 180.0) * 1000)
                 ban_ms = self._position_query_ban_until_ms
         detail = {
             "exchange": getattr(self, "exchange_id", None),
@@ -4893,8 +4912,10 @@ class PositionSupervisor(
         while self.monitoring:
             try:
                 ban_left = self._position_query_ban_remaining_sec()
-                if ban_left > 0:
-                    # Cool-down: no REST position. Breath on last-known qty + WS px only.
+                paused = bool(getattr(self, "trading_paused", False))
+                if ban_left > 0 or paused:
+                    # Cool-down / trading pause: no REST position or gap-fill.
+                    # Breath on last-known qty + WS px only (币安单系 v16.4.1/2).
                     self._ensure_price_ws()
                     if self.watched_qty > 0 and self._lock.acquire(timeout=0.5):
                         try:
@@ -4919,7 +4940,8 @@ class PositionSupervisor(
                                     pass
                         finally:
                             self._lock.release()
-                    time.sleep(min(max(ban_left, 5.0), 30.0))
+                    sleep_for = min(max(ban_left, 5.0), 30.0) if ban_left > 0 else 8.0
+                    time.sleep(sleep_for)
                     continue
                 self._ensure_price_ws()
                 if not self._lock.acquire(timeout=2.0):
@@ -5513,9 +5535,26 @@ class PositionSupervisor(
             saved_initial = float(self.initial_qty or 0)
             restored = max(saved_initial, open_log_qty, trade_qty)
             if restored > self.watched_qty:
-                self.initial_qty = restored
+                if hasattr(self, "_set_open_qty_baseline"):
+                    self._set_open_qty_baseline(restored, reason="startup_restore")
+                else:
+                    self.initial_qty = restored
             elif saved_initial <= 0:
-                self.initial_qty = self.watched_qty
+                if hasattr(self, "_set_open_qty_baseline"):
+                    self._set_open_qty_baseline(self.watched_qty, reason="startup_seed")
+                else:
+                    self.initial_qty = self.watched_qty
+            # Never compress saved baseline down to live after partial TP
+            elif saved_initial > 0 and self.watched_qty + 1e-12 < saved_initial:
+                self.initial_qty = saved_initial
+                if hasattr(self, "_sync_consumed_tp_levels"):
+                    try:
+                        px = float(
+                            self.client.get_current_price(self.symbol, prefer_ws=True) or 0
+                        )
+                    except Exception:
+                        px = float(self.watched_entry or 0)
+                    self._sync_consumed_tp_levels(self.watched_qty, px)
             if float(getattr(self, "base_qty", 0) or 0) <= 0:
                 self.base_qty = float(open_log_qty or trade_qty or self.initial_qty or self.watched_qty)
             # 妈妈版：永不推断加仓次数

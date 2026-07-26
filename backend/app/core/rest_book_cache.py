@@ -108,7 +108,7 @@ def _note_limit_from_exc(exchange: str, user_id: int | str, exc: BaseException) 
             note_rate_limit(
                 exchange=exchange,
                 user_id=user_id,
-                cool_sec=90.0,
+                cool_sec=180.0,
                 banned_until_ms=meta.get("banned_until_ms"),
             )
     except Exception:

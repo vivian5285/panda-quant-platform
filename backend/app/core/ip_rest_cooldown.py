@@ -14,13 +14,17 @@ _lock = threading.RLock()
 # key -> cool_until_epoch_sec
 _cool_until: dict[str, float] = {}
 
-DEFAULT_COOL_SEC = 90.0
+DEFAULT_COOL_SEC = 180.0
+# Cross-user / cross-symbol IP fuse — ETH+XAU (and any dual supervisors) share one stop.
+GLOBAL_SUFFIX = "_GLOBAL"
 
 
 def _key(exchange: str | None, user_id: int | str | None = None) -> str:
     ex = (exchange or "binance").lower()
     if user_id is None:
         return f"{ex}:ip"
+    if str(user_id) == GLOBAL_SUFFIX:
+        return f"{ex}:{GLOBAL_SUFFIX}"
     return f"{ex}:{int(user_id)}"
 
 
@@ -31,7 +35,11 @@ def note_rate_limit(
     cool_sec: float = DEFAULT_COOL_SEC,
     banned_until_ms: int | None = None,
 ) -> float:
-    """Extend cool-down; return cool_until epoch seconds."""
+    """Extend cool-down; return cool_until epoch seconds.
+
+    Broadcasts to user + IP + ``_GLOBAL`` so ETH/XAU (and all users on the host IP)
+    pause REST together — matches 币安单系 v16.4.2 incident harden.
+    """
     now = time.time()
     if banned_until_ms:
         until = max(now + 5.0, float(banned_until_ms) / 1000.0)
@@ -39,11 +47,12 @@ def note_rate_limit(
         until = now + float(cool_sec or DEFAULT_COOL_SEC)
     k = _key(exchange, user_id)
     k_ip = _key(exchange, None)
+    k_global = _key(exchange, GLOBAL_SUFFIX)
     with _lock:
-        for key in (k, k_ip):
+        for key in (k, k_ip, k_global):
             prev = float(_cool_until.get(key) or 0)
             _cool_until[key] = max(prev, until)
-        return float(_cool_until[k_ip])
+        return float(_cool_until[k_global])
 
 
 def remaining_sec(
@@ -56,6 +65,7 @@ def remaining_sec(
         until = max(
             float(_cool_until.get(_key(exchange, user_id)) or 0),
             float(_cool_until.get(_key(exchange, None)) or 0),
+            float(_cool_until.get(_key(exchange, GLOBAL_SUFFIX)) or 0),
         )
     left = until - now
     return left if left > 0 else 0.0

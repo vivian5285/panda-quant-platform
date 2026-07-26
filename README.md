@@ -8,7 +8,8 @@
 
 > **文档同步（2026-07-26 · Gemini 多用户规格最终修正 · TP1/TP2 限价 + TP3 雷达管理 + ATR 仅用 TV）**  
 > 凡与本文冲突的旧描述（「TP3 挂限价并与雷达互斥」「VPS 独立拉 1h ATR / 场景切换」「雷达扫出=失败离场」「查不到单就盲补」「硬止损=TV原价」「硬=ATR地板+滑点垫」「日亏熔断默认开」）**一律作废**。  
-> 权威：`docs/VPS_SYSTEM_SPEC_GEMINI_MULTIUSER.md`（与桌面《VPS完整系统规格_Gemini多用户版》同步）· `docs/SMART_REENTRY_CLOSED_LOOP.md` · 部署：`docs/VPS_DEPLOY.md`
+> 权威：`docs/VPS_SYSTEM_SPEC_GEMINI_MULTIUSER.md`（与桌面《VPS完整系统规格_Gemini多用户版》同步）· `docs/SMART_REENTRY_CLOSED_LOOP.md` · 部署：`docs/VPS_DEPLOY.md`  
+> **事故对照（优先）**：`docs/SYSTEM_ISSUE_FIX_LOG.md` — 现象→根因→修复→复查点；含 **v16.4.2-incident-harden**（基线不压扁 / IP cool 180s+_GLOBAL / placeable 30% 对账 / pause·cool 停 REST）。
 
 ### 当前实盘一句话
 
@@ -53,6 +54,14 @@
 | 延迟启动 | `_close_all` 先 **plan** 快照 → purge → **commit** 启动 worker（避免 cancel_all 误杀刚挂的再入限价） |
 
 模块：`trend_tier_params.py` · `smart_reentry.py` · `smart_reentry_mixin.py` · `order_place_guard.py`
+
+### 事故与修复日志（查历史优先）
+
+| 文档 | 用途 |
+|------|------|
+| **`docs/SYSTEM_ISSUE_FIX_LOG.md`** | **主入口**：2026-07-26 硬帽/`-1003`/TG 风暴、基线压扁、假 TP3、暂停 REST 等；对齐币安单系 **v16.4.2-incident-harden** |
+| `docs/TP_DUPLICATE_INCIDENT_20260722.md` | 重复限价止盈专项 |
+| `docs/KNOWN_ISSUES.md` | 滚动已知项（非叙事对照） |
 
 ### 事故纪要 · 重复限价止盈 / 幽灵单（2026-07-23）
 

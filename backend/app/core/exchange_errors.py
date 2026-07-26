@@ -69,14 +69,14 @@ def raise_exchange_transient(
             until = note_rate_limit(
                 exchange=exchange,
                 user_id=user_id,
-                cool_sec=90.0,
+                cool_sec=180.0,
                 banned_until_ms=int(ban_ms) if ban_ms else None,
             )
             if not ban_ms:
                 ban_ms = int(until * 1000)
         except Exception:
             if not ban_ms:
-                ban_ms = int((time.time() + 90.0) * 1000)
+                ban_ms = int((time.time() + 180.0) * 1000)
     msg = f"{exchange} {op} failed: {exc}"
     raise ExchangeTransientError(
         msg,

@@ -1234,7 +1234,9 @@ class StartupReconcileMixin:
         """VPS 账本空仓时仍核对交易所：残量扫尾 / 人工平仓收口 / 同向持仓接管."""
         if getattr(self, "monitoring", False):
             return
-        # Rate-limit cool-down: idle patrol must not keep hitting REST
+        # Rate-limit cool-down / trading pause: idle patrol must not keep hitting REST
+        if bool(getattr(self, "trading_paused", False)):
+            return
         ban_left = 0.0
         if hasattr(self, "_position_query_ban_remaining_sec"):
             try:

@@ -1207,7 +1207,26 @@ class BinanceSmartDefenseMixin:
         if near is None:
             self._def_log("✗ 雷达拒挂·盘口不可读（禁谎称已有/禁盲挂）", logging.WARNING)
             return False
-        if near is True:
+        # Price-near is not enough: residual after TP1/TP2 must match live qty (no TP3).
+        qty_mismatch = False
+        target_qty = float(qty or 0)
+        if near is True and target_qty > 0 and hasattr(self, "_radar_stop_live_qty"):
+            try:
+                book_qty = float(self._radar_stop_live_qty(sl) or 0)
+                if book_qty > 0:
+                    tol = (
+                        self._qty_match_tol(book_qty, target_qty)
+                        if hasattr(self, "_qty_match_tol")
+                        else max(0.02 * max(book_qty, target_qty), 1e-8)
+                    )
+                    if abs(book_qty - target_qty) > tol:
+                        qty_mismatch = True
+                        self._def_log(
+                            f"雷达数量贴合 {book_qty:.6f}→{target_qty:.6f} @ {sl:.2f}",
+                        )
+            except Exception:
+                qty_mismatch = False
+        if near is True and not qty_mismatch:
             # Dual track: hard may sit near radar — do not treat hard as radar present.
             if (
                 hasattr(self, "_uses_dual_stop_track")
@@ -1229,12 +1248,19 @@ class BinanceSmartDefenseMixin:
                     return True
             else:
                 return True
+        # Qty mismatch: cancel radar only then rehang (do not hit 2-STOP refuse).
+        if qty_mismatch and hasattr(self, "_cancel_radar_stop_orders"):
+            try:
+                self._cancel_radar_stop_orders()
+                time.sleep(0.35)
+            except Exception:
+                pass
         # Dual-track hard cap: never exceed 2 STOPs (hard×1.15 + radar). Not raw TV SL.
         try:
             live_stops = int(self._count_live_stop_orders()) if hasattr(self, "_count_live_stop_orders") else -1
         except Exception:
             live_stops = -1
-        if live_stops >= 2:
+        if live_stops >= 2 and not qty_mismatch:
             self._def_log(
                 f"✗ 雷达拒挂·盘口已有 {live_stops} 笔STOP（帽=2·防双轨叠暴）",
                 logging.WARNING,
@@ -1243,15 +1269,17 @@ class BinanceSmartDefenseMixin:
         if live_stops < 0:
             self._def_log("✗ 雷达拒挂·STOP簿记未知", logging.WARNING)
             return False
-        self._cancel_radar_stop_orders()
-        time.sleep(0.35)
+        if not qty_mismatch:
+            self._cancel_radar_stop_orders()
+            time.sleep(0.35)
         # Cancel lag: re-check before place (timeout-after-accept must not stack)
         near2 = self._has_stop_sl_near(sl)
         if near2 is None:
             self._def_log("✗ 雷达撤后拒挂·盘口不可读", logging.WARNING)
             return False
-        if near2 is True:
+        if near2 is True and not qty_mismatch:
             return True
+        # After qty cancel, near2 may still see hard in cluster — place only if <2 or qty path
         try:
             live_stops = int(self._count_live_stop_orders()) if hasattr(self, "_count_live_stop_orders") else -1
         except Exception:
@@ -1742,7 +1770,15 @@ class BinanceSmartDefenseMixin:
 
         self.watched_qty = live_qty
         self.watched_entry = entry
-        self.initial_qty = live_qty
+        # Never compress open baseline to post-TP live qty (币安单系 v16.4.2)
+        if hasattr(self, "_set_open_qty_baseline"):
+            self._set_open_qty_baseline(
+                max(float(getattr(self, "initial_qty", 0) or 0), float(live_qty or 0)),
+                reason="tv_add_rebuild",
+            )
+        else:
+            prev_i = float(getattr(self, "initial_qty", 0) or 0)
+            self.initial_qty = max(prev_i, float(live_qty or 0)) if prev_i > 0 else float(live_qty or 0)
 
         if hasattr(self, "_refresh_radar_state_on_recover") and curr_px > 0 and entry > 0:
             self._refresh_radar_state_on_recover(curr_px, entry)

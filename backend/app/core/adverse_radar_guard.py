@@ -506,6 +506,30 @@ class AdverseRadarMixin:
             except Exception:
                 pass
 
+    def _set_open_qty_baseline(self, qty: float, *, reason: str = "") -> float:
+        """Open-entry baseline: while monitoring, initial_qty only rises (never compress).
+
+        Aligns with 币安单系 v16.4.2: after TP1/TP2, live qty shrinks — that must
+        update ``consumed_tp_levels``, NOT squash ``initial_qty`` to current position.
+        Returns the baseline after apply.
+        """
+        q = float(qty or 0)
+        cur = float(getattr(self, "initial_qty", 0) or 0)
+        monitoring = bool(getattr(self, "monitoring", False))
+        if q <= 0:
+            return cur
+        if monitoring and cur > 0 and q + 1e-12 < cur:
+            logger.info(
+                "[User %s] refuse compress initial_qty %.6f→%.6f (%s) — mark TP instead",
+                getattr(self, "user_id", "?"),
+                cur,
+                q,
+                reason or "monitoring",
+            )
+            return cur
+        self.initial_qty = max(cur, q) if (monitoring and cur > 0) else q
+        return float(self.initial_qty)
+
     def _pause_trading(self, reason: str, detail: dict | None = None) -> None:
         """Checklist §七: missing persist / direction mismatch → alert + pause opens.
 
@@ -1868,6 +1892,57 @@ class AdverseRadarMixin:
                     return 0.0
         return 0.0
 
+    def _radar_stop_live_qty(self, logical_sl: float) -> float:
+        """Qty of radar STOP on book (0 if missing). Prefer remembered radar oid.
+
+        Critical when TP3 is never hung: after TP1/TP2 the residual ~70% must
+        match live position — price-near alone must not skip qty resize.
+        """
+        if float(logical_sl or 0) <= 0:
+            return 0.0
+        hang = float(self._exchange_hang_stop_px(logical_sl) or logical_sl)
+        hard = float(self._frozen_hard_px() or 0) if hasattr(self, "_frozen_hard_px") else 0.0
+        hard_hang = float(self._exchange_hang_stop_px(hard) or hard) if hard > 0 else 0.0
+        try:
+            orders = list(self._collect_all_stop_like_orders() or [])
+        except Exception:
+            try:
+                orders = list(self._collect_adverse_stop_orders() or [])
+            except Exception:
+                return 0.0
+        ids = dict(getattr(self, "_defense_order_ids", None) or {})
+        radar_oid = ids.get("radar") or ids.get("sl")
+        hard_oid = ids.get("hard")
+        for o in orders:
+            oid = o.get("algoId") or o.get("orderId") or o.get("ordId")
+            if hard_oid is not None and oid is not None and str(oid) == str(hard_oid):
+                continue
+            if radar_oid is not None and oid is not None and str(oid) == str(radar_oid):
+                try:
+                    return float(o.get("quantity") or o.get("origQty") or o.get("qty") or 0)
+                except (TypeError, ValueError):
+                    return 0.0
+        for o in orders:
+            oid = o.get("algoId") or o.get("orderId") or o.get("ordId")
+            if hard_oid is not None and oid is not None and str(oid) == str(hard_oid):
+                continue
+            try:
+                px = float(_adverse_defense_price(o) or 0)
+            except (TypeError, ValueError):
+                px = 0.0
+            if px <= 0:
+                continue
+            # Skip frozen hard when price-clustered with radar
+            if hard_hang > 0 and abs(px - hard_hang) <= ADVERSE_STOP_TOLERANCE:
+                if abs(hang - hard_hang) > ADVERSE_STOP_TOLERANCE:
+                    continue
+            if abs(px - hang) <= ADVERSE_STOP_TOLERANCE or abs(px - float(logical_sl)) <= ADVERSE_STOP_TOLERANCE:
+                try:
+                    return float(o.get("quantity") or o.get("origQty") or o.get("qty") or 0)
+                except (TypeError, ValueError):
+                    return 0.0
+        return 0.0
+
     def _cancel_hard_tier_stop_orders_only(self) -> int:
         """Cancel frozen hard stop only — never radar (whitepaper permanence).
 
@@ -2985,7 +3060,8 @@ class AdverseRadarMixin:
         sl_px = float(self.current_sl)
         hang_px = self._exchange_hang_stop_px(sl_px)
         placed = False
-        # Heartbeat: touch exchange when price improved OR stop missing OR duplicates.
+        # Heartbeat: price improve OR stop missing OR qty≠live OR duplicates.
+        # No TP3 limit — radar must stay qty-glued to residual (TP1/TP2 partial fills).
         need_sync = bool(improved)
         live_stop_n = 0
         if hasattr(self, "_count_live_stop_orders"):
@@ -3029,7 +3105,16 @@ class AdverseRadarMixin:
                     getattr(self, "user_id", "?"),
                 )
                 return False
-            need_sync = not near
+            qty_mismatch = False
+            if near and hasattr(self, "_radar_stop_live_qty") and float(live_qty or 0) > 0:
+                try:
+                    book_qty = float(self._radar_stop_live_qty(sl_px) or 0)
+                    if book_qty > 0:
+                        tol = self._qty_match_tol(book_qty, float(live_qty))
+                        qty_mismatch = abs(book_qty - float(live_qty)) > tol
+                except Exception:
+                    qty_mismatch = False
+            need_sync = (not near) or qty_mismatch
         if need_sync:
             if self._uses_dual_stop_track() and hasattr(self, "_ensure_radar_sl"):
                 # Dual: only move radar; hard price stays frozen (qty repair via separate path)
@@ -3247,6 +3332,18 @@ class AdverseRadarMixin:
             was_activated = False
         else:
             was_activated = bool(persisted_activated)
+        # TP1/TP2 already consumed ⇒ residual is radar's job (no TP3 limit) — force Phase B.
+        if not was_activated and tp1_filled_from_consumed(
+            getattr(self, "consumed_tp_levels", None)
+        ):
+            was_activated = True
+            self.radar_activated = True
+            self.radar_latched = True
+            logger.info(
+                "%s [User %s] 重启恢复：TP已消耗 → 强制雷达激活（护 TP2→TP3 余仓）",
+                self._symbol_tag(),
+                getattr(self, "user_id", "?"),
+            )
 
         sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
         initial_stop = float(getattr(self, "initial_stop", 0) or 0)
@@ -4429,21 +4526,32 @@ class AdverseRadarMixin:
 
         Idempotent: each TP level resizes the stop at most once. Re-entry (false
         consumed clear/re-mark, duplicate notify) must NOT cancel↔rehang.
+
+        Simultaneous TP1+TP2 (or partial fills to ~70%): sync consumed from live
+        qty first, resize once to residual, mark all placeable consumed levels done.
         """
         if change_type not in ("tp1_filled", "tp2_filled", "tp3_filled"):
             return
+        # Exchange-first: live qty may already reflect TP1+TP2 together.
+        if hasattr(self, "_sync_consumed_tp_levels"):
+            try:
+                self._sync_consumed_tp_levels(float(live_qty or 0), float(curr_px or 0))
+            except Exception:
+                pass
         consumed = list(getattr(self, "consumed_tp_levels", None) or [])
         level = {"tp1_filled": 1, "tp2_filled": 2, "tp3_filled": 3}.get(change_type)
         if level and level not in consumed:
             consumed.append(level)
             self.consumed_tp_levels = consumed
+        consumed_set = {int(x) for x in consumed}
         self.remaining_qty_pct = self._remaining_qty_pct_from_consumed(consumed)
 
         done = getattr(self, "_stop_qty_resized_levels", None)
         if done is None:
             self._stop_qty_resized_levels = set()
             done = self._stop_qty_resized_levels
-        if level and int(level) in done:
+        pending = {lv for lv in (1, 2) if lv in consumed_set and lv not in done}
+        if not pending and level and int(level) in done:
             logger.info(
                 "[User %s] skip TP stop resize — already done for TP%s (anti-thrash)",
                 getattr(self, "user_id", "?"),
@@ -4452,6 +4560,10 @@ class AdverseRadarMixin:
             if hasattr(self, "_save_state"):
                 self._save_state()
             return
+        if not pending and change_type != "tp3_filled":
+            # Cause named a level not yet in consumed/done edge — still try once below.
+            if level in (1, 2):
+                pending = {int(level)}
 
         if hasattr(self, "_save_state"):
             self._save_state()
@@ -4495,13 +4607,14 @@ class AdverseRadarMixin:
                             self._ensure_radar_sl(hang, resize_qty)
                     logger.info(
                         "[User %s] TP后双轨止损数量收缩 remaining=%.0f%% qty=%.4f "
-                        "hard=%.2f radar=%.2f | %s",
+                        "hard=%.2f radar=%.2f | %s pending=%s",
                         getattr(self, "user_id", "?"),
                         float(self.remaining_qty_pct) * 100.0,
                         resize_qty,
                         hard_px,
                         stop_px,
                         change_type,
+                        sorted(pending) if pending else ([level] if level else []),
                     )
                 elif hasattr(self, "_sync_binance_merged_stop"):
                     already_ok = False
@@ -4512,7 +4625,18 @@ class AdverseRadarMixin:
                                 if hasattr(self, "_exchange_hang_stop_px")
                                 else stop_px
                             )
-                            already_ok = bool(self._has_stop_sl_near(hang)) and (
+                            near = bool(self._has_stop_sl_near(hang))
+                            book_q = (
+                                float(self._radar_stop_live_qty(stop_px) or 0)
+                                if hasattr(self, "_radar_stop_live_qty")
+                                else 0.0
+                            )
+                            qty_ok = True
+                            if book_q > 0 and resize_qty > 0:
+                                qty_ok = abs(book_q - resize_qty) <= self._qty_match_tol(
+                                    book_q, resize_qty
+                                )
+                            already_ok = near and qty_ok and (
                                 self._count_live_stop_orders() <= ADVERSE_MAX_STOP_ORDERS
                             )
                         except Exception:
@@ -4536,10 +4660,12 @@ class AdverseRadarMixin:
                             stop_px,
                             change_type,
                         )
-                if level:
-                    done.add(int(level))
-                    if hasattr(self, "_save_state"):
-                        self._save_state()
+                # Mark all placeable consumed levels — one resize covers simultaneous fills.
+                for lv in (1, 2):
+                    if lv in consumed_set or (level and int(level) == lv):
+                        done.add(lv)
+                if hasattr(self, "_save_state"):
+                    self._save_state()
             except Exception as exc:
                 logger.error(
                     "[User %s] TP后止损数量收缩失败: %s",
@@ -4693,8 +4819,10 @@ class AdverseRadarMixin:
             if hasattr(self, "consumed_tp_levels"):
                 self.consumed_tp_levels = []
             self._reset_adverse_radar(keep_tv_sl=True)
-            if hasattr(self, "initial_qty"):
-                self.initial_qty = new_qty
+            if hasattr(self, "_set_open_qty_baseline"):
+                self._set_open_qty_baseline(new_qty, reason="manual_add")
+            elif hasattr(self, "initial_qty"):
+                self.initial_qty = max(float(self.initial_qty or 0), float(new_qty or 0))
             if float(getattr(self, "tv_sl", 0) or 0) > 0 and hasattr(self, "_sync_tv_hard_stop"):
                 self._sync_tv_hard_stop(new_qty, force_replace=True)
             sl_to_pass = self._radar_sl_to_pass() if hasattr(self, "_radar_sl_to_pass") else None
