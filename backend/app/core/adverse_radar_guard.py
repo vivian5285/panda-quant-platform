@@ -3194,9 +3194,12 @@ class AdverseRadarMixin:
         mark = float(mark or 0)
         if stop <= 0 or mark <= 0:
             return 0.0
-        if stop_hit(side, mark, stop) or stop_would_trigger_immediately(stop, mark, side):
+        # Only drop stops that are already hit at mark.
+        # Do NOT use stop_would_trigger_immediately here — that checks exchange
+        # stop-market clamp distance, and falsely rejects valid SL below mark.
+        if stop_hit(side, mark, stop):
             logger.warning(
-                "%s [User %s] 重启恢复丢弃无效%s SL=%.4f mark=%.4f side=%s（会立刻触发）",
+                "%s [User %s] 重启恢复丢弃无效%s SL=%.4f mark=%.4f side=%s（已对现价触发）",
                 self._symbol_tag(),
                 getattr(self, "user_id", "?"),
                 label,

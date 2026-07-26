@@ -4540,15 +4540,21 @@ class PositionSupervisor(
             try:
                 from app.database import SessionLocal
                 from app.models import Trade
+                from app.core.symbol_registry import normalize_canonical_symbol
 
                 db = SessionLocal()
                 try:
-                    row = (
-                        db.query(Trade)
-                        .filter(Trade.user_id == self.user_id, Trade.status == "open")
-                        .order_by(Trade.created_at.desc())
-                        .first()
+                    can = normalize_canonical_symbol(
+                        getattr(self, "canonical_symbol", None) or self.symbol
+                    ) or str(self.symbol or "")
+                    # MUST scope by symbol — otherwise XAU flat-reconcile closes ETH open trade.
+                    q = db.query(Trade).filter(
+                        Trade.user_id == self.user_id,
+                        Trade.status == "open",
                     )
+                    if can:
+                        q = q.filter(Trade.symbol == can)
+                    row = q.order_by(Trade.created_at.desc()).first()
                     if row:
                         self.current_trade_id = row.id
                 finally:
