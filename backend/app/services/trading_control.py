@@ -1,4 +1,4 @@
-"""User + platform trading control (pause, risk level)."""
+"""User + platform trading control (pause, risk level, entry sizing)."""
 import json
 from sqlalchemy.orm import Session
 
@@ -12,12 +12,47 @@ from app.services.platform_runtime import (
 RISK_LEVELS = frozenset({"conservative", "balanced", "aggressive"})
 RISK_MULTIPLIERS = {"conservative": 0.6, "balanced": 1.0, "aggressive": 1.4}
 
+# Defaults match historical hardcode: 20% margin × 5× leverage (= 1× equity notional).
+DEFAULT_MARGIN_PCT_FRAC = 0.20
+DEFAULT_LEVERAGE = 5
+MIN_MARGIN_PCT_FRAC = 0.01
+MAX_MARGIN_PCT_FRAC = 1.0
+MIN_LEVERAGE = 1
+MAX_LEVERAGE_ADMIN = 125
+
+
+def clamp_margin_pct_frac(raw) -> float:
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError("invalid margin_pct_frac") from None
+    if v != v:  # NaN
+        raise ValueError("invalid margin_pct_frac")
+    # Accept either fraction (0.2) or percent (20) for admin convenience.
+    if v > 1.0 + 1e-12:
+        v = v / 100.0
+    if v < MIN_MARGIN_PCT_FRAC - 1e-12 or v > MAX_MARGIN_PCT_FRAC + 1e-12:
+        raise ValueError("margin_pct_frac out of range")
+    return round(max(MIN_MARGIN_PCT_FRAC, min(MAX_MARGIN_PCT_FRAC, v)), 6)
+
+
+def clamp_leverage(raw) -> int:
+    try:
+        v = int(float(raw))
+    except (TypeError, ValueError):
+        raise ValueError("invalid leverage") from None
+    if v < MIN_LEVERAGE or v > MAX_LEVERAGE_ADMIN:
+        raise ValueError("leverage out of range")
+    return v
+
 
 def _default_state() -> dict:
     return {
         "trading_paused": False,
         "risk_level": "balanced",
         "risk_multiplier": RISK_MULTIPLIERS["balanced"],
+        "margin_pct_frac": DEFAULT_MARGIN_PCT_FRAC,
+        "leverage": DEFAULT_LEVERAGE,
         "settlement_fee_deferred": False,
         "settlement_defer_note": "",
         "referral_invite_override": False,
@@ -36,10 +71,22 @@ def _parse(row: UserTradingState | None) -> dict:
     level = data.get("risk_level", "balanced")
     if level not in RISK_LEVELS:
         level = "balanced"
+    try:
+        margin = clamp_margin_pct_frac(
+            data.get("margin_pct_frac", DEFAULT_MARGIN_PCT_FRAC)
+        )
+    except ValueError:
+        margin = DEFAULT_MARGIN_PCT_FRAC
+    try:
+        lev = clamp_leverage(data.get("leverage", DEFAULT_LEVERAGE))
+    except ValueError:
+        lev = DEFAULT_LEVERAGE
     return {
         "trading_paused": bool(data.get("trading_paused", False)),
         "risk_level": level,
         "risk_multiplier": RISK_MULTIPLIERS[level],
+        "margin_pct_frac": margin,
+        "leverage": lev,
         "settlement_fee_deferred": bool(data.get("settlement_fee_deferred", False)),
         "settlement_defer_note": str(data.get("settlement_defer_note") or ""),
         "referral_invite_override": bool(data.get("referral_invite_override", False)),
@@ -53,12 +100,35 @@ def get_user_control(db: Session, user_id: int) -> dict:
     return _parse(row)
 
 
+def apply_sizing_to_supervisors(user_id: int, *, margin_pct_frac: float, leverage: int) -> int:
+    """Hot-apply sizing to live supervisors so next open uses new values immediately."""
+    try:
+        from app.services.dispatcher import supervisor_pool
+    except Exception:
+        return 0
+    n = 0
+    try:
+        for s in supervisor_pool.get_all_for_user(int(user_id)):
+            try:
+                s.entry_margin_pct = float(margin_pct_frac)
+                s.entry_leverage = int(leverage)
+                s.leverage = int(leverage)
+                n += 1
+            except Exception:
+                pass
+    except Exception:
+        return n
+    return n
+
+
 def set_user_control(
     db: Session,
     user_id: int,
     *,
     trading_paused: bool | None = None,
     risk_level: str | None = None,
+    margin_pct_frac: float | None = None,
+    leverage: int | None = None,
     settlement_fee_deferred: bool | None = None,
     settlement_defer_note: str | None = None,
     referral_invite_override: bool | None = None,
@@ -74,6 +144,10 @@ def set_user_control(
             raise ValueError("invalid risk_level")
         state["risk_level"] = risk_level
         state["risk_multiplier"] = RISK_MULTIPLIERS[risk_level]
+    if margin_pct_frac is not None:
+        state["margin_pct_frac"] = clamp_margin_pct_frac(margin_pct_frac)
+    if leverage is not None:
+        state["leverage"] = clamp_leverage(leverage)
     if settlement_fee_deferred is not None:
         state["settlement_fee_deferred"] = settlement_fee_deferred
         if not settlement_fee_deferred:
@@ -91,6 +165,8 @@ def set_user_control(
     payload = {
         "trading_paused": state["trading_paused"],
         "risk_level": state["risk_level"],
+        "margin_pct_frac": state["margin_pct_frac"],
+        "leverage": state["leverage"],
         "settlement_fee_deferred": state.get("settlement_fee_deferred", False),
         "settlement_defer_note": state.get("settlement_defer_note", ""),
         "referral_invite_override": state.get("referral_invite_override", False),
@@ -102,7 +178,14 @@ def set_user_control(
     else:
         db.add(UserTradingState(user_id=user_id, state_json=json.dumps(payload)))
     db.commit()
-    return get_user_control(db, user_id)
+    out = get_user_control(db, user_id)
+    if margin_pct_frac is not None or leverage is not None:
+        apply_sizing_to_supervisors(
+            user_id,
+            margin_pct_frac=float(out["margin_pct_frac"]),
+            leverage=int(out["leverage"]),
+        )
+    return out
 
 
 def clear_settlement_fee_deferred(db: Session, user_id: int) -> None:

@@ -516,7 +516,13 @@ class SignalDispatcher:
                 }
             ctrl = get_user_control(db, supervisor.user_id)
             effective_risk = round(get_global_risk_multiplier() * ctrl.get("risk_multiplier", 1.0), 4)
-            user_payload = {**payload, "risk_multiplier": effective_risk}
+            user_payload = {
+                **payload,
+                "risk_multiplier": effective_risk,
+                "margin_pct_frac": float(ctrl.get("margin_pct_frac") or 0.20),
+                "entry_leverage": int(ctrl.get("leverage") or 5),
+                "leverage": int(ctrl.get("leverage") or 5),
+            }
         finally:
             db.close()
         outcome = supervisor.handle_signal(user_payload)

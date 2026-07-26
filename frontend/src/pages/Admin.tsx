@@ -800,6 +800,17 @@ export default function Admin() {
     }
   }
 
+  const setUserSizing = async (data: { margin_pct_frac?: number; leverage?: number }) => {
+    if (!selectedUserId) return
+    try {
+      setUserTradingCtrl(await adminApi.userTradingControl(selectedUserId, data))
+      toast.success(t('admin.sizingUpdated'))
+      load()
+    } catch {
+      toast.error(t('admin.sizingUpdateFail'))
+    }
+  }
+
   const toggleSettlementDefer = async (allow: boolean) => {
     if (!selectedUserId) return
     try {
@@ -1255,7 +1266,7 @@ export default function Admin() {
     runSettlement, confirm, addAddr, saveEditingAddr, uploadAddrQr, removeAddrQr, saveWithdrawThresholds,
     saveDepositWalletSettings, clearDepositWalletSettings,
     savePayoutSettings, completeWd,
-    setAdminConfirm, forceUserPause, forceCloseUser, setUserRisk, toggleSettlementDefer, toggleReferralOverride,
+    setAdminConfirm, forceUserPause, forceCloseUser, setUserRisk, setUserSizing, toggleSettlementDefer, toggleReferralOverride,
     saveTemplateEdit, exportAuditCsv, saveSignalTemplate, testTemplate, reviewStrategy,
     exportUsersCsv, toggleUserSelect, toggleSelectAllUsers, runBatchNotify, runBatchPause,
     runWebhookTest, loadDispatchResults, renderDispatchUserResults,

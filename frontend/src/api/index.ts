@@ -357,6 +357,9 @@ export const adminApi = {
   userTradingControl: (userId: number, data?: {
     trading_paused?: boolean
     risk_level?: string
+    margin_pct_frac?: number
+    margin_pct?: number
+    leverage?: number
     settlement_fee_deferred?: boolean
     settlement_defer_note?: string
     referral_invite_override?: boolean

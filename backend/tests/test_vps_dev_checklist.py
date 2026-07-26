@@ -33,7 +33,7 @@ def test_checklist_risk20_sizing():
         live_balance=1000, initial_principal=1000, price=3300, tv_sl=3200,
         tv_stop_loss=3200, tv_qty=1.0, symbol="ETHUSDT",
     )
-    assert qty == pytest.approx(1000.0 / 3300.0, abs=1e-6)
+    assert qty == pytest.approx(0.303, abs=1e-6)  # floored to 0.001 step
     assert meta["binding"] == "margin20_lev5"
     qty2, m2 = compute_tv_entry_qty(
         live_balance=1000, initial_principal=1000, price=3300, tv_sl=3200,
@@ -43,6 +43,25 @@ def test_checklist_risk20_sizing():
     assert m2["binding"] == "margin20_lev5"
     assert m2.get("tv_qty_ignored") is True
 
+
+def test_resolve_entry_qty_eth_stop_optional():
+    """Stop is logged only — sizing does not require tv_sl."""
+    qty, meta = resolve_vps_entry_qty_eth(
+        live_balance=1000.0,
+        initial_principal=1000.0,
+        entry_type="OPEN",
+        base_qty=0,
+        price=3300.0,
+        tv_sl=0,
+        regime=3,
+        exchange_leverage=5,
+        round_fn=lambda x: x,
+        symbol="ETHUSDT",
+        tv_qty=1.0,
+    )
+    assert qty > 0
+    assert meta.get("error") in (None, "")
+    assert meta.get("binding") == "margin20_lev5"
 
 def test_checklist_tv_fields_parsed():
     raw = {
@@ -139,25 +158,6 @@ def test_ws_reconnect_exponential_all_exchanges():
     assert ws_reconnect_delay(0) == 1.0
     assert ws_reconnect_delay(1) == 2.0
     assert ws_reconnect_delay(2) == 4.0
-
-
-def test_resolve_entry_qty_eth_requires_stop():
-    """RISK20 sizing 必须有 stop。"""
-    qty, meta = resolve_vps_entry_qty_eth(
-        live_balance=1000.0,
-        initial_principal=1000.0,
-        entry_type="OPEN",
-        base_qty=0,
-        price=3300.0,
-        tv_sl=0,
-        regime=3,
-        exchange_leverage=5,
-        round_fn=lambda x: x,
-        symbol="ETHUSDT",
-        tv_qty=1.0,
-    )
-    assert qty == 0
-    assert meta.get("error") == "missing_stop"
 
 
 def test_resolve_entry_qty_deepcoin_open_contracts():

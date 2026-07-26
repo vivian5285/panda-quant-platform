@@ -154,6 +154,8 @@ def _admin_user_row(user: User, db: Session) -> AdminUserOut:
         referrer_id=user.referrer_id,
         trading_paused=trading_paused,
         risk_level=ctrl.get("risk_level", "balanced"),
+        margin_pct_frac=float(ctrl.get("margin_pct_frac") or 0.20),
+        leverage=int(ctrl.get("leverage") or 5),
         created_at=user.created_at,
         cumulative_pnl=cumulative_pnl,
         execution_success_rate=exec_rate,
@@ -376,6 +378,8 @@ def get_user_detail(user_id: int, admin=Depends(get_admin_user), db: Session = D
             api_key_mask=mask_api_key(user),
             trading_paused=trading_paused,
             risk_level=ctrl.get("risk_level", "balanced"),
+            margin_pct_frac=float(ctrl.get("margin_pct_frac") or 0.20),
+            leverage=int(ctrl.get("leverage") or 5),
             risk_flag=flagged,
             risk_flag_reason=flag_reason,
             cumulative_pnl=cumulative_pnl,
@@ -1609,16 +1613,22 @@ def admin_user_trading_control(
             user_id,
             trading_paused=body.get("trading_paused") if "trading_paused" in body else None,
             risk_level=body.get("risk_level") if "risk_level" in body else None,
+            margin_pct_frac=body.get("margin_pct_frac") if "margin_pct_frac" in body else (
+                body.get("margin_pct") if "margin_pct" in body else None
+            ),
+            leverage=body.get("leverage") if "leverage" in body else None,
             settlement_fee_deferred=body.get("settlement_fee_deferred") if "settlement_fee_deferred" in body else None,
             settlement_defer_note=body.get("settlement_defer_note") if "settlement_defer_note" in body else None,
             referral_invite_override=body.get("referral_invite_override") if "referral_invite_override" in body else None,
             referral_override_note=body.get("referral_override_note") if "referral_override_note" in body else None,
         )
-    except ValueError:
-        raise HTTPException(400, "Invalid risk_level")
+    except ValueError as e:
+        raise HTTPException(400, str(e) or "Invalid trading control") from e
     audit_detail = {
         "trading_paused": ctrl.get("trading_paused"),
         "risk_level": ctrl.get("risk_level"),
+        "margin_pct_frac": ctrl.get("margin_pct_frac"),
+        "leverage": ctrl.get("leverage"),
     }
     if "settlement_fee_deferred" in body:
         audit_detail["settlement_fee_deferred"] = ctrl.get("settlement_fee_deferred")

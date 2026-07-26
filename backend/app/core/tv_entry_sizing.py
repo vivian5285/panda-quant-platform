@@ -1,9 +1,12 @@
-"""Entry sizing — 合约本金 ×20% 保证金 ×5 杠杆 = 名义≈本金×1.
+"""Entry sizing — equity × margin_pct × leverage = notional.
+
+Default (legacy hardcode): 20% margin × 5× leverage = 1× equity notional.
+Per-user overrides come from admin trading-control (margin_pct_frac / leverage).
 
 Authoritative formula (stateless pure function, computed once at open):
-  sizing_base  = 合约本金余额 (futures total equity; fallback initial_principal)
-  margin_usd   = sizing_base × 0.20
-  notional     = margin_usd × 5          # ≡ sizing_base × 1（余额的 1 倍）
+  sizing_base  = futures total equity (fallback initial_principal)
+  margin_usd   = sizing_base × margin_pct
+  notional     = margin_usd × leverage
   qty          = floor(notional / price to exchange step)
 
 TV.qty / TV.stop_loss / VPS initialStop 不参与下单数量（止损价仍由呼吸引擎用 VPS ATR）。
@@ -54,6 +57,16 @@ def parse_tv_entry_fields(payload: dict | None) -> dict[str, Any]:
     data = dict(payload or {})
     tv_qty = _parse_float(data.get("qty"))
     atr = _parse_float(data.get("atr"))
+    margin = _parse_float(data.get("margin_pct_frac"), RISK_PCT)
+    if margin is None or margin <= 0:
+        margin = RISK_PCT
+    if margin > 1.0 + 1e-12:
+        margin = margin / 100.0
+    lev_raw = data.get("entry_leverage", data.get("leverage"))
+    lev = _parse_float(lev_raw, float(MAX_LEVERAGE))
+    if lev is None or lev <= 0:
+        lev = float(MAX_LEVERAGE)
+    lev_i = int(lev)
     return {
         "entry_type": "OPEN",
         "regime": None,
@@ -64,11 +77,11 @@ def parse_tv_entry_fields(payload: dict | None) -> dict[str, Any]:
         "tv_qty2": _parse_float(data.get("qty2")),
         "tv_qty3": _parse_float(data.get("qty3")),
         "atr": atr,
-        "margin_pct": RISK_PCT,
-        "leverage": MAX_LEVERAGE,
-        "tv_leverage": float(MAX_LEVERAGE),
+        "margin_pct": float(margin),
+        "leverage": lev_i,
+        "tv_leverage": float(lev_i),
         "qty_ratio": 1.0,
-        "qty_ratio_source": "vps_margin20_lev5",
+        "qty_ratio_source": "vps_admin_sizing",
         "sizing_mode": SIZING_MODE,
     }
 
@@ -101,9 +114,11 @@ def compute_tv_entry_qty(
     symbol: str | None = None,
     margin_pct: float | None = None,
     tv_qty: float | None = None,
+    exchange_leverage: float | int | None = None,
 ) -> tuple[float, dict[str, Any]]:
-    """Independent per-open sizing — always margin20 × lev5 (= 1× equity notional).
+    """Per-open sizing: equity × margin_pct × leverage.
 
+    Defaults remain 20% × 5× when overrides are omitted.
     ``tv_sl`` / ``tv_stop_loss`` are logged only; breathing engine places the real stop.
     ``tv_qty`` / qty1-3 are ignored for order size (optional legacy fields if present).
     """
@@ -118,8 +133,22 @@ def compute_tv_entry_qty(
     price_f = float(price or 0)
     vps_stop_f = float(tv_sl or 0)
     tv_sl_f = float(tv_stop_loss) if tv_stop_loss is not None and float(tv_stop_loss or 0) > 0 else 0.0
-    lev = float(MAX_LEVERAGE)
-    risk_frac = float(margin_pct if margin_pct is not None else RISK_PCT)
+    lev_in = exchange_leverage if exchange_leverage is not None else leverage
+    try:
+        lev = float(lev_in) if lev_in is not None and float(lev_in) > 0 else float(MAX_LEVERAGE)
+    except (TypeError, ValueError):
+        lev = float(MAX_LEVERAGE)
+    # risk_pct is legacy alias for margin_pct
+    margin_in = margin_pct if margin_pct is not None else (risk_pct if risk_pct else None)
+    try:
+        risk_frac = float(margin_in) if margin_in is not None else float(RISK_PCT)
+    except (TypeError, ValueError):
+        risk_frac = float(RISK_PCT)
+    if risk_frac > 1.0 + 1e-12:
+        risk_frac = risk_frac / 100.0
+    risk_frac = max(0.01, min(1.0, risk_frac))
+    lev = max(1.0, min(125.0, lev))
+    binding = f"margin{int(round(risk_frac * 100))}_lev{int(lev)}"
     can = normalize_canonical_symbol(symbol)
     step = _qty_step_for_symbol(symbol)
     mn = float(min_qty if min_qty is not None else step)
@@ -151,7 +180,7 @@ def compute_tv_entry_qty(
         "symbol": can,
         "qty_step": step,
         "qty_ratio": 1.0,
-        "binding": "margin20_lev5",
+        "binding": binding,
         "adjust_coef": None,
     }
 
@@ -162,7 +191,7 @@ def compute_tv_entry_qty(
         meta["error"] = "zero_equity"
         return 0.0, meta
 
-    # 铁律：本金×20% 保证金 ×5 杠杆 = 名义 = 本金×1（不读 TV qty / 不反推系数）
+    # equity × margin_pct × leverage（不读 TV qty / 不反推系数）
     margin_usd = sizing_base * risk_frac
     notional_target = margin_usd * lev
     # 内测闸门：E2E_FORCE_NOTIONAL_USD>0 时压到约最小名义（生产默认 0，不生效）
@@ -202,7 +231,7 @@ def compute_tv_entry_qty(
     meta["candidate_qty_by_notional"] = meta["qty_by_notional"]
     meta["candidate_qty_by_tv_adj"] = None
     if not meta.get("e2e_force_notional_usd"):
-        meta["binding"] = "margin20_lev5"
+        meta["binding"] = binding
 
     floored = floor_qty(theoretical, step)
     if round_fn is not None:
@@ -216,7 +245,7 @@ def compute_tv_entry_qty(
         meta["final_qty"] = 0.0
         return 0.0, meta
 
-    # Hard ceiling: never exceed 本金×1 notional
+    # Hard ceiling: never exceed sized notional target
     if qty * price_f > notional_target + 1e-6:
         qty = floor_qty(notional_target / price_f, step)
         if round_fn is not None:
@@ -272,6 +301,8 @@ def compute_vps_open_qty(
         price=price,
         tv_sl=tv_sl,
         tv_stop_loss=tv_stop_loss,
+        leverage=leverage,
+        margin_pct=risk_pct,
         round_fn=round_fn,
         min_qty=min_qty,
         max_qty=max_qty,
@@ -308,6 +339,8 @@ def compute_vps_open_contracts(
         price=price,
         tv_sl=tv_sl,
         tv_stop_loss=tv_stop_loss,
+        leverage=leverage,
+        risk_pct=risk_pct,
         round_fn=lambda x: x,
         min_qty=None,
         max_qty=max_qty,
@@ -360,6 +393,8 @@ def resolve_vps_entry_qty_eth(
         price=price,
         tv_sl=tv_sl,
         tv_stop_loss=tv_stop_loss,
+        leverage=int(exchange_leverage or MAX_LEVERAGE),
+        risk_pct=risk_pct,
         round_fn=round_fn,
         symbol=symbol,
         min_qty=min_qty,
@@ -394,6 +429,8 @@ def resolve_vps_entry_qty_deepcoin(
         price=price,
         tv_sl=tv_sl,
         tv_stop_loss=tv_stop_loss,
+        leverage=int(exchange_leverage or MAX_LEVERAGE),
+        risk_pct=risk_pct,
         face_value=face_value,
         symbol=symbol,
         tv_qty=tv_qty,

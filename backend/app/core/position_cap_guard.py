@@ -113,6 +113,12 @@ class PositionCapGuardMixin:
         sizing_base, sizing_source = resolve_cap_sizing_base(equity, principal)
         px = float(price or 0)
         leverage = self._resolve_cap_leverage()
+        margin_pct = float(FIXED_MARGIN_PCT)
+        if hasattr(self, "_resolve_entry_margin_pct"):
+            try:
+                margin_pct = float(self._resolve_entry_margin_pct())
+            except Exception:
+                margin_pct = float(FIXED_MARGIN_PCT)
         tv_stop_loss = float(getattr(self, "tv_sl", 0) or 0)
         vps_stop = float(
             getattr(self, "_sizing_initial_stop", 0)
@@ -132,8 +138,8 @@ class PositionCapGuardMixin:
             "price": round(px, 2),
             "regime": regime,
             "tv_sl": round(vps_stop, 4) if vps_stop else 0,
-            "margin_pct": FIXED_MARGIN_PCT * 100.0,
-            "cap_source": "risk20_cap5x",
+            "margin_pct": margin_pct * 100.0,
+            "cap_source": f"margin{int(round(margin_pct * 100))}_cap{int(leverage)}x",
         }
 
         tracked = max(
@@ -169,6 +175,7 @@ class PositionCapGuardMixin:
                 tv_stop_loss=_cap_tv_sl,
                 regime=regime,
                 exchange_leverage=leverage or FIXED_LEVERAGE,
+                risk_pct=margin_pct,
                 face_value=face_value,
                 symbol=getattr(self, "canonical_symbol", None),
                 tv_qty=_cap_tv_qty,
@@ -194,6 +201,7 @@ class PositionCapGuardMixin:
             tv_stop_loss=_cap_tv_sl,
             regime=regime,
             exchange_leverage=leverage or FIXED_LEVERAGE,
+            risk_pct=margin_pct,
             round_fn=(
                 self._round_qty if hasattr(self, "_round_qty") else (lambda q: float(q))
             ),

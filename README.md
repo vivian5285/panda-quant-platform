@@ -6,8 +6,8 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-07-26 · Gemini 多用户规格最终修正 · TP1/TP2 限价 + TP3 雷达管理 + ATR 仅用 TV）**  
-> 凡与本文冲突的旧描述（「TP3 挂限价并与雷达互斥」「VPS 独立拉 1h ATR / 场景切换」「雷达扫出=失败离场」「查不到单就盲补」「硬止损=TV原价」「硬=ATR地板+滑点垫」「日亏熔断默认开」）**一律作废**。  
+> **文档同步（2026-07-27 · 管理员可按用户调保证金占比/杠杆 · Gemini 多用户规格最终修正）**  
+> 凡与本文冲突的旧描述（「TP3 挂限价并与雷达互斥」「VPS 独立拉 1h ATR / 场景切换」「雷达扫出=失败离场」「查不到单就盲补」「硬止损=TV原价」「硬=ATR地板+滑点垫」「日亏熔断默认开」「杠杆/仓位永远硬编码不可改」）**一律作废**。  
 > 权威：`docs/VPS_SYSTEM_SPEC_GEMINI_MULTIUSER.md`（与桌面《VPS完整系统规格_Gemini多用户版》同步）· `docs/SMART_REENTRY_CLOSED_LOOP.md` · 部署：`docs/VPS_DEPLOY.md`  
 > **事故对照（优先）**：`docs/SYSTEM_ISSUE_FIX_LOG.md` — 现象→根因→修复→复查点；含 **v16.4.2-incident-harden**（基线不压扁 / IP cool 180s+_GLOBAL / placeable 30% 对账 / pause·cool 停 REST）。
 
@@ -107,7 +107,7 @@ TV 入队 → 解析 → ATR=webhook.atr → RISK20×5 算仓 → 市价开
 1. GitHub / 本地 / VPS `git rev-parse --short HEAD` 三数字一致。  
 2. 币安：仓位(0) + 当前委托(0) + 条件委托(0)。  
 3. 代码原样：`PLACEABLE_TP_LEVELS={1,2}`；`resolve_open_atr` 恒用 TV atr；`MAX_REENTRY=1`；`HARD_STOP_BUFFER_FIXED=1.15`。  
-4. 当面最小资金 LONG：应见 **硬止损1 + 雷达1 + TP限价仅 TP1+TP2（无 TP3 限价）**，钉钉杠杆 **5×**。
+4. 当面最小资金 LONG：应见 **硬止损1 + 雷达1 + TP限价仅 TP1+TP2（无 TP3 限价）**；钉钉杠杆为该用户配置值（默认 **5×**）。
 
 ### 三层防线永久共存（核心，不得误解）
 
@@ -139,13 +139,13 @@ TV 入队 → 解析 → ATR=webhook.atr → RISK20×5 算仓 → 市价开
 | 项 | 现行值 |
 |----|--------|
 | TV action | 仅 `LONG` / `SHORT` / `CLOSE_QUICK_EXIT` / `CLOSE_RSI_EXIT`；**无 qty 字段** |
-| 算仓 | `qty = 合约本金 × 20% × 5 / 价`（≈本金×1 名义）；忽略 TV qty |
+| 算仓 | `qty = 合约本金 × 保证金占比 × 杠杆 / 价`；默认 **20% × 5x**（≈本金×1 名义）；**管理员可按用户改**；忽略 TV qty |
 | 15s 铁律 | OPEN 先到 → 15s 内 CLOSE **丢弃**；CLOSE 先到 → **先平后开**；>15s CLOSE 独立平仓 |
 | 净场 | 开仓前无仓无挂单；平仓后立即撤该 symbol 全部挂单；反手一律先平 |
 | ATR | **优先**交易所原生 1h；失败用 TV atr；雷达/开仓**不用** 90m 合成 |
 | 呼吸 / 雷达 | ADX 弱/中/强档；启动=`fill±tp1_dist×(0.85/1.00)`；激活→entry±0.5ATR；步长/跟进/呼吸见 `trend_tier_params` |
 | TV 图表 | ETH **90m** / XAU **45m**（VPS「1h ATR」仅为波动率 oracle） |
-| 杠杆 | 一律 `FIXED_LEVERAGE=5` |
+| 杠杆 | 默认 `FIXED_LEVERAGE=5`；**`/admin` 用户详情可按账户改**（1–125，受交易所上限约束） |
 | 加仓 | **禁用**；同向亦先平后开 |
 | 重入 | 最多 **1** 次；窗口 ETH 2 根 / XAU 3 根；成功后雷达 +1 档 |
 
@@ -183,7 +183,8 @@ rules:
   - DAILY_LOSS_CIRCUIT_ENABLED=False in prod (false trips blocked real TV)
   - REST: price/fills via WS; position reconcile ~30s; symbol REST gap ≥100ms; on -1003: ip_rest_cooldown 90s
   - on Binance -1003: ip_rest_cooldown shared 90s; no cancel_all when book unreadable
-  - sizing = equity * 0.20 * 5 / price; ignore TV qty
+  - sizing = equity * margin_pct * leverage / price; default 0.20×5; admin per-user override; ignore TV qty
+  - admin_sizing: /admin → user detail → margin% + leverage (next open)
   - E2E_FORCE_NOTIONAL_USD=0 in production; wait real TV
   - three-way commit: local = GitHub = VPS
 
@@ -346,7 +347,7 @@ trade_logs + 钉钉关键摘要（执行快照杠杆 5× · 按交易所主题�
 | 开放交易所 | 系统 | `platform.enabled_exchanges` |
 | 全局暂停 | 风控 | Redis `platform:trading_paused` |
 
-> **杠杆：** 实盘开仓与钉钉展示不读独立 `LEVERAGE=25` 类 env 作为权威源；一律 `FIXED_LEVERAGE=5`（`tv_entry_sizing` / `exchange_leverage()` / `_alert` 注入）。
+> **杠杆 / 仓位权重：** 默认 `FIXED_LEVERAGE=5` + `margin_pct=0.20`（`tv_entry_sizing`）。管理员可在 `/admin` 用户详情覆盖；Dispatcher 注入 `margin_pct_frac` / `entry_leverage`，开仓 `_resolve_entry_leverage` / `_resolve_entry_margin_pct` 读取。
 
 ---
 
@@ -360,7 +361,7 @@ panda-quant-platform/
 │   │   ├── position_supervisor.py           # Binance/OKX/Gate 执行大脑
 │   │   ├── position_supervisor_deepcoin.py
 │   │   ├── exchange_factory.py
-│   │   ├── tv_entry_sizing.py               # ★ RISK20 + FIXED_LEVERAGE=5
+│   │   ├── tv_entry_sizing.py               # ★ default 20%×5x; admin per-user override
 │   │   ├── breathing_stop.py                # ★ 呼吸止损 + 市价 TP 阶梯
 │   │   ├── adverse_radar_guard.py           # ★ 止损挂/改/触发 + TP后数量收缩
 │   │   ├── market_engine.py / market_indicators.py
@@ -451,10 +452,11 @@ initialStop = 开仓价 ± 1.5 × VPS_ATR         # 仅挂止损，不算仓
 | 缺 `TV.qty` | **拒开仓** |
 | ATR 异常（缺失/≤0/中位数异常） | **拒开仓** + `ATR_INVALID`/`ATR_ANOMALY`（**禁止** VPS K 线回退发明 atr） |
 | ATR 应急降级 | **已废除** — `initial_atr` 唯一来源 = TV webhook `atr` |
-| 杠杆 | **`FIXED_LEVERAGE=5`**（client / bind / 钉钉 / API 校验同源） |
+| 杠杆 | 默认 **`FIXED_LEVERAGE=5`**；管理员可在 `/admin` 按用户覆盖（`UserTradingState.margin_pct_frac` + `leverage`） |
 | 加仓路径 | 返回 `add_disabled` / qty=0 |
-| 开仓日志 | 记录 `notional_target`、`binding=margin20_lev5`、`atr_source=tv_webhook` |
+| 开仓日志 | 记录 `notional_target`、`binding=margin{N}_lev{L}`、`atr_source=tv_webhook` |
 | TV `qty`/`qty1-3` | **完全忽略**（可缺省；不参与算仓/TP 数量） |
+| 管理员改仓 | `/admin` 用户详情：「下单权重 · 杠杆」；保存后热更新 supervisor，**下次开仓**生效 |
 
 ### 四、开仓后挂单
 
@@ -758,6 +760,7 @@ currentStop = max/min(currentStop, extreme ∓ trail_dist)
 
 - 邀请：`{FRONTEND_URL}/register?ref=PANDA-XXXXXXXX`  
 - 管理端 `/admin`：用户、信号、风控、结算、缴纳、Webhook Secret、开放交易所、启动审计等  
+- **按用户下单权重**：用户详情可改 **保证金占权益 %**（1–100）与 **杠杆**（1–125）；默认 20% × 5x；按 UID / 昵称 / 交易所 / 脱敏 API Key 区分账户；保存后立即对**下次开仓**生效（已持仓不变）  
 - 默认管理员：`ADMIN_EMAIL` / `ADMIN_PASSWORD`（**部署必改**）  
 
 用户端：`/dashboard` `/api` `/trading` `/trades` `/settlements` `/referrals` `/withdraw` `/profile`

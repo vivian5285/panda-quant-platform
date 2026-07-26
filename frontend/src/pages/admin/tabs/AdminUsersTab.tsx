@@ -1,3 +1,4 @@
+import React, { useEffect, useState } from 'react'
 import StatCard from '../../../components/StatCard'
 import GlassCard from '../../../components/GlassCard'
 import TabBar from '../../../components/TabBar'
@@ -16,9 +17,19 @@ export default function AdminUsersTab() {
     userTrades, userLogs,
     userDetailTab, setUserDetailTab, userReferralStats, userPrincipalHistory, userTradingCtrl, linkedExchangeAccounts, userSubAccountFilings,
     load, loadUserDetail, closeUserDetail, exportUsersCsv, toggleUserSelect, toggleSelectAllUsers,
-    runBatchNotify, runBatchPause, forceUserPause, forceCloseUser, setUserRisk, toggleSettlementDefer, toggleReferralOverride,
+    runBatchNotify, runBatchPause, forceUserPause, forceCloseUser, setUserRisk, setUserSizing, toggleSettlementDefer, toggleReferralOverride,
     exportUserLogsCsv, setUserLogs,
   } = useAdmin()
+
+  const [draftMarginPct, setDraftMarginPct] = useState('')
+  const [draftLeverage, setDraftLeverage] = useState('')
+
+  useEffect(() => {
+    if (!userTradingCtrl) return
+    const m = Number(userTradingCtrl.margin_pct_frac ?? 0.2)
+    setDraftMarginPct(String(Math.round(m * 10000) / 100))
+    setDraftLeverage(String(userTradingCtrl.leverage ?? 5))
+  }, [userTradingCtrl?.margin_pct_frac, userTradingCtrl?.leverage, selectedUserId])
 
   if (selectedUserId && (userDetailLoading || (!userDetail && !userDetailError))) {
     return (
@@ -56,8 +67,12 @@ export default function AdminUsersTab() {
           <div className="info-grid-auto text-sm">
             <div><span className="text-muted">{t('common.email')}:</span> {userDetail.profile?.email || t('common.none')}</div>
             <div><span className="text-muted">{t('common.phone')}:</span> {userDetail.profile?.phone || t('common.none')}</div>
+            <div><span className="text-muted">{t('admin.exchangeLabel')}:</span> {(userDetail.profile?.exchange || 'binance').toUpperCase()}</div>
             <div><span className="text-muted">{t('admin.cols.api')}:</span> {userDetail.profile?.api_status}</div>
             <div><span className="text-muted">{t('admin.exchangeAccountMode')}:</span> {userDetail.profile?.api_account_mode === 'sub' ? t('admin.accountModeSub') : t('admin.accountModeMaster')}</div>
+            {userDetail.profile?.nickname && (
+              <div><span className="text-muted">{t('common.nickname')}:</span> {userDetail.profile.nickname}</div>
+            )}
             {userDetail.profile?.exchange_uid && (
               <div><span className="text-muted">{t('admin.exchangeUid')}:</span> {userDetail.profile.exchange_uid}</div>
             )}
@@ -172,6 +187,68 @@ export default function AdminUsersTab() {
                 <option value="aggressive">{t('risk.levels.aggressive')}</option>
               </select>
             </label>
+          </div>
+          <div className="section-mt-md p-4 settlement-defer-panel">
+            <p className="text-sm-strong section-mb-xs">{t('admin.sizingTitle')}</p>
+            <p className="text-sm text-muted section-mb-sm">{t('admin.sizingHint')}</p>
+            <div className="flex-gap-sm" style={{ flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <label className="trades-filter">
+                <span className="text-muted">{t('admin.marginPctLabel')}</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={100}
+                  step={0.1}
+                  value={draftMarginPct}
+                  onChange={e => setDraftMarginPct(e.target.value)}
+                  style={{ width: 96 }}
+                />
+              </label>
+              <label className="trades-filter">
+                <span className="text-muted">{t('admin.leverageLabel')}</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={125}
+                  step={1}
+                  value={draftLeverage}
+                  onChange={e => setDraftLeverage(e.target.value)}
+                  style={{ width: 96 }}
+                />
+              </label>
+              <button
+                className="btn btn-primary btn-sm"
+                type="button"
+                onClick={() => {
+                  const m = Number(draftMarginPct)
+                  const lev = Number(draftLeverage)
+                  if (!Number.isFinite(m) || m < 1 || m > 100) {
+                    toast.error(t('admin.sizingUpdateFail'))
+                    return
+                  }
+                  if (!Number.isFinite(lev) || lev < 1 || lev > 125) {
+                    toast.error(t('admin.sizingUpdateFail'))
+                    return
+                  }
+                  setUserSizing({ margin_pct_frac: m / 100, leverage: Math.round(lev) })
+                }}
+              >
+                {t('admin.sizingSave')}
+              </button>
+            </div>
+            {(() => {
+              const m = Number(draftMarginPct)
+              const lev = Number(draftLeverage)
+              if (!Number.isFinite(m) || !Number.isFinite(lev) || m <= 0 || lev <= 0) return null
+              const nx = Math.round((m / 100) * lev * 100) / 100
+              return (
+                <p className="text-xs text-muted section-mt-sm">
+                  {t('admin.sizingNotionalHint', { m, lev, nx })}
+                </p>
+              )
+            })()}
           </div>
         </GlassCard>
         <TabBar
@@ -386,8 +463,11 @@ export default function AdminUsersTab() {
             <tr>
               <th><input type="checkbox" checked={users.length > 0 && selectedUserIds.length === users.length} onChange={toggleSelectAllUsers} aria-label="select all" /></th>
               <th>{t('admin.cols.uid')}</th><th>{t('admin.emailPhone')}</th>
+              <th>{t('admin.exchangeLabel')}</th>
               <th>{t('admin.cols.registeredAt')}</th>
               <th>{t('admin.cols.api')}</th>
+              <th>{t('admin.marginPctLabel')}</th>
+              <th>{t('admin.leverageLabel')}</th>
               <th>{t('admin.cols.paused')}</th>
               <th>{t('admin.cols.cumulativePnl')}</th>
               <th>{t('admin.cols.execSuccessRate')}</th>
@@ -399,10 +479,13 @@ export default function AdminUsersTab() {
             {users.map((u: any) => (
               <tr key={u.id} className={u.risk_flag ? 'row-flagged' : undefined}>
                 <td><input type="checkbox" checked={selectedUserIds.includes(u.id)} onChange={() => toggleUserSelect(u.id)} /></td>
-                <td><span className="badge badge-gray">{u.uid}</span></td>
+                <td><span className="badge badge-gray">{u.uid}</span>{u.nickname ? <div className="text-xs text-muted">{u.nickname}</div> : null}</td>
                 <td>{u.email || u.phone || t('common.none')}</td>
+                <td className="text-xs">{(u.exchange || 'binance').toUpperCase()}{u.exchange_uid ? <div className="text-muted">{u.exchange_uid}</div> : null}</td>
                 <td className="text-xs">{u.created_at ? localeDate(u.created_at, locale) : '—'}</td>
-                <td><span className={`badge ${u.api_status === 'active' ? 'badge-green' : 'badge-gray'}`}>{u.api_status}</span></td>
+                <td><span className={`badge ${u.api_status === 'active' ? 'badge-green' : 'badge-gray'}`}>{u.api_status}</span>{u.api_account_mode === 'sub' ? <div className="text-xs text-muted">{t('admin.accountModeSub')}</div> : null}</td>
+                <td className="text-xs">{u.margin_pct_frac != null ? `${Math.round(Number(u.margin_pct_frac) * 1000) / 10}%` : '20%'}</td>
+                <td className="text-xs">{u.leverage != null ? `${u.leverage}x` : '5x'}</td>
                 <td><span className={`badge ${u.trading_paused ? 'badge-gray' : 'badge-green'}`}>{u.trading_paused ? t('admin.userPaused') : t('admin.notPaused')}</span></td>
                 <td className={(u.cumulative_pnl || 0) >= 0 ? 'text-green' : 'text-red'}>${(u.cumulative_pnl ?? 0).toFixed(2)}</td>
                 <td>{u.execution_success_rate != null ? `${u.execution_success_rate}%` : '—'}</td>

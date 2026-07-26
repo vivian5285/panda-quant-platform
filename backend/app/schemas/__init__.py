@@ -912,6 +912,8 @@ class AdminUserOut(BaseModel):
     referrer_id: Optional[int]
     trading_paused: bool = False
     risk_level: str = "balanced"
+    margin_pct_frac: float = 0.20
+    leverage: int = 5
     created_at: datetime
     cumulative_pnl: float = 0.0
     execution_success_rate: Optional[float] = None
@@ -1031,6 +1033,8 @@ class AdminUserDetailOut(BaseModel):
     api_key_mask: Optional[str] = None
     trading_paused: bool = False
     risk_level: str = "balanced"
+    margin_pct_frac: float = 0.20
+    leverage: int = 5
     risk_flag: bool = False
     risk_flag_reason: Optional[str] = None
     cumulative_pnl: float = 0.0

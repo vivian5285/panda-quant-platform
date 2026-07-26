@@ -2773,6 +2773,24 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         # Prefer TV webhook atr as frozen initial_atr; VPS 90m only as fallback
         self.risk_multiplier = float(payload.get("risk_multiplier", 1.0))
+        if payload.get("margin_pct_frac") is not None:
+            try:
+                mp = float(payload.get("margin_pct_frac"))
+                if mp > 1.0 + 1e-12:
+                    mp = mp / 100.0
+                if mp > 0:
+                    self.entry_margin_pct = max(0.01, min(1.0, mp))
+            except (TypeError, ValueError):
+                pass
+        lev_raw = payload.get("entry_leverage", payload.get("leverage"))
+        if lev_raw is not None:
+            try:
+                lev = int(float(lev_raw))
+                if lev > 0:
+                    self.entry_leverage = lev
+                    self.leverage = lev
+            except (TypeError, ValueError):
+                pass
         position_open = bool(
             getattr(self, "monitoring", False)
             or float(getattr(self, "watched_qty", 0) or 0) > 0
@@ -3037,12 +3055,41 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return True
 
     def _resolve_entry_leverage(self) -> int:
-        """v6.5.6: always 5x (TV leverage field deleted)."""
+        """Per-user admin leverage (default FIXED_LEVERAGE=5)."""
         from app.core.tv_entry_sizing import FIXED_LEVERAGE
+
+        for src in (
+            getattr(self, "entry_leverage", None),
+            (getattr(self, "_tv_entry_fields", None) or {}).get("leverage"),
+            getattr(self, "leverage", None),
+        ):
+            try:
+                lev = int(float(src))
+                if lev > 0:
+                    return lev
+            except (TypeError, ValueError):
+                continue
         return int(FIXED_LEVERAGE)
 
+    def _resolve_entry_margin_pct(self) -> float:
+        from app.core.tv_entry_sizing import FIXED_MARGIN_PCT
+
+        for src in (
+            getattr(self, "entry_margin_pct", None),
+            (getattr(self, "_tv_entry_fields", None) or {}).get("margin_pct"),
+        ):
+            try:
+                v = float(src)
+                if v > 1.0 + 1e-12:
+                    v = v / 100.0
+                if v > 0:
+                    return max(0.01, min(1.0, v))
+            except (TypeError, ValueError):
+                continue
+        return float(FIXED_MARGIN_PCT)
+
     def _bind_tv_leverage(self) -> int:
-        """Apply fixed 5x leverage before sizing/order."""
+        """Apply per-user leverage before sizing/order."""
         lev = self._resolve_entry_leverage()
         self.leverage = lev
         client = getattr(self, "client", None)
@@ -3056,11 +3103,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return lev
 
     def _resolve_entry_qty(self, curr_px: float) -> tuple[int, dict]:
-        """RISK20 sizing once at open → DeepCoin contracts (TV.qty distance-adjusted)."""
+        """Admin sizing once at open → DeepCoin contracts."""
         from app.core.breathing_stop import compute_initial_stop
 
         equity = read_contract_equity(self.client)
         leverage = self._resolve_entry_leverage()
+        margin_pct = self._resolve_entry_margin_pct()
         tv_fields = getattr(self, "_tv_entry_fields", None) or {}
         tv_qty = tv_fields.get("tv_qty")
         price = float(curr_px or self.tv_price or 0)
@@ -3135,6 +3183,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             tv_stop_loss=tv_sl_ref if tv_sl_ref > 0 else None,
             regime=int(self.regime or 3),
             exchange_leverage=leverage,
+            risk_pct=margin_pct,
             face_value=self.face_value,
             symbol=self.canonical_symbol,
             tv_qty=float(tv_qty) if tv_qty else None,
