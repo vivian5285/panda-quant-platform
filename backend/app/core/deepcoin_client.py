@@ -116,6 +116,20 @@ class DeepcoinClient:
             if isinstance(data, dict) and str(data.get("code", "")) != "0":
                 msg = str(data.get("msg", ""))
                 logger.error(f"Deepcoin API 错误 {method} {request_path} | code={data.get('code')} msg={msg}")
+                try:
+                    from app.core.exchange_errors import is_rate_limit_error, parse_binance_error
+                    from app.core.ip_rest_cooldown import note_rate_limit
+
+                    code = data.get("code")
+                    if is_rate_limit_error(msg, code=code):
+                        meta = parse_binance_error(f"code={code} {msg}")
+                        note_rate_limit(
+                            exchange="deepcoin",
+                            user_id=self.user_id,
+                            banned_until_ms=meta.get("banned_until_ms"),
+                        )
+                except Exception:
+                    pass
                 # 签名/时间戳类错误自动重试一次
                 if _retry == 0 and any(k in msg.lower() for k in ("timestamp", "sign", "time", "expired")):
                     time.sleep(0.3)
@@ -123,6 +137,10 @@ class DeepcoinClient:
             return data
         except Exception as e:
             logger.error(f"Deepcoin 请求失败 {endpoint}: {e}")
+            from app.core.exchange_errors import is_rate_limit_error, raise_exchange_transient
+
+            if is_rate_limit_error(e):
+                raise_exchange_transient(e, exchange="deepcoin", op=endpoint, user_id=self.user_id)
             return None
 
     def _public_request(self, endpoint: str, params: dict = None):

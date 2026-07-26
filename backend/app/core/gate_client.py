@@ -98,12 +98,24 @@ class GateClient:
                     resp.status_code,
                     resp.text[:300],
                 )
+                try:
+                    from app.core.exchange_errors import is_rate_limit_error
+                    from app.core.ip_rest_cooldown import note_rate_limit
+
+                    if resp.status_code == 429 or is_rate_limit_error(resp.text):
+                        note_rate_limit(exchange="gate", user_id=self.user_id)
+                except Exception:
+                    pass
                 return None
             if not resp.text:
                 return {}
             return resp.json()
         except Exception as exc:
             logger.error("[User %s] Gate request failed %s: %s", self.user_id, path, exc)
+            from app.core.exchange_errors import is_rate_limit_error, raise_exchange_transient
+
+            if is_rate_limit_error(exc):
+                raise_exchange_transient(exc, exchange="gate", op=path, user_id=self.user_id)
             return None
 
     def _load_contract_meta(self) -> None:

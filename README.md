@@ -66,7 +66,8 @@ SIGNAL_RECEIVED → PENDING_CLEAR → CLEARED → ENTRY_SUBMITTED
 
 | 项 | 状态 |
 |----|------|
-| 对账 REST 阀门 | OKX/Gate/DeepCoin `get_position`/`get_open_orders`(及 DeepCoin pending/trigger) 入口 `require_rest_or_transient`；Binance mop-up 改走缓存路径；cool 下 `_count_open_book_orders`/`_resolve_adverse_live_qty` 读账本 |
+| 对账 REST 阀门 | OKX/Gate/DeepCoin `_request` 限流即 `note_rate_limit`；读入口 `require_rest_or_transient`；预算 **40/min** → 180s cool |
+| WS 限流根因 | **已绝**：`_radar_ws_fast_tick` 零 REST；哨兵 20–45s；缓存 TTL 15/25s |
 | `TP_FILLED` / `TRAIL` | 纳入通讯官：`TP_FILLED` 仅持仓相位；`BREATH_TRAIL`/`TRAIL` **90s** 节流 |
 | 雷达公式影子 | **已禁用** — 无 live/watched 则 `RADAR_RESIZE_SKIPPED` 拒挂，不发明数量 |
 
@@ -234,14 +235,17 @@ rules:
   - local PendingOrderRegistry tag → refuse place even if book empty (anti 50× LIMIT)
   - OPEN_ORDERS_HARD_CAP=5 → critical + pause symbol opens
   - DAILY_LOSS_CIRCUIT_ENABLED=False in prod (false trips blocked real TV)
-  - REST: price/fills via WS; position reconcile ~30s; symbol REST gap ≥100ms; on -1003: ip_rest_cooldown **180s** + `_GLOBAL`
-  - on Binance -1003: ip_rest_cooldown shared **180s**; no cancel_all when book unreadable
+  - REST: price/fills via WS; position reconcile ~45s; symbol REST gap ≥100ms; shared-account gap 2s; on -1003: cool **180s** + `_GLOBAL`
+  - on rate-limit (any exchange): note_rate_limit in client `_request`; budget **40**/min → full 180s cool
+  - WS tick: **no REST** (trail on watched_qty only); adverse/book audit ≥30s
+  - SENTINEL_POLL: normal 45 / arming·radar 20; ORDER_AUDIT 30; RADAR_WS_TICK_MIN 2.0
+  - book cache TTL: pos 15s / orders·algo 25s
   - sizing = equity * margin_pct * leverage / price; default 0.20×5; admin per-user override; ignore TV qty
   - admin_sizing: /admin → user detail → margin% + leverage (next open)
   - pipeline: Signal→Admission→Auditor→Execution(TP≈30% self-check)→ChiefAuditor→Comms; ledger under data/supervisor/ledgers/
   - pipeline_stall: PHASE_STALL_SEC → critical PIPELINE_STALL; mid-trade ChiefAuditor.recheck_live on TP fill
   - flat_auto_unpause: chief_auditor_fail / open_orders_gt_5 / open_book_dirty / ATR应急 / 方向 / 先平后开失败
-  - REST valve: rest_throttle_valve; sentinel_may_rest blocks pause/cool; book cache prefers stale
+  - REST valve: rest_throttle_valve; sentinel_may_rest blocks pause/cool/**budget**; book cache prefers stale
   - E2E_FORCE_NOTIONAL_USD=0 in production; wait real TV
   - three-way commit: local = GitHub = VPS
 
@@ -269,9 +273,11 @@ modules:
 | 项 | 规则 |
 |----|------|
 | WS vs REST | 价格监控 / 订单成交 → **WebSocket**；下单改撤 + 持仓对账 → REST |
-| 持仓对账 | REST 约 **每 30s**（`SENTINEL_POLL_NORMAL=30`）；近 TP / 雷达期可略密，仍以 WS tick 为主 |
-| 单品种间隔 | `rest_symbol_pace`：同品种连续 REST **≥100ms** |
-| 共享冷静 | `ip_rest_cooldown`：ETH+XAU 共用 IP 级冷却，默认 **180s** + `_GLOBAL`；有 `banned until` 则用交易所时间戳 |
+| 持仓对账 | REST 约 **每 45s**（`SENTINEL_POLL_NORMAL=45`）；近 TP / 雷达期 **20s**；WS tick **禁止 REST** |
+| 单品种间隔 | `rest_symbol_pace`：同品种连续 REST **≥100ms**；全账户共享端点 **≥2s** |
+| 共享冷静 | `ip_rest_cooldown`：ETH+XAU 共用 IP 级冷却，默认 **180s** + `_GLOBAL`；预算耗尽同冷 |
+| 预算阀门 | `rest_throttle_valve`：**40 次/分钟/账户**；超限 → 立刻 180s cool，拒绝新 REST |
+| 缓存 TTL | 持仓 **15s** / 挂单·algo **25s**；拒绝刷新时优先 stale |
 | 触发 | REST 返回 `-1003` / 限流文案 → `note_rate_limit`；哨兵/补挂读 `remaining_sec` 跳过，禁止硬撞 |
 | 盘口不可读 | **禁止** `cancel_all`、禁止盲补 TP/Stop（防误撤 STOP + 加剧限流） |
 | 钉钉 | 限流抖动去重，避免刷屏 |

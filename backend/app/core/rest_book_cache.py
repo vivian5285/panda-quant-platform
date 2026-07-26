@@ -22,11 +22,11 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-# Dual ETH+XAU supervisors share one IP budget (~2400/min). Longer TTL +
-# single-flight prevents markPrice WS (~0.45s) from weight-storming openOrders(~40).
-POS_TTL_SEC = 5.0
-ORDER_TTL_SEC = 10.0
-ALGO_TTL_SEC = 10.0
+# Dual ETH+XAU supervisors share one IP budget. Longer TTL + single-flight
+# prevents markPrice WS from weight-storming openOrders(~40).
+POS_TTL_SEC = 15.0
+ORDER_TTL_SEC = 25.0
+ALGO_TTL_SEC = 25.0
 
 _lock = threading.RLock()
 # key = f"{exchange}:{user_id}"
@@ -100,11 +100,11 @@ def _cool_left(exchange: str, user_id: int | str) -> float:
 
 def _note_limit_from_exc(exchange: str, user_id: int | str, exc: BaseException) -> None:
     try:
-        from app.core.exchange_errors import parse_binance_error
+        from app.core.exchange_errors import is_rate_limit_error, parse_binance_error
         from app.core.ip_rest_cooldown import note_rate_limit
 
         meta = parse_binance_error(exc)
-        if meta.get("code") in (-1003, "-1003", 1003, "1003") or "Too many requests" in str(exc):
+        if is_rate_limit_error(exc, code=meta.get("code")):
             note_rate_limit(
                 exchange=exchange,
                 user_id=user_id,

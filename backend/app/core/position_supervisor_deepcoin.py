@@ -77,17 +77,17 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 DEEPCOIN_SUPERVISOR_VERSION = "v13.4.7-ws-radar"
-SENTINEL_POLL_NORMAL = 30.0
-# Align with Binance/OKX/Gate — dual-symbol REST rate-limit safe
-SENTINEL_POLL_ARMING = 8.0
-SENTINEL_POLL_RADAR = 8.0
-SENTINEL_POLL_JITTER_SEC = 0.5
-SENTINEL_ORDER_AUDIT_SEC = 15.0
-RADAR_WS_TICK_MIN_SEC = 0.45
+SENTINEL_POLL_NORMAL = 45.0
+# Align with Binance/OKX/Gate — multi-user REST headroom
+SENTINEL_POLL_ARMING = 20.0
+SENTINEL_POLL_RADAR = 20.0
+SENTINEL_POLL_JITTER_SEC = 1.0
+SENTINEL_ORDER_AUDIT_SEC = 30.0
+RADAR_WS_TICK_MIN_SEC = 2.0
 DUST_ORPHAN_CONTRACTS = 1
 TP_COMPLETE_RESIDUAL_RATIO = 0.12
 FLAT_WAIT_TIMEOUT = 12.0
-FLAT_WAIT_POLL = 0.6
+FLAT_WAIT_POLL = 2.0
 
 
 class _DingtalkBridge:
@@ -313,7 +313,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         """空仓待命时后台巡检：实盘对账 / 同向接管 / 残张扫尾"""
         from app.config import get_settings
 
-        interval = float(get_settings().IDLE_PATROL_INTERVAL_SEC or 10.0)
+        interval = float(get_settings().IDLE_PATROL_INTERVAL_SEC or 45.0)
 
         def loop():
             while True:

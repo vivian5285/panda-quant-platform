@@ -1,9 +1,12 @@
-"""WS mark-price listeners + radar poll cadence (all exchanges)."""
+"""WS mark-price listeners + radar poll cadence (all exchanges).
+
+Rate-limit harden: WS ticks never REST; sentinel polls are slow (20–45s).
+"""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import threading
 
 from app.core.ws_price_listeners import (
@@ -17,6 +20,7 @@ from app.core.position_supervisor import (
     SENTINEL_POLL_ARMING,
     SENTINEL_POLL_NORMAL,
     SENTINEL_POLL_RADAR,
+    SENTINEL_ORDER_AUDIT_SEC,
 )
 
 
@@ -36,20 +40,22 @@ def test_ws_price_listener_fanout():
     assert seen == [("ETHUSDT", 2500.5)]
 
 
-def test_radar_ws_tick_min_sec_is_subsecond():
-    assert RADAR_WS_TICK_MIN_SEC < 1.0
-    # All exchanges aligned: arming/radar sentinel = 0.5s (拍板)
-    assert SENTINEL_POLL_ARMING == 0.5
-    assert SENTINEL_POLL_RADAR == 0.5
-    assert SENTINEL_POLL_NORMAL <= 5.0
+def test_radar_cadence_rate_limit_safe():
+    # Absolute: WS tick ≥2s; sentinel never sub-10s under multi-user load
+    assert RADAR_WS_TICK_MIN_SEC >= 2.0
+    assert SENTINEL_POLL_ARMING >= 15.0
+    assert SENTINEL_POLL_RADAR >= 15.0
+    assert SENTINEL_POLL_NORMAL >= 30.0
+    assert SENTINEL_ORDER_AUDIT_SEC >= 25.0
 
 
-def test_deepcoin_sentinel_aligned_to_half_sec():
+def test_deepcoin_sentinel_aligned_rate_limit_safe():
     from app.core import position_supervisor_deepcoin as dc
 
-    assert dc.SENTINEL_POLL_ARMING == 0.5
-    assert dc.SENTINEL_POLL_RADAR == 0.5
-    assert dc.SENTINEL_POLL_NORMAL == 5.0
+    assert dc.SENTINEL_POLL_ARMING >= 15.0
+    assert dc.SENTINEL_POLL_RADAR >= 15.0
+    assert dc.SENTINEL_POLL_NORMAL >= 30.0
+    assert dc.RADAR_WS_TICK_MIN_SEC >= 2.0
 
 
 def _stub_supervisor():
@@ -68,6 +74,8 @@ def _stub_supervisor():
     sup._radar_ws_tick_ts = 0.0
     sup._lock = threading.Lock()
     sup.watched_entry = 1800.0
+    sup.watched_qty = 0.05
+    sup.best_price = 1800.0
     sup.tv_tps = [1830.0, 1850.0, 1870.0]
     sup.current_side = "LONG"
     sup.regime = 3
@@ -91,18 +99,31 @@ def test_ensure_price_ws_binds_listener_once():
     assert sup.client.unregister_price_listener.call_count == 1
 
 
-def test_sentinel_poll_fast_near_activation():
+def test_sentinel_poll_cadence_bands():
     from app.core.adverse_radar_guard import AdverseRadarMixin
 
-    # Bind mixin methods onto stub (PositionSupervisor already subclasses mixin in prod)
     sup = _stub_supervisor()
-    # Far from TP1 (~10% of path) → normal
-    far = 1800.0 + (1830.0 - 1800.0) * 0.10
-    assert PositionSupervisor._sentinel_poll_sec(sup, far) == SENTINEL_POLL_NORMAL
-    # Near activation threshold → arming
-    near = 1800.0 + (1830.0 - 1800.0) * 0.50
-    assert PositionSupervisor._sentinel_poll_sec(sup, near) == SENTINEL_POLL_ARMING
-    # Latched → radar cadence
-    sup.radar_latched = True
-    assert AdverseRadarMixin._is_radar_engaged(sup) is True
-    assert PositionSupervisor._sentinel_poll_sec(sup, near) == SENTINEL_POLL_RADAR
+    with patch("random.uniform", return_value=0.0):
+        far = 1800.0 + (1830.0 - 1800.0) * 0.10
+        assert PositionSupervisor._sentinel_poll_sec(sup, far) == SENTINEL_POLL_NORMAL
+        near = 1800.0 + (1830.0 - 1800.0) * 0.50
+        assert PositionSupervisor._sentinel_poll_sec(sup, near) == SENTINEL_POLL_ARMING
+        sup.radar_latched = True
+        assert AdverseRadarMixin._is_radar_engaged(sup) is True
+        assert PositionSupervisor._sentinel_poll_sec(sup, near) == SENTINEL_POLL_RADAR
+
+
+def test_ws_fast_tick_never_calls_get_position():
+    """Rate-limit absolute: WS path must not REST."""
+    sup = _stub_supervisor()
+    called = {"pos": 0}
+
+    def boom(*a, **k):
+        called["pos"] += 1
+        raise AssertionError("WS tick must not REST get_position")
+
+    sup._get_active_position = boom
+    sup._process_radar_trailing = MagicMock(return_value=False)
+    PositionSupervisor._radar_ws_fast_tick(sup, 1820.0)
+    assert called["pos"] == 0
+    assert sup._process_radar_trailing.called

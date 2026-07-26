@@ -55,7 +55,9 @@ logger = logging.getLogger(__name__)
 ADVERSE_HARD_STOP_PCT = 0.10
 TV_SL_TIER_MARKER = -1.0  # plan tier_pct when stop price comes from TV
 ADVERSE_STOP_TOLERANCE = 2.0
-ADVERSE_REPAIR_COOLDOWN_SEC = 20.0
+ADVERSE_REPAIR_COOLDOWN_SEC = 30.0
+# Adverse shield REST audit — must not run on every WS tick
+ADVERSE_SHIELD_SYNC_MIN_SEC = 30.0
 # Checklist hard fuse: TOTAL open orders (limits+stops) on one symbol
 OPEN_ORDERS_HARD_CAP = 5
 EXIT_OWNERSHIP_NONE = "NONE"
@@ -693,12 +695,22 @@ class AdverseRadarMixin:
         if bool(self.trading_paused) and str(self.trading_pause_reason or "") == reason:
             return True
         # Throttle REST hard-cap — WS path calls orchestrate ~0.45s
-        gap = 15.0  # align SENTINEL_ORDER_AUDIT_SEC; avoid circular import
+        gap = 30.0  # align SENTINEL_ORDER_AUDIT_SEC; avoid circular import
         now = time.time()
         last = float(getattr(self, "_hard_cap_checked_at", 0) or 0)
         if last and (now - last) < gap:
             return False
         self._hard_cap_checked_at = now
+        try:
+            from app.core.rest_throttle_valve import rest_silent
+
+            if rest_silent(
+                exchange=getattr(self, "exchange_id", None),
+                user_id=getattr(self, "user_id", None),
+            ):
+                return False
+        except Exception:
+            pass
         if not hasattr(self, "_count_raw_exchange_orders"):
             return False
         try:
@@ -4155,8 +4167,36 @@ class AdverseRadarMixin:
         """
         Step 1 in adverse flow: trust exchange book, then align internal records.
         Restart-safe — does not place or cancel orders.
+
+        Throttled: WS/breath must not hammer get_open_orders every tick.
         """
         self._init_adverse_radar_fields()
+        now = time.time()
+        last = float(getattr(self, "_adverse_shield_sync_ts", 0) or 0)
+        cached = getattr(self, "_adverse_shield_sync_cache", None)
+        if (
+            isinstance(cached, dict)
+            and last
+            and (now - last) < ADVERSE_SHIELD_SYNC_MIN_SEC
+        ):
+            return dict(cached)
+        try:
+            from app.core.rest_throttle_valve import rest_silent
+
+            if rest_silent(
+                exchange=getattr(self, "exchange_id", None),
+                user_id=getattr(self, "user_id", None),
+            ):
+                if isinstance(cached, dict):
+                    return dict(cached)
+                return {
+                    "aligned": True,
+                    "skipped": "rest_cool",
+                    "open_count": 0,
+                    "live_qty": float(live_qty or 0),
+                }
+        except Exception:
+            pass
         live_qty = self._resolve_adverse_live_qty(live_qty)
         plan = self._compute_adverse_stop_plan(live_qty)
         audit = self._audit_adverse_shield_live(plan)
@@ -4180,6 +4220,8 @@ class AdverseRadarMixin:
         audit["live_qty"] = live_qty
         audit["plan"] = plan
         audit["synced_armed"] = self.adverse_sl_armed
+        self._adverse_shield_sync_ts = now
+        self._adverse_shield_sync_cache = dict(audit)
         return audit
 
     def _on_adverse_startup_reconcile(self, live_qty: float, curr_px: float) -> dict[str, Any]:

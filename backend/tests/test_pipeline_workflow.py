@@ -289,6 +289,32 @@ def test_require_rest_raises_transient_when_cooling():
     reset_cool()
 
 
+def test_budget_trip_enters_full_cool():
+    from app.core.ip_rest_cooldown import reset_for_tests as reset_cool
+    from app.core.rest_throttle_valve import (
+        DEFAULT_BUDGET_PER_MIN,
+        ThrottleDenied,
+        acquire_rest_permit,
+        record_rest_call,
+        reset_for_tests as reset_budget,
+        sentinel_may_rest,
+    )
+
+    reset_cool()
+    reset_budget()
+    assert DEFAULT_BUDGET_PER_MIN <= 40
+    for _ in range(DEFAULT_BUDGET_PER_MIN):
+        record_rest_call(exchange="binance", user_id=42)
+    may, why = sentinel_may_rest(exchange="binance", user_id=42, trading_paused=False)
+    assert may is False and "budget" in why
+    with pytest.raises(ThrottleDenied):
+        acquire_rest_permit(exchange="binance", user_id=42, op="probe")
+    # Budget trip should share cool across IP
+    assert remaining_sec(exchange="binance", user_id=42) > 100
+    reset_cool()
+    reset_budget()
+
+
 def test_stall_budget_table():
     assert PHASE_STALL_SEC[TradePhase.ENTRY_SUBMITTED] == 30.0
     assert PHASE_STALL_SEC[TradePhase.ORDERS_PLACED] == 45.0

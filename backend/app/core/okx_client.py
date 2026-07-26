@@ -109,9 +109,28 @@ class OkxClient:
                     data.get("code"),
                     data.get("msg"),
                 )
+                try:
+                    from app.core.exchange_errors import is_rate_limit_error, parse_binance_error
+                    from app.core.ip_rest_cooldown import note_rate_limit
+
+                    code = data.get("code")
+                    msg = data.get("msg") or ""
+                    if is_rate_limit_error(msg, code=code):
+                        meta = parse_binance_error(f"code={code} {msg}")
+                        note_rate_limit(
+                            exchange="okx",
+                            user_id=self.user_id,
+                            banned_until_ms=meta.get("banned_until_ms"),
+                        )
+                except Exception:
+                    pass
             return data
         except Exception as exc:
             logger.error("[User %s] OKX request failed %s: %s", self.user_id, path, exc)
+            from app.core.exchange_errors import is_rate_limit_error, raise_exchange_transient
+
+            if is_rate_limit_error(exc):
+                raise_exchange_transient(exc, exchange="okx", op=path, user_id=self.user_id)
             return None
 
     @staticmethod

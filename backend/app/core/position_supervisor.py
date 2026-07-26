@@ -77,23 +77,22 @@ CANCEL_VERIFY_ROUNDS = 5
 HEAL_PLACE_ROUNDS = 2
 SIGNAL_QUEUE_TTL = 120.0
 SIGNAL_LOCK_SLICE = 5.0
-SENTINEL_POLL_NORMAL = 30.0  # whitepaper §8.2: REST position reconcile ≤1/30s
-# Near TP1 / TP fill monitor (REST book) — dual-symbol rate-limit safe
-SENTINEL_POLL_ARMING = 8.0
-# Radar engaged: trail on markPrice WS; REST sentinel slower under IP budget
-SENTINEL_POLL_RADAR = 8.0
-# Order-book / TP audit REST cadence (fills prefer user-data WS invalidate)
-SENTINEL_ORDER_AUDIT_SEC = 15.0
-# WS tick → radar evaluate throttle (avoid place/cancel thrash)
-RADAR_WS_TICK_MIN_SEC = 0.45
-SENTINEL_POLL_JITTER_SEC = 0.5
+SENTINEL_POLL_NORMAL = 45.0  # multi-user REST headroom (was 30)
+# Near TP1 / radar: still slower than before — WS owns trail
+SENTINEL_POLL_ARMING = 20.0
+SENTINEL_POLL_RADAR = 20.0
+# Order-book / TP audit REST cadence
+SENTINEL_ORDER_AUDIT_SEC = 30.0
+# WS tick → radar evaluate (NO REST on this path)
+RADAR_WS_TICK_MIN_SEC = 2.0
+SENTINEL_POLL_JITTER_SEC = 1.0
 DUST_QTY_ETH = 0.004
 TP_COMPLETE_RESIDUAL_RATIO = 0.12
 RADAR_SL_MIN_MOVE = 1.0
 FLAT_WAIT_TIMEOUT = 12.0
-FLAT_WAIT_POLL = 0.6
+FLAT_WAIT_POLL = 2.0
 FLAT_CONFIRM_POLLS = 3
-FLAT_CONFIRM_DELAY = 0.45
+FLAT_CONFIRM_DELAY = 1.0
 
 
 @dataclass
@@ -4214,57 +4213,50 @@ class PositionSupervisor(
 
     def _radar_ws_fast_tick(self, curr_px: float) -> None:
         """
-        Lightweight WS-driven radar: sync TP fills + arm/trail on remaining qty.
-        Skips CAP/heavy heal — sentinel still does those on slower cadence.
+        WS-driven radar trail ONLY — never REST.
 
-        Under IP cool-down: trail on watched_qty only — never REST position/orders
-        (that was the ETH+XAU × 0.45s → -1003 storm).
+        Absolute rate-limit rule: markPrice ticks must not call get_position /
+        get_open_orders. Sentinel owns periodic REST reconcile.
         """
         if curr_px <= 0 or not self.monitoring:
             return
-        cooling = self._position_query_ban_remaining_sec() > 0
-        if cooling:
-            live_qty = float(getattr(self, "watched_qty", 0) or 0)
-            if live_qty <= 0:
-                return
-            entry = float(getattr(self, "watched_entry", 0) or 0)
-            if self.current_side == "LONG":
-                self.best_price = max(float(self.best_price or entry or 0), curr_px)
-            elif self.current_side == "SHORT":
-                bp = float(self.best_price or entry or 0)
-                self.best_price = min(bp, curr_px) if bp > 0 else curr_px
-            # Breath trail may amend stops; skip hard-cap REST while cooling.
-            if hasattr(self, "_process_radar_trailing"):
-                try:
-                    self._process_radar_trailing(live_qty, curr_px)
-                except Exception as exc:
-                    logger.debug("[User %s] cool WS trail: %s", self.user_id, exc)
+        live_qty = float(getattr(self, "watched_qty", 0) or 0)
+        if live_qty <= 0:
             return
-
-        pos = self._get_active_position()
-        if not pos or float(pos.get("size") or 0) <= 0:
-            return
-        live_qty = float(pos["size"])
-        entry = float(pos.get("entry_price") or self.watched_entry or 0)
+        entry = float(getattr(self, "watched_entry", 0) or 0)
         if self.current_side == "LONG":
             self.best_price = max(float(self.best_price or entry or 0), curr_px)
         elif self.current_side == "SHORT":
             bp = float(self.best_price or entry or 0)
             self.best_price = min(bp, curr_px) if bp > 0 else curr_px
-        if hasattr(self, "_sync_consumed_tp_levels"):
-            before = set(int(x) for x in (self.consumed_tp_levels or []))
-            self._sync_consumed_tp_levels(live_qty, curr_px)
-            after = set(int(x) for x in (self.consumed_tp_levels or []))
-            gained = sorted(after - before)
-            if gained and hasattr(self, "_notify_tp_fill_detected"):
-                # Update book qty first so bump/boost never see stale watched_qty (§7.3)
-                self.watched_qty = live_qty
-                self._notify_tp_fill_detected(gained[0], live_qty, live_qty, curr_px)
-        self.watched_qty = live_qty
-        if entry > 0:
-            self.watched_entry = entry
-        if hasattr(self, "_orchestrate_defense_monitoring"):
-            self._orchestrate_defense_monitoring(live_qty, curr_px)
+        # Breath / radar trail may amend stops via WS px + ledger qty only.
+        if hasattr(self, "_process_radar_trailing"):
+            try:
+                self._process_radar_trailing(live_qty, curr_px)
+            except Exception as exc:
+                logger.debug("[User %s] WS trail: %s", self.user_id, exc)
+        # Hard-cap / adverse REST audits: only on slow cadence, never every tick
+        try:
+            from app.core.rest_throttle_valve import rest_silent
+
+            if rest_silent(
+                exchange=getattr(self, "exchange_id", None),
+                user_id=getattr(self, "user_id", None),
+            ):
+                return
+        except Exception:
+            pass
+        now = time.time()
+        gap = float(globals().get("SENTINEL_ORDER_AUDIT_SEC", 30.0) or 30.0)
+        last = float(getattr(self, "_ws_orch_rest_ts", 0) or 0)
+        if last and (now - last) < gap:
+            return
+        self._ws_orch_rest_ts = now
+        if hasattr(self, "_enforce_open_orders_hard_cap"):
+            try:
+                self._enforce_open_orders_hard_cap()
+            except Exception:
+                pass
 
     def _position_query_ban_remaining_sec(self) -> float:
         """Seconds left on exchange IP ban / shared cool-down; 0 if none."""

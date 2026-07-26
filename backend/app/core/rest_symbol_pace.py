@@ -15,7 +15,7 @@ from typing import Any
 
 MIN_GAP_SEC = 0.100  # whitepaper §8.3
 # Shared all-account endpoints (openOrders ~weight 40) need stronger pacing.
-SHARED_ACCOUNT_GAP_SEC = 1.0
+SHARED_ACCOUNT_GAP_SEC = 2.0
 
 _lock = threading.RLock()
 # key -> last_request_monotonic
