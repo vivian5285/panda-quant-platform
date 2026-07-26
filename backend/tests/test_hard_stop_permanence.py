@@ -55,11 +55,12 @@ def test_open_atr_scenario_restores_frozen_hard_after_radar_init():
     with patch(
         "app.core.adverse_radar_guard.resolve_open_atr",
         return_value={
-            "scenario": "vps",
+            "scenario": "tv_webhook",
             "initial_atr": 16.0,
             "tp3_limit_active": False,
-            "atr_source": "vps_1h",
-            "atr_1h": 16.0,
+            "atr_source": "tv_webhook",
+            "atr_1h": 0.0,
+            "tv_atr": 16.0,
         },
     ), patch("app.core.adverse_radar_guard.refresh_supervisor_breath", return_value={}):
         detail = h._resolve_and_apply_open_atr_scenario(1900.0)
@@ -73,6 +74,36 @@ def test_open_atr_scenario_restores_frozen_hard_after_radar_init():
     # ATR widen disabled since 2026-07-25 (TV distance × buffer only)
     assert bool((detail.get("hard_widen") or {}).get("widened")) is False
     assert float(h.current_sl or 0) > 0
+
+
+def test_protect_reset_preserves_tv_atr_ref():
+    """Regression #263: _reset_adverse_radar must not wipe TV atr before radar arm."""
+    h = _make_host(atr=7.7986)
+    h._tv_atr_ref = 7.7986
+    h.current_atr = 7.7986
+    h._tv_entry_fields = {"atr": 7.7986}
+    h._reset_adverse_radar(keep_tv_sl=False)
+    assert float(h._tv_atr_ref or 0) == 0.0  # wipe still clears
+    # simulate protect restore path
+    pending = 7.7986
+    h._tv_atr_ref = pending
+    h.current_atr = pending
+    detail = h._resolve_and_apply_open_atr_scenario(1900.0)
+    assert detail.get("ok") is True
+    assert abs(float(detail.get("initial_atr") or 0) - 7.7986) < 1e-6
+    assert abs(float(h._tv_atr_ref or 0) - 7.7986) < 1e-6
+
+
+def test_resolve_open_atr_falls_back_to_entry_fields():
+    h = _make_host(atr=0.0)
+    h._tv_atr_ref = 0.0
+    h.current_atr = 0.0
+    h._tv_entry_fields = {"atr": 7.8}
+    with patch("app.core.adverse_radar_guard.refresh_supervisor_breath", return_value={}):
+        detail = h._resolve_and_apply_open_atr_scenario(1900.0)
+    assert detail.get("ok") is True
+    assert abs(float(detail.get("tv_atr") or 0) - 7.8) < 1e-9
+    assert abs(float(h.initial_atr or 0) - 7.8) < 1e-9
 
 
 def test_recompute_vps_hard_sl_dual_never_overwrites_frozen():

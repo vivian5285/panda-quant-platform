@@ -2684,6 +2684,17 @@ class AdverseRadarMixin:
         """
         self._init_adverse_radar_fields()
         tv_atr = float(getattr(self, "_tv_atr_ref", 0) or 0)
+        if tv_atr <= 0:
+            try:
+                tv_atr = float(
+                    (getattr(self, "_tv_entry_fields", None) or {}).get("atr") or 0
+                )
+            except (TypeError, ValueError):
+                tv_atr = 0.0
+        if tv_atr <= 0:
+            tv_atr = float(getattr(self, "current_atr", 0) or 0)
+        if tv_atr > 0:
+            self._tv_atr_ref = tv_atr
         decision = resolve_open_atr(tv_atr=tv_atr)
         scenario = ATR_SCENARIO_TV
         atr_v = float(decision.get("initial_atr") or 0) or tv_atr

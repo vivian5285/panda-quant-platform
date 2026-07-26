@@ -663,6 +663,12 @@ class PositionSupervisor(
         ])
         self.risk_multiplier = float(payload.get("risk_multiplier", 1.0))
         self._apply_tv_entry_context(payload)
+        if tv_atr > 0:
+            fields = getattr(self, "_tv_entry_fields", None)
+            if not isinstance(fields, dict):
+                fields = {}
+                self._tv_entry_fields = fields
+            fields["atr"] = tv_atr
         self._apply_tv_sl_from_payload(payload)
         close_reason = payload.get("reason", "策略指标反转/波动率安全退出")
         tv_side = str(payload.get("side") or "").upper().strip() or None
@@ -3651,7 +3657,26 @@ class PositionSupervisor(
         开仓后：硬止损(fill±TV距×buffer) → TP1/TP2(10/20) → TV atr 武装雷达（TP3=70%雷达管理）。
         返回 {ok, aborted, defense, shield}；硬止损挂失败则撤仓并 aborted=True（禁止裸奔）。
         """
+        # Preserve TV atr across radar reset — wipe used to zero _tv_atr_ref and
+        # abort open with no_atr_for_breath (dispatch #263 / 2026-07-26).
+        pending_tv_atr = float(getattr(self, "_tv_atr_ref", 0) or 0)
+        if pending_tv_atr <= 0:
+            try:
+                pending_tv_atr = float(
+                    (getattr(self, "_tv_entry_fields", None) or {}).get("atr") or 0
+                )
+            except (TypeError, ValueError):
+                pending_tv_atr = 0.0
+        if pending_tv_atr <= 0:
+            pending_tv_atr = float(getattr(self, "current_atr", 0) or 0)
+
         self._reset_adverse_radar(keep_tv_sl=False)
+        if pending_tv_atr > 0:
+            self._tv_atr_ref = pending_tv_atr
+            self.current_atr = pending_tv_atr
+            fields = getattr(self, "_tv_entry_fields", None)
+            if isinstance(fields, dict):
+                fields["atr"] = pending_tv_atr
         self.tp3_limit_active = False
         self.atr_scenario = "pending"
         self.best_price = entry_price
