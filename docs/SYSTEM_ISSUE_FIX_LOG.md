@@ -17,6 +17,7 @@
 | 2026-07-26 | 暂停/冷却仍 REST | 哨兵与空闲巡检在 pause/cool 下仍查仓 | 已修 · §5 |
 | 2026-07-26/27 | 雷达 qty 贴合 / TP2→TP3 护利 | 无 TP3 限价时雷达价对但量不对；双 TP 同成交漏缩量 | 已修 · §6 |
 | 2026-07-26 | TP2 吃光雷达余仓 → ~1904 全平 | 排除 TP3 后切片把 70% 塞进 TP2；假 TP 成交 + 雷达抬止损扫出 | 已修 · §7 |
+| 2026-07-27 | 全交易所 harden 对齐 | DeepCoin 平行监督器缺 TP/基线/雷达 qty/cool；OKX/Gate 限流指纹偏窄 | 已修 · §8 |
 
 ---
 
@@ -265,6 +266,39 @@
 - [ ] 单测 `test_exclude_tp3_never_eats_radar_residual`。  
 - [ ] 无 `TP_FILLED … 0.02→0.02` 类无减仓通知。  
 - [ ] 雷达激活后 SL 可上移，但余仓仍在，不得因 TP2 限价吃满而在 TP2 价位必然全平。
+
+---
+
+## §8 · 2026-07-27 · 全交易所图表同修（OKX / Gate / DeepCoin）
+
+### 现象
+
+- Binance/`PositionSupervisor` 已落地 §1–§7；DeepCoin 为平行 `position_supervisor_deepcoin.py`，未继承同一套 harden。
+- OKX/Gate 走共享 supervisor，但限流指纹偏 Binance `-1003`，其它所频率限制未必触发 180s `_GLOBAL` 冷却。
+
+### 根因
+
+1. DeepCoin `_compute_tp_slices` 缺 ≥95% 拒挂；consumed/expected 仍允许档位 3。  
+2. DeepCoin 直接写 `initial_qty = live` 可在监控中压扁基线。  
+3. DeepCoin 雷达 `_ensure_radar_sl` 仅价 near，无 qty 贴合。  
+4. DeepCoin 哨兵 pause/cool 仍 REST 查仓；查仓失败不 `note_rate_limit`。  
+5. `raise_exchange_transient` 对 OKX `50011/50013`、Gate/DeepCoin “too many/frequent” 识别不足。
+
+### 修复
+
+| 项 | 行为 |
+|----|------|
+| DeepCoin TP | placeable-only + 95% refuse + consumed 无 3 |
+| DeepCoin 基线 | `_set_open_qty_baseline`（TV 开仓/重对齐/重启） |
+| DeepCoin 雷达 | `_radar_stop_live_qty` 数量不匹配则重挂 |
+| DeepCoin 哨兵 | pause/cool → WS breath only；失败 → 180s cool |
+| `exchange_errors` | 跨所限流指纹 → 共享 cool |
+
+### 复查点
+
+- [ ] OKX/Gate 与 Binance 同属 `PositionSupervisor`：开仓后 TP1+TP2≤~30%。  
+- [ ] DeepCoin 单测：placeable / 基线拒绝压缩 / 哨兵 cool 分支存在。  
+- [ ] OKX `code=50011` 触发 `note_rate_limit`。
 
 ---
 

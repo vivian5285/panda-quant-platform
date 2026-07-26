@@ -27,11 +27,37 @@ class ExchangeTransientError(RuntimeError):
 
     @property
     def is_ip_ban(self) -> bool:
-        return self.code in (-1003, "-1003", 1003, "1003") or bool(self.banned_until_ms)
+        if self.code in (
+            -1003, "-1003", 1003, "1003",
+            50011, "50011", 50013, "50013",
+            429, "429",
+        ):
+            return True
+        return bool(self.banned_until_ms)
 
 
 _BAN_UNTIL_RE = re.compile(r"banned until\s+(\d+)", re.I)
 _CODE_RE = re.compile(r"code(?:=|\s*)(-?\d+)", re.I)
+
+# Cross-exchange rate-limit fingerprints (Binance / OKX / Gate / DeepCoin).
+_RATE_LIMIT_RE = re.compile(
+    r"(too many requests|rate.?limit|request.?rate|frequen(?:t|cy)|频繁|"
+    r"banned until|cool-?down|exceeded the (?:api|request)|"
+    r"code(?:=|\s*)(-1003|50011|50013|429))",
+    re.I,
+)
+
+
+def is_rate_limit_error(exc: BaseException | str, *, code: str | int | None = None) -> bool:
+    """True when REST should cool instead of storming alerts / retries."""
+    if code in (
+        -1003, "-1003", 1003, "1003",
+        50011, "50011", 50013, "50013",
+        429, "429",
+    ):
+        return True
+    text = str(exc)
+    return bool(_RATE_LIMIT_RE.search(text))
 
 
 def parse_binance_error(exc: BaseException | str) -> dict[str, Any]:
@@ -48,6 +74,10 @@ def parse_binance_error(exc: BaseException | str) -> dict[str, Any]:
             out["code"] = c.group(1)
     if " -1003" in text or "code=-1003" in text or "code\":-1003" in text:
         out["code"] = -1003
+    if out.get("code") is None and is_rate_limit_error(text):
+        # Synthetic rate code so callers treat OKX/Gate/DeepCoin frequency limits
+        # the same as Binance -1003 (shared cool-down).
+        out["code"] = -1003
     return out
 
 
@@ -61,8 +91,8 @@ def raise_exchange_transient(
     meta = parse_binance_error(exc)
     code = meta.get("code")
     ban_ms = meta.get("banned_until_ms")
-    # -1003 often has no "banned until" stamp — impose shared cool-down
-    if code in (-1003, "-1003", 1003, "1003") or "Too many requests" in str(exc):
+    # Rate-limit / IP cool: shared cool-down across symbols for this exchange+user.
+    if is_rate_limit_error(exc, code=code) or code in (-1003, "-1003", 1003, "1003"):
         try:
             from app.core.ip_rest_cooldown import note_rate_limit
 

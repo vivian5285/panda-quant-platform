@@ -645,7 +645,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 notes.append(f"方向背离: 实盘{side} vs TV指令{self.last_tv_side}")
 
         if saved_initial <= 0 and real_amt > 0:
-            self.initial_qty = real_amt
+            if hasattr(self, "_set_open_qty_baseline"):
+                self._set_open_qty_baseline(real_amt, reason="reconcile_seed")
+            else:
+                self.initial_qty = real_amt
 
         for n in notes:
             logger.warning(f"🔎 重启对账: {n}")
@@ -755,6 +758,27 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         except (TypeError, ValueError):
             return default
 
+    def _position_query_ban_remaining_sec(self) -> float:
+        """Seconds left on rate-limit / shared cool-down; 0 if none (Binance parity)."""
+        ban_ms = getattr(self, "_position_query_ban_until_ms", None)
+        left = 0.0
+        if ban_ms:
+            try:
+                left = float(ban_ms) / 1000.0 - time.time()
+            except (TypeError, ValueError):
+                left = 0.0
+        try:
+            from app.core.ip_rest_cooldown import remaining_sec
+
+            shared = remaining_sec(
+                exchange=getattr(self, "exchange_id", None) or "deepcoin",
+                user_id=getattr(self, "user_id", None),
+            )
+            left = max(left, shared)
+        except Exception:
+            pass
+        return left if left > 0 else 0.0
+
     def _handle_position_query_failure(self, err):
         from datetime import datetime, timezone
         from app.core.exchange_errors import ExchangeTransientError
@@ -763,6 +787,22 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self._position_query_degraded = True
         self._position_query_error = str(err)[:500]
         ban_ms = getattr(err, "banned_until_ms", None) if isinstance(err, ExchangeTransientError) else None
+        if ban_ms:
+            self._position_query_ban_until_ms = int(ban_ms)
+        elif isinstance(err, ExchangeTransientError) and getattr(err, "is_ip_ban", False):
+            try:
+                from app.core.ip_rest_cooldown import note_rate_limit
+
+                until = note_rate_limit(
+                    exchange=getattr(self, "exchange_id", None) or "deepcoin",
+                    user_id=getattr(self, "user_id", None),
+                    cool_sec=180.0,
+                )
+                self._position_query_ban_until_ms = int(until * 1000)
+                ban_ms = self._position_query_ban_until_ms
+            except Exception:
+                self._position_query_ban_until_ms = int((time.time() + 180.0) * 1000)
+                ban_ms = self._position_query_ban_until_ms
         detail = {
             "exchange": "deepcoin",
             "symbol": getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None),
@@ -779,11 +819,35 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 ).isoformat()
             except (OSError, OverflowError, ValueError):
                 detail["banned_until_ms"] = ban_ms
-        logger.error(
+        log_fn = logger.debug if already else logger.error
+        log_fn(
             "position query failed — keep book qty=%s side=%s | %s",
             detail["watched_qty"], detail["current_side"], err,
         )
         if already:
+            return
+        is_rate = False
+        if isinstance(err, ExchangeTransientError):
+            code = getattr(err, "code", None)
+            if code in (-1003, "-1003", 1003, "1003", 50011, "50011", 50013, "50013") or getattr(
+                err, "is_ip_ban", False,
+            ):
+                is_rate = True
+        err_s = str(err)
+        low = err_s.lower()
+        if (
+            "cool-down" in low
+            or "too many" in low
+            or "rate limit" in low
+            or "frequent" in low
+            or "banned until" in low
+        ):
+            is_rate = True
+        if is_rate:
+            logger.warning(
+                "RATE_LIMIT_COOL — skip EXCHANGE_QUERY_FAIL alert | %s",
+                err_s[:200],
+            )
             return
         if hasattr(self, "_alert"):
             self._alert(
@@ -797,8 +861,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
     def _clear_position_query_degraded(self):
         if not getattr(self, "_position_query_degraded", False):
             return
+        if self._position_query_ban_remaining_sec() > 0:
+            return
         self._position_query_degraded = False
         self._position_query_error = ""
+        self._position_query_ban_until_ms = None
         logger.info("position query recovered — auto flat judgment resumed")
         if hasattr(self, "_alert"):
             self._alert(
@@ -1188,7 +1255,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return dedupe_orders_by_id(orders)
 
     def _compute_tp_slices(self, qty, exclude_levels=None):
-        """Fixed 10/20/70; TP1/TP2/TP3 always placeable."""
+        """Fixed 10/20/70; only TP1/TP2 hung (TP3 radar residual — parity with Binance)."""
         from app.core.open_atr_scenario import supervisor_placeable_levels
         from app.core.tp_regime_targets import pine_tp_ratios_frac
 
@@ -1203,10 +1270,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         row = dict(settings.get(r) or settings.get(3) or {})
         row["ratios"] = ratios
         settings[r] = row
-        anchor = float(self._safe_qty(getattr(self, "initial_qty", 0) or qty))
-        live_cap = float(self._safe_qty(qty)) if float(qty or 0) > 0 else None
+        qty_f = float(self._safe_qty(qty) or 0)
+        anchor = float(self._safe_qty(getattr(self, "initial_qty", 0) or qty) or 0)
+        live_cap = qty_f if qty_f > 0 else None
         slices = compute_tp_slices(
-            anchor if anchor > 0 else float(qty),
+            anchor if anchor > 0 else qty_f,
             r,
             self.tv_tps,
             settings,
@@ -1215,24 +1283,44 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             min_qty=1.0,
             live_cap=live_cap,
         )
-        return [(lv, q, px) for lv, q, px in slices if lv in placeable]
+        out = [(lv, q, px) for lv, q, px in slices if lv in placeable]
+        used = sum(float(q) for _, q, _ in out)
+        if qty_f > 0 and used + 1e-12 >= 0.95 * qty_f and 3 in exclude:
+            logger.error(
+                "[User %s] DeepCoin TP placeable %.0f ≥95%% of live %.0f — refuse (radar residual)",
+                getattr(self, "user_id", "?"),
+                used,
+                qty_f,
+            )
+            return []
+        return out
 
     def _sync_consumed_tp_levels(self, live_qty, curr_px):
         from app.core.tp_slice_guard import compute_tp_slices, levels_past_by_mark
+        from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
 
         anchor = float(self._safe_qty(self.initial_qty or live_qty))
         live = float(self._safe_qty(live_qty))
         tol = tp_slice_qty_tolerance(anchor, is_contracts=True)
+        # Placeable-only slices for fill accounting (10%+20%); TP3 never hung.
         slices = compute_tp_slices(
-            anchor, self.regime, self.tv_tps, self.regime_settings, exclude_levels=set(),
+            anchor,
+            self.regime,
+            self.tv_tps,
+            self.regime_settings,
+            exclude_levels={3} - set(PLACEABLE_TP_LEVELS),
         )
         tp1_slice = float(slices[0][1]) if slices else 0.0
-        past_early = levels_past_by_mark(
-            float(curr_px or 0),
-            self.current_side,
-            list(self.tv_tps or []),
-            peak_px=float(getattr(self, "best_price", 0) or 0),
-        )
+        past_early = {
+            int(x)
+            for x in levels_past_by_mark(
+                float(curr_px or 0),
+                self.current_side,
+                list(self.tv_tps or []),
+                peak_px=float(getattr(self, "best_price", 0) or 0),
+            )
+            if int(x) in PLACEABLE_TP_LEVELS
+        }
         # 手数噪声带（1 张）；仅当盘口仍挂着对应 TP 限价时才清误记账。
         # 超时撤单后 live==anchor 且盘口已空 → 必须保留 consumed，禁止核武重挂循环。
         restore_tol = 1.0
@@ -1280,11 +1368,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             is_contracts=True,
             peak_px=float(getattr(self, "best_price", 0) or 0),
         )
-        prev = {int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3)}
+        prev = {int(x) for x in (self.consumed_tp_levels or []) if int(x) in PLACEABLE_TP_LEVELS}
         merged = sorted(
             prev
-            | {int(x) for x in inferred if int(x) in (1, 2, 3)}
-            | {int(x) for x in past_early if int(x) in (1, 2, 3)}
+            | {int(x) for x in inferred if int(x) in PLACEABLE_TP_LEVELS}
+            | past_early
         )
         if merged != sorted(self.consumed_tp_levels or []):
             logger.info(
@@ -1297,7 +1385,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         return merged
 
     def _consumed_tp_level_set(self) -> set[int]:
-        return {int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3)}
+        from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
+
+        return {int(x) for x in (self.consumed_tp_levels or []) if int(x) in PLACEABLE_TP_LEVELS}
 
     def _cancel_tp_orders_for_consumed_levels(self) -> int:
         """Remove stale TP orders at tiers already eaten (e.g. TP1 after partial fill)."""
@@ -1555,8 +1645,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             px = self._current_tp_price()
         self._sync_consumed_tp_levels(live_qty, px)
         exclude = self._active_tp_exclude_levels(live_qty, px)
-        normalized = {int(x) for x in exclude if int(x) in (1, 2, 3)}
-        if normalized != {int(x) for x in (self.consumed_tp_levels or []) if int(x) in (1, 2, 3)}:
+        from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
+
+        normalized = {int(x) for x in exclude if int(x) in PLACEABLE_TP_LEVELS}
+        if normalized != {int(x) for x in (self.consumed_tp_levels or []) if int(x) in PLACEABLE_TP_LEVELS}:
             self.consumed_tp_levels = sorted(normalized)
             if hasattr(self, "_save_state"):
                 self._save_state()
@@ -2127,7 +2219,22 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 sl = self._market_safe_stop_price(sl, curr_px)
             else:
                 sl = clamp_stop_market_safe(sl, curr_px, getattr(self, "current_side", None))
-        if self._has_trigger_sl_near(sl):
+        target_qty = float(self._safe_qty(live_qty) or 0)
+        qty_mismatch = False
+        if self._has_trigger_sl_near(sl) and target_qty > 0 and hasattr(self, "_radar_stop_live_qty"):
+            try:
+                book_qty = float(self._radar_stop_live_qty(sl) or 0)
+                if book_qty > 0:
+                    tol = max(1.0, 0.02 * max(book_qty, target_qty))
+                    if abs(book_qty - target_qty) > tol:
+                        qty_mismatch = True
+                        logger.info(
+                            "雷达数量贴合 %.0f→%.0f @ %.2f",
+                            book_qty, target_qty, sl,
+                        )
+            except Exception:
+                qty_mismatch = False
+        if self._has_trigger_sl_near(sl) and not qty_mismatch:
             return True
         self._cancel_radar_trigger_orders_only()
         time.sleep(0.25)
@@ -2368,7 +2475,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         self.watched_qty = live_qty
         self.watched_entry = entry
-        self.initial_qty = live_qty
+        if hasattr(self, "_set_open_qty_baseline"):
+            self._set_open_qty_baseline(live_qty, reason="tv_realign")
+        else:
+            self.initial_qty = live_qty
 
         if hasattr(self, "_refresh_radar_state_on_recover") and curr_px > 0 and entry > 0:
             self._refresh_radar_state_on_recover(curr_px, entry)
@@ -3341,7 +3451,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             # 开仓宽限：禁止立刻 CAP 市价减仓
             self.trade_opened_at = time.time()
             self.base_qty = real_qty
-            self.initial_qty = real_qty
+            if hasattr(self, "_set_open_qty_baseline"):
+                self._set_open_qty_baseline(real_qty, reason="tv_open")
+            else:
+                self.initial_qty = real_qty
             self.add_count = 0
             self.consumed_tp_levels = []
             self._tp_fill_dingtalk_levels = set()
@@ -3822,6 +3935,37 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         last_px = 0.0
         while self.monitoring:
             try:
+                ban_left = self._position_query_ban_remaining_sec()
+                paused = bool(getattr(self, "trading_paused", False))
+                if ban_left > 0 or paused:
+                    # Cool-down / trading pause: no REST position (Binance parity).
+                    self._ensure_price_ws()
+                    if self.watched_qty > 0 and self._lock.acquire(timeout=0.5):
+                        try:
+                            try:
+                                curr_px = float(
+                                    self.client.get_current_price(
+                                        self.symbol, prefer_ws=True,
+                                    )
+                                    or 0
+                                )
+                            except Exception:
+                                curr_px = float(last_px or 0)
+                            if curr_px > 0:
+                                last_px = curr_px
+                            if curr_px > 0 and hasattr(self, "_process_breathing_stop_tick"):
+                                sign = 1.0 if str(self.current_side or "").upper() == "LONG" else -1.0
+                                try:
+                                    self._process_breathing_stop_tick(
+                                        float(self.watched_qty) * sign, curr_px,
+                                    )
+                                except Exception:
+                                    pass
+                        finally:
+                            self._lock.release()
+                    sleep_for = min(max(ban_left, 5.0), 30.0) if ban_left > 0 else 8.0
+                    time.sleep(sleep_for)
+                    continue
                 self._ensure_price_ws()
                 if not self._lock.acquire(timeout=2.0):
                     continue
@@ -3829,8 +3973,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     from app.core.exchange_errors import ExchangeTransientError
                     try:
                         pos = self._get_active_position()
-                    except ExchangeTransientError:
+                    except ExchangeTransientError as e:
+                        self._handle_position_query_failure(e)
+                        ban_left = self._position_query_ban_remaining_sec()
+                        time.sleep(
+                            min(max(ban_left, 15.0), 60.0) if ban_left > 0 else 15.0
+                        )
                         continue
+                    self._clear_position_query_degraded()
                     real_amt = self._safe_qty(pos.get("size")) if pos else 0
                     actual_side = "LONG" if pos and pos.get('posSide') == "long" else "SHORT"
 
@@ -4411,7 +4561,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         )
                 restored = max(saved_initial, open_log_qty, real_amt)
                 self.watched_qty = real_amt
-                if restored > real_amt:
+                if hasattr(self, "_set_open_qty_baseline"):
+                    if restored > real_amt:
+                        self._set_open_qty_baseline(restored, reason="startup_restore")
+                    elif saved_initial <= 0:
+                        self._set_open_qty_baseline(real_amt, reason="startup_seed")
+                    else:
+                        self._set_open_qty_baseline(saved_initial, reason="startup_saved")
+                elif restored > real_amt:
                     self.initial_qty = restored
                 elif saved_initial <= 0:
                     self.initial_qty = real_amt
@@ -4685,7 +4842,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             audit.update(reconcile)
             open_qty = float(open_log.get("qty") or trade.get("quantity") or 0)
             if open_qty > 0:
-                self.initial_qty = max(float(self.initial_qty or 0), open_qty)
+                if hasattr(self, "_set_open_qty_baseline"):
+                    self._set_open_qty_baseline(open_qty, reason="recovery_open_log")
+                else:
+                    self.initial_qty = max(float(self.initial_qty or 0), open_qty)
             for src in (trade, open_log, latest_tv):
                 if src.get("tv_tps"):
                     self.tv_tps = [float(x) for x in src["tv_tps"][:3]]

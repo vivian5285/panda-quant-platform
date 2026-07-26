@@ -4201,15 +4201,25 @@ class PositionSupervisor(
         is_rate = False
         if isinstance(err, ExchangeTransientError):
             code = getattr(err, "code", None)
-            if code in (-1003, "-1003", 1003, "1003") or getattr(err, "is_ip_ban", False):
+            if code in (-1003, "-1003", 1003, "1003", 50011, "50011", 50013, "50013") or getattr(
+                err, "is_ip_ban", False,
+            ):
                 is_rate = True
         err_s = str(err)
-        if (
-            "cool-down" in err_s.lower()
-            or "Too many requests" in err_s
-            or "banned until" in err_s.lower()
-        ):
-            is_rate = True
+        try:
+            from app.core.exchange_errors import is_rate_limit_error
+
+            if is_rate_limit_error(err_s, code=getattr(err, "code", None)):
+                is_rate = True
+        except Exception:
+            low = err_s.lower()
+            if (
+                "cool-down" in low
+                or "too many requests" in low
+                or "rate limit" in low
+                or "banned until" in low
+            ):
+                is_rate = True
         if is_rate:
             logger.warning(
                 "[User %s] RATE_LIMIT_COOL — skip EXCHANGE_QUERY_FAIL alert | %s",

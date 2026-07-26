@@ -53,7 +53,8 @@ def test_deepcoin_bump_sl_after_tp_calls_boost_like_binance():
     assert called["change"] == "tp1_filled"
     assert called["qty"] == pytest.approx(70.0)
     assert result.get("stop_resized") is True
-    assert float(h.remaining_qty_pct) == pytest.approx(0.7)
+    # Pine placeable: TP1=10% → remaining 90% (legacy 30% slice used 0.7).
+    assert float(h.remaining_qty_pct) == pytest.approx(0.9)
 
 
 def test_deepcoin_close_all_and_manual_flat_use_clear_position_local_state():
@@ -74,3 +75,50 @@ def test_cap_align_detect_only_shared():
     src = inspect.getsource(pcg.PositionCapGuardMixin._enforce_regime_cap_alignment)
     assert "detect_only_no_trim" in src
     assert "Detect-only" in src or "detect-only" in src
+
+
+def test_deepcoin_tp_slices_refuse_full_book_when_tp3_excluded():
+    """Parity with Binance §7: placeable must not eat ~70% radar residual."""
+    from app.core.tp_regime_targets import pine_tp_ratios_frac
+
+    host = MagicMock()
+    host.regime = 3
+    host.tv_tps = [1895.66, 1904.63, 1913.2]
+    host.initial_qty = 100
+    host.regime_settings = {3: {"margin": 0.0, "ratios": list(pine_tp_ratios_frac())}}
+    host._safe_qty = lambda x, d=0: int(float(x or d))
+
+    with patch(
+        "app.core.open_atr_scenario.supervisor_placeable_levels",
+        return_value=frozenset({1, 2}),
+    ):
+        slices = DeepcoinPositionSupervisor._compute_tp_slices(host, 100, exclude_levels={3})
+    used = sum(q for _, q, _ in slices)
+    assert used > 0
+    assert used <= 35  # ~30% + rounding
+    assert all(lv in (1, 2) for lv, _, _ in slices)
+
+
+def test_deepcoin_sentinel_skips_rest_on_pause_or_cool():
+    src = inspect.getsource(DeepcoinPositionSupervisor._sentinel_loop)
+    assert "_position_query_ban_remaining_sec" in src
+    assert "trading_paused" in src
+    assert "no REST" in src or "Cool-down" in src
+
+
+def test_deepcoin_ensure_radar_qty_aware():
+    src = inspect.getsource(DeepcoinPositionSupervisor._ensure_radar_sl)
+    assert "_radar_stop_live_qty" in src
+    assert "qty_mismatch" in src
+
+
+def test_okx_gate_rate_limit_triggers_cool():
+    from app.core.exchange_errors import is_rate_limit_error, parse_binance_error
+
+    assert is_rate_limit_error("code=50011 msg=Too Many Requests")
+    assert is_rate_limit_error("gate Too many requests")
+    assert is_rate_limit_error("deepcoin frequent request")
+    meta = parse_binance_error("code=50013 Rate limit")
+    assert meta.get("code") in (-1003, 50013, "50013") or is_rate_limit_error(
+        "code=50013", code=meta.get("code"),
+    )
