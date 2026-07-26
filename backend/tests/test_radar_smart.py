@@ -27,14 +27,18 @@ def supervisor(tmp_path, monkeypatch):
 
 
 def test_compute_tp_slices_excludes_filled_level(supervisor):
+    supervisor.initial_qty = 1.0
     slices_all = supervisor._compute_tp_slices(1.0, exclude_levels=set())
     slices_no_tp1 = supervisor._compute_tp_slices(0.82, exclude_levels={1})
 
-    assert len(slices_all) == 3
-    assert len(slices_no_tp1) == 2
-    assert all(level != 1 for level, _, _ in slices_no_tp1)
-    total_qty = sum(q for _, q, _ in slices_no_tp1)
-    assert abs(total_qty - 0.82) < 0.002
+    # TP3 never placeable — only TP1+TP2 (≈30%)
+    assert len(slices_all) == 2
+    assert all(level in (1, 2) for level, _, _ in slices_all)
+    assert abs(sum(q for _, q, _ in slices_all) - 0.30) < 0.02
+    assert len(slices_no_tp1) == 1
+    assert slices_no_tp1[0][0] == 2
+    # Absolute 20% of initial 1.0, capped by live 0.82
+    assert abs(slices_no_tp1[0][1] - 0.20) < 0.02
 
 
 def test_classify_qty_change_detects_tp1_fill(supervisor):
@@ -63,12 +67,15 @@ def test_classify_tp1_fill_real_scenario_1234_to_987(supervisor):
     assert 1 in supervisor.consumed_tp_levels
 
 
-def test_after_tp1_only_tp23_slices(supervisor):
+def test_after_tp1_only_tp2_placeable_slice(supervisor):
+    """After TP1: only TP2 limit remains; ~70% stays radar (no TP3 limit)."""
     supervisor.consumed_tp_levels = [1]
+    supervisor.initial_qty = 1.0
     slices = supervisor._compute_tp_slices(0.987, exclude_levels={1})
-    assert len(slices) == 2
-    assert all(level in (2, 3) for level, _, _ in slices)
-    assert abs(sum(q for _, q, _ in slices) - 0.987) < 0.002
+    assert len(slices) == 1
+    assert slices[0][0] == 2
+    assert abs(slices[0][1] - 0.20) < 0.02
+    assert sum(q for _, q, _ in slices) + 1e-9 < 0.987
 
 
 def test_classify_tp2_after_heal_not_manual(supervisor):

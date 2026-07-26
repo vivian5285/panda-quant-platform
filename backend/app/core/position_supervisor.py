@@ -2148,8 +2148,13 @@ class PositionSupervisor(
                 ref_px = float(self._current_tp_price() or 0)
         except Exception:
             ref_px = 0.0
+        # Anchor = open baseline so TP1/TP2 stay 10%/20% of initial — not of shrunk live,
+        # and never absorb the 70% radar residual when TP3 is excluded.
+        anchor = float(getattr(self, "initial_qty", 0) or 0)
+        base = anchor if anchor > 0 else qty_f
+        live_cap = qty_f if qty_f > 0 else None
         slices = compute_tp_slices(
-            qty_f,
+            base,
             r,
             self.tv_tps,
             settings,
@@ -2158,8 +2163,20 @@ class PositionSupervisor(
             min_qty=float(getattr(self, "min_order_qty", 0) or 0),
             min_notional=min_notional,
             ref_price=ref_px,
+            live_cap=live_cap,
         )
-        return [(lv, q, px) for lv, q, px in slices if lv in placeable]
+        out = [(lv, q, px) for lv, q, px in slices if lv in placeable]
+        used = sum(float(q) for _, q, _ in out)
+        # Force-fail loud if placeable still ≈ full book (historical TP2-eats-radar bug).
+        if qty_f > 0 and used + 1e-12 >= 0.95 * qty_f and 3 in exclude:
+            logger.error(
+                "[User %s] TP placeable %.6f ≥95%% of live %.6f — refuse (radar residual required)",
+                getattr(self, "user_id", "?"),
+                used,
+                qty_f,
+            )
+            return []
+        return out
 
     def _open_tp_prices_on_book(self) -> list[float]:
         prices: list[float] = []
@@ -2448,6 +2465,21 @@ class PositionSupervisor(
     ) -> None:
         """VPS order monitor: TP1/TP2/TP3 fill → bump SL (1/2) + DingTalk."""
         lvl = int(level)
+        # Refuse phantom fills: price-past without qty drop (caused false TP2/TP3
+        # consume then radar trail-sweep at ~TP2 while peer held to higher prints).
+        try:
+            tol = self._qty_match_tol(float(old_qty), float(new_qty))
+        except Exception:
+            tol = max(1e-8, 0.02 * max(float(old_qty or 0), float(new_qty or 0), 1e-8))
+        if float(new_qty or 0) > 0 and abs(float(old_qty or 0) - float(new_qty or 0)) <= tol:
+            logger.warning(
+                "[User %s] refuse TP%d notify without qty drop (%.6f→%.6f)",
+                getattr(self, "user_id", "?"),
+                lvl,
+                float(old_qty or 0),
+                float(new_qty or 0),
+            )
+            return
         alerted = getattr(self, "_tp_fill_dingtalk_levels", None)
         if alerted is None:
             self._tp_fill_dingtalk_levels = set()

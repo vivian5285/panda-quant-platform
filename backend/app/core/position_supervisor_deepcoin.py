@@ -1203,14 +1203,17 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         row = dict(settings.get(r) or settings.get(3) or {})
         row["ratios"] = ratios
         settings[r] = row
+        anchor = float(self._safe_qty(getattr(self, "initial_qty", 0) or qty))
+        live_cap = float(self._safe_qty(qty)) if float(qty or 0) > 0 else None
         slices = compute_tp_slices(
-            float(qty),
+            anchor if anchor > 0 else float(qty),
             r,
             self.tv_tps,
             settings,
             exclude_levels=exclude,
             round_qty_fn=lambda x: float(max(self._safe_qty(x), 1)),
             min_qty=1.0,
+            live_cap=live_cap,
         )
         return [(lv, q, px) for lv, q, px in slices if lv in placeable]
 

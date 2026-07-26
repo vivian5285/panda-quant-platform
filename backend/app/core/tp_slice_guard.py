@@ -128,14 +128,16 @@ def compute_tp_slices(
     min_qty: float = 0.0,
     min_notional: float = 0.0,
     ref_price: float = 0.0,
+    live_cap: float | None = None,
 ) -> list[tuple[int, float, float]]:
-    """Regime-ratio slices for live qty; skip consumed levels and re-normalize.
+    """Absolute-ratio TP slices; never dump excluded (radar) share into last limit.
 
-    ``min_qty``: exchange lot-size floor.
-    ``min_notional`` + ``ref_price``: fold tiers whose notional is below exchange
-    MIN_NOTIONAL into later tiers (critical for ~20U ETH smoke — TP1/TP2 ≈2–4U).
-    - If qty ≥ N × min_qty AND each tier can meet min_notional: keep all N tiers.
-    - Else: fold undersized early tiers into later ones so at least one placeable TP remains.
+    Spec 10/20/70: when TP3 is excluded from placeable limits, TP1+TP2 must stay
+    ≈30% of base qty — **not** renormalize so TP2 absorbs the 70% radar residual.
+    That bug closed full ETH books at TP2 (~1904) while peer systems rode to 1920+.
+
+    ``live_cap``: optional max total to hang (current position); base ``qty`` should
+    be open anchor / initial when available.
     """
     exclude_levels = exclude_levels or set()
     ratios = regime_settings[regime]["ratios"]
@@ -145,16 +147,18 @@ def compute_tp_slices(
         price = float(tv_tps[i]) if i < len(tv_tps) else 0.0
         if level in exclude_levels or price <= 0:
             continue
-        active.append((level, ratio, price))
+        active.append((level, float(ratio), price))
     if not active or qty <= 0:
         return []
 
     floor = max(float(min_qty or 0), 0.0)
     min_n = max(float(min_notional or 0), 0.0)
     ref = max(float(ref_price or 0), 0.0)
-    # Per-tier qty floor implied by notional (use tier price when available)
+    base = float(qty)
+    cap_live = float(live_cap) if live_cap is not None and float(live_cap) > 0 else base
+
     def _notional_floor_qty(px: float) -> float:
-        if min_n <= 0 or ref <= 0 and px <= 0:
+        if min_n <= 0 or (ref <= 0 and px <= 0):
             return 0.0
         use = float(px or ref or 0)
         if use <= 0:
@@ -162,72 +166,76 @@ def compute_tp_slices(
         return float(min_n) / use
 
     total_ratio = sum(r for _, r, _ in active)
-    n = len(active)
-    qty = float(qty)
+    # Hard placeable budget from absolute ratios (do NOT use base * 1.0).
+    placeable_budget = min(cap_live, round_qty_fn(base * total_ratio) if total_ratio > 0 else 0.0)
+    if placeable_budget <= 0 and total_ratio > 0:
+        placeable_budget = min(cap_live, base * total_ratio)
 
-    # Prefer full TP123 only when every tier can clear lot + notional floors
-    tier_floors = [
-        max(floor, _notional_floor_qty(px)) for _, _, px in active
-    ]
-    need = sum(tier_floors)
-    if need > 0 and qty + 1e-12 >= need and total_ratio > 0:
-        remainder = max(qty - need, 0.0)
-        slices: list[tuple[int, float, float]] = []
-        allocated = 0.0
-        for idx, (level, ratio, price) in enumerate(active):
-            tf = tier_floors[idx]
-            if idx == n - 1:
-                part = round_qty_fn(qty - allocated)
-            else:
-                part = round_qty_fn(tf + remainder * (ratio / total_ratio))
-                if part + 1e-12 < tf:
-                    part = round_qty_fn(tf)
-                allocated += part
-            if part > 0:
-                slices.append((level, part, price))
-        if slices:
-            used = sum(q for _, q, _ in slices[:-1])
-            last_lvl, _, last_px = slices[-1]
-            last_q = round_qty_fn(qty - used)
-            if last_q > 0:
-                slices[-1] = (last_lvl, last_q, last_px)
-            else:
-                slices.pop()
-        return _fold_notional_undersized(slices, min_n, round_qty_fn)
-
-    # Small position: ratio-split then fold under-min into next tier
+    # Absolute split — last tier does NOT receive (base - allocated).
     raw: list[tuple[int, float, float]] = []
-    allocated = 0.0
-    for idx, (level, ratio, price) in enumerate(active):
-        if idx == n - 1:
-            part_qty = round_qty_fn(qty - allocated)
-        else:
-            part_qty = round_qty_fn(qty * (ratio / total_ratio))
-            allocated += part_qty
-        raw.append((level, part_qty, price))
+    for level, ratio, price in active:
+        part_qty = round_qty_fn(base * ratio)
+        if part_qty > 0:
+            raw.append((level, part_qty, price))
 
-    slices = []
+    slices: list[tuple[int, float, float]] = []
     carry = 0.0
     for idx, (level, part_qty, price) in enumerate(raw):
-        q = round_qty_fn(part_qty + carry)
+        q = round_qty_fn(float(part_qty) + carry)
         carry = 0.0
         is_last = idx == len(raw) - 1
-        nf = _notional_floor_qty(price)
-        need_q = max(floor, nf)
+        need_q = max(floor, _notional_floor_qty(price))
         if not is_last and need_q > 0 and q + 1e-12 < need_q:
-            carry = q
+            # Fold undersized early tier into next placeable — still inside budget.
+            carry = float(q)
             continue
         if q > 0:
             slices.append((level, q, price))
     if carry > 0 and slices:
         lvl, q, px = slices[-1]
-        slices[-1] = (lvl, round_qty_fn(q + carry), px)
-    elif carry > 0 and not slices and raw:
-        level, _, price = raw[-1]
-        q = round_qty_fn(qty)
-        if q > 0:
-            slices.append((level, q, price))
-    return _fold_notional_undersized(slices, min_n, round_qty_fn)
+        slices[-1] = (lvl, round_qty_fn(float(q) + carry), px)
+    elif carry > 0 and not slices:
+        # Cannot form a placeable tier — leave all to radar (better than full-TP dump).
+        return []
+
+    slices = _fold_notional_undersized(slices, min_n, round_qty_fn)
+    # Enforce budget: shrink from the end; never let placeable ≈ 100% of book.
+    used = sum(float(q) for _, q, _ in slices)
+    budget = float(placeable_budget or 0)
+    if budget > 0 and used > budget + 1e-12:
+        overflow = used - budget
+        trimmed: list[tuple[int, float, float]] = []
+        for lvl, q, px in reversed(slices):
+            qf = float(q)
+            if overflow <= 1e-12:
+                trimmed.append((lvl, round_qty_fn(qf), px))
+                continue
+            take = min(qf, overflow)
+            overflow -= take
+            left = round_qty_fn(qf - take)
+            if left > 0:
+                trimmed.append((lvl, left, px))
+        slices = list(reversed(trimmed))
+    used = sum(float(q) for _, q, _ in slices)
+    # Catastrophic guard: if TP3 reserved and placeable still ≥95% of base, wipe.
+    if 3 in exclude_levels and base > 0 and used + 1e-12 >= 0.95 * min(base, cap_live):
+        return []
+    # Clamp to live_cap
+    if cap_live + 1e-12 < used:
+        overflow = used - cap_live
+        trimmed = []
+        for lvl, q, px in reversed(slices):
+            qf = float(q)
+            if overflow <= 1e-12:
+                trimmed.append((lvl, round_qty_fn(qf), px))
+                continue
+            take = min(qf, overflow)
+            overflow -= take
+            left = round_qty_fn(qf - take)
+            if left > 0:
+                trimmed.append((lvl, left, px))
+        slices = list(reversed(trimmed))
+    return slices
 
 
 def _fold_notional_undersized(

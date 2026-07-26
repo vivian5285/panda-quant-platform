@@ -19,7 +19,8 @@ TV_TPS = [1810.27, 1829.88, 1847.32]
 INITIAL = 1.234
 
 
-def test_exclude_tp1_redistributes_remaining_qty():
+def test_exclude_tp1_keeps_absolute_ratios_not_full_dump():
+    """Excluding a filled tier must NOT renormalize remaining into 100% of live."""
     slices = compute_tp_slices(
         0.987,
         3,
@@ -31,8 +32,31 @@ def test_exclude_tp1_redistributes_remaining_qty():
     assert len(slices) == 2
     assert slices[0][0] == 2
     assert slices[1][0] == 3
-    assert abs(sum(q for _, q, _ in slices) - 0.987) < 0.002
+    # Absolute 0.32+0.50 of 0.987 — not full 0.987 dump into TP2+TP3
+    used = sum(q for _, q, _ in slices)
+    assert abs(used - 0.987 * (0.32 + 0.50)) < 0.02
+    assert used + 1e-9 < 0.987
 
+
+def test_exclude_tp3_never_eats_radar_residual():
+    """Placeable-only: TP1+TP2 ≤ ~30%; must not assign full book to TP2 (1904 incident)."""
+    rs = {3: {"margin": 0.0, "ratios": [0.10, 0.20, 0.70]}}
+    tps = [1895.66, 1904.63, 1913.2]
+    qty = 0.031
+    slices = compute_tp_slices(
+        qty,
+        3,
+        tps,
+        rs,
+        exclude_levels={3},
+        round_qty_fn=lambda x: round(x, 3),
+        min_notional=0.0,
+    )
+    used = sum(q for _, q, _ in slices)
+    assert used > 0
+    assert used <= qty * 0.35 + 1e-9
+    assert abs(used - qty * 0.30) < 0.005
+    assert all(lv in (1, 2) for lv, _, _ in slices)
 
 def test_match_tp1_reduction_from_initial_open():
     slices = compute_tp_slices(
@@ -344,30 +368,36 @@ def test_helpers_price_and_book():
     assert not price_reached_tp(4020.0, 4004.75, "SHORT")
 
 
-def test_keep_three_tps_when_qty_covers_min():
+def test_keep_absolute_ratios_with_min_qty_floor():
+    """Absolute 10/20/70: min_qty may fold early tiers, but must not dump 100% into one TP when TP3 present."""
     rs = build_regime_settings()
     slices = compute_tp_slices(
-        0.03, 2, [100.0, 101.0, 102.0], rs,
+        1.0, 2, [100.0, 101.0, 102.0], rs,
         round_qty_fn=lambda x: round(x, 3),
         min_qty=0.01,
     )
     assert len(slices) == 3
-    assert all(q >= 0.01 - 1e-9 for _, q, _ in slices)
-    assert abs(sum(q for _, q, _ in slices) - 0.03) < 1e-9
+    used = sum(q for _, q, _ in slices)
+    assert abs(used - 1.0) < 1e-6  # full book when TP3 included
+    assert abs(slices[0][1] - 0.10) < 0.02
+    assert abs(slices[1][1] - 0.20) < 0.02
+    assert abs(slices[2][1] - 0.70) < 0.02
 
 
 def test_resolve_tp2_fill_after_heal_uses_remaining_plan():
-    """Live bug: after TP1, heal re-slices TP23 on remaining qty — step fill must match that."""
+    """After TP1, heal re-slices placeable TP2 on absolute 20% of anchor."""
     rs = build_regime_settings()
     tps = [1848.0, 1851.49, 1854.18]
     initial = 0.076
-    # After TP1 + earlier reduces, remaining 0.031 with TP1 consumed
     old_qty = 0.031
     remaining = compute_tp_slices(
-        old_qty, 1, tps, rs, exclude_levels={1}, round_qty_fn=lambda x: round(x, 3),
+        initial, 1, tps, rs, exclude_levels={1, 3}, round_qty_fn=lambda x: round(x, 3),
+        live_cap=old_qty,
     )
-    assert len(remaining) == 2
+    assert len(remaining) == 1
+    assert remaining[0][0] == 2
     tp2_qty = remaining[0][1]
+    assert tp2_qty + 1e-9 < old_qty
     new_qty = round(old_qty - tp2_qty, 3)
     level = resolve_tp_step_fill_level(
         old_qty=old_qty,

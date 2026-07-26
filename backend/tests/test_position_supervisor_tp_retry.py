@@ -34,6 +34,8 @@ def supervisor(tmp_path, monkeypatch):
     sup.current_side = "LONG"
     sup.regime = 3
     sup.tv_tps = [3600.0, 3700.0, 3800.0]
+    sup.initial_qty = 1.0
+    sup.watched_qty = 1.0
     return sup
 
 
@@ -69,14 +71,15 @@ def test_place_limit_with_retry_fails_after_max(supervisor, monkeypatch):
 
 
 def test_scan_open_defenses_detects_missing_tp(supervisor):
-    """Only TP1 on book → TP2+TP3 missing."""
+    """Only TP1 on book → TP2 missing (TP3 never hung)."""
+    supervisor.initial_qty = 1.0
     supervisor.client.get_open_orders.return_value = [
         {
             "orderId": 1,
             "type": "LIMIT",
             "side": "SELL",
             "price": "3600.00",
-            "origQty": "0.300",
+            "origQty": "0.100",
             "reduceOnly": True,
         },
     ]
@@ -84,8 +87,9 @@ def test_scan_open_defenses_detects_missing_tp(supervisor):
 
     scan = supervisor._scan_open_defenses(slices)
 
+    assert len(slices) == 2
     assert len(scan["matched_tps"]) == 1
-    assert len(scan["missing_tps"]) == 2
+    assert len(scan["missing_tps"]) == 1
     assert scan["aligned"] is False
 
 
