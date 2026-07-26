@@ -17,7 +17,11 @@ _MAX_TEXT = 4000  # Telegram hard limit 4096; leave margin
 
 
 def _brand() -> str:
-    return str(getattr(get_settings(), "NOTIFY_BRAND", "") or "双子星量化").strip() or "双子星量化"
+    """Brand label for TG prefix. Fall back if .env encoding garbled."""
+    raw = str(getattr(get_settings(), "NOTIFY_BRAND", "") or "").strip()
+    if raw and "双子星" in raw and "?" not in raw and "\ufffd" not in raw:
+        return raw
+    return "双子星量化"
 
 
 def get_telegram_bot_token() -> str:
