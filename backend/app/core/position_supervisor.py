@@ -294,6 +294,26 @@ class PositionSupervisor(
             payload.setdefault("current_sl", float(self.current_sl))
         if getattr(self, "regime", None) is not None:
             payload.setdefault("regime", int(self.regime))
+        # ADX trend-tier snapshot for DingTalk / TG (whitepaper §10)
+        try:
+            from app.core.trend_tier_params import clamp_tier, params_for_tier
+
+            if hasattr(self, "_resolve_trend_tier"):
+                base_tier = int(self._resolve_trend_tier())
+            else:
+                base_tier = int(getattr(self, "trend_tier", 1) or 1)
+            payload.setdefault("trend_tier", base_tier)
+            display_tier = getattr(self, "active_radar_tier", None)
+            if display_tier is None:
+                display_tier = base_tier
+            payload.setdefault(
+                "tier_label",
+                params_for_tier(clamp_tier(display_tier), can).tier_label,
+            )
+            if getattr(self, "reentry_tier_label", None):
+                payload.setdefault("reentry_tier_label", self.reentry_tier_label)
+        except Exception:
+            pass
         tag = self._symbol_tag()
         titled = title if str(title).startswith(tag) else f"{tag} {title}"
         msg = message if str(message).startswith(tag) else f"{tag} {message}"
@@ -2039,6 +2059,16 @@ class PositionSupervisor(
                 "atr": self.current_atr,
                 **sizing_meta,
             }
+            try:
+                from app.core.trend_tier_params import clamp_tier, params_for_tier
+
+                tt = int(getattr(self, "trend_tier", 1) or 1)
+                detail["trend_tier"] = tt
+                detail["tier_label"] = params_for_tier(
+                    clamp_tier(tt), self.canonical_symbol,
+                ).tier_label
+            except Exception:
+                pass
             self._protect_and_monitor(real_qty, entry_price)
             protect = getattr(self, "_last_protect_result", None) or {}
             if protect.get("aborted"):

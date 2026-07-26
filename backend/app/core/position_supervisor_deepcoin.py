@@ -159,6 +159,20 @@ class _DingtalkBridge:
         detail.setdefault("entry_type", "OPEN")
         if lev:
             detail["leverage"] = int(lev)
+        try:
+            from app.core.trend_tier_params import clamp_tier, params_for_tier
+
+            tt = int(getattr(self._sup, "trend_tier", 1) or 1)
+            detail.setdefault("trend_tier", tt)
+            detail.setdefault(
+                "tier_label",
+                params_for_tier(
+                    clamp_tier(tt),
+                    getattr(self._sup, "canonical_symbol", None),
+                ).tier_label,
+            )
+        except Exception:
+            pass
         title = (
             f"{theme['accent']} GEMINI开仓 · "
             f"{theme.get('symbol_label') or getattr(self._sup, 'canonical_symbol', '')} "

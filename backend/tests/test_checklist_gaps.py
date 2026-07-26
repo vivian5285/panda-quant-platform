@@ -65,9 +65,25 @@ def test_radar_arm_detail_includes_floating_pnl():
         "floating_pnl": 12.5,
         "exchange": "binance",
         "symbol": "ETHUSDT",
+        "tier_label": "中趋势",
     })
-    assert "当前浮盈" in text
+    assert "浮盈" in text
     assert "+12.50" in text
+    assert "档位·中趋势" in text
+
+
+def test_radar_activate_detail_uses_tier_suffix():
+    text = format_radar_arm_detail_cn({
+        "event": "radar_activate",
+        "arm_kind": "first",
+        "arm_tp1_pct": 0.85,
+        "radar_arm_trigger": 3350,
+        "new_sl": 3301,
+        "tier_label": "强趋势",
+    })
+    assert "雷达激活" in text
+    assert "首次开仓" in text
+    assert "档位·强趋势" in text
 
 
 def test_purge_old_logs_deletes_aged_rows(db_session=None):

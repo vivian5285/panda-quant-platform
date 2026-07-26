@@ -47,11 +47,14 @@ def test_alert_body_includes_brand_header_and_exchange_accent():
         user_id=1,
         uid="U001",
         display="test@example.com",
+        detail={"tier_label": "中趋势", "trend_tier": 1, "side": "LONG"},
     )
     assert "双子星量化 · OKX" in body
     assert "#双子星·OKX5x" in body or "#双子星·OKX5x·ETH" in body
     assert "5×" in body
     assert "ETH-USDT-SWAP" in body
+    assert "档位·中趋势" in body
+    assert "仅强趋势可重入" in body
 
 
 def test_dingtalk_critical_only_open_and_trail_go_tg_not_ding():

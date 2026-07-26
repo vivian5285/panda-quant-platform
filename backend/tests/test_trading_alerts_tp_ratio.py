@@ -18,9 +18,28 @@ FORBIDDEN_KEYWORDS = (
 
 def test_format_regime_radar_activation_legend():
     legend = format_regime_radar_activation_legend()
-    assert "初始1.5ATR" in legend
-    assert "50%~85%" in legend
-    assert "步进0.4" in legend
+    assert "硬止损呼吸垫固定1.15" in legend
+    assert "弱/中/强" in legend
+    assert "TP1+TP2" in legend or "雷达启动" in legend
+    assert "重入仅强趋势" in legend
+
+
+def test_open_detail_includes_trend_tier_label():
+    body = format_vps_entry_detail_cn(
+        {
+            "side": "LONG",
+            "qty": 0.3,
+            "entry": 3300.0,
+            "initial_stop": 3240.0,
+            "equity": 1000,
+            "tier_label": "强趋势",
+            "trend_tier": 2,
+            "tv_tps": [3350.0, 3400.0],
+        },
+        "binance",
+    )
+    assert "档位·强趋势" in body
+    assert "TP 3350.00/3400.00" in body
 
 
 def test_tv_open_dingtalk_shows_tv_leverage_not_config_25():

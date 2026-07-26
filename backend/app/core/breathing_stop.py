@@ -950,8 +950,9 @@ def format_breathing_legend(symbol: str | None = None) -> str:
     mid = params_for_tier(1, symbol)
     return (
         f"[{p.symbol_tag}] 硬止损呼吸垫固定1.15"
+        f" · 档位弱/中/强(ADX<20/20–30/>30)调雷达步长"
         f" · 雷达启动=(TP1+TP2)/2首次|TP2重入→entry±0.5ATR"
         f" · 步进{mid.step_trigger_atr}/{mid.step_advance_atr}×ATR(中档)"
         f" · 追踪{mid.trail_coef_min}~{mid.trail_coef_max}×ATR"
-        f" · 重入最多1次/{mid.reentry_bars}根K"
+        f" · 重入仅强趋势·最多1次/{mid.reentry_bars}根K"
     )

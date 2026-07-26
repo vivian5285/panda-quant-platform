@@ -223,6 +223,46 @@ def format_regime_radar_activation_legend(symbol: str | None = None) -> str:
     return format_breathing_legend(symbol)
 
 
+def format_trend_tier_intro() -> str:
+    """钉钉/TG 档位介绍：弱/中/强（ADX）对雷达与重入的影响。"""
+    return (
+        "档位·弱趋势(ADX<20)/中趋势(20–30)/强趋势(>30)："
+        "影响雷达步长·跟进·呼吸空间；硬止损垫固定1.15不分档；"
+        "仅强趋势允许雷达扫出后限价重入（最多1次）"
+    )
+
+
+def resolve_tier_label(detail: dict | None = None) -> str:
+    """Resolve 弱/中/强 label from alert detail (tier_label or trend_tier)."""
+    d = dict(detail or {})
+    for key in ("tier_label", "reentry_tier_label"):
+        raw = d.get(key)
+        if raw is not None and str(raw).strip():
+            return str(raw).strip()
+    tier = d.get("trend_tier")
+    if tier is None and isinstance(d.get("meta"), dict):
+        tier = d["meta"].get("trend_tier")
+    if tier is None:
+        return ""
+    try:
+        from app.core.trend_tier_params import clamp_tier, params_for_tier
+
+        sym = d.get("canonical_symbol") or d.get("symbol")
+        return params_for_tier(clamp_tier(tier), sym).tier_label
+    except Exception:
+        return f"t{tier}"
+
+
+def _with_tier(msg: str, detail: dict | None = None) -> str:
+    """Append 「档位·弱/中/强」 when available (whitepaper §10)."""
+    tier = resolve_tier_label(detail)
+    if not tier:
+        return msg
+    if tier in msg or f"档位·{tier}" in msg or f"档位 {tier}" in msg:
+        return msg
+    return f"{msg}，档位·{tier}"
+
+
 def resolve_exchange_theme(
     exchange: str | None = None,
     symbol: str | None = None,
@@ -339,7 +379,8 @@ def format_signal_received_message(payload: dict | None) -> str:
 
 
 def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str:
-    """妈妈版开仓钉钉短文案."""
+    """妈妈版开仓钉钉短文案（含 ADX 档位 · whitepaper §10.1）。"""
+    del exchange  # theme resolved by caller
     side = detail.get("side") or "—"
     side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(side).upper(), str(side))
     price = detail.get("entry") or detail.get("price") or detail.get("tv_price") or 0
@@ -352,39 +393,59 @@ def format_vps_entry_detail_cn(detail: dict, exchange: str | None = None) -> str
         or 0
     )
     equity = detail.get("equity") or detail.get("sizing_base") or detail.get("equity_balance") or 0
-    msg = (
-        f"开仓 {side_txt}，价格 {float(price):.2f}，数量 {float(qty):.4f}，"
-        f"初始止损 {init_stop:.2f}，账户权益 {float(equity):.2f}"
-    )
-    return msg
+    parts = [
+        f"开仓 {side_txt}",
+        f"价格 {float(price):.2f}",
+        f"数量 {float(qty):.4f}",
+        f"初始止损 {init_stop:.2f}",
+        f"账户权益 {float(equity):.2f}",
+    ]
+    tps = detail.get("tv_tps") or detail.get("tp_prices")
+    if isinstance(tps, (list, tuple)) and tps:
+        tp_txt = "/".join(
+            f"{float(x):.2f}" for x in tps[:3] if x is not None and float(x or 0) > 0
+        )
+        if tp_txt:
+            parts.append(f"TP {tp_txt}")
+    return _with_tier("，".join(parts), detail)
 
 
 def format_force_align_detail_cn(detail: dict, exchange: str | None = None) -> str:
-    return f"异常告警：FORCE_ALIGN，{detail.get('reason') or detail.get('message') or '方向背离'}"
+    del exchange
+    return _with_tier(
+        f"异常告警：FORCE_ALIGN，{detail.get('reason') or detail.get('message') or '方向背离'}",
+        detail,
+    )
 
 
 def format_startup_detail_cn(detail: dict, exchange: str | None = None) -> str:
     """妈妈版重启恢复短文案."""
+    del exchange
     side = detail.get("side") or detail.get("current_side") or "—"
     side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(side).upper(), str(side))
     qty = detail.get("qty") or detail.get("live_qty") or detail.get("watched_qty") or 0
     stop_px = detail.get("shield_stop_price") or detail.get("current_sl") or detail.get("tv_sl") or 0
-    return (
+    return _with_tier(
         f"重启恢复完成，持仓 {side_txt}，数量 {float(qty):.4f}，"
-        f"当前止损 {float(stop_px):.2f}"
+        f"当前止损 {float(stop_px):.2f}",
+        detail,
     )
 
 
 def format_radar_arm_detail_cn(detail: dict, exchange: str | None = None) -> str:
     """妈妈版止损移动 / 阶段切换 / 雷达激活短文案."""
+    del exchange
     event = str(detail.get("event") or "")
-    adx = float(detail.get("adx") or detail.get("current_adx") or 0)
     trail = detail.get("trail_dist_atr")
     if trail is None and isinstance(detail.get("meta"), dict):
         trail = detail["meta"].get("trail_dist_atr")
     new_sl = detail.get("new_sl") or detail.get("current_sl") or 0
     extreme = detail.get("best_price") or detail.get("extreme") or 0
-    profit = detail.get("profit_pct") or detail.get("floating_pnl_pct")
+    profit = (
+        detail.get("profit_pct")
+        or detail.get("floating_pnl_pct")
+        or detail.get("floating_pnl")
+    )
     side = str(detail.get("side") or "").upper()
     move = "上移" if side != "SHORT" else "下移"
 
@@ -394,27 +455,29 @@ def format_radar_arm_detail_cn(detail: dict, exchange: str | None = None) -> str
             kind = "重入开仓" if str(detail.get("arm_kind") or "") == "reentry" else "首次开仓"
         arm_pct = float(detail.get("arm_tp1_pct") or 0)
         trig = detail.get("radar_arm_trigger") or detail.get("curr_px") or 0
-        tier = detail.get("tier_label") or ""
-        return (
+        return _with_tier(
             f"雷达激活（{kind}·阈值{arm_pct:.2f}）：触发价 {float(trig):.2f}，"
-            f"止损上移至 {float(new_sl):.2f}"
-            + (f"，{tier}" if tier else "")
+            f"止损上移至 {float(new_sl):.2f}",
+            detail,
         )
 
     if event == "phase2_enter":
-        return (
+        return _with_tier(
             f"阶段切换：止损已进入阶段二（自适应追踪），"
-            f"追踪距离={float(trail or 0):.2f}×initial_atr"
+            f"追踪距离={float(trail or 0):.2f}×initial_atr",
+            detail,
         )
     profit_txt = f"{float(profit):+.2f}" if profit is not None else "—"
-    return (
+    return _with_tier(
         f"止损{move}至 {float(new_sl):.2f}，当前最高/最低价 {float(extreme):.2f}，"
-        f"浮盈 {profit_txt}%"
+        f"浮盈 {profit_txt}%",
+        detail,
     )
 
 
 def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
     """妈妈版平仓 / 反转保护 / 止损触发短文案."""
+    del exchange
     reason = detail.get("tv_reason") or detail.get("reason") or detail.get("close_reason") or ""
     price = detail.get("exit_price") or detail.get("tv_price") or detail.get("price") or detail.get("curr_px") or 0
     stop = detail.get("current_sl") or detail.get("stop") or detail.get("tv_sl") or 0
@@ -438,34 +501,48 @@ def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
             kind = "初始止损（阶段一）"
         else:
             kind = "呼吸止损（阶段一）"
-        return (
+        return _with_tier(
             f"{kind}触发：价格 {float(price):.2f} 触及止损 {float(stop):.2f}，"
-            f"盈亏 {pnl_txt}%"
+            f"盈亏 {pnl_txt}%",
+            detail,
         )
     # Only explicit TV reverse-protect actions — never promote arbitrary reason text
     if "QUICK" in action or "RSI" in action:
-        return f"反转保护平仓，原因：{reason or action}，价格 {float(price):.2f}"
+        return _with_tier(
+            f"反转保护平仓，原因：{reason or action}，价格 {float(price):.2f}",
+            detail,
+        )
     if detail.get("matched_tps") or "TP" in action or origin in ("exchange_limit_tp", "radar_tp3_trail"):
         levels = detail.get("matched_tps") or []
         if not levels and isinstance(detail.get("attribution"), dict):
             levels = detail["attribution"].get("matched_tps") or []
         if 3 in levels or action == "CLOSE_TP3" or origin == "radar_tp3_trail":
             prefix = "（推断）" if confidence in ("inferred", "low") else ""
-            return f"{prefix}余仓止盈成交（阶段二），全部平仓，盈亏 {pnl_txt}%"
+            return _with_tier(
+                f"{prefix}余仓止盈成交（阶段二），全部平仓，盈亏 {pnl_txt}%",
+                detail,
+            )
         if 2 in levels:
-            return f"TP2 止盈成交，剩余仓位 70%，当前止损 {float(stop):.2f}"
+            return _with_tier(
+                f"TP2 止盈成交，剩余仓位 70%，当前止损 {float(stop):.2f}",
+                detail,
+            )
         if 1 in levels:
-            return f"TP1 止盈成交，剩余仓位 90%，当前止损 {float(stop):.2f}"
+            return _with_tier(
+                f"TP1 止盈成交，剩余仓位 90%，当前止损 {float(stop):.2f}",
+                detail,
+            )
         if origin == "exchange_limit_tp":
-            return f"止盈限价成交，盈亏 {pnl_txt}%"
+            return _with_tier(f"止盈限价成交，盈亏 {pnl_txt}%", detail)
     if confidence in ("insufficient", "low") or origin in ("unknown", "exchange_already_flat"):
-        return (
+        return _with_tier(
             f"仓位已平（证据不足，原因待核实）：{reason or origin or '未知'}，"
-            f"价格 {float(price):.2f}"
+            f"价格 {float(price):.2f}",
+            detail,
         )
     if reason:
-        return f"全平完成，说明：{reason}，价格 {float(price):.2f}"
-    return f"全平完成，价格 {float(price):.2f}"
+        return _with_tier(f"全平完成，说明：{reason}，价格 {float(price):.2f}", detail)
+    return _with_tier(f"全平完成，价格 {float(price):.2f}", detail)
 
 
 def format_tp_fill_detail_cn(detail: dict, alert_type: str = "") -> str:
@@ -482,16 +559,19 @@ def format_tp_fill_detail_cn(detail: dict, alert_type: str = "") -> str:
             level = 3
     lvl = int(level or 0)
     if lvl == 1:
-        return f"TP1 止盈成交，剩余仓位 90%，当前止损 {stop:.2f}"
+        return _with_tier(f"TP1 止盈成交，剩余仓位 90%，当前止损 {stop:.2f}", detail)
     if lvl == 2:
-        return f"TP2 止盈成交，剩余仓位 70%，当前止损 {stop:.2f}"
+        return _with_tier(f"TP2 止盈成交，剩余仓位 70%，当前止损 {stop:.2f}", detail)
     if lvl == 3:
         pnl_txt = f"{float(pnl):+.2f}" if pnl is not None else "—"
-        return f"TP3限价止盈成交，全部平仓，盈亏 {pnl_txt}%"
+        return _with_tier(f"TP3限价止盈成交，全部平仓，盈亏 {pnl_txt}%", detail)
     rem = detail.get("remaining_qty_pct")
     if rem is not None:
-        return f"止盈成交，剩余仓位 {float(rem)*100:.0f}%，当前止损 {stop:.2f}"
-    return f"止盈成交，当前止损 {stop:.2f}"
+        return _with_tier(
+            f"止盈成交，剩余仓位 {float(rem)*100:.0f}%，当前止损 {stop:.2f}",
+            detail,
+        )
+    return _with_tier(f"止盈成交，当前止损 {stop:.2f}", detail)
 
 
 def format_cap_align_detail_cn(detail: dict, exchange: str | None = None) -> str:
@@ -634,6 +714,8 @@ def format_trading_alert_body(
             resolved_title = "呼吸止损平仓（阶段一）"
         type_label = resolved_title
     detail_block = format_admin_detail_lines(alert_type, detail, exchange=ex)
+    tier_lbl = resolve_tier_label(d)
+    tier_header = f" · **档位·{tier_lbl}**" if tier_lbl else ""
 
     pipe = format_checklist_pipe_line(
         event=type_label or alert_type,
@@ -649,10 +731,15 @@ def format_trading_alert_body(
         f"`{pipe}`\n\n"
         f"{theme['header']}\n"
         f"{sev} **{theme['tag']} [{type_label}]** "
-        f"{theme['accent']} {theme['label']} · **{theme.get('symbol_label') or theme['symbol']}** · **{theme['leverage']}×**\n\n"
+        f"{theme['accent']} {theme['label']} · **{theme.get('symbol_label') or theme['symbol']}** · "
+        f"**{theme['leverage']}×**{tier_header}\n\n"
         f"**合约**：`{theme['symbol']}`（{theme.get('canonical_symbol') or ''}）\n"
-        f"**用户**：{display}（UID {uid} / 内部ID {user_id}）\n\n"
-        f"**{resolved_title}**\n\n"
+        f"**用户**：{display}（UID {uid} / 内部ID {user_id}）\n"
+    )
+    if tier_lbl:
+        body += f"**档位**：{tier_lbl}（弱/中/强由 TV ADX 判定，影响雷达步长；仅强趋势可重入）\n"
+    body += (
+        f"\n**{resolved_title}**\n\n"
         f"{message}\n"
     )
     if detail_block:
