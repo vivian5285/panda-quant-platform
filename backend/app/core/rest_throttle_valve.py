@@ -83,6 +83,32 @@ def acquire_rest_permit(
             pass
 
 
+def require_rest_or_transient(
+    *,
+    exchange: str | None,
+    user_id: int | str | None = None,
+    op: str = "rest",
+) -> None:
+    """Client entry: deny → ExchangeTransientError so callers fail-closed / use stale."""
+    try:
+        acquire_rest_permit(exchange=exchange, user_id=user_id, op=op)
+    except ThrottleDenied as e:
+        from app.core.exchange_errors import ExchangeTransientError
+
+        ban_ms = int((time.time() + float(getattr(e, "remaining", 0) or 0)) * 1000)
+        raise ExchangeTransientError(
+            str(e),
+            exchange=exchange,
+            code=-1003,
+            banned_until_ms=ban_ms if getattr(e, "remaining", 0) else None,
+        ) from e
+
+
+def rest_silent(*, exchange: str | None, user_id: int | str | None = None) -> bool:
+    """True when REST must not be initiated (cool or pause-style silence)."""
+    return float(remaining_sec(exchange=exchange, user_id=user_id) or 0) > 0
+
+
 def sentinel_may_rest(*, exchange: str | None, user_id: int | str | None, trading_paused: bool) -> tuple[bool, str]:
     """巡检/哨兵：暂停或冷却时禁止 REST；只读账本。"""
     if trading_paused:

@@ -339,7 +339,9 @@ class OkxClient:
     def get_position(self, symbol: str | None = None) -> dict | None:
         """Binance-shaped position; None only for confirmed flat. Failures raise."""
         from app.core.exchange_errors import ExchangeTransientError, raise_exchange_transient
+        from app.core.rest_throttle_valve import require_rest_or_transient
 
+        require_rest_or_transient(exchange="okx", user_id=self.user_id, op="get_position")
         inst = symbol or self.trading_symbol
         res = self._request("GET", "/account/positions", {"instType": "SWAP", "instId": inst})
         if res is None:
@@ -392,6 +394,9 @@ class OkxClient:
         }
 
     def get_open_orders(self, symbol: str | None = None) -> list[dict]:
+        from app.core.rest_throttle_valve import require_rest_or_transient
+
+        require_rest_or_transient(exchange="okx", user_id=self.user_id, op="get_open_orders")
         inst = symbol or self.trading_symbol
         orders = []
         for row in self._data_list(

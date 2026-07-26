@@ -340,7 +340,17 @@ class ChiefAuditor:
 
 
 class CommunicationsOfficer:
-    GATED_TYPES = frozenset({"OPEN", "DEFENSE", "ENTRY", "PIPELINE_REPORT"})
+    GATED_TYPES = frozenset({
+        "OPEN", "DEFENSE", "ENTRY", "PIPELINE_REPORT",
+        "TP_FILLED", "TRAIL", "BREATH_TRAIL",
+    })
+    HOLD_PHASES = frozenset({
+        TradePhase.ORDERS_PLACED,
+        TradePhase.VERIFIED,
+        TradePhase.REPORTED,
+    })
+    TRAIL_TYPES = frozenset({"TRAIL", "BREATH_TRAIL"})
+    TRAIL_MIN_INTERVAL_SEC = 90.0
 
     @staticmethod
     def allow_notify(host: Any, alert_type: str, severity: str, *, stash: dict | None = None) -> bool:
@@ -352,20 +362,45 @@ class CommunicationsOfficer:
             return True
         led = ledger_for(host)
         ph = led.phase()
-        if ph in (TradePhase.VERIFIED, TradePhase.REPORTED):
+
+        # OPEN/DEFENSE/ENTRY — only after chief verify (or held until flush)
+        if at in ("OPEN", "DEFENSE", "ENTRY", "PIPELINE_REPORT"):
+            if ph in (TradePhase.VERIFIED, TradePhase.REPORTED):
+                return True
+            if ph == TradePhase.ORDERS_PLACED and led.snap.last_audit_ok is True:
+                return True
+            led.note_event("NOTIFY_HELD", {"type": at, "phase": ph.value})
+            if stash is not None:
+                held = getattr(host, "_held_pipeline_notifies", None)
+                if not isinstance(held, list):
+                    held = []
+                    host._held_pipeline_notifies = held
+                held.append(dict(stash))
+                if len(held) > 8:
+                    host._held_pipeline_notifies = held[-8:]
+            return False
+
+        # TP fill — only while holding (never during pre-open scramble)
+        if at == "TP_FILLED":
+            if ph in CommunicationsOfficer.HOLD_PHASES or bool(getattr(host, "monitoring", False)):
+                return True
+            led.note_event("NOTIFY_HELD", {"type": at, "phase": ph.value})
+            return False
+
+        # Trail / breath trail — CommunicationsOfficer owns rate limit (anti-spam)
+        if at in CommunicationsOfficer.TRAIL_TYPES:
+            if ph not in CommunicationsOfficer.HOLD_PHASES and not bool(getattr(host, "monitoring", False)):
+                led.note_event("NOTIFY_HELD", {"type": at, "phase": ph.value})
+                return False
+            now = time.time()
+            last = float(getattr(host, "_comms_last_trail_at", 0) or 0)
+            if now - last < CommunicationsOfficer.TRAIL_MIN_INTERVAL_SEC:
+                led.note_event("NOTIFY_THROTTLED", {"type": at, "since": round(now - last, 1)})
+                return False
+            host._comms_last_trail_at = now
             return True
-        if ph == TradePhase.ORDERS_PLACED and led.snap.last_audit_ok is True:
-            return True
-        led.note_event("NOTIFY_HELD", {"type": at, "phase": ph.value})
-        if stash is not None:
-            held = getattr(host, "_held_pipeline_notifies", None)
-            if not isinstance(held, list):
-                held = []
-                host._held_pipeline_notifies = held
-            held.append(dict(stash))
-            if len(held) > 8:
-                host._held_pipeline_notifies = held[-8:]
-        return False
+
+        return True
 
     @staticmethod
     def mark_reported(host: Any) -> None:

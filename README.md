@@ -62,13 +62,13 @@ SIGNAL_RECEIVED → PENDING_CLEAR → CLEARED → ENTRY_SUBMITTED
 5. 人为 cool / pause：哨兵与空闲巡检 **无新 REST**  
 6. TP 自检故意算错：拒挂 + `CHIEF_AUDITOR_FAIL` 暂停  
 
-#### D. 已知残余风险（勿当已灭）
+#### D. 残余风险收口状态（2026-07-27 harden-2）
 
-| 项 | 说明 |
+| 项 | 状态 |
 |----|------|
-| 全路径 REST 阀门 | book cache / 哨兵 / 空闲巡检已收口；个别对账仍可直打 REST（限流时依赖 cool） |
-| 通讯官 | 仅闸 `OPEN/DEFENSE/ENTRY/PIPELINE_REPORT`；`TP_FILLED`/`TRAIL` 仍可发（靠既有去重） |
-| 雷达 | 实盘 qty 优先；书不可读时仍可能短暂公式影子（已打 warning） |
+| 对账 REST 阀门 | OKX/Gate/DeepCoin `get_position`/`get_open_orders`(及 DeepCoin pending/trigger) 入口 `require_rest_or_transient`；Binance mop-up 改走缓存路径；cool 下 `_count_open_book_orders`/`_resolve_adverse_live_qty` 读账本 |
+| `TP_FILLED` / `TRAIL` | 纳入通讯官：`TP_FILLED` 仅持仓相位；`BREATH_TRAIL`/`TRAIL` **90s** 节流 |
+| 雷达公式影子 | **已禁用** — 无 live/watched 则 `RADAR_RESIZE_SKIPPED` 拒挂，不发明数量 |
 
 ### 生产代码锚点
 

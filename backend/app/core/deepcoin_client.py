@@ -464,7 +464,9 @@ class DeepcoinClient:
     def get_position_info(self, symbol="ETH-USDT-SWAP"):
         """Raw DeepCoin positions payload. Network/API hard failures raise."""
         from app.core.exchange_errors import ExchangeTransientError
+        from app.core.rest_throttle_valve import require_rest_or_transient
 
+        require_rest_or_transient(exchange="deepcoin", user_id=self.user_id, op="get_position")
         res = self._request("GET", "/account/positions", {"instType": "SWAP", "instId": symbol})
         if res is None:
             raise ExchangeTransientError(
@@ -618,6 +620,9 @@ class DeepcoinClient:
 
     def get_pending_orders(self, symbol="ETH-USDT-SWAP"):
         """GET /deepcoin/trade/v2/orders-pending — 未成交限价单（支持按品种或全账户查询）"""
+        from app.core.rest_throttle_valve import require_rest_or_transient
+
+        require_rest_or_transient(exchange="deepcoin", user_id=self.user_id, op="get_open_orders")
         seen = set()
         merged = []
         for params in (
@@ -642,6 +647,9 @@ class DeepcoinClient:
 
     def get_trigger_orders_pending(self, symbol="ETH-USDT-SWAP"):
         """GET /deepcoin/trade/trigger-orders-pending — 未触发条件单"""
+        from app.core.rest_throttle_valve import require_rest_or_transient
+
+        require_rest_or_transient(exchange="deepcoin", user_id=self.user_id, op="get_trigger_orders")
         res = self._request("GET", "/trade/trigger-orders-pending", {
             "instType": "SWAP", "instId": symbol, "limit": 100,
         })

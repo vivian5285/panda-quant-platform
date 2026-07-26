@@ -813,14 +813,19 @@ class BinanceClient:
         symbol = self._sym(symbol)
         try:
             from app.core.ip_rest_cooldown import remaining_sec
+            from app.core.rest_throttle_valve import require_rest_or_transient
 
             if float(remaining_sec(exchange="binance", user_id=self.user_id) or 0) > 0:
                 logger.warning(
                     "[User %s] mop-up skipped under IP cool-down", self.user_id
                 )
                 return -1
-        except Exception:
-            pass
+            require_rest_or_transient(
+                exchange="binance", user_id=self.user_id, op="mop_up_orders",
+            )
+        except Exception as e:
+            logger.warning("[User %s] mop-up rest gate: %s", self.user_id, e)
+            return -1
         last = 0
         list_failed = False
         for _ in range(max(1, int(rounds))):
@@ -829,7 +834,8 @@ class BinanceClient:
             rows: list[dict] = []
             reg_ok = algo_ok = True
             try:
-                rows.extend(self.client.futures_get_open_orders(symbol=symbol) or [])
+                # Prefer throttled cached path — never raw futures_get_open_orders
+                rows.extend(self.get_open_orders(symbol=symbol) or [])
             except Exception as e:
                 logger.warning("[User %s] mop-up list regular failed: %s", self.user_id, e)
                 reg_ok = False

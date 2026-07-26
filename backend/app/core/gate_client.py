@@ -349,7 +349,9 @@ class GateClient:
     def get_position(self, symbol: str | None = None) -> dict | None:
         """Binance-shaped position; None only for confirmed flat. Failures raise."""
         from app.core.exchange_errors import ExchangeTransientError
+        from app.core.rest_throttle_valve import require_rest_or_transient
 
+        require_rest_or_transient(exchange="gate", user_id=self.user_id, op="get_position")
         contract = symbol or self.trading_symbol
         try:
             row = self._request("GET", f"/futures/usdt/positions/{contract}")
@@ -402,6 +404,9 @@ class GateClient:
         }
 
     def get_open_orders(self, symbol: str | None = None) -> list[dict]:
+        from app.core.rest_throttle_valve import require_rest_or_transient
+
+        require_rest_or_transient(exchange="gate", user_id=self.user_id, op="get_open_orders")
         contract = symbol or self.trading_symbol
         rows = self._request("GET", "/futures/usdt/orders", {"contract": contract, "status": "open"})
         if not isinstance(rows, list):

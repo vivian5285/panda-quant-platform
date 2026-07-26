@@ -1760,7 +1760,19 @@ class AdverseRadarMixin:
         }
 
     def _resolve_adverse_live_qty(self, fallback_qty: float) -> float:
-        """Always anchor adverse slices to exchange live position, not stale watched_qty."""
+        """Always anchor adverse slices to exchange live position, not stale watched_qty.
+
+        Under REST cool-down: never hit exchange — return watched_qty / fallback.
+        """
+        try:
+            from app.core.rest_throttle_valve import rest_silent
+
+            ex = getattr(self, "exchange_id", None) or "binance"
+            if rest_silent(exchange=ex, user_id=getattr(self, "user_id", None)):
+                wq = float(getattr(self, "watched_qty", 0) or 0)
+                return wq if wq > 0 else float(fallback_qty or 0)
+        except Exception:
+            pass
         if hasattr(self, "_resolve_live_qty"):
             try:
                 return float(self._resolve_live_qty(fallback_qty))
@@ -4574,18 +4586,29 @@ class AdverseRadarMixin:
         resize_qty = float(live_qty or 0)
         if resize_qty <= 0 and hasattr(self, "_resolve_adverse_live_qty"):
             resize_qty = float(self._resolve_adverse_live_qty(0) or 0)
-        # Prefer ledger/watched qty over formula shadow (pipeline: radar follows ledger)
+        # Prefer ledger/watched qty — NEVER invent formula shadow (wrong STOP size risk)
         if resize_qty <= 0:
             resize_qty = float(getattr(self, "watched_qty", 0) or 0)
         if resize_qty <= 0:
-            init_q = float(getattr(self, "initial_qty", 0) or 0)
-            resize_qty = init_q * float(self.remaining_qty_pct or 0)
-            if resize_qty > 0:
-                logger.warning(
-                    "[User %s] radar resize using formula shadow qty=%.6f (book unread)",
-                    getattr(self, "user_id", "?"),
-                    resize_qty,
-                )
+            logger.error(
+                "[User %s] radar resize REFUSED — no live/watched qty "
+                "(formula shadow disabled)",
+                getattr(self, "user_id", "?"),
+            )
+            if hasattr(self, "_alert"):
+                try:
+                    self._alert(
+                        "warning",
+                        "RADAR_RESIZE_SKIPPED",
+                        "雷达缩量跳过·无实盘数量",
+                        "书不可读且 watched_qty=0；禁止用 initial×剩余%% 影子挂单",
+                        {"change_type": change_type, "level": level},
+                    )
+                except Exception:
+                    pass
+            if hasattr(self, "_save_state"):
+                self._save_state()
+            return
 
         stop_px = float(getattr(self, "current_sl", 0) or 0)
         if resize_qty > 0 and stop_px > 0:

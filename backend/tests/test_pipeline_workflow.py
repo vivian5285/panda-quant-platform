@@ -253,6 +253,42 @@ def test_recheck_live_detects_compressed_baseline(tmp_path: Path):
     assert paused
 
 
+def test_comms_gates_tp_and_throttles_trail(tmp_path: Path):
+    host = SimpleNamespace(
+        user_id=8,
+        exchange_id="binance",
+        canonical_symbol="ETHUSDT",
+        monitoring=True,
+        _comms_last_trail_at=0.0,
+    )
+    host._trade_ledger = TradeLedger(
+        user_id=8, exchange="binance", symbol="ETHUSDT", state_dir=tmp_path,
+    )
+    # Pre-open: TP_FILLED held
+    host._trade_ledger.advance(TradePhase.SIGNAL_RECEIVED, force=True)
+    host.monitoring = False
+    assert CommunicationsOfficer.allow_notify(host, "TP_FILLED", "info") is False
+    # Holding: allowed
+    host.monitoring = True
+    host._trade_ledger.advance(TradePhase.REPORTED, force=True)
+    assert CommunicationsOfficer.allow_notify(host, "TP_FILLED", "info") is True
+    # Trail: first ok, second throttled
+    assert CommunicationsOfficer.allow_notify(host, "BREATH_TRAIL", "info") is True
+    assert CommunicationsOfficer.allow_notify(host, "BREATH_TRAIL", "info") is False
+    assert CommunicationsOfficer.allow_notify(host, "TRAIL", "info") is False
+
+
+def test_require_rest_raises_transient_when_cooling():
+    from app.core.exchange_errors import ExchangeTransientError
+    from app.core.rest_throttle_valve import require_rest_or_transient
+
+    reset_cool()
+    note_rate_limit(exchange="okx", user_id=7, cool_sec=30.0)
+    with pytest.raises(ExchangeTransientError):
+        require_rest_or_transient(exchange="okx", user_id=7, op="get_position")
+    reset_cool()
+
+
 def test_stall_budget_table():
     assert PHASE_STALL_SEC[TradePhase.ENTRY_SUBMITTED] == 30.0
     assert PHASE_STALL_SEC[TradePhase.ORDERS_PLACED] == 45.0

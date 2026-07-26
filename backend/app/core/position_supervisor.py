@@ -1239,8 +1239,18 @@ class PositionSupervisor(
     def _count_open_book_orders(self) -> int:
         """Filtered TP limits + adverse stops (defense audit). Prefer raw count for open gate.
 
-        Returns -1 on fetch failure (FAIL CLOSED).
+        Returns -1 on fetch failure (FAIL CLOSED) or under REST cool-down.
         """
+        try:
+            from app.core.rest_throttle_valve import rest_silent
+
+            if rest_silent(
+                exchange=getattr(self, "exchange_id", None),
+                user_id=getattr(self, "user_id", None),
+            ):
+                return -1
+        except Exception:
+            pass
         n = 0
         try:
             if hasattr(self, "_collect_tp_limit_orders"):
