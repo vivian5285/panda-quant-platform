@@ -910,7 +910,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 {"exchange": "deepcoin", "symbol": getattr(self, "symbol", None)},
             )
 
-    def _get_active_position(self):
+    def _list_live_positions(self) -> list[dict]:
+        """All non-zero positions on this symbol.
+
+        DeepCoin 开平仓模式(双向) 可同时返回 long+short；买卖模式(单向)通常一侧。
+        只读第一条会漏掉对侧 → 先平后开后留下反向/幽灵仓。
+        """
         from app.core.exchange_errors import ExchangeTransientError
 
         try:
@@ -919,24 +924,109 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self._handle_position_query_failure(e)
             raise
         self._clear_position_query_degraded()
-        if res and "data" in res:
-            for p in res["data"]:
-                if self._safe_qty(p.get("pos")) > 0:
-                    return {
-                        "size": self._safe_qty(p.get("pos")),
-                        "entry_price": round(float(p.get("avgPx", p.get("price", 0)) or 0), 2),
-                        "posSide": p.get("posSide", "long").lower(),
-                    }
-        return None
+        out: list[dict] = []
+        if not res or "data" not in res:
+            return out
+        for p in res["data"] or []:
+            sz = self._safe_qty(p.get("pos"))
+            if sz <= 0:
+                continue
+            ps = str(p.get("posSide") or "long").lower()
+            if ps in ("buy", "net"):
+                ps = "long"
+            elif ps in ("sell",):
+                ps = "short"
+            out.append({
+                "size": sz,
+                "entry_price": round(float(p.get("avgPx", p.get("price", 0)) or 0), 2),
+                "posSide": ps if ps in ("long", "short") else "long",
+            })
+        return out
+
+    def _get_active_position(self):
+        rows = self._list_live_positions()
+        if not rows:
+            return None
+        if len(rows) > 1:
+            # Dual-side residual (hedge mode) — never pretend there is only one book
+            logger.warning(
+                "[User %s] DeepCoin dual-side live positions: %s",
+                getattr(self, "user_id", "?"),
+                [(r.get("posSide"), r.get("size")) for r in rows],
+            )
+            booked = str(getattr(self, "current_side", "") or "").upper()
+            want = "long" if booked == "LONG" else ("short" if booked == "SHORT" else "")
+            if want:
+                for r in rows:
+                    if r.get("posSide") == want:
+                        return r
+            # Prefer largest size for monitoring; open/flat paths use _list_live_positions
+            return max(rows, key=lambda r: float(r.get("size") or 0))
+        return rows[0]
 
     def _verify_flat(self):
         from app.core.exchange_errors import ExchangeTransientError
 
         try:
-            pos = self._get_active_position()
+            rows = self._list_live_positions()
         except ExchangeTransientError:
             return False
-        return pos is None or self._safe_qty(pos.get("size")) == 0
+        return len(rows) == 0
+
+    def _reduce_close_position_side(self, pos: dict) -> None:
+        """Market reduceOnly one posSide (hedge-safe)."""
+        if not pos:
+            return
+        live_sz = self._safe_qty(pos.get("size"))
+        if live_sz <= 0:
+            return
+        ps = str(pos.get("posSide") or "long").lower()
+        close_side = "sell" if ps == "long" else "buy"
+        self.client.place_market_order(
+            self.symbol, close_side, ps, live_sz, reduce_only=True,
+        )
+
+    def _flat_all_position_sides(self, *, rounds: int = 6, reason: str = "") -> bool:
+        """Cancel book + close every live posSide (long and/or short).
+
+        Uses batch-close when available, then per-side reduceOnly mop.
+        """
+        try:
+            self.client.cancel_all_open_orders(self.symbol)
+        except Exception as exc:
+            logger.warning("flat_all cancel_all failed: %s", exc)
+        time.sleep(0.35)
+        try:
+            if hasattr(self.client, "batch_close_position"):
+                self.client.batch_close_position(self.symbol)
+                time.sleep(0.6)
+        except Exception as exc:
+            logger.warning("batch_close_position failed (%s): %s", reason, exc)
+
+        for round_i in range(max(1, int(rounds))):
+            try:
+                rows = self._list_live_positions()
+            except Exception:
+                return False
+            if not rows:
+                return True
+            logger.info(
+                "🔪 DeepCoin 全侧强平 %s/%s reason=%s sides=%s",
+                round_i + 1,
+                rounds,
+                reason or "-",
+                [(r.get("posSide"), r.get("size")) for r in rows],
+            )
+            for pos in rows:
+                try:
+                    self._reduce_close_position_side(pos)
+                except Exception as exc:
+                    logger.warning("reduce close %s failed: %s", pos.get("posSide"), exc)
+            time.sleep(1.2)
+        try:
+            return self._verify_flat()
+        except Exception:
+            return False
 
     def _wait_until_flat(self, timeout: float = FLAT_WAIT_TIMEOUT, poll: float = FLAT_WAIT_POLL) -> bool:
         """确认交易所持仓归零后再新开，避免残仓叠加。"""
@@ -1083,22 +1173,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self._alert("info", alert_type, alert_title, ding_msg, close_detail)
 
     def _sweep_dust_and_finalize(self, reason):
-        """哨兵检测：止盈后蚂蚁仓/无 TP 残张 → 撤单 + reduceOnly 扫尾 + 收网钉钉"""
+        """哨兵检测：止盈后蚂蚁仓/无 TP 残张 → 撤单 + 全侧 reduceOnly 扫尾 + 收网钉钉"""
         logger.warning(f"🐜 止盈扫尾：检测到残量，启动蚂蚁仓强平 → {reason}")
         self.monitoring = False
-        self.client.cancel_all_open_orders(self.symbol)
-        time.sleep(0.4)
-        for round_i in range(4):
-            pos = self._get_active_position()
-            if not pos or self._safe_qty(pos.get("size")) <= 0:
-                break
-            close_side = "sell" if pos["posSide"] == "long" else "buy"
-            live_sz = self._safe_qty(pos["size"])
-            logger.info(f"🐜 扫尾第 {round_i + 1}/4: {close_side} {live_sz}张 reduceOnly")
-            self.client.place_market_order(
-                self.symbol, close_side, pos["posSide"], live_sz, reduce_only=True,
-            )
-            time.sleep(1.0)
+        self._flat_all_position_sides(rounds=4, reason=f"dust_sweep:{reason}")
         if hasattr(self, "_clear_position_local_state"):
             self._clear_position_local_state()
         else:
@@ -1114,14 +1192,25 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self._report_flat_close(reason, swept_dust=True)
 
     def _scan_and_sweep_dust_on_startup(self):
-        """重启首检：发现蚂蚁仓/止盈残张 → 扫尾收网，避免误接管为正常持仓"""
+        """重启首检：发现蚂蚁仓/止盈残张/双向对侧 → 扫尾收网，避免误接管为正常持仓"""
         from app.core.exchange_errors import ExchangeTransientError
 
         try:
-            pos = self._get_active_position()
+            rows = self._list_live_positions()
         except ExchangeTransientError as e:
             logger.error("startup dust scan skipped — QUERY_FAILED: %s", e)
             return False
+        if not rows:
+            return False
+        # Dual-side or orphan dust → always mop both sides before recover
+        if len(rows) > 1:
+            logger.warning(
+                "🐜 [重启扫描] 双向/多侧残仓 %s → 全侧扫尾",
+                [(r.get("posSide"), r.get("size")) for r in rows],
+            )
+            self._sweep_dust_and_finalize("重启扫描：双向残仓自动扫平")
+            return True
+        pos = rows[0]
         if not isinstance(pos, dict) or self._safe_qty(pos.get("size")) <= 0:
             return False
         if not self.current_side:
@@ -3552,8 +3641,50 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         except Exception as exc:
             logger.warning("daily_loss_circuit check failed: %s", exc)
         leverage = self._bind_tv_leverage()
+        # Pre-open mop: both merge modes + both posSides (hedge dual residual)
+        self._flat_all_position_sides(rounds=3, reason="pre_open_mop")
+        if not self._verify_flat():
+            logger.error("⛔ 开仓前净场失败：仍有持仓（可能双向对侧/蚂蚁仓）")
+            if hasattr(self, "_alert"):
+                try:
+                    rows = self._list_live_positions()
+                except Exception:
+                    rows = []
+                self._alert(
+                    "critical",
+                    "OPEN_ABORT_DIRTY",
+                    "开仓前净场失败·拒开",
+                    f"DeepCoin 仍有仓/对侧: {[(r.get('posSide'), r.get('size')) for r in rows]}",
+                    {"positions": rows},
+                )
+            return {
+                "status": "error",
+                "reason": "pre_open_not_flat",
+                "message": "开仓前未净场（双向/幽灵仓），拒绝开仓",
+            }
+        # Extra cancel pass after flat (limits/triggers)
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.4)
+        raw_n = -1
+        try:
+            raw_n = int(self._count_raw_exchange_orders(force_refresh=True))
+        except Exception:
+            raw_n = -1
+        if raw_n > 0:
+            logger.error("⛔ 开仓前挂单未清干净 raw=%s — 拒开防反向/叠单", raw_n)
+            if hasattr(self, "_alert"):
+                self._alert(
+                    "critical",
+                    "OPEN_ABORT_DIRTY",
+                    "开仓前挂单未净·拒开",
+                    f"DeepCoin 仍有 {raw_n} 笔挂单/条件单",
+                    {"raw_orders": raw_n},
+                )
+            return {
+                "status": "error",
+                "reason": "pre_open_orders_dirty",
+                "message": "开仓前挂单未净，拒绝开仓",
+            }
         if float(getattr(self, "tv_sl", 0) or 0) <= 0:
             recovered = float(
                 getattr(self, "_tv_stop_loss_ref", 0)
@@ -4522,41 +4653,19 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         trade_id_snapshot = self.current_trade_id
         self._purge_defense_orders_on_flat("code_close_all", notify=False)
         time.sleep(0.5)
-        closed_successfully = False
-
-        for round_i in range(6):
-            pos = self._get_active_position()
-            if not pos or self._safe_qty(pos.get("size")) == 0:
-                closed_successfully = True
-                break
-
-            close_side = "sell" if pos["posSide"] == "long" else "buy"
-            live_sz = self._safe_qty(pos["size"])
-            logger.info(f"🔪 强平第 {round_i + 1}/6 轮: {close_side} {live_sz}张 reduceOnly")
-            self.client.place_market_order(
-                self.symbol, close_side, pos["posSide"], live_sz, reduce_only=True,
-            )
-            time.sleep(1.5)
+        closed_successfully = self._flat_all_position_sides(rounds=6, reason=reason or "close_all")
 
         if not closed_successfully:
-            residual = self._get_active_position()
-            residual_sz = self._safe_qty(residual["size"]) if residual else 0
-            if residual_sz > 0 and self._is_dust_qty(residual_sz):
-                close_side = "sell" if residual["posSide"] == "long" else "buy"
-                logger.warning(f"🐜 强平后残 {residual_sz}张，触发蚂蚁仓扫尾")
-                self.client.place_market_order(
-                    self.symbol, close_side, residual["posSide"], residual_sz, reduce_only=True,
-                )
-                time.sleep(1.0)
-                closed_successfully = self._verify_flat()
-            if not closed_successfully:
-                residual = self._get_active_position()
-                residual_sz = self._safe_qty(residual["size"]) if residual else 0
-                logger.error(f"❌ 6 轮强平后仍有残单: {residual_sz}张")
-                self._dt.report_system_alert(
-                    "强平未完全归零",
-                    f"6 轮市价平仓后仍剩 {residual_sz} 张，请人工核查 Deepcoin 盘口",
-                )
+            try:
+                residual_rows = self._list_live_positions()
+            except Exception:
+                residual_rows = []
+            residual_sz = sum(self._safe_qty(r.get("size")) for r in residual_rows)
+            logger.error(f"❌ 全侧强平后仍有残单: {residual_sz}张 sides={residual_rows}")
+            self._dt.report_system_alert(
+                "强平未完全归零",
+                f"全侧市价平仓后仍剩 {residual_sz} 张（可能双向对侧未净），请人工核查 Deepcoin 盘口",
+            )
 
         self.monitoring = False
         self._unbind_price_ws_listener()

@@ -13,6 +13,7 @@
 | 2026-07-27 | `xau-binance-only` | XAU 仅币安加载/分发；OKX/Gate/DeepCoin 只 ETH | 已修 · §10 |
 | 2026-07-27 | `deepcoin-open-orders` | 深币缺 `get_open_orders` → 先平后开假空簿；补 pending+trigger 合并 + raw 计数委托 | 已修 · §11 |
 | 2026-07-27 | `open-close-10s-parity` | 开仓后忽略迟到平仓宽限 5s→10s；深币 TP 自检放宽整数张；README 开平铁律 | 已修 · §12 |
+| 2026-07-27 | `deepcoin-hedge-flat` | 深币双向模式漏平对侧→幽灵/反向仓；全侧 list+batch-close+拒开 | 已修 · §13 |
 | 2026-07-27 | `tp-radar-resize-10s` | TP 部分成交缩雷达 + cool 排队；开平铁律 10s；DeepCoin TP1≥1 张 | 已修 · f80a27d |
 | 2026-07-27 | `pipeline-ledger-v1` | 统一 TradeLedger+岗位流水线+督察+REST阀门；补相位卡住/持仓再督察/硬止损公式/FLAT清pause | 已修 · §9 |
 | 2026-07-26 | `open_orders_gt_5` + `-1003` + TG 风暴 | 雷达 thrash + stale book + 暂停重复告警 → 硬帽熔断刷屏 | 已修 · 对照下方 §1 |
@@ -424,6 +425,30 @@
 - [ ] OPEN 后 1–10s 单独 CLOSE_QUICK → 忽略；>10s → 正常平。  
 - [ ] 同窗 CLOSE→OPEN → 先平后开有仓。  
 - [ ] 深币小名义仍能挂出 TP1≥1 张。
+
+---
+
+## §13 · 2026-07-27 · 深币开平仓(双向) / 买卖(单向) 净场
+
+### 现象 / 风险
+
+DeepCoin 账户可能是**开平仓模式（双向）**或**买卖模式（单向）**。旧 `_get_active_position` 只返回第一条 `pos>0`，双向残留对侧会被忽略 → 先平后开后留下反向仓；撤单只扫 `IsMergeMode=1` 可能漏挂单 → 幽灵限价/超限。
+
+### 修复
+
+| 项 | 行为 |
+|----|------|
+| `_list_live_positions` | 列出 symbol 上全部非零 posSide |
+| `_flat_all_position_sides` | cancel_all → `batch_close_position` → 每侧 reduceOnly |
+| `cancel_all_open_orders` | `IsMergeMode` 扫 1/0/-1 |
+| `_open_position` | 开仓前必须 flat 且 raw 挂单=0，否则 `OPEN_ABORT_DIRTY` |
+| 单测 | `test_deepcoin_hedge_flat.py` |
+
+### 复查点
+
+- [ ] 人为制造 long+short 残仓 → 全平后两侧均为 0。  
+- [ ] 开仓前有挂单 → 拒开并告警。  
+- [ ] 买卖模式单侧仓仍正常开平。
 
 ---
 

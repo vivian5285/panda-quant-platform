@@ -733,22 +733,27 @@ class DeepcoinClient:
         })
 
     def cancel_all_open_orders(self, symbol="ETH-USDT-SWAP"):
-        """一键撤单 + 条件单一键撤单 + 兜底逐笔撤销"""
+        """一键撤单 + 条件单一键撤单 + 兜底逐笔撤销.
+
+        DeepCoin 开平仓(双向)/买卖(单向) 挂单字段 IsMergeMode 不同，
+        必须 1/0/-1 都扫一遍，避免净场漏撤导致反向/幽灵限价。
+        """
         try:
             instrument_id = self.inst_id_to_instrument_id(symbol)
             product_group = self.swap_product_group(symbol)
-            self._safe_cancel("/trade/swap/cancel-all", {
-                "InstrumentID": instrument_id,
-                "ProductGroup": product_group,
-                "IsCrossMargin": 1,
-                "IsMergeMode": 1,
-            })
-            self._safe_cancel("/trade/swap/cancel-trigger-all", {
-                "ProductGroup": product_group,
-                "InstrumentID": instrument_id,
-                "IsCrossMargin": -1,
-                "IsMergeMode": -1,
-            })
+            for merge_mode in (1, 0, -1):
+                self._safe_cancel("/trade/swap/cancel-all", {
+                    "InstrumentID": instrument_id,
+                    "ProductGroup": product_group,
+                    "IsCrossMargin": 1,
+                    "IsMergeMode": merge_mode,
+                })
+                self._safe_cancel("/trade/swap/cancel-trigger-all", {
+                    "ProductGroup": product_group,
+                    "InstrumentID": instrument_id,
+                    "IsCrossMargin": -1,
+                    "IsMergeMode": merge_mode,
+                })
             time.sleep(0.4)
 
             pending = self._request("GET", "/trade/v2/orders-pending", {

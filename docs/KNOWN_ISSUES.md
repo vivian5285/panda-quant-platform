@@ -12,6 +12,7 @@
 | 币安 ETH + XAU | **可实盘**（XAU 仅币安 API 用户） |
 | OKX / Gate / DeepCoin ETH | **逻辑可候命**（权重/杠杆/10s 开平/雷达缩量与币安同）；是否开闸由管理员决策 |
 | OPEN 后 10s 内迟到平仓 | **忽略**（`OPEN_FORCE_CLOSE_GRACE_SEC=10` + coalesce discard） |
+| 深币双向/单向 | **全侧净场**（list 两侧 + batch-close + 开仓前拒脏盘） |
 | 非币安 XAU | **禁止**（`trading_symbols_for_exchange` + 分发门禁） |
 | 三端同步 | 以 `git rev-parse --short HEAD` 为准 |
 
