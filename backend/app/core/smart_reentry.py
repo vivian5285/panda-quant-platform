@@ -1,8 +1,9 @@
-"""Dual-symbol smart re-entry — whitepaper v3.0 (2026-07-25).
+"""Dual-symbol smart re-entry — whitepaper v3 + Gemini ADX arm (2026-07-27).
 
 Max 1 reentry after radar BE/micro-profit flat; ADX tier params;
 dual-insurance limit price; hard-stop / loss closes never re-enter.
-Radar arm: first 0.85 / reentry 1.00 of tp1_distance; trail loosens +1 tier.
+Radar arm Layer-1: ADX≤17→70% … ≥35→90% × (1.35×ATR); trail loosens +1 tier on reentry.
+Layer-2 trailDistanceMultiplier (ATR-ratio) unchanged.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from app.core.symbol_registry import CANONICAL_ETH, CANONICAL_XAU, normalize_can
 from app.core.trend_tier_params import (
     MAX_REENTRY,
     RADAR_ACTIVATE_BE_ATR,
+    RADAR_ARM_RATIO_STRONG,
     RADAR_ARM_TP1_PCT,
     RADAR_ARM_TP1_PCT_REENTRY,
     TrendTierParams,
@@ -26,7 +28,7 @@ from app.core.trend_tier_params import (
     reentry_zone_atr as _zone_atr,
 )
 
-# Re-export for callers / tests (first-open + reentry ratios)
+# Compat aliases — LIVE arm uses radar_arm_ratio_by_adx; these are mid/strong defaults
 ARM_TP1_PCTS: tuple[float, ...] = (RADAR_ARM_TP1_PCT, RADAR_ARM_TP1_PCT_REENTRY)
 LIMIT_IMPROVE_PCT = 0.003
 MAX_TIER_INDEX = 2  # ADX tiers 0..2
@@ -81,14 +83,14 @@ def smart_reentry_enabled_for(symbol: str | None) -> bool:
 
 
 def arm_tp1_pct_for_attempt(attempt: int = 0) -> float:
-    """First open 0.85; after reentry 1.00 (whitepaper v3)."""
+    """Compat hint only — LIVE Layer-1 arm uses ``radar_arm_ratio_by_adx``."""
     return float(arm_ratio_for_attempt(attempt))
 
 
 def next_attempt_arm_pct(_prev_pct: float = 0.0) -> float:
-    """Compat: next (reentry) arm is always 1.00 under whitepaper v3."""
+    """Compat: reentry hint defaults to strong-bound 90% (LIVE still uses ADX)."""
     _ = _prev_pct
-    return float(RADAR_ARM_TP1_PCT_REENTRY)
+    return float(RADAR_ARM_RATIO_STRONG)
 
 
 def tier_for_attempt(
@@ -97,10 +99,11 @@ def tier_for_attempt(
     *,
     adx_tier: int | None = None,
 ) -> RadarTier:
-    """Map open/reentry attempt → radar params.
+    """Map open/reentry attempt → radar trail params.
 
-    attempt 0: radar_tier = adx_tier, arm = 0.85
-    attempt ≥1: radar_tier = min(adx_tier+1, 2), arm = 1.00
+    attempt 0: radar_tier = adx_tier
+    attempt ≥1: radar_tier = min(adx_tier+1, 2)
+    arm_tp1_pct field is a compat hint only (LIVE arm is ADX-driven).
     """
     base = clamp_tier(adx_tier if adx_tier is not None else 1)
     att = max(0, int(attempt))
@@ -156,16 +159,22 @@ def arm_distance(
     tv_entry: float | None = None,
     tp1_dist: float | None = None,
     adx_tier: int | None = None,
+    adx: float | None = None,
 ) -> float:
-    """Favorable move to arm radar = tp1_distance × activation_ratio."""
+    """Favorable move to arm radar = (1.35×ATR) × ADX_ratio (or override pct)."""
     from app.core.breathing_profile import profile_for_symbol
-    from app.core.trend_tier_params import radar_arm_trigger_price
+    from app.core.trend_tier_params import radar_arm_ratio_by_adx, radar_arm_trigger_price
 
     a = float(atr or 0)
     fill = float(entry or 0)
     t1 = float(tp1 or 0)
-    pct = float(arm_tp1_pct if arm_tp1_pct is not None else arm_ratio_for_attempt(attempt))
-    if fill > 0 and (t1 > 0 or float(tp1_dist or 0) > 0 or float(tv_entry or 0) > 0):
+    if arm_tp1_pct is not None:
+        pct = float(arm_tp1_pct)
+    elif adx is not None:
+        pct = float(radar_arm_ratio_by_adx(adx))
+    else:
+        pct = float(arm_ratio_for_attempt(attempt))
+    if fill > 0 and (t1 > 0 or float(tp1_dist or 0) > 0 or a > 0 or float(tv_entry or 0) > 0):
         trig = radar_arm_trigger_price(
             side="LONG",
             fill_entry=fill,
@@ -175,8 +184,9 @@ def arm_distance(
             atr=a,
             symbol=symbol,
             arm_pct=pct,
+            adx=adx,
         )
-        return abs(trig - fill)
+        return abs(trig - fill) if trig > 0 else float(profile_for_symbol(symbol).tp1_atr) * a * pct
     p = profile_for_symbol(symbol)
     if a <= 0:
         return 0.0

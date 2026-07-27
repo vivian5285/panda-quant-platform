@@ -35,19 +35,27 @@ def test_legacy_ladder_demo_purged():
 
 
 def test_whitepaper_arm_path_not_absolute_tp1():
+    from app.core.trend_tier_params import radar_arm_trigger_price as wp_arm
+
     arm = radar_arm_trigger_price(ENTRY, TP1, "LONG", progress=RADAR_ARM_PROGRESS)
     expect = ENTRY + RADAR_ARM_PROGRESS * (TP1 - ENTRY)
     assert abs(arm - expect) < 1e-9
     # Must NOT be absolute TP1 × 0.85
     assert abs(arm - TP1 * 0.85) > 1.0
+    # LIVE arm uses ADX × 1.35ATR (independent of path-progress helper)
+    live = wp_arm(side="LONG", fill_entry=ENTRY, atr=ATR, adx=17.0, symbol="ETHUSDT")
+    assert abs(live - (ENTRY + 1.35 * ATR * 0.70)) < 1e-9
 
 
 def test_placeable_tp_and_timers():
+    from app.core.trend_tier_params import RADAR_ARM_MODE_ADX, radar_arm_ratio_by_adx
+
     assert PLACEABLE_TP_LEVELS == frozenset({1, 2})
     assert ATR_REFRESH_SEC == 300.0
     assert TP_LIMIT_TIMEOUT_SEC == 300.0
-    assert RADAR_ARM_TP1_PCT == 0.85
+    assert abs(RADAR_ARM_TP1_PCT - radar_arm_ratio_by_adx(25.0)) < 1e-9
     assert HARD_STOP_BUFFER_FIXED == 1.15
+    assert RADAR_ARM_MODE_ADX == "adx_70_90"
 
 
 def test_purged_step_constants_are_nan():

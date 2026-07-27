@@ -13,7 +13,7 @@
 | 路径 | 触发 | 行为 |
 |------|------|------|
 | ① 理想 | TP1/TP2 限价 + 雷达兑现 TP3 残仓 | 逐级兑现 → flat → 等下一 TV |
-| ② 核心 | 雷达在保本/微赚区扫出，且在窗口内 | 清场 → 双保险限价再入（最多 1 次）→ trail +1 档 + **arm=1.00** |
+| ② 核心 | 雷达在保本/微赚区扫出，且在窗口内 | 清场 → 双保险限价再入（最多 1 次）→ trail +1 档（arm 仍由 ADX 驱动） |
 | ③ 认输 | 硬止损 / 亏损 / 窗口过期 / 已重入过 / **该用户TP1已成交** / **档位非强趋势(tier≠2)** | **永不重入**，等新 TV |
 
 ---
@@ -33,13 +33,13 @@ TV webhook (:6010)
             └─ _protect_and_monitor
                  ├─ 硬止损  compute_temp_tv_stop(…, buffer=1.15 固定)
                  ├─ TP1/TP2 (10/20；TP3=70% 雷达)
-                 └─ 雷达    fill ± tp1_distance × (0.85|1.00)
+                 └─ 雷达    fill ± (1.35×ATR × ADX_ratio 70%~90%)
 ```
 
 | 文件 | 职责 |
 |------|------|
-| `trend_tier_params.py` | ADX 0/1/2 档参数表；arm 公式；固定 hard buffer |
-| `smart_reentry.py` | 再入条件、窗口、双保险价、最多 1 次、arm 0.85→1.00、trail +1 |
+| `trend_tier_params.py` | ADX 0/1/2 档参数表；Layer-1 ADX arm 70–90%；固定 hard buffer |
+| `smart_reentry.py` | 再入条件、窗口、双保险价、最多 1 次、trail +1 |
 | `smart_reentry_mixin.py` | plan/commit、限价 worker、钉钉、持久化 `radar_tp1_distance` |
 | `breathing_stop.py` | 硬止损 buffer；雷达延迟启动 + 被动跟踪 |
 | `order_place_guard.py` | 本地挂单标签 |
@@ -61,12 +61,13 @@ TV webhook (:6010)
 
 可选：webhook 传 `tier`（0/1/2）；否则 ADX；再否则 `tv_stop_distance/atr` 启发式。
 
-雷达启动（距离，非绝对价）：
+雷达启动 Layer-1（ADX 驱动，与 TP1 是否成交无关）：
 ```
-tp1_distance = |TV.tp1 − TV.price|
-首次：fill ± tp1_distance × 0.85
-重入：fill ± tp1_distance × 1.00
+ADX ≤ 17 → 70%；ADX ≥ 35 → 90%；中间线性插值
+arm_distance = (1.35 × initial_atr) × start_ratio
+多：触发价 = fill + arm_distance；空：fill − arm_distance
 ```
+Layer-2 追踪 `trailDistanceMultiplier` 仍由实时 ATR/initial_atr 比值驱动（ETH 1.2~2.5 / XAU 0.5~1.2），与 Layer-1 独立。
 激活瞬间：止损上移至 **开仓价 ± 0.5×ATR**。
 
 | 参数 | ETH 弱/中/强 | XAU 弱/中/强 |
@@ -79,7 +80,7 @@ tp1_distance = |TV.tp1 − TV.price|
 | 重入窗口 | 2 根×90m ≈ 3h | 3 根×45m ≈ 2.25h |
 | 重入区 | 开仓价→开仓+0.5×ATR | 开仓价→开仓+0.3×ATR |
 
-重入成功：雷达 trail 取 **ADX档+1**（封顶强档）；arm 固定 **1.00**；不影响 TP 价格与数量。
+重入成功：雷达 trail 取 **ADX档+1**（封顶强档）；Layer-1 arm 仍按当前 ADX 插值；不影响 TP 价格与数量。
 
 ### 重入硬闸（Gemini 多用户规格 §9.1 本版新增）
 
@@ -110,11 +111,11 @@ actual_stop_distance = tv_stop_distance × 1.15
 
 ```
 MAX_REENTRY == 1
-RADAR_ARM_TP1_PCT == 0.85
-RADAR_ARM_TP1_PCT_REENTRY == 1.00
+radar_arm_ratio_by_adx(17) == 0.70
+radar_arm_ratio_by_adx(35) == 0.90
 HARD_STOP_BUFFER_FIXED == 1.15
 compute_temp_tv_stop(1900.80, LONG, 1874, tv_entry=1900) == 1870.90
-radar_arm_trigger_price(fill=1900.80, tp1=1925.65, tv_entry=1900, 0.85) == 1922.60
+radar_arm_trigger_price(fill=1900, atr=20, adx=17) == 1900 + 1.35*20*0.70
 ```
 
 三方 commit 同数字；`E2E_FORCE_NOTIONAL_USD=0`。

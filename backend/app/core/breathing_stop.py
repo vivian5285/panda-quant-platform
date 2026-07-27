@@ -356,12 +356,12 @@ def radar_arm_reached(
     tp1: float | None = None,
     tp2: float | None = None,
     is_reentry: bool | None = None,
+    adx: float | None = None,
 ) -> bool:
-    """True when price hits §6.1 arm: first=(TP1+TP2)/2, reentry=TP2."""
-    from app.core.trend_tier_params import RADAR_ARM_TP1_PCT, radar_armed_by_price
+    """True when price hits Layer-1 ADX arm (70–90% × 1.35×ATR). Independent of TP1 fill."""
+    from app.core.trend_tier_params import radar_armed_by_price
 
     del smooth_ratio  # dynamic vol arm purged (§14)
-    pct = float(arm_tp1_pct if arm_tp1_pct is not None else RADAR_ARM_TP1_PCT)
     return bool(
         radar_armed_by_price(
             side=str(side or ""),
@@ -373,7 +373,8 @@ def radar_arm_reached(
             tp1_dist=tp1_dist,
             atr=float(initial_atr or 0),
             symbol=symbol,
-            arm_pct=pct,
+            arm_pct=arm_tp1_pct,
+            adx=adx,
             is_reentry=is_reentry,
         )
     )
@@ -466,6 +467,7 @@ def _tier_overrides(legacy: dict[str, Any], profile) -> dict[str, float | None]:
 
     return {
         "arm_tp1_pct": _f("arm_tp1_pct"),
+        "adx": _f("adx"),
         "step_trigger_atr": _f("step_trigger_atr"),
         "early_breakeven_atr": _f("early_breakeven_atr"),
         "step_advance_atr": _f("step_advance_atr"),
@@ -512,11 +514,12 @@ def calculate_stop_long(
     smooth_ratio: float | None = None,
     **_legacy: Any,
 ) -> tuple[float, float, bool, dict[str, Any]]:
-    """§6.1: arm at (TP1+TP2)/2 first / TP2 reentry; activate entry+0.5ATR; trail."""
+    """Layer-1 ADX arm 70–90%×(1.35ATR); activate entry+0.5ATR; then trail."""
     from app.core.trend_tier_params import (
         RADAR_ACTIVATE_BE_ATR,
-        RADAR_ARM_TP1_PCT,
+        RADAR_ARM_MODE_ADX,
         is_reentry_attempt,
+        radar_arm_ratio_by_adx,
         radar_arm_trigger_price,
         radar_armed_by_price,
     )
@@ -525,7 +528,20 @@ def calculate_stop_long(
     ov = _tier_overrides(_legacy, p)
     step_adv_atr = float(ov["step_advance_atr"] if ov["step_advance_atr"] is not None else p.step_advance_atr)
     step_trig = float(ov["step_trigger_atr"] if ov["step_trigger_atr"] is not None else p.step_trigger_atr)
-    arm_pct = float(ov["arm_tp1_pct"] if ov["arm_tp1_pct"] is not None else RADAR_ARM_TP1_PCT)
+    try:
+        adx_raw = _legacy.get("adx")
+        if adx_raw is None:
+            adx_raw = ov.get("adx")
+        adx_f = float(adx_raw) if adx_raw is not None else None
+    except (TypeError, ValueError):
+        adx_f = None
+    # LIVE: ADX drives ratio when adx present; else optional arm_tp1_pct override (tests).
+    if adx_f is not None and float(adx_f) > 0:
+        arm_pct = float(radar_arm_ratio_by_adx(adx_f))
+    elif ov["arm_tp1_pct"] is not None:
+        arm_pct = float(ov["arm_tp1_pct"])
+    else:
+        arm_pct = float(radar_arm_ratio_by_adx(None))
     activate_be = float(ov["early_breakeven_atr"] if ov["early_breakeven_atr"] is not None else RADAR_ACTIVATE_BE_ATR)
     cmin = ov["coef_min"]
     cmax = ov["coef_max"]
@@ -573,6 +589,7 @@ def calculate_stop_long(
         "is_reentry": reentry,
         "tp1": tp1,
         "tp2": tp2,
+        "adx": adx_f,
     }
 
     arm_kw = dict(
@@ -585,6 +602,7 @@ def calculate_stop_long(
         atr=initial_atr,
         symbol=symbol,
         arm_pct=arm_pct,
+        adx=adx_f,
         is_reentry=reentry,
     )
     arm_trig = radar_arm_trigger_price(**arm_kw)
@@ -592,7 +610,7 @@ def calculate_stop_long(
     meta["radar_arm_dist"] = arm_dist
     meta["radar_arm_trigger"] = arm_trig
     meta["radar_arm_ratio"] = arm_pct
-    meta["radar_arm_mode"] = "tp2" if reentry else "tp1_tp2_mid"
+    meta["radar_arm_mode"] = RADAR_ARM_MODE_ADX
     already = bool(ov.get("radar_activated"))
     armed = already or radar_armed_by_price(price=price, **arm_kw)
     meta["radar_armed"] = armed
@@ -670,11 +688,12 @@ def calculate_stop_short(
     smooth_ratio: float | None = None,
     **_legacy: Any,
 ) -> tuple[float, float, bool, dict[str, Any]]:
-    """§6.1 short: arm at (TP1+TP2)/2 first / TP2 reentry; activate entry−0.5ATR."""
+    """Layer-1 ADX arm 70–90%×(1.35ATR); activate entry−0.5ATR; then trail."""
     from app.core.trend_tier_params import (
         RADAR_ACTIVATE_BE_ATR,
-        RADAR_ARM_TP1_PCT,
+        RADAR_ARM_MODE_ADX,
         is_reentry_attempt,
+        radar_arm_ratio_by_adx,
         radar_arm_trigger_price,
         radar_armed_by_price,
     )
@@ -683,7 +702,19 @@ def calculate_stop_short(
     ov = _tier_overrides(_legacy, p)
     step_adv_atr = float(ov["step_advance_atr"] if ov["step_advance_atr"] is not None else p.step_advance_atr)
     step_trig = float(ov["step_trigger_atr"] if ov["step_trigger_atr"] is not None else p.step_trigger_atr)
-    arm_pct = float(ov["arm_tp1_pct"] if ov["arm_tp1_pct"] is not None else RADAR_ARM_TP1_PCT)
+    try:
+        adx_raw = _legacy.get("adx")
+        if adx_raw is None:
+            adx_raw = ov.get("adx")
+        adx_f = float(adx_raw) if adx_raw is not None else None
+    except (TypeError, ValueError):
+        adx_f = None
+    if adx_f is not None and float(adx_f) > 0:
+        arm_pct = float(radar_arm_ratio_by_adx(adx_f))
+    elif ov["arm_tp1_pct"] is not None:
+        arm_pct = float(ov["arm_tp1_pct"])
+    else:
+        arm_pct = float(radar_arm_ratio_by_adx(None))
     activate_be = float(ov["early_breakeven_atr"] if ov["early_breakeven_atr"] is not None else RADAR_ACTIVATE_BE_ATR)
     cmin = ov["coef_min"]
     cmax = ov["coef_max"]
@@ -734,6 +765,7 @@ def calculate_stop_short(
         "is_reentry": reentry,
         "tp1": tp1,
         "tp2": tp2,
+        "adx": adx_f,
     }
 
     arm_kw = dict(
@@ -746,6 +778,7 @@ def calculate_stop_short(
         atr=initial_atr,
         symbol=symbol,
         arm_pct=arm_pct,
+        adx=adx_f,
         is_reentry=reentry,
     )
     arm_trig = radar_arm_trigger_price(**arm_kw)
@@ -753,7 +786,7 @@ def calculate_stop_short(
     meta["radar_arm_dist"] = arm_dist
     meta["radar_arm_trigger"] = arm_trig
     meta["radar_arm_ratio"] = arm_pct
-    meta["radar_arm_mode"] = "tp2" if reentry else "tp1_tp2_mid"
+    meta["radar_arm_mode"] = RADAR_ARM_MODE_ADX
     already = bool(ov.get("radar_activated"))
     armed = already or radar_armed_by_price(price=price, **arm_kw)
     meta["radar_armed"] = armed
@@ -852,6 +885,7 @@ def apply_breathing_tick(
     radar_tp1_distance: float | None = None,
     is_reentry: bool | None = None,
     reentry_attempt: int | None = None,
+    adx: float | None = None,
 ) -> dict[str, Any]:
     from app.core.breathing_profile import trail_distance_multiplier
 
@@ -865,6 +899,8 @@ def apply_breathing_tick(
         coef = resolve_breathing_coef(breathing_coefficient, symbol)
     side_u = str(side or "").upper()
     dist = tp1_dist if tp1_dist is not None else radar_tp1_distance
+    # Prefer explicit adx kw; fall back to adx_val (legacy arg name)
+    adx_use = adx if adx is not None else adx_val
     tier_kw = {
         "arm_tp1_pct": arm_tp1_pct,
         "step_trigger_atr": step_trigger_atr,
@@ -882,6 +918,7 @@ def apply_breathing_tick(
         "tp1_dist": dist,
         "is_reentry": is_reentry,
         "reentry_attempt": reentry_attempt,
+        "adx": adx_use,
     }
     if side_u == "LONG":
         new_stop, peak, phase, meta = calculate_stop_long(
@@ -950,8 +987,9 @@ def format_breathing_legend(symbol: str | None = None) -> str:
     mid = params_for_tier(1, symbol)
     return (
         f"[{p.symbol_tag}] 硬止损呼吸垫固定1.15"
-        f" · 档位弱/中/强(ADX<20/20–30/>30)调雷达步长"
-        f" · 雷达启动=(TP1+TP2)/2首次|TP2重入→entry±0.5ATR"
+        f" · 雷达启动=ADX70%~90%×(1.35×ATR) (≤17→70% ≥35→90%)"
+        f" · 档位弱/中/强调雷达步长"
+        f" · 激活→entry±0.5ATR"
         f" · 步进{mid.step_trigger_atr}/{mid.step_advance_atr}×ATR(中档)"
         f" · 追踪{mid.trail_coef_min}~{mid.trail_coef_max}×ATR"
         f" · 重入仅强趋势·最多1次/{mid.reentry_bars}根K"

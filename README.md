@@ -13,7 +13,7 @@
 
 ### 当前实盘一句话
 
-**硬止损是底线，雷达是骑士。** TP1/TP2 限价兑现 10%/20%；**TP3（70%）永不挂限价**，全程雷达管理、无价格天花板。ATR **一律用 webhook `atr`（TV）**，VPS 不再独立拉取交易所 ATR。雷达首次激活用 (TP1+TP2)/2，重入用 TP2。重入最多一次。本地挂单标签 + 挂单硬帽≤5 + ETH/XAU 隔离。  
+**硬止损是底线，雷达是骑士。** TP1/TP2 限价兑现 10%/20%；**TP3（70%）永不挂限价**，全程雷达管理、无价格天花板。ATR **一律用 webhook `atr`（TV）**，VPS 不再独立拉取交易所 ATR。雷达启动=ADX 驱动 **70%~90%**×(1.35×ATR)（≤17→70% ≥35→90%，线性插值；与 TP1 是否成交无关）。重入最多一次。本地挂单标签 + 挂单硬帽≤5 + ETH/XAU 隔离。  
 开仓链路按 **流水线岗位** 交接：信号官 → 准入官 → 仓位稽查 → 执行官（TP 自检≈30%）→ 督察官（VERIFIED）→ 通讯官（钉钉）；账本 `data/supervisor/ledgers/`。暂停/冷却时哨兵**禁止 REST**，优先读账本/缓存。  
 **两次 TV 只有三条路**：①TP1/TP2 止盈（+雷达兑现剩余）②雷达 BE/微赚扫出→更优价再入（≤1 次）③硬止损认输不重入。  
 验收必须以：交易所空仓零挂单 + 本地/GitHub/VPS **三方 commit 同数字** + 日志/订单 JSON / 钉钉为准。
@@ -93,7 +93,7 @@ SIGNAL_RECEIVED → PENDING_CLEAR → CLEARED → ENTRY_SUBMITTED
 | ② 重入判断 | 仅雷达轨 + 平仓价在保本~微赚区（ETH 0.5×ATR / XAU 0.3×ATR）+ **窗口内**（ETH 2×90m / XAU 3×45m）+ 累计重入=0。硬止损/亏损 → 永不重入 |
 | ③ 双保险价 | 多 `min(5m低+tick, TV×0.997)`；空 `max(5m高−tick, TV×1.003)`；须优于 TV **且** 优于上次开仓价 → 否则终止 |
 | ④ 挂限价 | **先查本地标签**；标签占用 → 绝对拒挂。`newClientOrderId` 幂等。TTL 5min |
-| ⑤ 成交保护 | fill 为原点：硬止损=`fill±(|TV.e−TV.SL|×**1.15**)` + **仅 TP1/TP2** 限价(10/20) + 雷达（ATR=`TV.atr`；arm=中点/TP2）。钉钉 `SMART_REENTRY_PROTECTED` |
+| ⑤ 成交保护 | fill 为原点：硬止损=`fill±(|TV.e−TV.SL|×**1.15**)` + **仅 TP1/TP2** 限价(10/20) + 雷达（ATR=`TV.atr`；arm=ADX 70%~90%×1.35ATR）。钉钉 `SMART_REENTRY_PROTECTED` |
 | ⑥ 档位 | ADX 弱/中/强（0/1/2，可选 webhook `tier`）；重入成功雷达 trail +1 档（封顶 2）、arm 改为 1.00；**最多重入 1 次** |
 | ⑦ 新 TV | 先清场归零，重置档位/标签/计数器，再开新方向 |
 
@@ -152,7 +152,7 @@ SIGNAL_RECEIVED → PENDING_CLEAR → CLEARED → ENTRY_SUBMITTED
 ```
 TV 入队 → 解析 → ATR=webhook.atr → RISK20×5 算仓 → 市价开
   → 永久硬止损 fill±(|TV.e−SL|×**1.15**) + TP1/TP2(10/20)（TP3 不挂限价）
-  → 雷达武装(TV atr；首次 arm=(TP1+TP2)/2；重入 arm=TP2)
+  → 雷达武装(TV atr；arm=ADX 70%~90%×1.35×ATR)
 ```
 
 不可读盘口时：**禁止再挂 TP/Stop、禁止 cancel_all、禁止把未知当已保护**。
@@ -168,7 +168,7 @@ TV 入队 → 解析 → ATR=webhook.atr → RISK20×5 算仓 → 市价开
 | 层 | 规则 |
 |----|------|
 | **① 硬止损（永久防线）** | `dist=\|TV.price−TV.stop_loss\|×**1.15**`（全品种全档位固定）。挂单=`fill±dist`。无 ATR 地板、无滑点垫。至 flat：**禁止**收紧/撤销。雷达不碰硬止损。**缺 SL 或距&lt;5 ticks → 拒开仓**。 |
-| **② 雷达止损（骑士守卫）** | ATR **仅用 TV webhook `atr`**。首次 `(TP1+TP2)/2`、重入 `TP2` 绝对价才启动；激活瞬间止损→开仓价±0.5×ATR；之后按档位步长/跟进/呼吸空间被动抬止损。与硬止损并行。启动前仅硬止损保护。 |
+| **② 雷达止损（骑士守卫）** | ATR **仅用 TV webhook `atr`**。启动阈值=`fill±(1.35×ATR×ADX比例)`：ADX≤17→70%、≥35→90%、中间线性；**不依赖 TP1 是否已成交**。激活瞬间止损→开仓价±0.5×ATR；之后按档位步长/跟进/呼吸空间被动抬止损。第二层追踪 `trailDistanceMultiplier`（ATR 比值）独立、不改。启动前仅硬止损保护。 |
 | **③ TP 限价** | **仅 TP1/TP2** 挂 TV 价 **10%/20%**。**TP3（70%）永不挂限价**，完全交雷达管理（无价格天花板）。历史若曾挂过 TP3，开仓/退出路径必须撤掉遗留单。 |
 | 部分平仓 | TP 成交后仓位变 90%/70%/0：硬止损与雷达止损**数量同步收缩**，价格不变。 |
 | 归零清理 | 任一止损触发或全部 TP 成交 → 立即撤销其余挂单，不留孤儿单。 |
@@ -197,7 +197,7 @@ TV 入队 → 解析 → ATR=webhook.atr → RISK20×5 算仓 → 市价开
 | 15s 铁律 | OPEN 先到 → 15s 内 CLOSE **丢弃**；CLOSE 先到 → **先平后开**；>15s CLOSE 独立平仓 |
 | 净场 | 开仓前无仓无挂单；平仓后立即撤该 symbol 全部挂单；反手一律先平 |
 | ATR | **优先**交易所原生 1h；失败用 TV atr；雷达/开仓**不用** 90m 合成 |
-| 呼吸 / 雷达 | ADX 弱/中/强档；启动=`fill±tp1_dist×(0.85/1.00)`；激活→entry±0.5ATR；步长/跟进/呼吸见 `trend_tier_params` |
+| 呼吸 / 雷达 | 启动=ADX 70%~90%×(1.35×ATR)；trail 档位弱/中/强；激活→entry±0.5ATR；步长/跟进见 `trend_tier_params` |
 | TV 图表 | ETH **90m** / XAU **45m**（VPS「1h ATR」仅为波动率 oracle） |
 | 杠杆 | 默认 `FIXED_LEVERAGE=5`；**`/admin` 用户详情可按账户改**（1–125，受交易所上限约束） |
 | 加仓 | **禁用**；同向亦先平后开 |
@@ -230,8 +230,8 @@ rules:
   - hard_stop = fill ± (|TV.price−TV.stop_loss| × 1.15); NO ATR floor / slip pad
   - missing SL or distance < 5 ticks → reject open
   - TP always 10/20/70 (TP1+TP2+TP3); TP3 ↔ radar mutex
-  - radar arm = fill ± tp1_distance × (0.85 first / 1.00 reentry); activate → entry±0.5ATR; then passive trail by ADX tier
-  - max reentry = 1; window ETH 2×90m / XAU 3×45m; reentry loosens radar +1 tier + arm=1.00
+  - radar arm Layer-1 = fill ± (1.35×ATR × ADX_ratio70–90); activate → entry±0.5ATR; Layer-2 trail = ATR-ratio trailDistanceMultiplier (unchanged)
+  - max reentry = 1; window ETH 2×90m / XAU 3×45m; reentry loosens trail +1 ADX tier (arm still ADX-driven)
   - local PendingOrderRegistry tag → refuse place even if book empty (anti 50× LIMIT)
   - OPEN_ORDERS_HARD_CAP=5 → critical + pause symbol opens
   - DAILY_LOSS_CIRCUIT_ENABLED=False in prod (false trips blocked real TV)
@@ -684,8 +684,8 @@ https://twinstar.pro/gemini/webhook
 
 ```
 早保本: 浮盈 ≥ early_be×ATR → 止损锁到 entry±1 tick   # ETH 0.5 / XAU 0.65（再入场档位递进）
-雷达启动: TP1×50/65/80/95 递进 + step_trigger×ATR 下限
-追踪 coef: ETH/XAU 均为 1.2~2.5（智能再入场方案）
+雷达启动: ADX≤17→70% … ≥35→90% × (1.35×initialAtr)；与 TP1 成交无关
+追踪 coef: Layer-2 ATR比值插值（ETH 1.2~2.5 / XAU 0.5~1.2；floor/ceil 0.6/2.2）
 step_count = floor(|price − entry| / (step_trigger × initialAtr))
 step_stop  = initialStop ± step_count × step_advance × initialAtr
 candidate  = max/min(currentStop, step_stop, early_be)   # 只朝盈利

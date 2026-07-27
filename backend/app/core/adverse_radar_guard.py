@@ -2696,13 +2696,17 @@ class AdverseRadarMixin:
             return out
 
         px = float(curr_px or 0) or entry
-        # Only skip when whitepaper arm already true — never use purged 0.50~0.85 dynamic arm
+        # Skip stagnant tighten only when Layer-1 ADX arm already true
         arm_pct = None
         if hasattr(self, "_breathing_tier_kwargs"):
             try:
                 arm_pct = (self._breathing_tier_kwargs() or {}).get("arm_tp1_pct")
             except Exception:
                 arm_pct = None
+        try:
+            adx_live = float(getattr(self, "current_adx", 0) or 0) or None
+        except (TypeError, ValueError):
+            adx_live = None
         tp1_d = float(getattr(self, "radar_tp1_distance", 0) or 0)
         tv_e = float(getattr(self, "tv_price", 0) or 0) or None
         tps = list(getattr(self, "tv_tps", None) or [])
@@ -2713,6 +2717,7 @@ class AdverseRadarMixin:
             tp1_dist=tp1_d if tp1_d > 0 else None,
             tv_entry=tv_e,
             tp1=tp1_px if tp1_px > 0 else None,
+            adx=adx_live,
         )
         if already_armed:
             self._stagnant_tighten_done = True
@@ -2996,6 +3001,15 @@ class AdverseRadarMixin:
             # Dual track: do NOT overwrite frozen hard with radar seed
 
         was_phase = phase
+        tier_kw = dict(self._breathing_tier_kwargs() if hasattr(self, "_breathing_tier_kwargs") else {})
+        # All exchanges: inject live ADX for Layer-1 arm (DeepCoin lacks mixin kwargs).
+        if "adx" not in tier_kw or not tier_kw.get("adx"):
+            try:
+                adx_live = float(getattr(self, "current_adx", 0) or 0)
+            except (TypeError, ValueError):
+                adx_live = 0.0
+            if adx_live > 0:
+                tier_kw["adx"] = adx_live
         tick = apply_breathing_tick(
             side=side,
             price=px,
@@ -3008,7 +3022,8 @@ class AdverseRadarMixin:
             breathing_coefficient=coef,
             symbol=sym,
             smooth_ratio=float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
-            **(self._breathing_tier_kwargs() if hasattr(self, "_breathing_tier_kwargs") else {}),
+            adx_val=tier_kw.get("adx"),
+            **tier_kw,
         )
         new_sl = float(tick.get("current_sl") or 0)
         new_best = float(tick.get("best_price") or best)
@@ -3173,7 +3188,7 @@ class AdverseRadarMixin:
 
         meta = dict(tick.get("meta") or {})
         trail_dist_atr = meta.get("trail_dist_atr")
-        # Whitepaper §10.1: radar activate must note first-open vs reentry (0.85 vs 1.00)
+        # Layer-1 ADX arm activate alert (ratio 70–90%)
         if (
             (event == "radar_activate" or meta.get("just_activated"))
             and not bool(getattr(self, "_radar_arm_dingtalk_sent", False))
@@ -3181,11 +3196,10 @@ class AdverseRadarMixin:
             arm_pct = float(
                 meta.get("radar_arm_ratio")
                 or meta.get("arm_tp1_pct")
-                or getattr(self, "reentry_arm_tp1_pct", 0.85)
-                or 0.85
+                or 0.0
             )
             attempt = int(getattr(self, "reentry_attempt", 0) or 0)
-            arm_kind = "reentry" if attempt >= 1 or arm_pct >= 0.999 else "first"
+            arm_kind = "reentry" if attempt >= 1 else "first"
             arm_kind_cn = "重入开仓" if arm_kind == "reentry" else "首次开仓"
             tier_lbl = ""
             try:
@@ -3195,11 +3209,14 @@ class AdverseRadarMixin:
                 tier_lbl = params_for_tier(clamp_tier(t), sym).tier_label
             except Exception:
                 tier_lbl = ""
+            adx_meta = meta.get("adx")
             detail_arm = {
                 "event": "radar_activate",
                 "arm_kind": arm_kind,
                 "arm_kind_cn": arm_kind_cn,
                 "arm_tp1_pct": arm_pct,
+                "radar_arm_mode": meta.get("radar_arm_mode"),
+                "adx": adx_meta,
                 "radar_arm_trigger": meta.get("radar_arm_trigger"),
                 "radar_arm_dist": meta.get("radar_arm_dist"),
                 "current_sl": sl_px,
@@ -3213,10 +3230,11 @@ class AdverseRadarMixin:
                 "reentry_attempt": attempt,
                 "meta": meta,
             }
-            title = f"雷达激活·{arm_kind_cn}"
+            title = f"雷达激活·ADX{arm_pct:.0%}"
             msg = (
-                f"{arm_kind_cn} | 阈值={arm_pct:.2f} | 触发@"
-                f"{float(meta.get('radar_arm_trigger') or px):.2f} | "
+                f"{arm_kind_cn} | ADX启动={arm_pct:.2f}"
+                + (f"(adx={float(adx_meta):.1f})" if adx_meta else "")
+                + f" | 触发@{float(meta.get('radar_arm_trigger') or px):.2f} | "
                 f"止损上移@{sl_px:.2f}"
                 + (f" | {tier_lbl}" if tier_lbl else "")
             )

@@ -55,11 +55,11 @@ def test_legacy_ladder_purged_cannot_fight_breathing():
             entry=1800, curr_px=1835, best_price=1835, atr=30, side="LONG",
             tp1=1840.5, tp2=1875, tp3=1908,
         )
-    # Whitepaper arm still works via trend_tier_params
+    # LIVE ADX arm via trend_tier_params
     trig = wp_arm_trigger(
-        side="LONG", fill_entry=1900.80, tp1=1925.65, tv_entry=1900.0, arm_pct=0.85,
+        side="LONG", fill_entry=1900.0, atr=20.0, adx=17.0, symbol="ETHUSDT",
     )
-    assert abs(trig - 1922.60) < 0.02
+    assert abs(trig - (1900.0 + 1.35 * 20 * 0.70)) < 1e-9
 
 
 def test_idempotency_60s_action_symbol_price():

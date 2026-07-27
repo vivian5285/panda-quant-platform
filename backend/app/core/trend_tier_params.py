@@ -1,11 +1,13 @@
-"""ADX trend-tier parameters — Gemini multi-user spec §6.1 (2026-07-26).
+"""ADX trend-tier + radar-arm parameters — Gemini final arm spec (2026-07-27).
 
-Tier 0 weak (ADX < 20), tier 1 mid (20–30), tier 2 strong (ADX > 30).
-ETH 90m / XAU 45m.
+Trail tiers (separate from arm):
+  Tier 0 weak (ADX < 20), tier 1 mid (20–30), tier 2 strong (ADX > 30).
 
-Radar arm (absolute TP prices, shared across users):
-  - first open: (TP1 + TP2) / 2
-  - reentry: TP2
+Radar arm — Layer 1 (ADX-driven start ratio, replaces mid/TP2 & fixed 0.85):
+  ADX <= 17 → 70%; ADX >= 35 → 90%; linear interpolate in between.
+  Arm distance = (1.35 × initial_atr) × start_ratio; trigger = fill ± distance.
+  Independent of TP1 fill. Trail layer 2 (ATR-ratio trailDistanceMultiplier) unchanged.
+
 Hard-stop buffer FIXED 1.15; reentry still loosens trail params +1 ADX tier.
 """
 
@@ -19,14 +21,29 @@ from app.core.symbol_registry import CANONICAL_ETH, CANONICAL_XAU, normalize_can
 ADX_WEAK = 20.0
 ADX_STRONG = 30.0
 DEFAULT_TREND_TIER = 1  # mid when ADX missing
-# Compat aliases — LIVE arm uses absolute TP midpoint / TP2 (§6.1), not these ratios.
-RADAR_ARM_TP1_PCT = 0.85  # legacy fill±tp1_dist fallback only
-RADAR_ARM_TP1_PCT_REENTRY = 1.00  # legacy / is_reentry hint when tp2 missing
+
+# Layer-1 radar arm (ADX → start ratio). Bounds from final Gemini arm spec.
+RADAR_ARM_ADX_WEAK = 17.0
+RADAR_ARM_ADX_STRONG = 35.0
+RADAR_ARM_RATIO_WEAK = 0.70
+RADAR_ARM_RATIO_STRONG = 0.90
+RADAR_ARM_TP1_ATR = 1.35  # TP1 distance = 1.35 × initial_atr
+DEFAULT_ARM_ADX = 25.0  # mid ADX when missing → ~77.8% ratio
+
+# Compat aliases — LIVE arm uses ADX ratio; these are mid-point defaults / logs only.
+RADAR_ARM_TP1_PCT = RADAR_ARM_RATIO_WEAK + (
+    (RADAR_ARM_RATIO_STRONG - RADAR_ARM_RATIO_WEAK)
+    * (DEFAULT_ARM_ADX - RADAR_ARM_ADX_WEAK)
+    / (RADAR_ARM_ADX_STRONG - RADAR_ARM_ADX_WEAK)
+)  # ≈0.778 at ADX=25
+RADAR_ARM_TP1_PCT_REENTRY = RADAR_ARM_RATIO_STRONG  # legacy name; LIVE ignores attempt
 RADAR_ACTIVATE_BE_ATR = 0.5  # on arm: stop → entry ± 0.5×ATR
 MAX_REENTRY = 1
 HARD_STOP_BUFFER_FIXED = 1.15  # v3: unified, not tiered
-RADAR_ARM_MODE_FIRST = "tp1_tp2_mid"
-RADAR_ARM_MODE_REENTRY = "tp2"
+RADAR_ARM_MODE_ADX = "adx_70_90"
+# Deprecated mode tags kept for log parsers / old tests imports
+RADAR_ARM_MODE_FIRST = RADAR_ARM_MODE_ADX
+RADAR_ARM_MODE_REENTRY = RADAR_ARM_MODE_ADX
 
 
 @dataclass(frozen=True)
@@ -222,8 +239,47 @@ def hard_buffer_for_tier(_tier: int | None = None, symbol: str | None = None) ->
 
 
 def arm_ratio_for_attempt(attempt: int = 0) -> float:
-    """Legacy ratio hint: first 0.85 / reentry 1.00. LIVE arm prefers absolute TP."""
-    return float(RADAR_ARM_TP1_PCT_REENTRY if int(attempt or 0) >= 1 else RADAR_ARM_TP1_PCT)
+    """Deprecated attempt-based hint — LIVE arm uses ``radar_arm_ratio_by_adx``."""
+    _ = attempt
+    return float(RADAR_ARM_TP1_PCT)
+
+
+def radar_arm_ratio_by_adx(adx: float | None) -> float:
+    """Layer-1 start ratio: ADX≤17→70%, ADX≥35→90%, linear in between."""
+    try:
+        a = float(adx) if adx is not None else float(DEFAULT_ARM_ADX)
+    except (TypeError, ValueError):
+        a = float(DEFAULT_ARM_ADX)
+    if a != a:  # NaN
+        a = float(DEFAULT_ARM_ADX)
+    if a <= RADAR_ARM_ADX_WEAK:
+        return float(RADAR_ARM_RATIO_WEAK)
+    if a >= RADAR_ARM_ADX_STRONG:
+        return float(RADAR_ARM_RATIO_STRONG)
+    span = RADAR_ARM_ADX_STRONG - RADAR_ARM_ADX_WEAK
+    if span <= 0:
+        return float(RADAR_ARM_RATIO_WEAK)
+    t = (a - RADAR_ARM_ADX_WEAK) / span
+    return float(
+        RADAR_ARM_RATIO_WEAK
+        + t * (RADAR_ARM_RATIO_STRONG - RADAR_ARM_RATIO_WEAK)
+    )
+
+
+def tp1_atr_distance(initial_atr: float, symbol: str | None = None) -> float:
+    """TP1 distance = 1.35 × initial_atr (profile.tp1_atr when available)."""
+    a = float(initial_atr or 0)
+    if a <= 0:
+        return 0.0
+    try:
+        from app.core.breathing_profile import profile_for_symbol
+
+        mult = float(profile_for_symbol(symbol).tp1_atr or RADAR_ARM_TP1_ATR)
+    except Exception:
+        mult = float(RADAR_ARM_TP1_ATR)
+    if mult <= 0:
+        mult = float(RADAR_ARM_TP1_ATR)
+    return mult * a
 
 
 def is_reentry_attempt(attempt: int = 0, *, is_reentry: bool | None = None) -> bool:
@@ -233,14 +289,9 @@ def is_reentry_attempt(attempt: int = 0, *, is_reentry: bool | None = None) -> b
 
 
 def radar_arm_absolute_trigger(tp1: float, tp2: float, *, is_reentry: bool) -> float:
-    """§6.1: first=(TP1+TP2)/2, reentry=TP2. Returns 0 if TPs unusable."""
-    t1 = float(tp1 or 0)
-    t2 = float(tp2 or 0)
-    if t1 <= 0 or t2 <= 0:
-        return 0.0
-    if is_reentry:
-        return t2
-    return (t1 + t2) / 2.0
+    """DEPRECATED — absolute mid/TP2 arm removed. Always returns 0 (force ADX path)."""
+    _ = (tp1, tp2, is_reentry)
+    return 0.0
 
 
 def reentry_zone_atr(symbol: str | None = None) -> float:
@@ -271,49 +322,39 @@ def radar_arm_trigger_price(
     tp1_dist: float | None = None,
     atr: float = 0.0,
     symbol: str | None = None,
-    arm_pct: float = RADAR_ARM_TP1_PCT,
+    arm_pct: float | None = None,
+    adx: float | None = None,
     is_reentry: bool | None = None,
     attempt: int | None = None,
 ) -> float:
-    """Gemini §6.1: absolute TP arm — first=(TP1+TP2)/2, reentry=TP2.
+    """LIVE arm: fill ± (1.35×ATR × ADX_ratio70–90). Independent of TP1 fill.
 
-    Fallback (tests / missing TP2): fill ± tp1_distance × arm_pct.
+    ``arm_pct`` optional test override; otherwise ADX drives the ratio.
+    ``tp1``/``tp2``/``is_reentry`` retained for call-site compat (ignored for trigger).
     """
-    from app.core.breathing_profile import profile_for_symbol
-
+    _ = (tp1, tp2, tv_entry, is_reentry, attempt)
     side_u = str(side or "").upper()
-    reentry = is_reentry_attempt(
-        int(attempt or 0),
-        is_reentry=is_reentry if is_reentry is not None else (
-            True if float(arm_pct or 0) >= 0.999 else None
-        ),
-    )
-    abs_trig = radar_arm_absolute_trigger(tp1, tp2, is_reentry=reentry)
-    if abs_trig > 0:
-        return abs_trig
-
     fill = float(fill_entry if fill_entry is not None else (entry or 0))
-    pct = float(arm_pct) if arm_pct and arm_pct > 0 else RADAR_ARM_TP1_PCT
     if fill <= 0 or side_u not in ("LONG", "SHORT"):
         return 0.0
 
-    dist = float(tp1_dist or 0)
-    if dist <= 0:
-        tv_e = float(tv_entry or 0)
-        t1 = float(tp1 or 0)
-        if tv_e > 0 and t1 > 0:
-            dist = abs(t1 - tv_e)
-        elif t1 > 0 and fill > 0:
-            dist = abs(t1 - fill)
-        else:
-            p = profile_for_symbol(symbol)
-            a = float(atr or 0)
-            if a <= 0:
-                return 0.0
-            dist = float(p.tp1_atr) * a
+    if arm_pct is not None:
+        try:
+            pct = float(arm_pct)
+        except (TypeError, ValueError):
+            pct = 0.0
+        if pct <= 0:
+            pct = radar_arm_ratio_by_adx(adx)
+    else:
+        pct = radar_arm_ratio_by_adx(adx)
 
+    # Prefer ATR×1.35 (final spec). Optional explicit tp1_dist only if ATR missing.
+    dist = tp1_atr_distance(atr, symbol)
+    if dist <= 0:
+        dist = float(tp1_dist or 0)
     if dist <= 0:
         return 0.0
+
     if side_u == "LONG":
         return fill + dist * pct
     return fill - dist * pct
@@ -331,7 +372,8 @@ def radar_armed_by_price(
     tp1_dist: float | None = None,
     atr: float = 0.0,
     symbol: str | None = None,
-    arm_pct: float = RADAR_ARM_TP1_PCT,
+    arm_pct: float | None = None,
+    adx: float | None = None,
     is_reentry: bool | None = None,
     attempt: int | None = None,
 ) -> bool:
@@ -347,6 +389,7 @@ def radar_armed_by_price(
         atr=atr,
         symbol=symbol,
         arm_pct=arm_pct,
+        adx=adx,
         is_reentry=is_reentry,
         attempt=attempt,
     )

@@ -19,7 +19,7 @@ from app.core.trend_tier_params import RADAR_ARM_TP1_PCT
 
 RADAR_STAGE_LABELS: dict[int, str] = {
     0: "硬止损防守·雷达候命",
-    1: "85%激活·保本",
+    1: "ADX启动·保本",
     2: "档位跟踪跟进",
     3: "TP1区间",
     4: "TP2区间",
@@ -33,7 +33,7 @@ TP_LIMIT_TIMEOUT_SEC = 300.0
 _LEGACY_PURGE_MSG = (
     "LEGACY_PURGED: continuous-ladder SL (0.5/0.3 ATR / 1.5ATR floor) removed. "
     "LIVE path = breathing_stop.apply_breathing_tick "
-    "(arm=(TP1+TP2)/2 first | TP2 reentry)."
+    "(arm=ADX 70%~90% × 1.35×ATR)."
 )
 
 

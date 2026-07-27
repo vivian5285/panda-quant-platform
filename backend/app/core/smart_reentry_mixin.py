@@ -211,11 +211,6 @@ class SmartReentryMixin:
                 pass
 
     def _breathing_tier_kwargs(self) -> dict[str, Any]:
-        from app.core.trend_tier_params import RADAR_ARM_TP1_PCT
-
-        arm = float(getattr(self, "reentry_arm_tp1_pct", 0) or 0)
-        if arm <= 0:
-            arm = float(RADAR_ARM_TP1_PCT)
         st = float(getattr(self, "active_step_trigger_atr", 0) or 0)
         eb = float(getattr(self, "active_early_be_atr", 0) or 0)
         sa = float(getattr(self, "active_step_advance_atr", 0) or 0)
@@ -224,8 +219,13 @@ class SmartReentryMixin:
         b12 = float(getattr(self, "active_breath_tp1_tp2_atr", 0) or 0)
         b23 = float(getattr(self, "active_breath_tp2_tp3_atr", 0) or 0)
         attempt = int(getattr(self, "reentry_attempt", 0) or 0)
+        try:
+            adx = float(getattr(self, "current_adx", 0) or 0)
+        except (TypeError, ValueError):
+            adx = 0.0
         kw: dict[str, Any] = {
-            "arm_tp1_pct": arm,
+            # Layer-1 arm is ADX-driven — do not pin arm_tp1_pct (would freeze ratio).
+            "adx": adx if adx > 0 else None,
             "step_trigger_atr": st if st > 0 else None,
             "early_breakeven_atr": eb if eb > 0 else None,
             "step_advance_atr": sa if sa > 0 else None,
@@ -314,7 +314,7 @@ class SmartReentryMixin:
         self.reentry_pending = False
 
     def _seed_tier0_on_open(self, side: str, tv_px: float) -> None:
-        """First market open — attempt 0, arm=0.85 of tp1_distance; trail at ADX tier."""
+        """First market open — attempt 0; Layer-1 arm is ADX-driven on ticks."""
         from app.core.trend_tier_params import resolve_tier_from_payload
 
         self._stop_reentry_limit_loop()

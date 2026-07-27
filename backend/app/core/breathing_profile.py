@@ -31,7 +31,7 @@ class BreathingProfile:
     initial_sl_atr: float = 1.5
     stop_order_buffer: float = 0.3
     early_breakeven_atr: float = 0.5
-    # Deprecated: live first-move uses fill±tp1_distance×(0.85/1.00) (whitepaper v3).
+    # Deprecated display field — LIVE arm: fill±(1.35×ATR)×ADX_ratio(70–90%).
     # Kept only so historical backtest scripts can rebuild the old 0.75 gate.
     step_trigger_atr: float = 0.75
     step_advance_atr: float = 0.4
@@ -127,30 +127,27 @@ def trail_distance_multiplier(
     return mn + (mx - mn) * (r - lo) / span
 
 
-# §14 purge: dynamic 0.50~0.85 arm removed — whitepaper fixed first-open 0.85
-RADAR_ARM_RATIO_MIN = 0.85
-RADAR_ARM_RATIO_MAX = 0.85
+# Layer-1 arm bounds (ADX-driven). Layer-2 trail uses RATIO_FLOOR/CEILING separately.
+RADAR_ARM_RATIO_MIN = 0.70
+RADAR_ARM_RATIO_MAX = 0.90
 
 
-def radar_start_ratio(smooth_ratio: float, profile: BreathingProfile | None = None) -> float:
-    """Fixed first-open arm ratio 0.85 (whitepaper v3). ``smooth_ratio`` ignored."""
+def radar_start_ratio(smooth_ratio: float, profile: BreathingProfile | None = None, *, adx: float | None = None) -> float:
+    """Layer-1 ADX start ratio 70%~90%. ``smooth_ratio`` ignored (trail layer 2 only)."""
     del smooth_ratio, profile
-    from app.core.trend_tier_params import RADAR_ARM_TP1_PCT
+    from app.core.trend_tier_params import radar_arm_ratio_by_adx
 
-    return float(RADAR_ARM_TP1_PCT)
+    return float(radar_arm_ratio_by_adx(adx))
 
 
-def radar_arm_distance(initial_atr: float, smooth_ratio: float, profile: BreathingProfile | None = None) -> float:
-    """ATR-span fallback at fixed 0.85×TP1_atr×ATR (compat only).
-
-    LIVE arm: ``trend_tier_params.radar_arm_trigger_price`` (fill±tv tp1_distance).
-    """
+def radar_arm_distance(initial_atr: float, smooth_ratio: float, profile: BreathingProfile | None = None, *, adx: float | None = None) -> float:
+    """Arm distance = 1.35×ATR × ADX_ratio (compat helper)."""
     p = profile or ETH_PROFILE
     atr = float(initial_atr or 0)
     if atr <= 0:
         return 0.0
     del smooth_ratio
-    return float(p.tp1_atr) * atr * radar_start_ratio(1.0, p)
+    return float(p.tp1_atr) * atr * radar_start_ratio(1.0, p, adx=adx)
 
 
 def effective_radar_arm_distance(
@@ -160,9 +157,10 @@ def effective_radar_arm_distance(
     *,
     arm_tp1_pct: float | None = None,
     step_trigger_atr: float | None = None,
+    adx: float | None = None,
 ) -> float:
-    """Arm distance when ``arm_tp1_pct`` given; else fixed 0.85 ATR-span fallback."""
-    from app.core.trend_tier_params import RADAR_ARM_TP1_PCT
+    """Arm distance for ADX ratio (or explicit pct override)."""
+    from app.core.trend_tier_params import radar_arm_ratio_by_adx
 
     p = profile or ETH_PROFILE
     atr = float(initial_atr or 0)
@@ -172,17 +170,18 @@ def effective_radar_arm_distance(
         try:
             pct = float(arm_tp1_pct)
         except (TypeError, ValueError):
-            pct = float(RADAR_ARM_TP1_PCT)
+            pct = radar_arm_ratio_by_adx(adx)
         if pct <= 0:
-            pct = float(RADAR_ARM_TP1_PCT)
-        trig = float(
-            step_trigger_atr
-            if step_trigger_atr is not None
-            else p.step_trigger_atr
-        )
-        return max(float(p.tp1_atr) * atr * pct, trig * atr)
-    del smooth_ratio
-    return radar_arm_distance(atr, 1.0, p)
+            pct = radar_arm_ratio_by_adx(adx)
+    else:
+        pct = radar_arm_ratio_by_adx(adx)
+        del smooth_ratio
+    trig = float(
+        step_trigger_atr
+        if step_trigger_atr is not None
+        else p.step_trigger_atr
+    )
+    return max(float(p.tp1_atr) * atr * pct, trig * atr)
 
 
 def stagnant_breath_samples(profile: BreathingProfile | None = None) -> int:
@@ -260,6 +259,6 @@ def profile_as_dict(profile: BreathingProfile) -> dict[str, Any]:
         "chart_tf_min": profile.chart_tf_min,
         "stagnant_window_min": profile.stagnant_window_min,
         "stagnant_breath_samples": stagnant_breath_samples(profile),
-        "radar_arm": "fill±tp1_distance×(0.85首次/1.00重入)（白皮书v3）",
+        "radar_arm": "fill±(1.35×ATR)×ADX(70%~90%)（ADX≤17→70% ≥35→90%）",
         "trail_tighten": 1.0,  # removed — always 1.0 (tightness in min/max)
     }

@@ -31,12 +31,20 @@ from app.core.trend_tier_params import (
 
 
 def test_whitepaper_arm_and_max_reentry():
-    assert arm_tp1_pct_for_attempt(0) == RADAR_ARM_TP1_PCT == 0.85
-    assert arm_tp1_pct_for_attempt(1) == RADAR_ARM_TP1_PCT_REENTRY == 1.00
-    assert next_attempt_arm_pct(0.50) == 1.00
+    from app.core.trend_tier_params import (
+        RADAR_ARM_RATIO_STRONG,
+        RADAR_ARM_RATIO_WEAK,
+        radar_arm_ratio_by_adx,
+    )
+
+    assert abs(arm_tp1_pct_for_attempt(0) - RADAR_ARM_TP1_PCT) < 1e-9
+    assert abs(next_attempt_arm_pct(0.50) - RADAR_ARM_RATIO_STRONG) < 1e-9
     assert MAX_REENTRY == 1
     assert MAX_TIER_INDEX == 2
-    assert ARM_TP1_PCTS == (0.85, 1.00)
+    assert ARM_TP1_PCTS[0] == RADAR_ARM_TP1_PCT
+    assert ARM_TP1_PCTS[1] == RADAR_ARM_TP1_PCT_REENTRY
+    assert radar_arm_ratio_by_adx(17) == RADAR_ARM_RATIO_WEAK
+    assert radar_arm_ratio_by_adx(35) == RADAR_ARM_RATIO_STRONG
 
 
 def test_adx_tiers():
@@ -58,7 +66,7 @@ def test_resolve_tier_from_payload():
 def test_eth_xau_mid_tier_params():
     e1 = tier_for_attempt(0, "ETHUSDT", adx_tier=1)
     assert e1.tier_label == "中趋势"
-    assert e1.arm_tp1_pct == 0.85
+    assert abs(e1.arm_tp1_pct - RADAR_ARM_TP1_PCT) < 1e-9  # compat hint only
     assert e1.early_breakeven_atr == 0.5
     assert e1.step_trigger_atr == 0.50
     assert e1.step_advance_atr == 0.35
@@ -72,11 +80,11 @@ def test_eth_xau_mid_tier_params():
     assert x1.coef_min == 1.8 and x1.coef_max == 2.2
     assert x1.reentry_bars == 3
 
-    # Reentry: trail +1 tier AND arm=1.00
+    # Reentry: trail +1 tier (arm field remains compat hint)
     e_re = tier_for_attempt(1, "ETHUSDT", adx_tier=1)
     assert e_re.radar_tier == 2
     assert e_re.step_trigger_atr == 0.60
-    assert e_re.arm_tp1_pct == 1.00
+    assert abs(e_re.arm_tp1_pct - RADAR_ARM_TP1_PCT) < 1e-9
     assert e_re.hard_buffer == 1.15
 
     e0 = params_for_tier(0, "ETHUSDT")
@@ -87,21 +95,21 @@ def test_eth_xau_mid_tier_params():
 
 def test_arm_distance_tp1_distance_times_ratio():
     atr = 10.0
-    # Fallback profile path when no tv_entry
+    # Fallback profile path — mid ADX default ratio
     d = arm_distance(atr, 0, "ETHUSDT", adx_tier=1)
-    assert abs(d - 1.35 * 10 * 0.85) < 1e-9
-    # Explicit: fill + |tp1−tv_entry|×0.85 (whitepaper §4.1)
+    assert abs(d - 1.35 * 10 * RADAR_ARM_TP1_PCT) < 1e-9
+    # Explicit ADX=17 → 70%
     trig = radar_arm_trigger_price(
-        side="LONG", fill_entry=1900.80, tp1=1925.65, tv_entry=1900.00, arm_pct=0.85,
+        side="LONG", fill_entry=1900.0, atr=20.0, adx=17.0, symbol="ETHUSDT",
     )
-    assert abs(trig - 1922.60) < 0.01
-    # Reentry arm 1.00
+    assert abs(trig - (1900.0 + 1.35 * 20 * 0.70)) < 1e-9
+    # Override arm_pct still honored
     trig_r = radar_arm_trigger_price(
-        side="LONG", fill_entry=1895.0, tp1=1925.65, tv_entry=1900.00, arm_pct=1.00,
+        side="LONG", fill_entry=1895.0, atr=20.0, arm_pct=0.90, symbol="ETHUSDT",
     )
-    assert abs(trig_r - (1895.0 + 25.65)) < 1e-9
-    d2 = arm_distance(atr, 0, "ETHUSDT", entry=2000, tp1=2100, tv_entry=2000)
-    assert abs(d2 - 85.0) < 1e-9
+    assert abs(trig_r - (1895.0 + 1.35 * 20 * 0.90)) < 1e-9
+    d2 = arm_distance(atr, 0, "ETHUSDT", entry=2000, tp1=2100, tv_entry=2000, arm_tp1_pct=0.85)
+    assert abs(d2 - 1.35 * atr * 0.85) < 1e-9
 
 
 def test_hard_stop_fixed_buffer_115():
@@ -251,7 +259,7 @@ def test_classify_stop_track():
 def test_reset_reentry_state():
     st = reset_reentry_state("XAUUSDT", adx_tier=1)
     assert st["reentry_attempt"] == 0
-    assert st["reentry_arm_tp1_pct"] == 0.85
+    assert abs(float(st["reentry_arm_tp1_pct"]) - RADAR_ARM_TP1_PCT) < 1e-9
     assert st["active_early_be_atr"] == 0.5
     assert st["active_coef_min"] == 1.8
     assert st["active_coef_max"] == 2.2
@@ -271,12 +279,10 @@ def test_profile_mid_tier_defaults():
     assert XAU_PROFILE.early_breakeven_atr == 0.5
 
 
-def test_radar_waits_until_tp1_path_then_activates():
+def test_radar_waits_until_adx_arm_then_activates():
     entry, atr = 2000.0, 20.0
-    tp1 = entry + 1.35 * atr  # 2027
-    tp2 = entry + 2.0 * (tp1 - entry)
     initial_stop = entry - 1.5 * atr
-    # Below midpoint → waiting
+    arm_px = entry + 1.35 * atr * 0.70  # ADX=17
     tick = apply_breathing_tick(
         side="LONG",
         price=entry + 5,
@@ -287,10 +293,7 @@ def test_radar_waits_until_tp1_path_then_activates():
         best_price=entry + 5,
         breakeven_phase=False,
         symbol="ETHUSDT",
-        tp1_price=tp1,
-        tp2_price=tp2,
-        tv_entry=entry,
-        is_reentry=False,
+        adx=17.0,
         radar_activated=False,
         breath_tp1_tp2_atr=1.2,
         step_trigger_atr=0.50,
@@ -302,21 +305,17 @@ def test_radar_waits_until_tp1_path_then_activates():
     assert tick["meta"]["event"] == "waiting_arm"
     assert abs(tick["current_sl"] - initial_stop) < 1e-9
 
-    mid = (tp1 + tp2) / 2.0
     tick2 = apply_breathing_tick(
         side="LONG",
-        price=mid,
+        price=arm_px,
         entry_price=entry,
         initial_atr=atr,
         initial_stop=initial_stop,
         current_stop=initial_stop,
-        best_price=mid,
+        best_price=arm_px,
         breakeven_phase=False,
         symbol="ETHUSDT",
-        tp1_price=tp1,
-        tp2_price=tp2,
-        tv_entry=entry,
-        is_reentry=False,
+        adx=17.0,
         radar_activated=False,
         breath_tp1_tp2_atr=1.2,
         step_trigger_atr=0.50,
@@ -329,26 +328,25 @@ def test_radar_waits_until_tp1_path_then_activates():
     assert tick2["current_sl"] >= entry + 0.5 * atr - 1e-9
 
 
-def test_reentry_arm_ratio_100_later_than_first():
-    """§6.1: reentry arms at TP2 — past midpoint still waiting_arm."""
-    fill, tv_e, tp1, tp2 = 1895.0, 1900.0, 1925.65, 1955.00
-    mid = (tp1 + tp2) / 2.0
-    assert mid < tp2
-    tick_early = apply_breathing_tick(
-        side="LONG", price=mid + 1.0, entry_price=fill, initial_atr=20,
-        initial_stop=fill - 30, current_stop=fill - 30, best_price=mid + 1.0,
+def test_strong_adx_arms_later_than_weak():
+    """ADX=35 (90%) arm price is further than ADX=17 (70%)."""
+    fill, atr = 1900.0, 20.0
+    weak_arm = fill + 1.35 * atr * 0.70
+    strong_arm = fill + 1.35 * atr * 0.90
+    assert weak_arm < strong_arm
+    tick_mid = apply_breathing_tick(
+        side="LONG", price=weak_arm + 0.5, entry_price=fill, initial_atr=atr,
+        initial_stop=fill - 30, current_stop=fill - 30, best_price=weak_arm + 0.5,
         breakeven_phase=False, symbol="ETHUSDT",
-        tp1_price=tp1, tp2_price=tp2, tv_entry=tv_e,
-        is_reentry=True, radar_activated=False,
+        adx=35.0, radar_activated=False,
     )
-    assert tick_early["meta"]["event"] == "waiting_arm"
-    assert tick_early["meta"].get("radar_arm_mode") == "tp2"
+    assert tick_mid["meta"]["event"] == "waiting_arm"
+    assert tick_mid["meta"].get("radar_arm_mode") == "adx_70_90"
     tick_full = apply_breathing_tick(
-        side="LONG", price=tp2, entry_price=fill, initial_atr=20,
-        initial_stop=fill - 30, current_stop=fill - 30, best_price=tp2,
+        side="LONG", price=strong_arm, entry_price=fill, initial_atr=atr,
+        initial_stop=fill - 30, current_stop=fill - 30, best_price=strong_arm,
         breakeven_phase=False, symbol="ETHUSDT",
-        tp1_price=tp1, tp2_price=tp2, tv_entry=tv_e,
-        is_reentry=True, radar_activated=False,
+        adx=35.0, radar_activated=False,
     )
     assert tick_full["meta"].get("just_activated") or tick_full["event"] == "radar_activate"
 
