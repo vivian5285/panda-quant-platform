@@ -55,7 +55,7 @@ def test_placeable_tp_and_timers():
     assert TP_LIMIT_TIMEOUT_SEC == 300.0
     assert abs(RADAR_ARM_TP1_PCT - radar_arm_ratio_by_adx(25.0)) < 1e-9
     assert HARD_STOP_BUFFER_FIXED == 1.15
-    assert RADAR_ARM_MODE_ADX == "adx_70_90"
+    assert RADAR_ARM_MODE_ADX == "adx_70_80_90"
 
 
 def test_purged_step_constants_are_nan():

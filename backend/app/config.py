@@ -119,6 +119,7 @@ class Settings(BaseSettings):
     MAX_ADD_TIMES_REG2: int = 0
     MAX_ADD_TIMES_REG3: int = 0
     MAX_ADD_TIMES_REG4: int = 0
+    # MAX_ADD_TIMES_BY_REGIME lives in tv_entry_sizing (compat alias, all zeros)
 
     # 空仓待命时仍巡检交易所（秒）— 发现同向持仓则接管补挂 TP123/雷达
     IDLE_PATROL_INTERVAL_SEC: float = 45.0

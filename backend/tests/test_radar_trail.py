@@ -203,14 +203,20 @@ def test_tp2_locks_stage_4():
     assert detect_radar_stage(entry, tp2, "LONG", tp1, tp2, tp3, tp1_filled=True) == 4
 
 
-def test_breakeven_floor_wider_before_tp1():
+def test_breakeven_floor_is_fee_cover_be():
+    """Marathon: floor = fee+tick BE; TP1 consume does not widen/narrow ATR floor."""
+    from app.core.radar_trail import fee_cover_breakeven_stop
+
     entry = 2000.0
     atr = 30.0
-    before = breakeven_floor(entry, "LONG", atr, consumed_tp_levels=[])
-    after = breakeven_floor(entry, "LONG", atr, consumed_tp_levels=[1])
+    before = breakeven_floor(entry, "LONG", atr, consumed_tp_levels=[], symbol="ETHUSDT")
+    after = breakeven_floor(entry, "LONG", atr, consumed_tp_levels=[1], symbol="ETHUSDT")
+    expect = fee_cover_breakeven_stop(entry, "LONG", "ETHUSDT")
     assert before > entry
     assert after > entry
-    assert before > after
+    assert abs(before - after) < 1e-9
+    assert abs(before - expect) < 1e-9
+    assert before < entry + 0.5 * atr
 
 
 def test_compute_radar_sl_purged():
@@ -234,7 +240,11 @@ def test_stop_market_safe_clamp_long_pullback():
     curr = 1785.0
     tp1_dist = 37.62
     trail = trail_distance(30.0, 0.9, tp1_dist)
-    raw = max(best - trail, breakeven_floor(entry, "LONG", 30.0))
+    # Floor is fee BE (near entry); trail from peak may still sit above mark
+    raw = max(best - trail, breakeven_floor(entry, "LONG", 30.0, symbol="ETHUSDT"))
+    # Force an above-mark candidate if trail alone is below mark (marathon fee BE)
+    if raw <= curr:
+        raw = curr + 5.0
     assert raw > curr
     assert stop_would_trigger_immediately(raw, curr, "LONG") is True
     safe = clamp_stop_market_safe(raw, curr, "LONG")

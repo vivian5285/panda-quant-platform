@@ -1454,6 +1454,18 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             )
         except Exception:
             pass
+        try:
+            from app.core.tp_slice_guard import top_up_tp12_to_target_ratio
+
+            out = top_up_tp12_to_target_ratio(
+                out,
+                base_qty=anchor if anchor > 0 else qty_f,
+                tv_tps=list(self.tv_tps or []),
+                round_qty_fn=lambda x: float(max(self._safe_qty(x), 0)),
+                min_lot=1.0,
+            )
+        except Exception:
+            pass
         used = sum(float(q) for _, q, _ in out)
         if qty_f > 0 and used + 1e-12 >= 0.95 * qty_f and 3 in exclude:
             logger.error(
@@ -1474,6 +1486,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             )
             if not ok and out:
                 logger.error("DeepCoin TP slice self-check refuse: %s", detail)
+                if qty_f > 0 and used + 1e-12 < 0.95 * qty_f:
+                    return out
                 return []
         except Exception:
             pass

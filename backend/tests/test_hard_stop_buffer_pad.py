@@ -60,7 +60,7 @@ def test_reject_missing_or_tiny_tv_stop():
 def test_radar_arm_adx_ratio_not_fixed_085():
     from app.core.trend_tier_params import RADAR_ARM_TP1_PCT, radar_arm_ratio_by_adx
 
-    # No ADX → mid default (~0.778 at ADX=25)
+    # No ADX → mid default 80%
     assert abs(radar_start_ratio(0.6) - RADAR_ARM_TP1_PCT) < 1e-9
     assert abs(radar_start_ratio(2.2, adx=17.0) - 0.70) < 1e-9
     assert abs(radar_start_ratio(1.0, adx=35.0) - 0.90) < 1e-9
@@ -68,3 +68,5 @@ def test_radar_arm_adx_ratio_not_fixed_085():
     arm = radar_arm_distance(atr, 1.0, adx=17.0)
     assert abs(arm - 1.35 * atr * 0.70) < 1e-9
     assert abs(radar_arm_ratio_by_adx(26.0) - 0.80) < 1e-9
+    # 弱早强晚
+    assert radar_arm_ratio_by_adx(17.0) < radar_arm_ratio_by_adx(35.0)

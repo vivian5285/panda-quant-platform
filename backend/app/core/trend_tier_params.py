@@ -1,12 +1,13 @@
-"""ADX trend-tier + radar-arm parameters — Gemini final arm spec (2026-07-27).
+"""ADX trend-tier + radar-arm parameters — Marathon radar (fix版 2026-07-28).
 
 Trail tiers (separate from arm):
   Tier 0 weak (ADX < 20), tier 1 mid (20–30), tier 2 strong (ADX > 30).
 
-Radar arm — Layer 1 (ADX-driven start ratio, replaces mid/TP2 & fixed 0.85):
-  ADX <= 17 → 70%; ADX >= 35 → 90%; linear interpolate in between.
+Radar arm — Layer 1 (ADX discrete start ratio × TP1 distance):
+  ADX < 20 → 70% (早激活·保护微利); ADX 20–30 → 80%; ADX > 30 → 90% (晚激活·留呼吸).
+  弱早强晚：弱趋势毛刺少但回撤也小，早点保本；强趋势回踩深，晚点介入。
   Arm distance = (1.35 × initial_atr) × start_ratio; trigger = fill ± distance.
-  Independent of TP1 fill. Trail layer 2 (ATR-ratio trailDistanceMultiplier) unchanged.
+  Independent of TP1 fill. Activate lift = fee+tick BE (not entry±0.5ATR).
 
 Hard-stop buffer FIXED 1.15; reentry still loosens trail params +1 ADX tier.
 """
@@ -22,25 +23,24 @@ ADX_WEAK = 20.0
 ADX_STRONG = 30.0
 DEFAULT_TREND_TIER = 1  # mid when ADX missing
 
-# Layer-1 radar arm (ADX → start ratio). Bounds from final Gemini arm spec.
-RADAR_ARM_ADX_WEAK = 17.0
-RADAR_ARM_ADX_STRONG = 35.0
-RADAR_ARM_RATIO_WEAK = 0.70
-RADAR_ARM_RATIO_STRONG = 0.90
+# Layer-1 radar arm — marathon discrete bands (弱早强晚; aligned ADX_WEAK/STRONG).
+# Ranges in doc: weak 65–70% → 70%; mid 75–80% → 80%; strong 85–90% → 90%.
+RADAR_ARM_ADX_WEAK = ADX_WEAK  # <20 → weak ratio
+RADAR_ARM_ADX_STRONG = ADX_STRONG  # >30 → strong ratio
+RADAR_ARM_RATIO_WEAK = 0.70  # early arm — protect micro-profit
+RADAR_ARM_RATIO_MID = 0.80
+RADAR_ARM_RATIO_STRONG = 0.90  # late arm — room for deep pullbacks
 RADAR_ARM_TP1_ATR = 1.35  # TP1 distance = 1.35 × initial_atr
-DEFAULT_ARM_ADX = 25.0  # mid ADX when missing → ~77.8% ratio
+DEFAULT_ARM_ADX = 25.0  # mid band → 80%
 
-# Compat aliases — LIVE arm uses ADX ratio; these are mid-point defaults / logs only.
-RADAR_ARM_TP1_PCT = RADAR_ARM_RATIO_WEAK + (
-    (RADAR_ARM_RATIO_STRONG - RADAR_ARM_RATIO_WEAK)
-    * (DEFAULT_ARM_ADX - RADAR_ARM_ADX_WEAK)
-    / (RADAR_ARM_ADX_STRONG - RADAR_ARM_ADX_WEAK)
-)  # ≈0.778 at ADX=25
-RADAR_ARM_TP1_PCT_REENTRY = RADAR_ARM_RATIO_STRONG  # legacy name; LIVE ignores attempt
-RADAR_ACTIVATE_BE_ATR = 0.5  # on arm: stop → entry ± 0.5×ATR
+# Compat aliases — LIVE mid default
+RADAR_ARM_TP1_PCT = RADAR_ARM_RATIO_MID
+RADAR_ARM_TP1_PCT_REENTRY = RADAR_ARM_RATIO_MID  # LIVE ignores attempt; same ADX formula
+# LEGACY: activate used entry±0.5ATR — marathon uses fee+tick BE (see fee_cover_breakeven_stop).
+RADAR_ACTIVATE_BE_ATR = 0.0
 MAX_REENTRY = 1
 HARD_STOP_BUFFER_FIXED = 1.15  # v3: unified, not tiered
-RADAR_ARM_MODE_ADX = "adx_70_90"
+RADAR_ARM_MODE_ADX = "adx_70_80_90"
 # Deprecated mode tags kept for log parsers / old tests imports
 RADAR_ARM_MODE_FIRST = RADAR_ARM_MODE_ADX
 RADAR_ARM_MODE_REENTRY = RADAR_ARM_MODE_ADX
@@ -129,7 +129,7 @@ _ETH: tuple[TrendTierParams, ...] = (
     ),
 )
 
-# XAUUSDT.P — whitepaper §2.3
+# XAUUSDT.P — marathon 修复版跟踪表（步长/跟进/TP3后追踪距离）
 _XAU: tuple[TrendTierParams, ...] = (
     _tier_row(
         tier=0, step_trigger_atr=0.35, step_advance_atr=0.20,
@@ -140,13 +140,13 @@ _XAU: tuple[TrendTierParams, ...] = (
     _tier_row(
         tier=1, step_trigger_atr=0.40, step_advance_atr=0.30,
         breath_tp1_tp2_atr=1.00, breath_tp2_tp3_atr=1.40,
-        trail_coef_min=1.8, trail_coef_max=2.2,
+        trail_coef_min=1.5, trail_coef_max=2.0,
         reentry_bars=3, reentry_zone_atr=0.3, chart_tf_min=45.0,
     ),
     _tier_row(
         tier=2, step_trigger_atr=0.50, step_advance_atr=0.35,
         breath_tp1_tp2_atr=1.30, breath_tp2_tp3_atr=1.80,
-        trail_coef_min=2.2, trail_coef_max=3.0,
+        trail_coef_min=2.0, trail_coef_max=2.8,
         reentry_bars=3, reentry_zone_atr=0.3, chart_tf_min=45.0,
     ),
 )
@@ -245,25 +245,18 @@ def arm_ratio_for_attempt(attempt: int = 0) -> float:
 
 
 def radar_arm_ratio_by_adx(adx: float | None) -> float:
-    """Layer-1 start ratio: ADX≤17→70%, ADX≥35→90%, linear in between."""
+    """Layer-1 start ratio: ADX<20→70%, 20–30→80%, >30→90% (弱早强晚)."""
     try:
         a = float(adx) if adx is not None else float(DEFAULT_ARM_ADX)
     except (TypeError, ValueError):
         a = float(DEFAULT_ARM_ADX)
     if a != a:  # NaN
         a = float(DEFAULT_ARM_ADX)
-    if a <= RADAR_ARM_ADX_WEAK:
+    if a < float(RADAR_ARM_ADX_WEAK):
         return float(RADAR_ARM_RATIO_WEAK)
-    if a >= RADAR_ARM_ADX_STRONG:
+    if a > float(RADAR_ARM_ADX_STRONG):
         return float(RADAR_ARM_RATIO_STRONG)
-    span = RADAR_ARM_ADX_STRONG - RADAR_ARM_ADX_WEAK
-    if span <= 0:
-        return float(RADAR_ARM_RATIO_WEAK)
-    t = (a - RADAR_ARM_ADX_WEAK) / span
-    return float(
-        RADAR_ARM_RATIO_WEAK
-        + t * (RADAR_ARM_RATIO_STRONG - RADAR_ARM_RATIO_WEAK)
-    )
+    return float(RADAR_ARM_RATIO_MID)
 
 
 def tp1_atr_distance(initial_atr: float, symbol: str | None = None) -> float:
@@ -327,7 +320,7 @@ def radar_arm_trigger_price(
     is_reentry: bool | None = None,
     attempt: int | None = None,
 ) -> float:
-    """LIVE arm: fill ± (1.35×ATR × ADX_ratio70–90). Independent of TP1 fill.
+    """LIVE arm: fill ± (1.35×ATR × ADX_ratio 70/80/90). Independent of TP1 fill.
 
     ``arm_pct`` optional test override; otherwise ADX drives the ratio.
     ``tp1``/``tp2``/``is_reentry`` retained for call-site compat (ignored for trigger).

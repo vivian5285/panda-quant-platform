@@ -149,9 +149,10 @@ class ExecutionOfficer:
         if used + 1e-12 >= 0.95 * iq:
             return False, f"tp_eats_radar used={used} iq={iq}"
         if abs(ratio - 0.30) > TP_PLACEABLE_SUM_TOL:
-            # DeepCoin/contract min lot (1 张): integer rounding can leave
-            # TP1+TP2 off ~30%; still OK if radar residual remains.
-            if relax_for_min_lot and used > 0:
+            # DeepCoin/contract min lot (1 张) + small XAU/ETH min_notional folds:
+            # integer/step rounding can leave TP1+TP2 off ~30%; still OK if radar
+            # residual remains (placeable ≤ ~35%).
+            if relax_for_min_lot and used > 0 and ratio <= 0.35 + TP_PLACEABLE_SUM_TOL:
                 return True, f"ok_relaxed_min_lot ratio={ratio:.4f}"
             return False, f"tp_sum_ratio={ratio:.4f} want≈0.30 (used={used} iq={iq})"
         return True, "ok"

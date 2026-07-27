@@ -117,6 +117,32 @@ def sanitize_tp_limit_price(
     return tp, "ok"
 
 
+def _ceil_to_qty_step(need: float, round_qty_fn) -> float:
+    """Smallest exchange qty >= need (round_qty usually floors)."""
+    need_f = float(need or 0)
+    if need_f <= 0:
+        return 0.0
+    q = float(round_qty_fn(need_f))
+    if q + 1e-12 >= need_f:
+        return q
+    from decimal import Decimal, ROUND_UP
+
+    # Infer step: difference between two consecutive floored probes
+    a = Decimal(str(float(round_qty_fn(0.001))))
+    b = Decimal(str(float(round_qty_fn(0.002))))
+    step = b - a
+    if step <= 0:
+        # Contract / integer lot (DeepCoin): step 1
+        c = Decimal(str(float(round_qty_fn(1.5))))
+        d = Decimal(str(float(round_qty_fn(2.5))))
+        step = d - c if d > c else Decimal("1")
+    if step <= 0:
+        step = Decimal("0.001")
+    return float(
+        (Decimal(str(need_f)) / step).to_integral_value(rounding=ROUND_UP) * step
+    )
+
+
 def compute_tp_slices(
     qty: float,
     regime: int,
@@ -163,7 +189,7 @@ def compute_tp_slices(
         use = float(px or ref or 0)
         if use <= 0:
             return 0.0
-        return float(min_n) / use
+        return _ceil_to_qty_step(float(min_n) / use, round_qty_fn)
 
     total_ratio = sum(r for _, r, _ in active)
     # Hard placeable budget from absolute ratios (do NOT use base * 1.0).
@@ -236,6 +262,95 @@ def compute_tp_slices(
                 trimmed.append((lvl, left, px))
         slices = list(reversed(trimmed))
     return slices
+
+
+def top_up_tp12_to_target_ratio(
+    slices: list[tuple[int, float, float]],
+    *,
+    base_qty: float,
+    tv_tps: list[float] | None = None,
+    target_ratio: float = 0.30,
+    max_placeable_frac: float = 0.35,
+    round_qty_fn=round_quantity,
+    min_lot: float = 0.0,
+    min_notional: float = 0.0,
+) -> list[tuple[int, float, float]]:
+    """After lot/notional folds, top up TP1+TP2 toward ≈30% without eating radar.
+
+    Small XAU/ETH opens (e.g. 0.014) can fold TP1 under min_notional then
+    ``ensure_tp1_min_lot`` leaves ~21% placeable; self-check then wiped the book
+    (empty TP12 + chief_auditor_fail). Prefer topping up TP2 within the 35%
+    radar-safe budget over returning an empty placeable set.
+    """
+    base = float(base_qty or 0)
+    if base <= 0:
+        return list(slices or [])
+    tps = list(tv_tps or [])
+    by_lv: dict[int, tuple[float, float]] = {
+        int(lv): (float(q), float(px)) for lv, q, px in (slices or []) if float(q) > 0
+    }
+    # Ensure each hung tier clears exchange min notional when budget allows
+    max_placeable = round_qty_fn(base * float(max_placeable_frac))
+    min_n = max(float(min_notional or 0), 0.0)
+    lot = max(float(min_lot or 0), 0.0)
+
+    def _need_qty(px: float) -> float:
+        need = lot
+        if min_n > 0 and float(px or 0) > 0:
+            need = max(need, min_n / float(px))
+        if need <= 0:
+            return 0.0
+        return _ceil_to_qty_step(need, round_qty_fn)
+
+    for lv in (1, 2):
+        if lv not in by_lv:
+            continue
+        q, px = by_lv[lv]
+        need = _need_qty(px)
+        if need <= 0 or q + 1e-12 >= need:
+            continue
+        deficit = need - q
+        used = sum(float(x[0]) for x in by_lv.values())
+        room = max(0.0, float(max_placeable) - used)
+        take = min(deficit, room)
+        if take + 1e-12 < deficit:
+            # Cannot clear min notional for this tier — drop it (fold qty into next)
+            if lv == 1 and 2 in by_lv:
+                q2, px2 = by_lv[2]
+                by_lv[2] = (round_qty_fn(q2 + q), px2)
+                del by_lv[1]
+            continue
+        by_lv[lv] = (round_qty_fn(q + take), px)
+
+    used = sum(float(q) for q, _ in by_lv.values())
+    target = round_qty_fn(base * float(target_ratio))
+    if target <= 0:
+        return [(lv, round_qty_fn(q), px) for lv, (q, px) in sorted(by_lv.items()) if q > 0]
+    if used + 1e-12 >= target:
+        return [(lv, round_qty_fn(q), px) for lv, (q, px) in sorted(by_lv.items()) if q > 0]
+
+    need = float(target) - float(used)
+    room = max(0.0, float(max_placeable) - float(used))
+    add = round_qty_fn(min(need, room))
+    if add <= 0:
+        return [(lv, round_qty_fn(q), px) for lv, (q, px) in sorted(by_lv.items()) if q > 0]
+
+    if 2 in by_lv:
+        q2, px2 = by_lv[2]
+        by_lv[2] = (round_qty_fn(q2 + add), px2)
+    elif 1 in by_lv:
+        q1, px1 = by_lv[1]
+        by_lv[1] = (round_qty_fn(q1 + add), px1)
+    elif tps:
+        px2 = float(tps[1]) if len(tps) > 1 and float(tps[1] or 0) > 0 else float(tps[0] or 0)
+        if px2 > 0:
+            by_lv[2] = (add, px2)
+
+    out = [(lv, round_qty_fn(q), px) for lv, (q, px) in sorted(by_lv.items()) if q > 0]
+    used = sum(float(q) for _, q, _ in out)
+    if used + 1e-12 >= 0.95 * base:
+        return list(slices or [])
+    return out
 
 
 def ensure_tp1_min_lot(

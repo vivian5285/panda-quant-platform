@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from app.core.symbol_precision import round_price
+from app.core.symbol_precision import round_price, price_tick_for
 
 # Arm progress along entry→TP1 (path formula — never absolute TP1×0.85)
 RADAR_ARM_PROGRESS = 0.85
@@ -18,7 +18,7 @@ SHORT_ARM_TP1_MULT = 1.0 + (1.0 - RADAR_ARM_PROGRESS)  # path shorthand only
 # Purged ladder constants (kept as NaN sentinels so accidental use is obvious)
 RADAR_STEP_ATR = float("nan")  # was 0.50 — LEGACY_PURGED
 RADAR_LOCK_ATR = float("nan")  # was 0.30 — LEGACY_PURGED
-RADAR_TP1_FLOOR_ATR = 0.50  # activate BE uses trend_tier RADAR_ACTIVATE_BE_ATR
+RADAR_TP1_FLOOR_ATR = float("nan")  # was 0.50 — marathon uses fee+tick BE
 RADAR_TP2_FLOOR_ATR = float("nan")  # was 1.50 — LEGACY_PURGED §14.1.6
 RADAR_TP3_TRAIL_ATR = float("nan")  # was 2.00 — LIVE uses ADX trail coef
 RADAR_BREAKEVEN_TICK_PCT = 0.0003  # ~1 tick slack past entry
@@ -36,8 +36,9 @@ RADAR_OPEN_GRACE_SEC = 15.0
 RADAR_ARM_CONFIRM_POLLS = 2
 RADAR_MIN_TRAIL_TP1_FRAC = 0.18
 FEE_BUFFER_PCT = 0.0015
-RADAR_BREAKEVEN_ATR_BEFORE_TP1 = 0.55
-RADAR_BREAKEVEN_ATR_AFTER_TP1 = 0.25
+# LEGACY ATR BE pads — marathon activate uses fee_cover_breakeven_stop only
+RADAR_BREAKEVEN_ATR_BEFORE_TP1 = float("nan")
+RADAR_BREAKEVEN_ATR_AFTER_TP1 = float("nan")
 RADAR_TIGHT_SPAN_ATR_MULT = 1.0
 RADAR_TIGHT_SPAN_MIN_PROGRESS = 0.85
 RADAR_MIN_ABS_ATR_MULT = 0.30
@@ -405,25 +406,39 @@ def radar_may_arm(
     return False
 
 
+def fee_cover_breakeven_stop(
+    entry: float,
+    side: str | None,
+    symbol: str | None = None,
+) -> float:
+    """Marathon activate BE: entry ± (1 tick + fee buffer). Not entry±0.5ATR."""
+    e = float(entry or 0)
+    if e <= 0:
+        return 0.0
+    tick = float(price_tick_for(symbol) or 0.01)
+    if tick <= 0:
+        tick = 0.01
+    fee = e * float(FEE_BUFFER_PCT)
+    slack = tick + fee
+    side_u = str(side or "").upper()
+    if side_u == "LONG":
+        return round_price(e + slack, symbol)
+    if side_u == "SHORT":
+        return round_price(e - slack, symbol)
+    return round_price(e, symbol)
+
+
 def breakeven_floor(
     entry: float,
     side: str | None,
-    atr: float,
+    atr: float = 0.0,
     *,
     consumed_tp_levels: list | None = None,
+    symbol: str | None = None,
 ) -> float:
-    fee = float(entry) * FEE_BUFFER_PCT
-    atr_mult = (
-        RADAR_BREAKEVEN_ATR_AFTER_TP1
-        if tp1_consumed(consumed_tp_levels)
-        else RADAR_BREAKEVEN_ATR_BEFORE_TP1
-    )
-    slack = max(fee, float(atr or 0) * atr_mult)
-    if side == "LONG":
-        return round_price(float(entry) + slack)
-    if side == "SHORT":
-        return round_price(float(entry) - slack)
-    return round_price(float(entry))
+    """Fee+tick BE floor (marathon). ``atr`` / consumed levels ignored (compat)."""
+    _ = (atr, consumed_tp_levels)
+    return fee_cover_breakeven_stop(entry, side, symbol)
 
 
 STOP_MARKET_MIN_GAP_USD = 1.0

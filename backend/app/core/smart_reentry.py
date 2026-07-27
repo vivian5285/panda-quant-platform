@@ -48,7 +48,7 @@ class RadarTier:
     attempt: int  # 0 = first open, 1 = after one reentry
     adx_tier: int
     radar_tier: int
-    early_breakeven_atr: float  # activate BE = 0.5×ATR (whitepaper)
+    early_breakeven_atr: float  # LEGACY field; LIVE activate = fee+tick BE
     step_trigger_atr: float
     step_advance_atr: float
     arm_tp1_pct: float
@@ -88,7 +88,7 @@ def arm_tp1_pct_for_attempt(attempt: int = 0) -> float:
 
 
 def next_attempt_arm_pct(_prev_pct: float = 0.0) -> float:
-    """Compat: reentry hint defaults to strong-bound 90% (LIVE still uses ADX)."""
+    """Compat: reentry hint defaults to strong-bound 70% (LIVE still uses ADX)."""
     _ = _prev_pct
     return float(RADAR_ARM_RATIO_STRONG)
 

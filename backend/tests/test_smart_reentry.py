@@ -67,7 +67,7 @@ def test_eth_xau_mid_tier_params():
     e1 = tier_for_attempt(0, "ETHUSDT", adx_tier=1)
     assert e1.tier_label == "中趋势"
     assert abs(e1.arm_tp1_pct - RADAR_ARM_TP1_PCT) < 1e-9  # compat hint only
-    assert e1.early_breakeven_atr == 0.5
+    assert e1.early_breakeven_atr == 0.0
     assert e1.step_trigger_atr == 0.50
     assert e1.step_advance_atr == 0.35
     assert e1.coef_min == 2.0 and e1.coef_max == 2.5
@@ -77,7 +77,7 @@ def test_eth_xau_mid_tier_params():
     x1 = tier_for_attempt(0, "XAUUSDT", adx_tier=1)
     assert x1.step_trigger_atr == 0.40
     assert x1.step_advance_atr == 0.30
-    assert x1.coef_min == 1.8 and x1.coef_max == 2.2
+    assert x1.coef_min == 1.5 and x1.coef_max == 2.0
     assert x1.reentry_bars == 3
 
     # Reentry: trail +1 tier (arm field remains compat hint)
@@ -98,11 +98,17 @@ def test_arm_distance_tp1_distance_times_ratio():
     # Fallback profile path — mid ADX default ratio
     d = arm_distance(atr, 0, "ETHUSDT", adx_tier=1)
     assert abs(d - 1.35 * 10 * RADAR_ARM_TP1_PCT) < 1e-9
-    # Explicit ADX=17 → 70%
+    # Explicit ADX=17 → 70%（弱早）
     trig = radar_arm_trigger_price(
         side="LONG", fill_entry=1900.0, atr=20.0, adx=17.0, symbol="ETHUSDT",
     )
     assert abs(trig - (1900.0 + 1.35 * 20 * 0.70)) < 1e-9
+    # Explicit ADX=35 → 90%（强晚）
+    trig_s = radar_arm_trigger_price(
+        side="LONG", fill_entry=1900.0, atr=20.0, adx=35.0, symbol="ETHUSDT",
+    )
+    assert abs(trig_s - (1900.0 + 1.35 * 20 * 0.90)) < 1e-9
+    assert trig_s > trig
     # Override arm_pct still honored
     trig_r = radar_arm_trigger_price(
         side="LONG", fill_entry=1895.0, atr=20.0, arm_pct=0.90, symbol="ETHUSDT",
@@ -260,29 +266,32 @@ def test_reset_reentry_state():
     st = reset_reentry_state("XAUUSDT", adx_tier=1)
     assert st["reentry_attempt"] == 0
     assert abs(float(st["reentry_arm_tp1_pct"]) - RADAR_ARM_TP1_PCT) < 1e-9
-    assert st["active_early_be_atr"] == 0.5
-    assert st["active_coef_min"] == 1.8
-    assert st["active_coef_max"] == 2.2
+    assert st["active_early_be_atr"] == 0.0
+    assert st["active_coef_min"] == 1.5
+    assert st["active_coef_max"] == 2.0
     assert st["reentry_tier_label"] == "中趋势"
     assert st["reentry_pending"] is False
     assert st["trend_tier"] == 1
 
 
 def test_profile_mid_tier_defaults():
-    assert ETH_PROFILE.early_breakeven_atr == 0.5
+    assert ETH_PROFILE.early_breakeven_atr == 0.0
     assert ETH_PROFILE.step_trigger_atr == 0.50
     assert ETH_PROFILE.step_advance_atr == 0.35
     assert ETH_PROFILE.coef_min == 2.0 and ETH_PROFILE.coef_max == 2.5
     assert XAU_PROFILE.step_trigger_atr == 0.40
     assert XAU_PROFILE.step_advance_atr == 0.30
-    assert XAU_PROFILE.coef_min == 1.8 and XAU_PROFILE.coef_max == 2.2
-    assert XAU_PROFILE.early_breakeven_atr == 0.5
+    assert XAU_PROFILE.coef_min == 1.5 and XAU_PROFILE.coef_max == 2.0
+    assert XAU_PROFILE.early_breakeven_atr == 0.0
 
 
 def test_radar_waits_until_adx_arm_then_activates():
+    from app.core.radar_trail import fee_cover_breakeven_stop
+
     entry, atr = 2000.0, 20.0
     initial_stop = entry - 1.5 * atr
-    arm_px = entry + 1.35 * atr * 0.70  # ADX=17
+    arm_px = entry + 1.35 * atr * 0.70  # ADX=17 → 70% 弱早
+    fee_be = fee_cover_breakeven_stop(entry, "LONG", "ETHUSDT")
     tick = apply_breathing_tick(
         side="LONG",
         price=entry + 5,
@@ -298,7 +307,7 @@ def test_radar_waits_until_adx_arm_then_activates():
         breath_tp1_tp2_atr=1.2,
         step_trigger_atr=0.50,
         step_advance_atr=0.35,
-        early_breakeven_atr=0.5,
+        early_breakeven_atr=0.0,
         coef_min=2.0,
         coef_max=2.5,
     )
@@ -320,35 +329,45 @@ def test_radar_waits_until_adx_arm_then_activates():
         breath_tp1_tp2_atr=1.2,
         step_trigger_atr=0.50,
         step_advance_atr=0.35,
-        early_breakeven_atr=0.5,
+        early_breakeven_atr=0.0,
         coef_min=2.0,
         coef_max=2.5,
     )
     assert tick2["meta"].get("just_activated") or tick2["event"] == "radar_activate"
-    assert tick2["current_sl"] >= entry + 0.5 * atr - 1e-9
+    assert tick2["current_sl"] >= fee_be - 1e-9
+    assert tick2["current_sl"] < entry + 0.5 * atr - 1e-6
 
 
 def test_strong_adx_arms_later_than_weak():
-    """ADX=35 (90%) arm price is further than ADX=17 (70%)."""
+    """弱早强晚：ADX=17 (70%) arm closer than ADX=35 (90%)."""
     fill, atr = 1900.0, 20.0
     weak_arm = fill + 1.35 * atr * 0.70
     strong_arm = fill + 1.35 * atr * 0.90
     assert weak_arm < strong_arm
-    tick_mid = apply_breathing_tick(
-        side="LONG", price=weak_arm + 0.5, entry_price=fill, initial_atr=atr,
-        initial_stop=fill - 30, current_stop=fill - 30, best_price=weak_arm + 0.5,
+    # At weak-arm price with weak ADX → activates; same price with strong ADX still waits
+    tick_weak = apply_breathing_tick(
+        side="LONG", price=weak_arm, entry_price=fill, initial_atr=atr,
+        initial_stop=fill - 30, current_stop=fill - 30, best_price=weak_arm,
+        breakeven_phase=False, symbol="ETHUSDT",
+        adx=17.0, radar_activated=False,
+    )
+    assert tick_weak["meta"].get("just_activated") or tick_weak["event"] == "radar_activate"
+    assert tick_weak["meta"].get("radar_arm_mode") == "adx_70_80_90"
+    tick_strong_same_px = apply_breathing_tick(
+        side="LONG", price=weak_arm, entry_price=fill, initial_atr=atr,
+        initial_stop=fill - 30, current_stop=fill - 30, best_price=weak_arm,
         breakeven_phase=False, symbol="ETHUSDT",
         adx=35.0, radar_activated=False,
     )
-    assert tick_mid["meta"]["event"] == "waiting_arm"
-    assert tick_mid["meta"].get("radar_arm_mode") == "adx_70_90"
-    tick_full = apply_breathing_tick(
+    assert tick_strong_same_px["meta"]["event"] == "waiting_arm"
+    # Strong ADX activates only at later price
+    tick_strong = apply_breathing_tick(
         side="LONG", price=strong_arm, entry_price=fill, initial_atr=atr,
         initial_stop=fill - 30, current_stop=fill - 30, best_price=strong_arm,
         breakeven_phase=False, symbol="ETHUSDT",
         adx=35.0, radar_activated=False,
     )
-    assert tick_full["meta"].get("just_activated") or tick_full["event"] == "radar_activate"
+    assert tick_strong["meta"].get("just_activated") or tick_strong["event"] == "radar_activate"
 
 
 def test_tier_coef_band_in_breathing_tick():

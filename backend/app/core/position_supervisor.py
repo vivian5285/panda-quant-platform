@@ -56,6 +56,7 @@ from app.core.tp_slice_guard import (
     infer_filled_tp_levels,
     match_qty_reduction_to_tp_level,
     resolve_tp_step_fill_level,
+    top_up_tp12_to_target_ratio,
 )
 from app.services.tv_signal_enrich import format_enrich_note, merge_supervisor_fallbacks
 from app.services.close_alert_utils import (
@@ -2452,6 +2453,18 @@ class PositionSupervisor(
                 )
         except Exception:
             pass
+        # Top up TP1+TP2 toward ≈30% after lot/notional folds (small XAU/ETH opens).
+        try:
+            out = top_up_tp12_to_target_ratio(
+                out,
+                base_qty=base if base > 0 else qty_f,
+                tv_tps=list(self.tv_tps or []),
+                round_qty_fn=self._round_qty,
+                min_lot=float(getattr(self, "min_order_qty", 0) or 0),
+                min_notional=float(min_notional or 0),
+            )
+        except Exception:
+            pass
         used = sum(float(q) for _, q, _ in out)
         # Force-fail loud if placeable still ≈ full book (historical TP2-eats-radar bug).
         if qty_f > 0 and used + 1e-12 >= 0.95 * qty_f and 3 in exclude:
@@ -2462,18 +2475,25 @@ class PositionSupervisor(
                 qty_f,
             )
             return []
-        # ExecutionOfficer self-check: TP1+TP2 must be ≈30% of open baseline
+        # ExecutionOfficer self-check: TP1+TP2 must be ≈30% of open baseline.
+        # Never wipe a radar-safe placeable set to [] — empty TP book + pause is worse.
         try:
             from app.core.pipeline_officers import ExecutionOfficer
 
             anchor = float(getattr(self, "initial_qty", 0) or qty_f or 0)
-            ok, detail = ExecutionOfficer.self_check_tp_slices(anchor if anchor > 0 else qty_f, out)
+            ok, detail = ExecutionOfficer.self_check_tp_slices(
+                anchor if anchor > 0 else qty_f,
+                out,
+                relax_for_min_lot=True,
+            )
             if not ok and out:
                 logger.error(
                     "[User %s] TP slice self-check refuse: %s",
                     getattr(self, "user_id", "?"),
                     detail,
                 )
+                if qty_f > 0 and used + 1e-12 < 0.95 * qty_f:
+                    return out
                 return []
         except Exception:
             pass

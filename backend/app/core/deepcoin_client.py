@@ -177,15 +177,46 @@ class DeepcoinClient:
 
     # ── 账户与行情 ──────────────────────────────────────────────
 
+    @staticmethod
+    def _fbal(item: dict, *keys: str) -> float:
+        for key in keys:
+            raw = item.get(key)
+            if raw is None or str(raw).strip() in ("", "None"):
+                continue
+            try:
+                val = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if val > 0:
+                return val
+        return 0.0
+
+    @staticmethod
+    def resolve_swap_usdt_balances(item: dict) -> tuple[float, float]:
+        """Map one DeepCoin balance row → (equity, available).
+
+        DeepCoin (and OKX-like rows) sometimes report ``cashBal``/``eq`` as 0 while
+        ``availBal + frozenBal`` still holds real USDT. Treating only ``eq`` then
+        zeroes RISK20 sizing and blocks opens. Prefer eq → cashBal → avail+frozen.
+        """
+        if not isinstance(item, dict):
+            return 0.0, 0.0
+        eq = DeepcoinClient._fbal(item, "eq")
+        cash = DeepcoinClient._fbal(item, "cashBal")
+        avail = DeepcoinClient._fbal(item, "availBal", "availEq")
+        frozen = DeepcoinClient._fbal(item, "frozenBal", "frozen", "ordFrozen")
+        composed = avail + frozen
+        equity = next((v for v in (eq, cash, composed, avail, frozen) if v > 0), 0.0)
+        available = avail if avail > 0 else equity
+        return float(equity), float(available)
+
     def _get_swap_usdt_balance(self, ccy: str = "USDT") -> tuple[float, float]:
         """Return (equity, available) from swap account — eq is total contract equity."""
         res = self._request("GET", "/account/balances", {"instType": "SWAP"})
         if isinstance(res, dict) and "data" in res:
             for item in res["data"]:
                 if item.get("ccy") == ccy:
-                    eq = float(item.get("eq", 0) or 0)
-                    avail = float(item.get("availBal", 0) or 0)
-                    return eq, avail
+                    return self.resolve_swap_usdt_balances(item)
         return 0.0, 0.0
 
     def get_available_balance(self, ccy="USDT"):
@@ -196,7 +227,7 @@ class DeepcoinClient:
         return _eq
 
     def get_contract_equity(self, ccy: str = "USDT") -> float:
-        """Total U-margined swap equity (eq) — same anchor as Binance total_margin_balance."""
+        """Total U-margined swap equity — never trust cashBal/eq alone when frozen holds funds."""
         eq, avail = self._get_swap_usdt_balance(ccy)
         return eq if eq > 0 else avail
 
@@ -1071,7 +1102,7 @@ class DeepcoinClient:
             return False
 
     def get_futures_account_summary(self) -> dict:
-        """Binance-compatible shape: total_margin_balance=eq, available_balance=availBal."""
+        """Binance-compatible shape: total_margin_balance=equity, available_balance=avail."""
         eq, avail = self._get_swap_usdt_balance("USDT")
         total = eq if eq > 0 else avail
         return {

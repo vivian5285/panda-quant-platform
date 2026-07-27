@@ -437,12 +437,20 @@ def resolve_vps_entry_qty_deepcoin(
     )
 
 
+# Compat with single-system NameError MAX_ADD_TIMES_BY_REGIME — mama edition: all zero.
+MAX_ADD_TIMES_BY_REGIME: dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0}
+
+
 def regime_add_qty_ratio(regime: int) -> float:
     return 0.0
 
 
 def max_add_times_for_regime(regime: int) -> int:
-    return 0
+    try:
+        r = int(regime or 0)
+    except (TypeError, ValueError):
+        r = 0
+    return int(MAX_ADD_TIMES_BY_REGIME.get(r, 0) or 0)
 
 
 def resolve_tv_add_qty_ratio(data: dict | None, regime: int) -> tuple[float, str]:

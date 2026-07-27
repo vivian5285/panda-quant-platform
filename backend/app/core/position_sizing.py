@@ -13,7 +13,27 @@ logger = logging.getLogger(__name__)
 
 def read_contract_equity(client) -> float:
     """Total U-margined futures equity — not available margin locked in positions."""
-    if hasattr(client, "get_futures_account_summary"):
+    # Prefer real class method (not MagicMock auto-attrs on instances).
+    get_eq = getattr(type(client), "get_contract_equity", None)
+    if callable(get_eq):
+        try:
+            eq = float(get_eq(client) or 0)
+            if eq > 0:
+                return eq
+        except Exception as e:
+            logger.debug("read_contract_equity get_contract_equity failed: %s", e)
+    get_summary = getattr(type(client), "get_futures_account_summary", None)
+    if callable(get_summary):
+        try:
+            summary = get_summary(client) or {}
+            for key in ("total_margin_balance", "margin_balance", "total_wallet_balance"):
+                val = float(summary.get(key, 0) or 0)
+                if val > 0:
+                    return val
+        except Exception as e:
+            logger.debug("read_contract_equity summary failed: %s", e)
+    elif hasattr(client, "get_futures_account_summary"):
+        # Spec-style mocks: configure methods on the instance.
         try:
             summary = client.get_futures_account_summary() or {}
             for key in ("total_margin_balance", "margin_balance", "total_wallet_balance"):
@@ -22,8 +42,17 @@ def read_contract_equity(client) -> float:
                     return val
         except Exception as e:
             logger.debug("read_contract_equity summary failed: %s", e)
+    get_avail = getattr(type(client), "get_available_balance", None)
+    if callable(get_avail):
+        try:
+            return float(get_avail(client) or 0)
+        except Exception:
+            pass
     if hasattr(client, "get_available_balance"):
-        return float(client.get_available_balance() or 0)
+        try:
+            return float(client.get_available_balance() or 0)
+        except Exception:
+            pass
     return 0.0
 
 

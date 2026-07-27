@@ -204,8 +204,35 @@ class OkxClient:
         for row in rows:
             for detail in row.get("details") or []:
                 if detail.get("ccy") == "USDT":
-                    total_eq = float(detail.get("eq") or detail.get("cashBal") or 0)
-                    avail = float(detail.get("availEq") or detail.get("availBal") or total_eq)
+                    # Same class of bug as DeepCoin: cashBal/eq may be 0 while
+                    # avail+frozen still holds funds — do not size to zero.
+                    try:
+                        eq = float(detail.get("eq") or 0)
+                    except (TypeError, ValueError):
+                        eq = 0.0
+                    try:
+                        cash = float(detail.get("cashBal") or 0)
+                    except (TypeError, ValueError):
+                        cash = 0.0
+                    try:
+                        avail_v = float(detail.get("availEq") or detail.get("availBal") or 0)
+                    except (TypeError, ValueError):
+                        avail_v = 0.0
+                    try:
+                        frozen = float(
+                            detail.get("frozenBal")
+                            or detail.get("ordFrozen")
+                            or detail.get("frozen")
+                            or 0
+                        )
+                    except (TypeError, ValueError):
+                        frozen = 0.0
+                    composed = max(0.0, avail_v) + max(0.0, frozen)
+                    total_eq = next(
+                        (v for v in (eq, cash, composed, avail_v) if float(v or 0) > 0),
+                        0.0,
+                    )
+                    avail = avail_v if avail_v > 0 else total_eq
                     upl = float(detail.get("upl") or 0)
         if total_eq <= 0 and rows:
             total_eq = float(rows[0].get("totalEq") or 0)

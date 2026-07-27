@@ -10,6 +10,8 @@
 
 | 日期 | 标签 | 一句话 | 状态 |
 |------|------|--------|------|
+| 2026-07-28 | `marathon-radar-fee-be` | 雷达激活=fee+tick保本；ADX **70/80/90 弱早强晚**；取消 0.5ATR/TP1底线；TP只缩量 | 已修 · §17 |
+| 2026-07-27 | `deepcoin-equity-cashbal-zero` | 深币 cashBal/eq=0 但 avail+frozen有钱 → 算仓0；顺手封 MAX_ADD_TIMES_BY_REGIME | 已修 · §16 |
 | 2026-07-27 | `tv-open-no-skip-no-instant-flat` | TV有信号却跳过/开仓秒平：先平后开失败卡暂停、ATR武装失败误撤仓 | 已修 · §15 |
 | 2026-07-27 | `deepcoin-hedge-sterile-bind` | 深币强制 APP 开平仓双向；绑定探测拒单向；开仓再闸；不自动切模式 | 已修 · §14 |
 | 2026-07-27 | `xau-binance-only` | XAU 仅币安加载/分发；OKX/Gate/DeepCoin 只 ETH | 已修 · §10 |
@@ -503,6 +505,71 @@ DeepCoin 账户可能是**开平仓模式（双向）**或**买卖模式（单�
 - [ ] paused=`先平后开失败·…` + 仍有仓 → 新 LONG 不 skip，走先平后开。  
 - [ ] 硬止损+TP12 已挂、atr=0 → 持仓保留、雷达用 DEFAULT。  
 - [ ] 空仓待命 + 无 pause → 下一笔真实 TV 开仓+TP12+硬止损+雷达候命。
+
+---
+
+## §16 · 2026-07-27 · 深币 equity 读成 0（cashBal/eq=0）
+
+### 现象（单系统对照）
+
+- `MAX_ADD_TIMES_BY_REGIME` NameError 崩溃（v13.91.8+ 已修）。
+- `cashBal=0` 但 `availBal+frozenBal≈100U` → 本金/算仓读成 0，RISK20 无法开仓。
+
+### Gemini 平台排查
+
+| 项 | 结论 |
+|----|------|
+| `MAX_ADD_TIMES_BY_REGIME` | 本仓原先**未引用**该名；加仓已禁用（`_max_add_times→0`）。仍在 `tv_entry_sizing` 定义全 0 映射，杜绝同类 NameError。 |
+| 深币余额 | `_get_swap_usdt_balance` **只读 `eq`/`availBal`** → 与单系统同类漏洞，会把有钱账户读成 0。 |
+| OKX | `eq`/`cashBal` 优先；补 `avail+frozen` 回退，防同型 API 怪账。 |
+
+### 修复
+
+| 项 | 行为 |
+|----|------|
+| `DeepcoinClient.resolve_swap_usdt_balances` | equity：`eq → cashBal → avail+frozen → avail` |
+| `read_contract_equity` | 优先 `get_contract_equity()` |
+| `MAX_ADD_TIMES_BY_REGIME` | 模块级 `{1..4: 0}` + `max_add_times_for_regime` |
+| 单测 | `test_deepcoin_equity_fallback.py` |
+
+### 复查点
+
+- [ ] `eq=0,cashBal=0,avail=40,frozen=60` → equity=100。  
+- [ ] `max_add_times_for_regime(*)==0`。  
+- [ ] DeepCoin 开仓 sizing 不再因余额字段怪账变成 0 张。
+
+---
+
+## §17 · 2026-07-28 · 马拉松雷达（保本起步）
+
+### 现象
+
+- 实盘 ETH 雷达在 TP1 后常被 **entry±0.5×ATR** 强制底线扫出（如 trade #128），浮盈空间过窄，属参数设计而非挂单 bug。
+- 激活比例曾写反：弱趋势过晚 / 强趋势过早，导致弱趋势微利被扫、强趋势被深度回踩打掉。
+
+### 根因
+
+- `calculate_stop_*` / `breakeven_floor` 以 `RADAR_ACTIVATE_BE_ATR=0.5` 做激活抬升与 TP1 底线。
+- 激活比例方向错误（弱晚强早）+ 旧 17↔35 连续插值。
+
+### 修复（最终版 · 弱早强晚）
+
+| 项 | 行为 |
+|----|------|
+| `radar_arm_ratio_by_adx` | 离散：ADX&lt;20→**70%**（早）、20–30→**80%**、&gt;30→**90%**（晚）；`adx_70_80_90` |
+| `fee_cover_breakeven_stop` | 激活 SL = entry±(1 tick + entry×0.0015) |
+| `breathing_stop` | 首次激活抬到 fee BE；阶梯原点=fee BE；无 TP1 0.5ATR 底线 |
+| ETH/XAU `step_*` / trail | 见 `trend_tier_params` 三档表（与马拉松方案第四部分对齐） |
+| `_boost_radar_after_tp_fill` | **只缩 qty**，禁止因 TP 改雷达价 |
+| `_maybe_rebase_legacy_half_atr_activate_to_fee_be` | 已激活且 step_count=0、SL≈entry±0.5ATR → 一次性改到 fee BE |
+| 钉钉/日志 | 「雷达激活·保本起步」 |
+
+### 验收清单
+
+- [x] 单测：`test_radar_arm_adx` / `test_breathing_stop` / `test_smart_reentry` 等绿。  
+- [ ] 实盘：硬止损仍在；雷达休眠则下一次激活走 fee BE + 70/80/90；TP12 份额不变。  
+- [ ] 日志无「entry±0.5ATR」激活文案；应为保本起步 / fee_cover_be。  
+- [ ] 本地 = GitHub `main` = VPS HEAD。
 
 ---
 

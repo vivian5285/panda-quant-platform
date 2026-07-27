@@ -30,14 +30,14 @@ class BreathingProfile:
     symbol_tag: str  # ETH | XAU
     initial_sl_atr: float = 1.5
     stop_order_buffer: float = 0.3
-    early_breakeven_atr: float = 0.5
-    # Deprecated display field — LIVE arm: fill±(1.35×ATR)×ADX_ratio(70–90%).
+    early_breakeven_atr: float = 0.0  # LEGACY unused — activate = fee+tick BE
+    # Deprecated display field — LIVE arm: fill±(1.35×ATR)×ADX_ratio(70/80/90 弱早强晚).
     # Kept only so historical backtest scripts can rebuild the old 0.75 gate.
     step_trigger_atr: float = 0.75
     step_advance_atr: float = 0.4
     phase2_trigger_atr: float = 3.0
     tp1_atr: float = 1.35
-    tp1_floor_atr: float = 0.5
+    tp1_floor_atr: float = 0.0  # LEGACY purged — no TP1 forced ATR floor
     tp2_atr: float = 2.5
     tp2_floor_atr: float = 1.5
     tp3_atr: float = 4.0
@@ -56,7 +56,7 @@ ETH_PROFILE = BreathingProfile(
     symbol_tag="ETH",
     initial_sl_atr=1.5,
     stop_order_buffer=0.3,
-    early_breakeven_atr=0.5,  # activate → entry±0.5ATR
+    early_breakeven_atr=0.0,  # marathon: fee+tick BE
     step_trigger_atr=0.50,  # mid-tier whitepaper default
     step_advance_atr=0.35,
     phase2_trigger_atr=3.0,
@@ -70,12 +70,12 @@ XAU_PROFILE = BreathingProfile(
     symbol_tag="XAU",
     initial_sl_atr=1.5,
     stop_order_buffer=0.5,
-    early_breakeven_atr=0.5,
+    early_breakeven_atr=0.0,
     step_trigger_atr=0.40,
     step_advance_atr=0.30,
     phase2_trigger_atr=3.0,
-    coef_min=1.8,
-    coef_max=2.2,
+    coef_min=1.5,
+    coef_max=2.0,
     chart_tf_min=45.0,  # actual TV chart
     stagnant_window_min=60.0,  # 45×~1.33 buffer ≈ one bar + slack
 )
@@ -127,13 +127,13 @@ def trail_distance_multiplier(
     return mn + (mx - mn) * (r - lo) / span
 
 
-# Layer-1 arm bounds (ADX-driven). Layer-2 trail uses RATIO_FLOOR/CEILING separately.
+# Layer-1 arm bounds (ADX discrete marathon bands 弱早强晚).
 RADAR_ARM_RATIO_MIN = 0.70
 RADAR_ARM_RATIO_MAX = 0.90
 
 
 def radar_start_ratio(smooth_ratio: float, profile: BreathingProfile | None = None, *, adx: float | None = None) -> float:
-    """Layer-1 ADX start ratio 70%~90%. ``smooth_ratio`` ignored (trail layer 2 only)."""
+    """Layer-1 ADX start ratio 70%/80%/90%（弱早强晚）。``smooth_ratio`` ignored (trail layer 2 only)."""
     del smooth_ratio, profile
     from app.core.trend_tier_params import radar_arm_ratio_by_adx
 
@@ -259,6 +259,7 @@ def profile_as_dict(profile: BreathingProfile) -> dict[str, Any]:
         "chart_tf_min": profile.chart_tf_min,
         "stagnant_window_min": profile.stagnant_window_min,
         "stagnant_breath_samples": stagnant_breath_samples(profile),
-        "radar_arm": "fill±(1.35×ATR)×ADX(70%~90%)（ADX≤17→70% ≥35→90%）",
+        "radar_arm": "fill±(1.35×ATR)×ADX(70%/80%/90%)（ADX<20→70%早 20–30→80% >30→90%晚）",
+        "activate_be": "fee+tick breakeven (marathon; not entry±0.5ATR)",
         "trail_tighten": 1.0,  # removed — always 1.0 (tightness in min/max)
     }

@@ -514,9 +514,9 @@ def calculate_stop_long(
     smooth_ratio: float | None = None,
     **_legacy: Any,
 ) -> tuple[float, float, bool, dict[str, Any]]:
-    """Layer-1 ADX arm 70–90%×(1.35ATR); activate entry+0.5ATR; then trail."""
+    """Layer-1 ADX arm 70/80/90%×(1.35ATR) 弱早强晚; activate fee+tick BE; then ladder trail."""
+    from app.core.radar_trail import fee_cover_breakeven_stop
     from app.core.trend_tier_params import (
-        RADAR_ACTIVATE_BE_ATR,
         RADAR_ARM_MODE_ADX,
         is_reentry_attempt,
         radar_arm_ratio_by_adx,
@@ -542,7 +542,6 @@ def calculate_stop_long(
         arm_pct = float(ov["arm_tp1_pct"])
     else:
         arm_pct = float(radar_arm_ratio_by_adx(None))
-    activate_be = float(ov["early_breakeven_atr"] if ov["early_breakeven_atr"] is not None else RADAR_ACTIVATE_BE_ATR)
     cmin = ov["coef_min"]
     cmax = ov["coef_max"]
     breath12 = float(ov["breath_tp1_tp2_atr"] or 1.2)
@@ -579,7 +578,8 @@ def calculate_stop_long(
         "arm_tp1_pct": arm_pct,
         "step_trigger_atr": step_trig,
         "step_advance_atr": step_adv_atr,
-        "early_breakeven_atr": activate_be,
+        "early_breakeven_atr": None,
+        "activate_mode": "fee_cover_be",
         "coef_min": float(cmin if cmin is not None else p.coef_min),
         "coef_max": float(cmax if cmax is not None else p.coef_max),
         "breath_tp1_tp2_atr": breath12,
@@ -620,13 +620,15 @@ def calculate_stop_long(
         meta["step_count"] = 0
         return new_stop, new_highest, new_phase, meta
 
-    activate_stop = entry_price + activate_be * initial_atr
+    # Marathon: activate lift = fee+tick BE (ladder origin); never entry+0.5ATR
+    activate_stop = fee_cover_breakeven_stop(entry_price, "LONG", symbol)
+    meta["activate_stop"] = activate_stop
     trail_dist = initial_atr * coef
     step_advance = step_adv_atr * initial_atr
     step_size = step_trig * initial_atr if step_trig > 0 else 0.0
 
     if not already:
-        # First activation: lift stop to entry+0.5ATR
+        # First activation: lift stop to fee-cover breakeven
         candidate = max(new_stop, activate_stop) if new_stop > 0 else activate_stop
         if candidate > current_stop + 1e-12 or current_stop <= 0:
             event = "radar_activate"
@@ -657,6 +659,7 @@ def calculate_stop_long(
     meta["breath_zone"] = zone
     meta["breath_atr"] = breath
     trail_stop = new_highest - breath * initial_atr
+    # Floor = fee BE only — no TP1 0.5ATR forced floor
     candidate = max(new_stop, step_stop, trail_stop, activate_stop)
     if new_phase:
         trailed = new_highest - trail_dist
@@ -688,9 +691,9 @@ def calculate_stop_short(
     smooth_ratio: float | None = None,
     **_legacy: Any,
 ) -> tuple[float, float, bool, dict[str, Any]]:
-    """Layer-1 ADX arm 70–90%×(1.35ATR); activate entry−0.5ATR; then trail."""
+    """Layer-1 ADX arm 70/80/90%×(1.35ATR) 弱早强晚; activate fee+tick BE; then ladder trail."""
+    from app.core.radar_trail import fee_cover_breakeven_stop
     from app.core.trend_tier_params import (
-        RADAR_ACTIVATE_BE_ATR,
         RADAR_ARM_MODE_ADX,
         is_reentry_attempt,
         radar_arm_ratio_by_adx,
@@ -715,7 +718,6 @@ def calculate_stop_short(
         arm_pct = float(ov["arm_tp1_pct"])
     else:
         arm_pct = float(radar_arm_ratio_by_adx(None))
-    activate_be = float(ov["early_breakeven_atr"] if ov["early_breakeven_atr"] is not None else RADAR_ACTIVATE_BE_ATR)
     cmin = ov["coef_min"]
     cmax = ov["coef_max"]
     breath12 = float(ov["breath_tp1_tp2_atr"] or 1.0)
@@ -755,7 +757,8 @@ def calculate_stop_short(
         "arm_tp1_pct": arm_pct,
         "step_trigger_atr": step_trig,
         "step_advance_atr": step_adv_atr,
-        "early_breakeven_atr": activate_be,
+        "early_breakeven_atr": None,
+        "activate_mode": "fee_cover_be",
         "coef_min": float(cmin if cmin is not None else p.coef_min),
         "coef_max": float(cmax if cmax is not None else p.coef_max),
         "breath_tp1_tp2_atr": breath12,
@@ -796,7 +799,8 @@ def calculate_stop_short(
         meta["step_count"] = 0
         return new_stop, new_lowest, new_phase, meta
 
-    activate_stop = entry_price - activate_be * initial_atr
+    activate_stop = fee_cover_breakeven_stop(entry_price, "SHORT", symbol)
+    meta["activate_stop"] = activate_stop
     trail_dist = initial_atr * coef
     step_advance = step_adv_atr * initial_atr
     step_size = step_trig * initial_atr if step_trig > 0 else 0.0
@@ -987,9 +991,9 @@ def format_breathing_legend(symbol: str | None = None) -> str:
     mid = params_for_tier(1, symbol)
     return (
         f"[{p.symbol_tag}] 硬止损呼吸垫固定1.15"
-        f" · 雷达启动=ADX70%~90%×(1.35×ATR) (≤17→70% ≥35→90%)"
+        f" · 雷达启动=ADX70%/80%/90%×(1.35×ATR) (<20→70%早 20–30→80% >30→90%晚)"
         f" · 档位弱/中/强调雷达步长"
-        f" · 激活→entry±0.5ATR"
+        f" · 激活→手续费保本(fee+tick)"
         f" · 步进{mid.step_trigger_atr}/{mid.step_advance_atr}×ATR(中档)"
         f" · 追踪{mid.trail_coef_min}~{mid.trail_coef_max}×ATR"
         f" · 重入仅强趋势·最多1次/{mid.reentry_bars}根K"

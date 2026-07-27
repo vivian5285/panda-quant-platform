@@ -24,9 +24,9 @@ def test_breathing_coefficient_continuous_eth():
 
 
 def test_breathing_coefficient_continuous_xau_mid_tier():
-    # Mid-tier XAU coef 1.8~2.2
-    assert abs(get_breathing_coefficient(0.5, "XAUUSDT") - 1.8) < 1e-9
-    assert abs(get_breathing_coefficient(2.2, "XAUUSDT") - 2.2) < 1e-9
+    # Mid-tier XAU coef 1.5~2.0 (马拉松修复版)
+    assert abs(get_breathing_coefficient(0.5, "XAUUSDT") - 1.5) < 1e-9
+    assert abs(get_breathing_coefficient(2.2, "XAUUSDT") - 2.0) < 1e-9
 
 
 def test_initial_stop_and_buffer_eth_default():
@@ -37,18 +37,21 @@ def test_initial_stop_and_buffer_eth_default():
 
 
 def test_xau_radar_waits_then_activates():
+    from app.core.radar_trail import fee_cover_breakeven_stop
+
     assert apply_stop_order_buffer("LONG", 3300, "XAUUSDT") == 3299.5
     assert apply_stop_order_buffer("SHORT", 3300, "XAUUSDT") == 3300.5
     entry, atr = 3300.0, 10.0
     coef = 1.9
     initial_stop = compute_initial_stop(entry, "LONG", atr, symbol="XAUUSDT")
     assert abs(initial_stop - (entry - 1.5 * atr)) < 1e-9
-    # ADX=17 → 70% × 1.35×ATR
-    arm_px = entry + 1.35 * atr * 0.70
+    # ADX=17 → 85% × 1.35×ATR
+    arm_px = entry + 1.35 * atr * 0.85
+    fee_be = fee_cover_breakeven_stop(entry, "LONG", "XAUUSDT")
     stop, high, phase, meta = calculate_stop_long(
         entry + 2, entry, atr, initial_stop, initial_stop, entry, False, coef,
         symbol="XAUUSDT", smooth_ratio=1.0, adx=17.0, radar_activated=False,
-        step_trigger_atr=0.40, early_breakeven_atr=0.5, step_advance_atr=0.30,
+        step_trigger_atr=0.40, early_breakeven_atr=0.0, step_advance_atr=0.30,
         breath_tp1_tp2_atr=1.0,
     )
     assert meta["event"] == "waiting_arm"
@@ -56,12 +59,14 @@ def test_xau_radar_waits_then_activates():
     stop, high, phase, meta = calculate_stop_long(
         arm_px, entry, atr, initial_stop, initial_stop, entry, False, coef,
         symbol="XAUUSDT", smooth_ratio=1.0, adx=17.0, radar_activated=False,
-        step_trigger_atr=0.40, early_breakeven_atr=0.5, step_advance_atr=0.30,
+        step_trigger_atr=0.40, early_breakeven_atr=0.0, step_advance_atr=0.30,
         breath_tp1_tp2_atr=1.0,
     )
     assert meta.get("just_activated") or meta["event"] == "radar_activate"
-    assert meta.get("radar_arm_mode") == "adx_70_90"
-    assert stop >= entry + 0.5 * atr - 1e-9
+    assert meta.get("radar_arm_mode") == "adx_70_80_90"
+    assert meta.get("activate_mode") == "fee_cover_be"
+    assert stop >= fee_be - 1e-9
+    assert stop < entry + 0.5 * atr - 1e-6
 
 
 def test_init_state():

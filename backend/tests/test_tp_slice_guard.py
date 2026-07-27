@@ -8,6 +8,7 @@ from app.core.tp_slice_guard import (
     match_qty_reduction_to_tp_level,
     price_reached_tp,
     resolve_tp_step_fill_level,
+    top_up_tp12_to_target_ratio,
     tp_limit_still_on_book,
 )
 from app.core.position_qty_tolerance import tp_slice_qty_tolerance
@@ -461,3 +462,46 @@ def test_ensure_tp1_min_lot_empty_when_inventory_too_small():
         max_placeable_frac=0.35,
     )
     assert out == []
+
+
+def test_small_xau_top_up_recovers_tp12_near_30pct():
+    """0.014 XAU: min_notional fold + min_lot left ~21%; top-up must restore ≈30%."""
+    from app.core.symbol_precision import round_quantity
+    from app.core.pipeline_officers import ExecutionOfficer
+
+    qty = 0.014
+    tps = [4062.36, 4049.15, 4036.52]
+    rs = {3: {"ratios": [0.10, 0.20, 0.70]}}
+    rq = lambda x: round_quantity(x, "XAUUSDT")
+    raw = compute_tp_slices(
+        qty,
+        3,
+        tps,
+        rs,
+        exclude_levels={3},
+        round_qty_fn=rq,
+        min_qty=0.001,
+        min_notional=5.0,
+        ref_price=4077.09,
+        live_cap=qty,
+    )
+    mid = ensure_tp1_min_lot(
+        raw, total_qty=qty, tv_tps=tps, min_lot=0.001, round_qty_fn=rq
+    )
+    out = top_up_tp12_to_target_ratio(
+        mid,
+        base_qty=qty,
+        tv_tps=tps,
+        round_qty_fn=rq,
+        min_lot=0.001,
+        min_notional=5.0,
+    )
+    used = sum(q for _, q, _ in out)
+    assert used > 0
+    assert used <= qty * 0.35 + 1e-9
+    assert abs(used / qty - 0.30) <= 0.04 + 1e-9
+    ok, detail = ExecutionOfficer.self_check_tp_slices(qty, out, relax_for_min_lot=True)
+    assert ok, detail
+    # Each hung leg must clear ~5U notional at XAU prices
+    for _, q, px in out:
+        assert float(q) * float(px) + 1e-9 >= 5.0

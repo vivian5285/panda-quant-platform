@@ -310,6 +310,8 @@ class AdverseRadarMixin:
             self.radar_activated = False
         if not hasattr(self, "radar_step_count"):
             self.radar_step_count = 0
+        if not hasattr(self, "_marathon_fee_be_rebase_done"):
+            self._marathon_fee_be_rebase_done = False
         if not hasattr(self, "_atr_refreshed_at"):
             self._atr_refreshed_at = 0.0
         if not hasattr(self, "_tp_placed_at"):
@@ -3188,6 +3190,14 @@ class AdverseRadarMixin:
             self.current_sl = current_sl
             # Dual track: do NOT overwrite frozen hard with radar seed
 
+        try:
+            self._maybe_rebase_legacy_half_atr_activate_to_fee_be(
+                entry=entry, atr=atr, side=side, symbol=sym,
+            )
+            current_sl = float(getattr(self, "current_sl", 0) or current_sl)
+        except Exception as rebase_exc:
+            logger.debug("marathon fee-BE rebase skipped: %s", rebase_exc)
+
         was_phase = phase
         tier_kw = dict(self._breathing_tier_kwargs() if hasattr(self, "_breathing_tier_kwargs") else {})
         # All exchanges: inject live ADX for Layer-1 arm (DeepCoin lacks mixin kwargs).
@@ -3418,9 +3428,9 @@ class AdverseRadarMixin:
                 "reentry_attempt": attempt,
                 "meta": meta,
             }
-            title = f"雷达激活·ADX{arm_pct:.0%}"
+            title = f"雷达激活·保本起步·ADX{arm_pct:.0%}"
             msg = (
-                f"{arm_kind_cn} | ADX启动={arm_pct:.2f}"
+                f"{arm_kind_cn} | 保本起步(fee+tick) | ADX启动={arm_pct:.2f}"
                 + (f"(adx={float(adx_meta):.1f})" if adx_meta else "")
                 + f" | 触发@{float(meta.get('radar_arm_trigger') or px):.2f} | "
                 f"止损上移@{sl_px:.2f}"
@@ -3496,6 +3506,96 @@ class AdverseRadarMixin:
                 self._save_state()
         return bool(improved)
 
+    def _maybe_rebase_legacy_half_atr_activate_to_fee_be(
+        self,
+        *,
+        entry: float,
+        atr: float,
+        side: str | None,
+        symbol: str | None,
+    ) -> bool:
+        """One-shot: if live radar still sits on old entry±0.5ATR activate (step_count==0),
+        rebase SL to fee+tick BE. Already stepped → never pull back.
+        """
+        self._init_adverse_radar_fields()
+        if bool(getattr(self, "_marathon_fee_be_rebase_done", False)):
+            return False
+        if not bool(getattr(self, "radar_activated", False)):
+            return False
+        if int(getattr(self, "radar_step_count", 0) or 0) > 0:
+            self._marathon_fee_be_rebase_done = True
+            return False
+        entry = float(entry or 0)
+        atr = float(atr or 0)
+        sl = float(getattr(self, "current_sl", 0) or 0)
+        if entry <= 0 or atr <= 0 or sl <= 0 or side not in ("LONG", "SHORT"):
+            return False
+        legacy = entry + 0.5 * atr if side == "LONG" else entry - 0.5 * atr
+        tol = max(0.05 * atr, 0.5)
+        if abs(sl - legacy) > tol:
+            # Not sitting on legacy half-ATR activate (already trailed / other origin)
+            self._marathon_fee_be_rebase_done = True
+            return False
+        from app.core.radar_trail import fee_cover_breakeven_stop
+
+        fee_be = float(fee_cover_breakeven_stop(entry, side, symbol) or 0)
+        if fee_be <= 0:
+            self._marathon_fee_be_rebase_done = True
+            return False
+        looser = (side == "LONG" and fee_be < sl - 1e-9) or (
+            side == "SHORT" and fee_be > sl + 1e-9
+        )
+        if not looser:
+            self._marathon_fee_be_rebase_done = True
+            return False
+        self.current_sl = fee_be
+        self._marathon_fee_be_rebase_done = True
+        logger.info(
+            "%s [User %s] marathon rebase radar SL %.4f→%.4f (legacy 0.5ATR→fee BE)",
+            self._symbol_tag(),
+            getattr(self, "user_id", "?"),
+            sl,
+            fee_be,
+        )
+        if hasattr(self, "_log"):
+            try:
+                self._log(
+                    "RADAR_MARATHON_REBASE",
+                    f"legacy0.5ATR→feeBE @{fee_be:.2f}",
+                    {"from_sl": sl, "to_sl": fee_be, "legacy_sl": legacy},
+                )
+            except Exception:
+                pass
+        # Rehang radar track at new (looser) BE if dual-track live
+        try:
+            live_q = float(getattr(self, "watched_qty", 0) or 0)
+            if live_q <= 0 and hasattr(self, "_resolve_adverse_live_qty"):
+                live_q = float(self._resolve_adverse_live_qty(0) or 0)
+            if live_q > 0 and self._uses_dual_stop_track() and hasattr(self, "_ensure_radar_sl"):
+                hang = (
+                    self._exchange_hang_stop_px(fee_be)
+                    if hasattr(self, "_exchange_hang_stop_px")
+                    else fee_be
+                )
+                self.radar_latched = True
+                if getattr(self, "exchange_id", "") == "deepcoin":
+                    self._ensure_radar_sl(live_q, hang)
+                else:
+                    self._ensure_radar_sl(hang, live_q)
+        except Exception as exc:
+            logger.warning(
+                "%s [User %s] marathon rebase rehang failed: %s",
+                self._symbol_tag(),
+                getattr(self, "user_id", "?"),
+                exc,
+            )
+        if hasattr(self, "_save_state"):
+            try:
+                self._save_state()
+            except Exception:
+                pass
+        return True
+
     def _recover_stop_usable(
         self,
         side: str,
@@ -3529,7 +3629,7 @@ class AdverseRadarMixin:
         """Restart: restore breathing SL from persisted phase — never assume armed.
 
         Phase A (radar_activated False/missing): keep initial radar stop; do not
-        lift to entry±0.5ATR. Phase B (explicit True): restore last SL + one tick.
+        lift to fee+tick BE. Phase B (explicit True): restore last SL + one tick.
         Never keeps a stop that is already hit at mark (false flat).
         """
         if curr_px <= 0 or not entry:
@@ -3611,7 +3711,7 @@ class AdverseRadarMixin:
             self.current_sl = float(current_sl or 0)
             return
 
-        # Phase A: not armed — do not run activation lift (entry±0.5ATR).
+        # Phase A: not armed — do not run activation lift (fee+tick BE).
         if not was_activated:
             self.current_sl = float(initial_stop or current_sl or 0)
             self.radar_activated = False
@@ -4791,6 +4891,7 @@ class AdverseRadarMixin:
     ) -> None:
         """TP1/TP2 fill (or live qty_sync): resize hard+radar stop qty to live headroom.
 
+        Marathon: prices are never moved here — only qty (full → ~70% → ~40%).
         Continuous partial fills of the same TP also resize whenever live qty drifts
         past tolerance vs last successful resize (not once-per-level only).
 
