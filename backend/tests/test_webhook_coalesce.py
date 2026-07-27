@@ -151,8 +151,8 @@ def test_timer_callback_flushes(coalesce, monkeypatch):
     assert c.pending_depth() == 0
 
 
-def test_post_open_close_discarded_within_15s(monkeypatch):
-    """Whitepaper: OPEN dispatched → CLOSE within 1–10s discarded."""
+def test_post_open_close_discarded_within_10s(monkeypatch):
+    """Whitepaper: OPEN dispatched → CLOSE within 10s discarded."""
     monkeypatch.setattr(
         "app.services.webhook_symbol_coalesce.get_settings",
         lambda: MagicMock(WEBHOOK_COALESCE_SEC=1.0),
@@ -170,8 +170,8 @@ def test_post_open_close_discarded_within_15s(monkeypatch):
     assert released == ["LONG"]
 
 
-def test_post_open_close_accepted_after_15s(monkeypatch):
-    """Whitepaper: CLOSE 20s after OPEN → independent close."""
+def test_post_open_close_accepted_after_10s(monkeypatch):
+    """Whitepaper: CLOSE >10s after OPEN → independent close."""
     monkeypatch.setattr(
         "app.services.webhook_symbol_coalesce.get_settings",
         lambda: MagicMock(WEBHOOK_COALESCE_SEC=1.0),

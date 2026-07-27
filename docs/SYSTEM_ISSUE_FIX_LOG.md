@@ -12,6 +12,7 @@
 |------|------|--------|------|
 | 2026-07-27 | `xau-binance-only` | XAU 仅币安加载/分发；OKX/Gate/DeepCoin 只 ETH | 已修 · §10 |
 | 2026-07-27 | `deepcoin-open-orders` | 深币缺 `get_open_orders` → 先平后开假空簿；补 pending+trigger 合并 + raw 计数委托 | 已修 · §11 |
+| 2026-07-27 | `open-close-10s-parity` | 开仓后忽略迟到平仓宽限 5s→10s；深币 TP 自检放宽整数张；README 开平铁律 | 已修 · §12 |
 | 2026-07-27 | `tp-radar-resize-10s` | TP 部分成交缩雷达 + cool 排队；开平铁律 10s；DeepCoin TP1≥1 张 | 已修 · f80a27d |
 | 2026-07-27 | `pipeline-ledger-v1` | 统一 TradeLedger+岗位流水线+督察+REST阀门；补相位卡住/持仓再督察/硬止损公式/FLAT清pause | 已修 · §9 |
 | 2026-07-26 | `open_orders_gt_5` + `-1003` + TG 风暴 | 雷达 thrash + stale book + 暂停重复告警 → 硬帽熔断刷屏 | 已修 · 对照下方 §1 |
@@ -401,6 +402,28 @@
 
 - [ ] 深币先平后开：盘口有挂单时 `raw_after>0`，不得假 clean 开仓。  
 - [ ] 无挂单时 `get_open_orders` 返回 `[]`，允许开仓。
+
+---
+
+## §12 · 2026-07-27 · 开平 10s 全所对齐（防先开秒平）
+
+### 要求
+
+平仓+开仓几乎同时到达 → 最终必须是持仓+TP12+硬止损+雷达；**先开后秒到平仓必须忽略平仓**。
+
+### 修复
+
+| 项 | 行为 |
+|----|------|
+| `OPEN_FORCE_CLOSE_GRACE_SEC` | 5 → **10**（与 coalesce discard 同窗） |
+| DeepCoin `self_check_tp_slices(relax_for_min_lot=True)` | 整数张不因偏离严格 30% 拒挂（仍禁吃光雷达） |
+| README | 多交易所对齐写明权重/杠杆/10s 铁律 |
+
+### 复查点
+
+- [ ] OPEN 后 1–10s 单独 CLOSE_QUICK → 忽略；>10s → 正常平。  
+- [ ] 同窗 CLOSE→OPEN → 先平后开有仓。  
+- [ ] 深币小名义仍能挂出 TP1≥1 张。
 
 ---
 

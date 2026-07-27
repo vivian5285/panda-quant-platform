@@ -10,7 +10,8 @@
 |----|------|
 | 逻辑对齐币安（先平后开 / TP12 / 硬止损 / 雷达 / 10s 铁律 / cool 禁 REST） | **OK** · 全所共享路径；DeepCoin 平行监督器已同修 |
 | 币安 ETH + XAU | **可实盘**（XAU 仅币安 API 用户） |
-| OKX / Gate / DeepCoin ETH | **逻辑可候命**；是否开闸由管理员 `/admin` `enabled_exchanges` 决策 |
+| OKX / Gate / DeepCoin ETH | **逻辑可候命**（权重/杠杆/10s 开平/雷达缩量与币安同）；是否开闸由管理员决策 |
+| OPEN 后 10s 内迟到平仓 | **忽略**（`OPEN_FORCE_CLOSE_GRACE_SEC=10` + coalesce discard） |
 | 非币安 XAU | **禁止**（`trading_symbols_for_exchange` + 分发门禁） |
 | 三端同步 | 以 `git rev-parse --short HEAD` 为准 |
 

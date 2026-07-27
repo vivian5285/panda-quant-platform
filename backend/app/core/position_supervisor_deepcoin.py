@@ -1343,7 +1343,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             from app.core.pipeline_officers import ExecutionOfficer
 
             anchor = float(self._safe_qty(getattr(self, "initial_qty", 0) or qty_f) or 0)
-            ok, detail = ExecutionOfficer.self_check_tp_slices(anchor if anchor > 0 else qty_f, out)
+            ok, detail = ExecutionOfficer.self_check_tp_slices(
+                anchor if anchor > 0 else qty_f,
+                out,
+                relax_for_min_lot=True,
+            )
             if not ok and out:
                 logger.error("DeepCoin TP slice self-check refuse: %s", detail)
                 return []

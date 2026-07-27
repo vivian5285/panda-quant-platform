@@ -116,16 +116,25 @@ class ExecutionOfficer:
         led.persist()
 
     @staticmethod
-    def self_check_tp_slices(initial_qty: float, slices: list) -> tuple[bool, str]:
+    def self_check_tp_slices(
+        initial_qty: float,
+        slices: list,
+        *,
+        relax_for_min_lot: bool = False,
+    ) -> tuple[bool, str]:
         iq = float(initial_qty or 0)
         if iq <= 0:
             return False, "zero_initial"
         used = sum(float(q) for lv, q, _ in slices if int(lv) in (1, 2))
         ratio = used / iq
-        if abs(ratio - 0.30) > TP_PLACEABLE_SUM_TOL:
-            return False, f"tp_sum_ratio={ratio:.4f} want≈0.30 (used={used} iq={iq})"
         if used + 1e-12 >= 0.95 * iq:
             return False, f"tp_eats_radar used={used} iq={iq}"
+        if abs(ratio - 0.30) > TP_PLACEABLE_SUM_TOL:
+            # DeepCoin/contract min lot (1 张): integer rounding can leave
+            # TP1+TP2 off ~30%; still OK if radar residual remains.
+            if relax_for_min_lot and used > 0:
+                return True, f"ok_relaxed_min_lot ratio={ratio:.4f}"
+            return False, f"tp_sum_ratio={ratio:.4f} want≈0.30 (used={used} iq={iq})"
         return True, "ok"
 
     @staticmethod
@@ -219,10 +228,14 @@ class ChiefAuditor:
 
         iq = float(s.initial_qty or getattr(host, "initial_qty", 0) or 0)
         tp_sum = float(s.tp1_qty or 0) + float(s.tp2_qty or 0)
+        relax = str(getattr(host, "exchange_id", "") or "").lower() == "deepcoin"
         if iq > 0 and tp_sum > 0:
             ratio = tp_sum / iq
+            ok_ratio = ratio < 0.95 and (
+                abs(ratio - 0.30) <= TP_PLACEABLE_SUM_TOL or relax
+            )
             findings.append(AuditorFinding(
-                abs(ratio - 0.30) <= TP_PLACEABLE_SUM_TOL and ratio < 0.95,
+                ok_ratio,
                 "tp_slices_30pct",
                 f"sum={tp_sum} iq={iq} ratio={ratio:.4f}",
             ))
@@ -230,7 +243,9 @@ class ChiefAuditor:
             try:
                 if hasattr(host, "_compute_tp_slices") and iq > 0:
                     slices = host._compute_tp_slices(iq, exclude_levels={3})
-                    ok, detail = ExecutionOfficer.self_check_tp_slices(iq, slices)
+                    ok, detail = ExecutionOfficer.self_check_tp_slices(
+                        iq, slices, relax_for_min_lot=relax,
+                    )
                     findings.append(AuditorFinding(ok, "tp_slices_30pct", detail))
                 else:
                     findings.append(AuditorFinding(True, "tp_slices_30pct", "deferred"))

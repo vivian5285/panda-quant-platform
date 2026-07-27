@@ -27,9 +27,20 @@
 | **Gate** | **ETH only** | 同上 | 同上 | 同上 |
 | **DeepCoin** | **ETH only** | `DeepcoinPositionSupervisor`（共享 mixin；合约张数 min=1） | 同上 | 先平后开+TP12+硬止损+雷达与币安同逻辑；张/精度按深币规则 |
 
-**对齐铁律（全所同一套）**：先平后开 → 净场核实撤单 → 开仓 → TP1/TP2 + 硬止损 + 雷达候命；**10s** OPEN/CLOSE 铁律；TP 全成/部分成交按实盘残仓缩雷达/硬止损（REST cool 下排队，cool 结束 flush）；限流共享 180s cool，哨兵 cool/pause **禁 REST**。  
+**仓位权重 + 杠杆（全所同一公式）**：`名义 = 权益 × margin_pct × leverage`（默认 20%×5x=1×权益；`/admin` 按用户覆盖）。分发时写入 `margin_pct_frac` / `entry_leverage`，币安/OKX/Gate/DeepCoin 同一套解析。
+
+**对齐铁律（全所同一套）**：
+1. **先平后开** → 净场核实撤单（含深币再核）→ 开仓 → **TP1/TP2 + 硬止损(1.15) + 雷达候命**（ADX 70%~90%×1.35ATR）  
+2. **10s 开平铁律**（无 TV 时间戳比较）：  
+   - 同窗 **CLOSE 先 / 同时** → 执行一次平仓再开仓 → **最终必有持仓**  
+   - 同窗 **OPEN 先** 或 OPEN 已成交后 **10s 内又到 CLOSE** → **自动忽略平仓**（防「先开又秒平」）  
+   - 单独迟到的平仓（>10s）才真正平仓  
+3. TP 全成/部分成交 → 雷达/硬止损数量跟 **实时残仓**（REST cool 排队，结束 flush）  
+4. 限流共享 180s cool；哨兵 cool/pause **禁 REST**  
+5. 深币 TP1 ≥ **1 张**；整数切片自检允许偏离严格 30%（但禁止吃光雷达余仓）
+
 **管理员决策**：是否对某所「开放交易」只在后台开闸；代码侧须先保证逻辑已对齐、门禁不误拦、分发不串所。  
-事故复盘权威：`docs/SYSTEM_ISSUE_FIX_LOG.md`（含 §8 全所 harden · §10 XAU 仅币安路由）。
+事故复盘权威：`docs/SYSTEM_ISSUE_FIX_LOG.md`（§8 全所 harden · §10 XAU 仅币安 · §11 深币挂单 · §12 10s 忽略迟到平仓）。
 ### 生产流水线验收清单（pipeline-ledger-v1 · 防今日复现）
 
 > 对照桌面《全域生产级工作流架构方案》+ `docs/SYSTEM_ISSUE_FIX_LOG.md` §9。  

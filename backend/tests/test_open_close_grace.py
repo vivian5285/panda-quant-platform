@@ -76,4 +76,4 @@ def test_late_force_grace_expires():
 
 
 def test_force_grace_is_five_seconds():
-    assert OPEN_FORCE_CLOSE_GRACE_SEC == 5.0
+    assert OPEN_FORCE_CLOSE_GRACE_SEC == 10.0

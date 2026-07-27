@@ -353,16 +353,16 @@ def is_hard_tv_close_action(action: str | None) -> bool:
 
 
 # After OPEN, delayed CLOSE_QUICK/RSI (meant for the prior bar) must not flatten the new position.
-OPEN_FORCE_CLOSE_GRACE_SEC = 5.0
+OPEN_FORCE_CLOSE_GRACE_SEC = 10.0
 # Bare TV CLOSE right after OPEN often is a regime/chart chase alert, not SL/TP.
 OPEN_BARE_CLOSE_GRACE_SEC = 60.0
 
 
 def should_ignore_late_close_after_open(supervisor, action: str | None) -> tuple[bool, str]:
-    """Ignore CLOSE_QUICK_EXIT / CLOSE_RSI_EXIT within grace after a successful OPEN.
+    """Ignore CLOSE_QUICK_EXIT / CLOSE_RSI_EXIT within 10s after a successful OPEN.
 
-    Same-window CLOSE+OPEN still close-then-open via coalesce. This only covers
-    cross-window: OPEN executed first, CLOSE arrives ~1–2s later alone.
+    Same-window CLOSE+OPEN still close-then-open via coalesce. This covers
+    cross-window: OPEN executed first, CLOSE arrives alone within the iron-rule window.
     """
     from app.services.webhook_guard import is_force_flat_close
 
