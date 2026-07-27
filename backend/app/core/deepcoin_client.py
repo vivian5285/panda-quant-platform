@@ -663,6 +663,38 @@ class DeepcoinClient:
                     merged.append(o)
         return merged
 
+    def get_open_orders(self, symbol="ETH-USDT-SWAP"):
+        """Parity alias for shared PositionSupervisor book-clean / hard-cap.
+
+        Merges resting limits (orders-pending) + untriggered conditionals
+        (trigger-orders-pending). Without this, ``hasattr(get_open_orders)``
+        is false and raw book count silently becomes 0 → false-clean OPEN.
+        """
+        merged: list = []
+        seen: set = set()
+        for o in self.get_pending_orders(symbol) or []:
+            if not isinstance(o, dict):
+                continue
+            oid = o.get("ordId") or o.get("orderId") or o.get("algoId")
+            key = ("L", oid) if oid is not None else ("L", id(o))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(o)
+        try:
+            for o in self.get_trigger_orders_pending(symbol) or []:
+                if not isinstance(o, dict):
+                    continue
+                oid = o.get("ordId") or o.get("orderId") or o.get("algoId")
+                key = ("T", oid) if oid is not None else ("T", id(o))
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(o)
+        except Exception as exc:
+            logger.warning("[DeepCoin] get_open_orders trigger merge failed: %s", exc)
+        return merged
+
     def get_trigger_orders_pending(self, symbol="ETH-USDT-SWAP"):
         """GET /deepcoin/trade/trigger-orders-pending — 未触发条件单"""
         from app.core.rest_throttle_valve import require_rest_or_transient

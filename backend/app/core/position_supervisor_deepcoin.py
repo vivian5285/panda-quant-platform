@@ -3325,6 +3325,29 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         return PositionSupervisor._count_open_book_orders(self)
 
+    def _count_raw_exchange_orders(self, *, force_refresh: bool = False) -> int:
+        """Delegate to shared book counter (requires client.get_open_orders alias)."""
+        from app.core.position_supervisor import PositionSupervisor
+
+        return PositionSupervisor._count_raw_exchange_orders(
+            self, force_refresh=force_refresh,
+        )
+
+    @staticmethod
+    def _classify_book_clean_result(
+        *,
+        raw_after: int | None,
+        orders_after: int | None,
+        cancel_leftover: int | None,
+    ) -> str:
+        from app.core.position_supervisor import PositionSupervisor
+
+        return PositionSupervisor._classify_book_clean_result(
+            raw_after=raw_after,
+            orders_after=orders_after,
+            cancel_leftover=cancel_leftover,
+        )
+
     def _ensure_book_clean_before_open(self, reason: str = "pre_open") -> dict:
         from app.core.position_supervisor import PositionSupervisor
 

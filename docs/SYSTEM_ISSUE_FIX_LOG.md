@@ -11,6 +11,7 @@
 | 日期 | 标签 | 一句话 | 状态 |
 |------|------|--------|------|
 | 2026-07-27 | `xau-binance-only` | XAU 仅币安加载/分发；OKX/Gate/DeepCoin 只 ETH | 已修 · §10 |
+| 2026-07-27 | `deepcoin-open-orders` | 深币缺 `get_open_orders` → 先平后开假空簿；补 pending+trigger 合并 + raw 计数委托 | 已修 · §11 |
 | 2026-07-27 | `tp-radar-resize-10s` | TP 部分成交缩雷达 + cool 排队；开平铁律 10s；DeepCoin TP1≥1 张 | 已修 · f80a27d |
 | 2026-07-27 | `pipeline-ledger-v1` | 统一 TradeLedger+岗位流水线+督察+REST阀门；补相位卡住/持仓再督察/硬止损公式/FLAT清pause | 已修 · §9 |
 | 2026-07-26 | `open_orders_gt_5` + `-1003` + TG 风暴 | 雷达 thrash + stale book + 暂停重复告警 → 硬帽熔断刷屏 | 已修 · 对照下方 §1 |
@@ -379,6 +380,27 @@
 - [ ] 人为向 OKX 用户打 XAU TV → 结果含 `symbol_not_on_exchange`，无开仓。  
 - [ ] 币安用户仍可收 ETH + XAU。  
 - [ ] README「多交易所实盘对齐」与本条一致。
+
+---
+
+## §11 · 2026-07-27 · DeepCoin `get_open_orders` 假空簿
+
+### 现象 / 风险
+
+审计：DeepCoin 仅有 `get_pending_orders`，共享 `_count_raw_exchange_orders` 在无 `get_open_orders` 时返回 `[]`（假 clean）；且 DC 监督器未挂 `_count_raw_exchange_orders` / `_classify_book_clean_result`，委托币安先平后开路径会 AttributeError 或误放行。
+
+### 修复
+
+| 项 | 行为 |
+|----|------|
+| `DeepcoinClient.get_open_orders` | 合并 pending 限价 + trigger 条件单 |
+| `DeepcoinPositionSupervisor` | 委托 `_count_raw_exchange_orders` + `_classify_book_clean_result` |
+| 单测 | `test_deepcoin_open_orders_parity.py` |
+
+### 复查点
+
+- [ ] 深币先平后开：盘口有挂单时 `raw_after>0`，不得假 clean 开仓。  
+- [ ] 无挂单时 `get_open_orders` 返回 `[]`，允许开仓。
 
 ---
 
