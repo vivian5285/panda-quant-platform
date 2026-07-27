@@ -2127,6 +2127,14 @@ class PositionSupervisor(
             entry_price = float(pos["entryPrice"])
             # 开仓宽限：禁止立刻 CAP 市价减仓；trade_opened_at 先打点供 grace 判定
             self.trade_opened_at = time.time()
+            try:
+                from app.services.webhook_symbol_coalesce import get_coalesce
+
+                get_coalesce().note_entry_filled(
+                    getattr(self, "canonical_symbol", None) or self.symbol
+                )
+            except Exception:
+                pass
             self.base_qty = real_qty
             if hasattr(self, "_set_open_qty_baseline"):
                 self._set_open_qty_baseline(real_qty, reason="tv_open")
@@ -4176,36 +4184,34 @@ class PositionSupervisor(
                 scenario_detail = {"ok": False, "error": str(atr_exc)[:200]}
 
             if not scenario_detail.get("ok"):
+                # Hard SL + TP12 already mounted — never flatten for ATR arm fail.
                 self._alert(
-                    "critical",
+                    "warning",
                     "ATR_SCENARIO",
-                    "开仓ATR不可用·立即撤仓",
+                    "开仓ATR武装降级·继续持仓（硬止损+TP12已挂）",
                     f"{scenario_detail}",
                     scenario_detail,
                 )
                 try:
-                    self._close_all(
-                        "开仓ATR不可用·禁止裸奔",
-                        close_action="HARD_SL_FAIL_ABORT",
-                        close_trigger="open_atr_scenario_failed",
-                    )
+                    from app.core.breathing_stop import DEFAULT_ATR
+
+                    if float(getattr(self, "current_sl", 0) or 0) <= 0:
+                        self._init_breathing_on_open(
+                            pos["entry_price"], atr=float(DEFAULT_ATR),
+                        )
+                    scenario_detail = {
+                        **scenario_detail,
+                        "ok": True,
+                        "degraded": True,
+                        "atr_fallback": True,
+                    }
                 except Exception as e:
-                    logger.error(
-                        "[User %s] atr scenario fail abort: %s",
+                    logger.warning(
+                        "[User %s] atr degrade seed failed (keep position): %s",
                         getattr(self, "user_id", "?"),
                         e,
                     )
-                self.monitoring = False
-                out = {
-                    "ok": False,
-                    "aborted": True,
-                    "reason": "open_atr_scenario_failed",
-                    "defense": result,
-                    "shield": shield_temp,
-                    "scenario": scenario_detail,
-                }
-                self._last_protect_result = out
-                return out
+                    scenario_detail = {**scenario_detail, "ok": True, "degraded": True}
 
             # ④ 确认硬止损仍在（永冻价）+ 独立挂雷达止损
             hard_widened = bool((scenario_detail.get("hard_widen") or {}).get("widened"))

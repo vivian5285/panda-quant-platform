@@ -717,6 +717,8 @@ class AdverseRadarMixin:
 
         Stale auto-clearable pauses (e.g. 先平后开失败 after already flat) are
         reclaimed on LONG/SHORT so the next TV is not permanently skipped.
+        Force-flat failure pauses also clear on OPEN even if still holding —
+        the OPEN path retries force_flat (incident: TV skipped while holding).
         """
         self._init_adverse_radar_fields()
         if not self.trading_paused:
@@ -727,8 +729,27 @@ class AdverseRadarMixin:
             return None
         if act in ("LONG", "SHORT", "UPDATE_TP"):
             reason = self.trading_pause_reason or "trading_paused"
-            if act in ("LONG", "SHORT") and self._try_reclaim_stale_auto_pause(reason):
-                return None
+            if act in ("LONG", "SHORT"):
+                try:
+                    from app.core.pipeline_officers import should_retry_open_despite_pause
+                except Exception:
+                    should_retry_open_despite_pause = lambda _r: False  # noqa: E731
+                if should_retry_open_despite_pause(reason):
+                    self._clear_trading_pause(f"retry_open:{reason}")
+                    if hasattr(self, "_alert"):
+                        try:
+                            self._alert(
+                                "info",
+                                "AUTO_UNPAUSE_RETRY",
+                                "先平后开失败暂停已解除·重试开仓",
+                                f"新TV OPEN 将再次先平后开：{reason}",
+                                {"was_reason": reason},
+                            )
+                        except Exception:
+                            pass
+                    return None
+                if self._try_reclaim_stale_auto_pause(reason):
+                    return None
             if hasattr(self, "_log"):
                 self._log("SIGNAL", f"⏸️ 交易已暂停，忽略 {act}: {reason}", {"action": act})
             return {
@@ -1105,6 +1126,11 @@ class AdverseRadarMixin:
         self._frozen_hard_stop_px = preserved_frozen
         self.initial_stop = preserved_initial_stop
         self.initial_atr = preserved_initial_atr
+        if keep_tv_sl:
+            # Keep TV atr for radar arm across book-clean / protect resets
+            preserved_atr = float(getattr(self, "_tv_atr_ref", 0) or 0)
+            if preserved_atr <= 0 and preserved_initial_atr > 0:
+                self._tv_atr_ref = preserved_initial_atr
         if not keep_tv_sl:
             self._vps_hard_sl_meta = {}
             self.initial_stop = 0.0
@@ -2960,8 +2986,11 @@ class AdverseRadarMixin:
         """After hard stop + TP1/TP2: arm radar with TV webhook atr only (§7 / §14.12).
 
         Never rewrites frozen hard stop. TP3 never hung as limit.
+        Missing atr → DEFAULT_ATR fallback (never fail-closed after a fill).
         """
         self._init_adverse_radar_fields()
+        from app.core.breathing_stop import DEFAULT_ATR, resolve_atr
+
         tv_atr = float(getattr(self, "_tv_atr_ref", 0) or 0)
         if tv_atr <= 0:
             try:
@@ -2972,13 +3001,21 @@ class AdverseRadarMixin:
                 tv_atr = 0.0
         if tv_atr <= 0:
             tv_atr = float(getattr(self, "current_atr", 0) or 0)
-        if tv_atr > 0:
-            self._tv_atr_ref = tv_atr
+        atr_fallback = False
+        if tv_atr <= 0:
+            tv_atr = float(resolve_atr(None) or DEFAULT_ATR)
+            atr_fallback = True
+            logger.warning(
+                "open ATR missing → fallback %.4f (keep position + hard SL + TP12)",
+                tv_atr,
+            )
+        self._tv_atr_ref = tv_atr
         decision = resolve_open_atr(tv_atr=tv_atr)
         scenario = ATR_SCENARIO_TV
         atr_v = float(decision.get("initial_atr") or 0) or tv_atr
         if atr_v <= 0:
-            return {"ok": False, "reason": "no_atr_for_breath", **decision}
+            atr_v = float(DEFAULT_ATR)
+            atr_fallback = True
 
         frozen = self._frozen_hard_px()
         # Clear lock so init can set TV atr once (radar track only)
@@ -2991,13 +3028,14 @@ class AdverseRadarMixin:
         self.atr_scenario = scenario
         self.tp3_limit_active = False
         self._temp_tv_stop_active = False
-        atr_src = "tv_webhook"
+        atr_src = "fallback" if atr_fallback else "tv_webhook"
         meta = dict(getattr(self, "_vps_hard_sl_meta", None) or {})
         meta["atr_source"] = atr_src
         meta["atr_scenario"] = scenario
         meta["tp3_limit_active"] = False
         meta["frozen_hard"] = float(self._frozen_hard_px() or 0)
         meta["hard_widen"] = widen
+        meta["atr_fallback"] = atr_fallback
         self._vps_hard_sl_meta = meta
 
         detail = {
@@ -3011,12 +3049,17 @@ class AdverseRadarMixin:
             "tv_atr": tv_atr,
             "tp3_limit_active": False,
             "atr_source": atr_src,
+            "atr_fallback": atr_fallback,
             "hard_widen": widen,
         }
         if hasattr(self, "_log"):
             self._log(
                 "ATR_SCENARIO",
-                "TV webhook atr 武装雷达（硬止损永冻·仅TP1/TP2限价·TP3雷达管理）",
+                (
+                    "TV atr 武装雷达（硬止损永冻·仅TP1/TP2限价·TP3雷达管理）"
+                    if not atr_fallback
+                    else "ATR缺失·DEFAULT 武装雷达（硬止损+TP12已挂·不撤仓）"
+                ),
                 detail,
             )
         return detail

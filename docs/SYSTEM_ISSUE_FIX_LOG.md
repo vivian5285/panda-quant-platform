@@ -10,6 +10,7 @@
 
 | 日期 | 标签 | 一句话 | 状态 |
 |------|------|--------|------|
+| 2026-07-27 | `tv-open-no-skip-no-instant-flat` | TV有信号却跳过/开仓秒平：先平后开失败卡暂停、ATR武装失败误撤仓 | 已修 · §15 |
 | 2026-07-27 | `deepcoin-hedge-sterile-bind` | 深币强制 APP 开平仓双向；绑定探测拒单向；开仓再闸；不自动切模式 | 已修 · §14 |
 | 2026-07-27 | `xau-binance-only` | XAU 仅币安加载/分发；OKX/Gate/DeepCoin 只 ETH | 已修 · §10 |
 | 2026-07-27 | `deepcoin-open-orders` | 深币缺 `get_open_orders` → 先平后开假空簿；补 pending+trigger 合并 + raw 计数委托 | 已修 · §11 |
@@ -475,6 +476,33 @@ DeepCoin 账户可能是**开平仓模式（双向）**或**买卖模式（单�
 - [ ] APP 开平仓双向 + 有余额 → 验证通过可绑。  
 - [ ] 已绑但被切成单向 → 开仓拒开并告警。  
 - [ ] 开仓前仓≠0 或挂单≠0 → 仍 `OPEN_ABORT_DIRTY`。
+
+---
+
+## §15 · 2026-07-27 · TV 有信号却不开 / 开仓秒平
+
+### 现象（实盘 DB）
+
+| 时间 (UTC) | 结果 | 根因 |
+|------------|------|------|
+| 07-26 13:30 | `hard_sl_fail_abort` / `open_atr_scenario_failed` | 成交后 ATR 武装失败 → **误撤仓**（硬止损文案误导） |
+| 07-26 22:30 | `flat_timeout` | 先平后开未归零 → 暂停 |
+| 07-27 07:30 | `skipped` / `trading_paused` · `先平后开失败·仓位已平但挂单/对账未干净` | **持仓中仍卡暂停**，reclaim 要求 flat → 新 TV OPEN 永久跳过 |
+
+### 修复
+
+| 项 | 行为 |
+|----|------|
+| `should_retry_open_despite_pause` | `先平后开失败*` / `open_book_dirty` / hard-cap → 新 OPEN **直接清 pause 重试**（即使仍持仓） |
+| ATR 武装 | 缺失 atr → `DEFAULT_ATR` 降级；**禁止**因 ATR 失败 `_close_all` |
+| coalesce | `note_entry_filled` 在成交时刷新 10s discard 时钟（防慢开仓后迟到 CLOSE） |
+| 全所 | Binance/OKX/Gate（共享 supervisor）+ DeepCoin 平行路径同修 |
+
+### 复查点
+
+- [ ] paused=`先平后开失败·…` + 仍有仓 → 新 LONG 不 skip，走先平后开。  
+- [ ] 硬止损+TP12 已挂、atr=0 → 持仓保留、雷达用 DEFAULT。  
+- [ ] 空仓待命 + 无 pause → 下一笔真实 TV 开仓+TP12+硬止损+雷达候命。
 
 ---
 

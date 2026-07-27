@@ -74,6 +74,20 @@ class WebhookSymbolCoalesce:
                 return None
             return time.time() - ts
 
+    def note_entry_filled(self, symbol: str | None) -> None:
+        """Refresh discard clock at fill time (not only enqueue) to prevent instant-flat CLOSE."""
+        from app.core.symbol_registry import normalize_canonical_symbol
+
+        sym = normalize_canonical_symbol(symbol) if symbol else None
+        if not sym:
+            return
+        with self._lock:
+            self._last_open_dispatched_at[sym] = time.time()
+            logger.info(
+                "[WebhookCoalesce] note_entry_filled symbol=%s → post-OPEN CLOSE discard refreshed",
+                sym,
+            )
+
     def submit(
         self,
         payload: dict,

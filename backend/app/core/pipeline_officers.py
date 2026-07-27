@@ -43,6 +43,25 @@ def should_auto_unpause_on_flat(reason: str) -> bool:
     return False
 
 
+def should_retry_open_despite_pause(reason: str) -> bool:
+    """Next TV OPEN may retry force-flat even if still holding / book was dirty.
+
+    Sticky ``先平后开失败·…`` while still in a position used to skip OPEN forever
+    (reclaim requires flat). The OPEN path itself re-runs force_flat — allow it.
+    """
+    r = str(reason or "").strip()
+    if not r:
+        return False
+    if r.startswith("先平后开失败"):
+        return True
+    if r in ("open_book_dirty", "flat_timeout"):
+        return True
+    if r.startswith("open_orders_gt_"):
+        # Hard-cap pause: allow OPEN to mop+retry once flat path runs
+        return True
+    return False
+
+
 class SignalOfficer:
     @staticmethod
     def receive(host: Any, payload: dict) -> TradeLedger:

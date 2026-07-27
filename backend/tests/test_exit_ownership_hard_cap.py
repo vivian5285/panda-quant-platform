@@ -80,7 +80,23 @@ def test_stale_flip_fail_pause_reclaimed_on_new_tv_when_flat():
     blocked = AdverseRadarMixin._block_if_trading_paused(h, "LONG")
     assert blocked is None
     assert h.trading_paused is False
-    assert any(a[1] == "AUTO_UNPAUSE_STALE" for a in h.alerts)
+    assert any(a[1] in ("AUTO_UNPAUSE_STALE", "AUTO_UNPAUSE_RETRY") for a in h.alerts)
+
+
+def test_flip_fail_pause_cleared_even_when_still_holding():
+    """Holding + 先平后开失败 pause must not skip next OPEN (retry force_flat)."""
+    h = _H()
+    h._init_adverse_radar_fields()
+    h.trading_paused = True
+    h.trading_pause_reason = "先平后开失败·平仓后仓位未归零"
+    h.monitoring = True
+    h.watched_qty = 0.03
+    h._confirm_exchange_flat = lambda: False
+    h._save_state = lambda: None
+    blocked = AdverseRadarMixin._block_if_trading_paused(h, "LONG")
+    assert blocked is None
+    assert h.trading_paused is False
+    assert any(a[1] == "AUTO_UNPAUSE_RETRY" for a in h.alerts)
 
 
 def test_manual_pause_still_blocks_open():
