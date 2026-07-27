@@ -77,7 +77,7 @@ from app.services.close_alert_utils import (
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-DEEPCOIN_SUPERVISOR_VERSION = "v13.4.7-ws-radar"
+DEEPCOIN_SUPERVISOR_VERSION = "v13.91.6-hedge-sterile"
 SENTINEL_POLL_NORMAL = 45.0
 # Align with Binance/OKX/Gate — multi-user REST headroom
 SENTINEL_POLL_ARMING = 20.0
@@ -311,8 +311,42 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             f"🧠 深币 Supervisor user={user_id} {self.canonical_symbol} "
             f"[{DEEPCOIN_SUPERVISOR_VERSION}/{CLIENT_VERSION}] 已加载"
         )
+        self._hedge_mode_ok: bool | None = None
         self._start_signal_worker()
         self._start_idle_flat_patrol()
+
+    def _ensure_open_close_hedge_mode(self, *, reason: str = "") -> bool:
+        """拒跑买卖/单向：仅开平仓双向可量化。不自动切模式。"""
+        cached = getattr(self, "_hedge_mode_ok", None)
+        if cached is True:
+            return True
+        probe = cached is not True
+        try:
+            mode = self.client.is_hedge_mode(self.symbol, probe=probe)
+        except Exception as exc:
+            logger.error("DeepCoin hedge mode check failed (%s): %s", reason, exc)
+            mode = None
+        self._hedge_mode_ok = mode is True
+        if mode is True:
+            return True
+        logger.error(
+            "⛔ DeepCoin 非开平仓双向（mode=%s reason=%s）— 拒开；请在 APP 切「开平仓/双向」",
+            mode,
+            reason or "-",
+        )
+        if hasattr(self, "_alert"):
+            try:
+                self._alert(
+                    "critical",
+                    "HEDGE_MODE_REQUIRED",
+                    "深币须开平仓双向·拒开",
+                    "APP 须为「开平仓 / 双向」（posSide=long/short + merge）。"
+                    "买卖/单向会乱仓；平台不自动切模式。",
+                    {"hedge_mode": mode, "reason": reason},
+                )
+            except Exception:
+                pass
+        return False
 
     def _read_live_position_snapshot(self):
         from app.core.position_supervisor import PositionSupervisor
@@ -3640,6 +3674,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 }
         except Exception as exc:
             logger.warning("daily_loss_circuit check failed: %s", exc)
+        if not self._ensure_open_close_hedge_mode(reason="pre_open"):
+            return {
+                "status": "error",
+                "reason": "hedge_mode_required",
+                "message": "深币须开平仓双向，拒绝开仓（请在 APP 切换，平台不自动切）",
+            }
         leverage = self._bind_tv_leverage()
         # Pre-open mop: both merge modes + both posSides (hedge dual residual)
         self._flat_all_position_sides(rounds=3, reason="pre_open_mop")

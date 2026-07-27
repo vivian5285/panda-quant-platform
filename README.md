@@ -25,7 +25,7 @@
 | **Binance** | **ETH + XAU** | `PositionSupervisor` + `AdverseRadarMixin` | `/admin` `enabled_exchanges` | 唯一执行 XAU TV 的所；XAU 只分发给绑定币安 API 的用户 |
 | **OKX** | **ETH only** | 同 Binance 共享 `PositionSupervisor` | 同上 | 不创建 XAU supervisor；收到 XAU → `symbol_not_on_exchange` 跳过 |
 | **Gate** | **ETH only** | 同上 | 同上 | 同上 |
-| **DeepCoin** | **ETH only** | `DeepcoinPositionSupervisor`（共享 mixin；合约张数 min=1） | 同上 | 先平后开+TP12+硬止损+雷达与币安同逻辑；张/精度按深币规则；**开平仓(双向)/买卖(单向) 全侧净场**（防对侧幽灵仓） |
+| **DeepCoin** | **ETH only** | `DeepcoinPositionSupervisor`（共享 mixin；合约张数 min=1） | 同上 | 先平后开+TP12+硬止损+雷达与币安同逻辑；张/精度按深币规则；**强制 APP 开平仓/双向**（绑定探测；不自动切）+ 无菌闸全侧净场 |
 
 **仓位权重 + 杠杆（全所同一公式）**：`名义 = 权益 × margin_pct × leverage`（默认 20%×5x=1×权益；`/admin` 按用户覆盖）。分发时写入 `margin_pct_frac` / `entry_leverage`，币安/OKX/Gate/DeepCoin 同一套解析。
 
@@ -38,10 +38,10 @@
 3. TP 全成/部分成交 → 雷达/硬止损数量跟 **实时残仓**（REST cool 排队，结束 flush）  
 4. 限流共享 180s cool；哨兵 cool/pause **禁 REST**  
 5. 深币 TP1 ≥ **1 张**；整数切片自检允许偏离严格 30%（但禁止吃光雷达余仓）  
-6. **深币持仓模式**：开平仓(双向) 可能同时 long+short；平仓/先平后开必须 **batch-close + 两侧 reduceOnly**，撤单扫 `IsMergeMode=1/0/-1`；开仓前若仍有仓或挂单 → **拒开**（防反向单/蚂蚁仓/幽灵限价）
+6. **深币持仓模式（对齐单系统 v13.91.6-hedge-sterile）**：APP **必须「开平仓 / 双向」**（`posSide=long/short` + `mrgPosition=merge`）；**禁止「买卖 / 单向」**；代码**不自动切模式**。绑定 API 时探测双向，未通过则拒绑；开仓前再闸。平仓/先平后开：**batch-close + 两侧 reduceOnly**；撤单扫 `IsMergeMode=1/0/-1`；开仓前仓=0 且限价+条件单=0，否则 **拒开**（防反向/蚂蚁/幽灵）
 
 **管理员决策**：是否对某所「开放交易」只在后台开闸；代码侧须先保证逻辑已对齐、门禁不误拦、分发不串所。  
-事故复盘权威：`docs/SYSTEM_ISSUE_FIX_LOG.md`（§8 全所 harden · §10 XAU 仅币安 · §11 深币挂单 · §12 10s 忽略迟到平仓 · §13 深币双向净场）。
+事故复盘权威：`docs/SYSTEM_ISSUE_FIX_LOG.md`（§8 全所 harden · §10 XAU 仅币安 · §11 深币挂单 · §12 10s 忽略迟到平仓 · §13 深币双向净场 · §14 深币绑定强制开平仓双向）。
 ### 生产流水线验收清单（pipeline-ledger-v1 · 防今日复现）
 
 > 对照桌面《全域生产级工作流架构方案》+ `docs/SYSTEM_ISSUE_FIX_LOG.md` §9。  

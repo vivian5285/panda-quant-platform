@@ -21,7 +21,7 @@ settings = get_settings()
 WS_PUBLIC_SWAP = "wss://stream.deepcoin.com/streamlet/trade/public/swap?platform=api&version=v2"
 WS_PRIVATE = "wss://stream.deepcoin.com/v1/private"
 
-CLIENT_VERSION = "v13.4.6-flat-reconcile"
+CLIENT_VERSION = "v13.91.6-hedge-sterile"
 # 公开 instruments 接口失败时的硬编码兜底
 SYMBOL_TICK_FALLBACK = {
     "ETH-USDT-SWAP": "0.01",
@@ -516,6 +516,190 @@ class DeepcoinClient:
         elif res:
             logger.warning(f"[设置杠杆失败] {symbol} → {leverage}x | {res}")
         return res
+
+    # ── 开平仓(双向) 检测（不自动切模式）──────────────────────────
+
+    # APP「买卖/单向」拒收 posSide=long/short 时的常见文案
+    _ONE_WAY_MODE_MARKERS = (
+        "买卖",
+        "单向",
+        "one-way",
+        "one way",
+        "oneway",
+        "net mode",
+        "posside",
+        "pos side",
+        "position mode",
+        "positionmode",
+        "not support",
+        "unsupported",
+        "51000",
+        "invalid pos",
+    )
+
+    @staticmethod
+    def _res_err_text(res) -> str:
+        if not isinstance(res, dict):
+            return str(res or "")
+        parts = [str(res.get("msg") or ""), str(res.get("code") or "")]
+        data = res.get("data")
+        if isinstance(data, dict):
+            parts.extend(
+                [str(data.get("sMsg") or ""), str(data.get("sCode") or "")]
+            )
+        elif isinstance(data, list):
+            for row in data[:3]:
+                if isinstance(row, dict):
+                    parts.extend(
+                        [str(row.get("sMsg") or ""), str(row.get("sCode") or "")]
+                    )
+        return " ".join(parts)
+
+    def _err_suggests_one_way(self, res) -> bool:
+        text = self._res_err_text(res)
+        low = text.lower()
+        for marker in self._ONE_WAY_MODE_MARKERS:
+            if marker.lower() in low or marker in text:
+                return True
+        return False
+
+    def _infer_hedge_from_positions(self, symbol=None) -> bool | None:
+        """From live rows: net → 买卖/单向; long/short → 开平仓/双向; empty → unknown."""
+        symbol = symbol or self.trading_symbol
+        try:
+            raw = self.get_position_info(symbol)
+        except Exception as exc:
+            logger.warning(
+                "[User %s] DeepCoin hedge infer positions failed: %s",
+                self.user_id,
+                exc,
+            )
+            return None
+        rows = []
+        if isinstance(raw, dict):
+            data = raw.get("data")
+            if isinstance(data, list):
+                rows = data
+            elif isinstance(data, dict):
+                rows = [data]
+        sides: set[str] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                sz = abs(float(row.get("pos") or 0))
+            except (TypeError, ValueError):
+                sz = 0.0
+            if sz <= 0:
+                continue
+            side = str(row.get("posSide") or "").strip().lower()
+            if side:
+                sides.add(side)
+        if "net" in sides:
+            return False
+        if sides & {"long", "short"}:
+            return True
+        return None
+
+    def _probe_open_close_hedge(self, symbol=None) -> bool | None:
+        """Place far post_only/limit with posSide=long + mrgPosition=merge, then cancel.
+
+        Does NOT switch APP mode. Success ⇒ 开平仓 accepts long/short.
+        Explicit one-way rejection ⇒ False. Other failures ⇒ None.
+        """
+        symbol = symbol or self.trading_symbol
+        last = self.get_current_price(symbol, prefer_ws=False)
+        if not last or float(last) <= 0:
+            logger.warning(
+                "[User %s] DeepCoin hedge probe: no price for %s",
+                self.user_id,
+                symbol,
+            )
+            return None
+        try:
+            info = self.get_instrument_info(symbol) if hasattr(self, "get_instrument_info") else {}
+            min_sz = int(float((info or {}).get("minSz") or 1))
+        except Exception:
+            min_sz = 1
+        min_sz = max(1, min_sz)
+        probe_px = self.format_price(float(last) * 0.35, symbol)
+        cl_ord = f"hm{int(time.time()) % 10_000_000:07d}"
+        base = {
+            "instId": symbol,
+            "tdMode": "cross",
+            "side": "buy",
+            "posSide": "long",
+            "sz": self.format_contract_sz(min_sz),
+            "px": probe_px,
+            "mrgPosition": "merge",
+            "clOrdId": cl_ord,
+        }
+        last_res = None
+        for ord_type in ("post_only", "limit"):
+            params = {**base, "ordType": ord_type}
+            res = self.place_order(params)
+            last_res = res
+            if self._is_success(res):
+                data = res.get("data") or {}
+                oid = data.get("ordId") if isinstance(data, dict) else None
+                try:
+                    if oid:
+                        self.cancel_order(symbol, oid)
+                    else:
+                        self.cancel_order(symbol, cl_ord_id=cl_ord)
+                except Exception as cancel_exc:
+                    logger.warning(
+                        "[User %s] DeepCoin hedge probe cancel: %s",
+                        self.user_id,
+                        cancel_exc,
+                    )
+                try:
+                    self.cancel_all_open_orders(symbol)
+                except Exception:
+                    pass
+                logger.info(
+                    "[User %s] DeepCoin hedge probe OK (%s posSide=long merge)",
+                    self.user_id,
+                    ord_type,
+                )
+                return True
+            if self._err_suggests_one_way(res):
+                logger.warning(
+                    "[User %s] DeepCoin hedge probe → 买卖/单向: %s",
+                    self.user_id,
+                    self._res_err_text(res),
+                )
+                return False
+            # post_only unsupported → try limit; other errors keep last_res
+            err = self._res_err_text(res).lower()
+            if ord_type == "post_only" and (
+                "ordtype" in err or "order type" in err or "post" in err
+            ):
+                continue
+            break
+        logger.warning(
+            "[User %s] DeepCoin hedge probe inconclusive: %s",
+            self.user_id,
+            self._res_err_text(last_res),
+        )
+        return None
+
+    def is_hedge_mode(self, symbol=None, *, probe: bool = True) -> bool | None:
+        """True=开平仓/双向, False=买卖/单向, None=无法判定。
+
+        绝不自动切换 APP 持仓模式（与单系统 v13.91.6-hedge-sterile 一致）。
+        """
+        symbol = symbol or self.trading_symbol
+        inferred = self._infer_hedge_from_positions(symbol)
+        if inferred is not None:
+            return inferred
+        if not probe:
+            return None
+        return self._probe_open_close_hedge(symbol)
+
+    def require_hedge_mode(self, symbol=None) -> bool:
+        """Bind/runtime gate: only True when 开平仓/双向 confirmed."""
+        return self.is_hedge_mode(symbol, probe=True) is True
 
     # ── 下单 / 撤单 ──────────────────────────────────────────────
 

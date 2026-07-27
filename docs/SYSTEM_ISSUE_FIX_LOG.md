@@ -10,6 +10,7 @@
 
 | 日期 | 标签 | 一句话 | 状态 |
 |------|------|--------|------|
+| 2026-07-27 | `deepcoin-hedge-sterile-bind` | 深币强制 APP 开平仓双向；绑定探测拒单向；开仓再闸；不自动切模式 | 已修 · §14 |
 | 2026-07-27 | `xau-binance-only` | XAU 仅币安加载/分发；OKX/Gate/DeepCoin 只 ETH | 已修 · §10 |
 | 2026-07-27 | `deepcoin-open-orders` | 深币缺 `get_open_orders` → 先平后开假空簿；补 pending+trigger 合并 + raw 计数委托 | 已修 · §11 |
 | 2026-07-27 | `open-close-10s-parity` | 开仓后忽略迟到平仓宽限 5s→10s；深币 TP 自检放宽整数张；README 开平铁律 | 已修 · §12 |
@@ -448,7 +449,32 @@ DeepCoin 账户可能是**开平仓模式（双向）**或**买卖模式（单�
 
 - [ ] 人为制造 long+short 残仓 → 全平后两侧均为 0。  
 - [ ] 开仓前有挂单 → 拒开并告警。  
-- [ ] 买卖模式单侧仓仍正常开平。
+- [ ] ~~买卖模式单侧仓仍正常开平~~ → **已废止**：买卖/单向一律拒绑/拒开（见 §14）。
+
+---
+
+## §14 · 2026-07-27 · 深币绑定强制开平仓双向（hedge-sterile）
+
+### 现象 / 风险
+
+单系统主站已按 **开平仓双向**（`posSide=long/short` + `mrgPosition=merge`）上线 `v13.91.6-hedge-sterile`。买卖/单向下传 `posSide` 会乱仓；平台若自动切模式也不安全。SaaS 原先绑定校验未要求双向，且 checklist 仍按「单向」文案。
+
+### 修复
+
+| 项 | 行为 |
+|----|------|
+| `DeepcoinClient.is_hedge_mode` | 持仓推断（net→单向；long/short→双向）+ 远价 probe 下单后撤；**不切模式** |
+| `validate_deepcoin_api` | 必检 `hedge`；失败 → `api.hedge_required` 拒绑 |
+| `_ensure_open_close_hedge_mode` | 开仓前再闸；失败 → `HEDGE_MODE_REQUIRED` |
+| 前端 API 页 | 深币 prep 步骤 + checklist「开平仓双向」 |
+| 版本标签 | `CLIENT_VERSION` / Supervisor → `v13.91.6-hedge-sterile` |
+
+### 复查点
+
+- [ ] APP 买卖/单向 → 验证失败，无法绑定。  
+- [ ] APP 开平仓双向 + 有余额 → 验证通过可绑。  
+- [ ] 已绑但被切成单向 → 开仓拒开并告警。  
+- [ ] 开仓前仓≠0 或挂单≠0 → 仍 `OPEN_ABORT_DIRTY`。
 
 ---
 

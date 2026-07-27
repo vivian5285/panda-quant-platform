@@ -43,6 +43,10 @@ MESSAGES: dict[str, dict[str, str]] = {
         "zh": "单向持仓未就绪 — 请先平掉所有合约持仓与挂单，或在币安手动切换为单向持仓",
         "en": "One-way mode not ready — close all futures positions/orders or switch manually on Binance",
     },
+    "api.hedge_required": {
+        "zh": "深币须为「开平仓 / 双向」— 请在 APP 切换，勿用「买卖 / 单向」。平台不会自动切模式",
+        "en": "DeepCoin must be Open/Close (hedge) mode — switch in the APP; do not use Buy/Sell (one-way). We never auto-switch",
+    },
     "api.leverage_failed": {
         "zh": "无法将合约杠杆设为 5x — 请检查 API 合约交易权限",
         "en": "Could not set perpetual leverage to 5x — check Futures trading permission",

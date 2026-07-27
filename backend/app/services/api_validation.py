@@ -226,7 +226,7 @@ def validate_binance_api(api_key: str, api_secret: str, user_id: int = 0) -> dic
     }
 
 
-DEEPCOIN_REQUIRED_CHECK_IDS = ("connect", "balance", "leverage", "can_trade")
+DEEPCOIN_REQUIRED_CHECK_IDS = ("connect", "balance", "leverage", "can_trade", "hedge")
 
 
 def validate_deepcoin_api(
@@ -259,19 +259,49 @@ def validate_deepcoin_api(
     checks.append(_check_item("balance", equity > 0, hint_key="api.hint.balance"))
     checks.append(_check_item("can_trade", True))
 
+    # 开平仓/双向：不自动切模式；探测失败则拒绑（与单系统 hedge-sterile 一致）
+    hedge = client.is_hedge_mode(settings.DEEPCOIN_SYMBOL, probe=True)
+    hedge_ok = hedge is True
+    hedge_hint = None
+    if hedge is False:
+        hedge_hint = "api.hint.hedge_manual"
+    elif hedge is None:
+        hedge_hint = "api.hint.hedge_unconfirmed"
+    checks.append(_check_item("hedge", hedge_ok, hint_key=hedge_hint))
+
     lev = exchange_leverage("deepcoin")
-    lev_res = client.set_leverage(settings.DEEPCOIN_SYMBOL, lev)
+    lev_res = client.set_leverage(settings.DEEPCOIN_SYMBOL, lev, mrg_position="merge")
     leverage_ok = bool(lev_res and client._is_success(lev_res))
     checks.append(_check_item("leverage", leverage_ok, hint_key="api.hint.leverage"))
 
     price = client.get_current_price(settings.DEEPCOIN_SYMBOL)
+    open_orders = 0
+    open_positions = 0
+    try:
+        open_orders = len(client.get_open_orders(settings.DEEPCOIN_SYMBOL) or [])
+    except Exception:
+        open_orders = 0
+    try:
+        pos_raw = client.get_position_info(settings.DEEPCOIN_SYMBOL)
+        rows = (pos_raw or {}).get("data") if isinstance(pos_raw, dict) else []
+        if isinstance(rows, list):
+            for row in rows:
+                try:
+                    if abs(float((row or {}).get("pos") or 0)) > 0:
+                        open_positions += 1
+                except (TypeError, ValueError):
+                    pass
+    except Exception:
+        open_positions = 0
+
     base_fields = {
         "total_balance": equity,
         "available_balance": equity,
         "wallet_balance": equity,
         "unrealized_pnl": 0.0,
         "can_trade": True,
-        "one_way_mode": True,
+        # DeepCoin 要求双向开平仓；one_way_mode 字段对前端含义：False=非单向（已确认双向）
+        "one_way_mode": False if hedge_ok else True,
         "leverage_ok": leverage_ok,
         "withdraw_disabled": None,
         "enable_futures": True,
@@ -279,9 +309,9 @@ def validate_deepcoin_api(
         "symbol_price": price,
         "leverage": lev,
         "exchange": "deepcoin",
-        "open_orders_count": 0,
-        "open_positions_count": 0,
-        "hedge_mode": False,
+        "open_orders_count": open_orders,
+        "open_positions_count": open_positions,
+        "hedge_mode": hedge,
     }
 
     required_ok = all(c["ok"] for c in checks if c["id"] in DEEPCOIN_REQUIRED_CHECK_IDS)
@@ -290,6 +320,8 @@ def validate_deepcoin_api(
         message_key = "api.verify_incomplete"
         if equity <= 0:
             message_key = "api.zero_balance"
+        elif not hedge_ok:
+            message_key = "api.hedge_required"
         elif not leverage_ok:
             message_key = "api.leverage_failed"
         return _build_failure(

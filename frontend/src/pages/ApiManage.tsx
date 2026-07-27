@@ -53,6 +53,8 @@ const BINANCE_CHECK_IDS = [
   'leverage',
 ] as const
 
+const DEEPCOIN_CHECK_IDS = ['connect', 'balance', 'can_trade', 'hedge', 'leverage'] as const
+
 const ALT_EXCHANGE_CHECK_IDS = ['connect', 'balance', 'can_trade', 'leverage'] as const
 
 type AccountMode = 'master' | 'sub'
@@ -76,6 +78,13 @@ const PASSPHRASE_EXCHANGES: ExchangeId[] = ['deepcoin', 'okx']
 function isAltExchange(ex: string | undefined, selected?: ExchangeId): boolean {
   const id = (ex || selected || 'binance') as ExchangeId
   return id !== 'binance'
+}
+
+function checklistIdsFor(ex: string | undefined, selected?: ExchangeId): readonly string[] {
+  const id = (ex || selected || 'binance') as ExchangeId
+  if (id === 'deepcoin') return DEEPCOIN_CHECK_IDS
+  if (id === 'binance') return BINANCE_CHECK_IDS
+  return ALT_EXCHANGE_CHECK_IDS
 }
 
 function needsPassphrase(ex: ExchangeId): boolean {
@@ -292,6 +301,7 @@ export default function ApiManage() {
       can_trade: t('api.checkCanTrade'),
       balance: t('api.checkBalance'),
       one_way: t('api.checkOneWay'),
+      hedge: t('api.checkHedge'),
       leverage: t('api.checkLeverage'),
     }
     return labels[id] || id
@@ -308,6 +318,8 @@ export default function ApiManage() {
       'api.hint.one_way_need_flat': t('api.hintOneWayNeedFlat'),
       'api.hint.one_way_manual': t('api.hintOneWayManual'),
       'api.hint.one_way_failed': t('api.hintOneWayFailed'),
+      'api.hint.hedge_manual': t('api.hintHedgeManual'),
+      'api.hint.hedge_unconfirmed': t('api.hintHedgeUnconfirmed'),
       'api.hint.leverage': t('api.hintLeverage'),
     }
     if (item.hint_key && byKey[item.hint_key]) return byKey[item.hint_key]
@@ -318,6 +330,7 @@ export default function ApiManage() {
       can_trade: t('api.hintCanTrade'),
       balance: t('api.hintBalance'),
       one_way: t('api.hintOneWayFailed'),
+      hedge: t('api.hintHedgeManual'),
       leverage: t('api.hintLeverage'),
     }
     return fallback[item.id] || null
@@ -404,7 +417,7 @@ export default function ApiManage() {
   }
 
   const renderChecklist = (v: VerifyResult) => {
-    const checkIds = isAltExchange(v.exchange, exchange) ? ALT_EXCHANGE_CHECK_IDS : BINANCE_CHECK_IDS
+    const checkIds = checklistIdsFor(v.exchange, exchange)
     const items = v.checks?.length
       ? v.checks
       : checkIds.map(id => ({
@@ -416,6 +429,7 @@ export default function ApiManage() {
             (id === 'can_trade' && v.can_trade) ||
             (id === 'balance' && v.total_balance > 0) ||
             (id === 'one_way' && v.one_way_mode) ||
+            (id === 'hedge' && v.hedge_mode === true) ||
             (id === 'leverage' && v.leverage_ok),
         }))
     const passed = v.checks_passed ?? items.filter(i => i.ok).length
@@ -570,20 +584,20 @@ export default function ApiManage() {
           <p className="text-muted api-prep-intro">{t('api.prepIntro')}</p>
           <ol className="api-prep-steps">
             <li>
-              <strong>{t('api.prepStep1Title')}</strong>
-              <p>{t('api.prepStep1Body')}</p>
+              <strong>{exchange === 'deepcoin' ? t('api.prepStep1TitleDeepcoin') : t('api.prepStep1Title')}</strong>
+              <p>{exchange === 'deepcoin' ? t('api.prepStep1BodyDeepcoin') : t('api.prepStep1Body')}</p>
             </li>
             <li>
-              <strong>{t('api.prepStep2Title')}</strong>
-              <p>{t('api.prepStep2Body')}</p>
+              <strong>{exchange === 'deepcoin' ? t('api.prepStep2TitleDeepcoin') : t('api.prepStep2Title')}</strong>
+              <p>{exchange === 'deepcoin' ? t('api.prepStep2BodyDeepcoin') : t('api.prepStep2Body')}</p>
             </li>
             <li>
-              <strong>{t('api.prepStep3Title')}</strong>
-              <p>{t('api.prepStep3Body')}</p>
+              <strong>{exchange === 'deepcoin' ? t('api.prepStep3TitleDeepcoin') : t('api.prepStep3Title')}</strong>
+              <p>{exchange === 'deepcoin' ? t('api.prepStep3BodyDeepcoin') : t('api.prepStep3Body')}</p>
             </li>
             <li>
               <strong>{t('api.prepStep4Title')}</strong>
-              <p>{t('api.prepStep4Body')}</p>
+              <p>{exchange === 'deepcoin' ? t('api.prepStep4BodyDeepcoin') : t('api.prepStep4Body')}</p>
             </li>
           </ol>
         </div>
