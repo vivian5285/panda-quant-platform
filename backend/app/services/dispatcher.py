@@ -7,9 +7,10 @@ from app.models import User, ApiStatus
 from app.core.exchange_factory import create_exchange_client, create_supervisor, user_has_api_credentials, user_exchange
 from app.core.symbol_registry import (
     DEFAULT_CANONICAL,
-    enabled_trading_symbols,
+    exchange_allows_symbol,
     extract_payload_symbol,
     normalize_canonical_symbol,
+    trading_symbols_for_exchange,
 )
 from app.services.platform_public_settings import is_exchange_enabled
 from app.services.trade_logger import TradeLogger
@@ -135,7 +136,8 @@ class UserSupervisorPool:
 
             trade_logger = TradeLogger(db)
             user_events = _user_event_handler(db)
-            symbols = enabled_trading_symbols()
+            # Binance: ETH+XAU; OKX/Gate/DeepCoin: ETH only (no XAU live)
+            symbols = trading_symbols_for_exchange(user_exchange(user))
             audits: list[dict] = []
             primary_audit: dict | None = None
 
@@ -393,6 +395,15 @@ class SignalDispatcher:
                         "symbol": signal_symbol,
                         "status": "risk_blocked",
                         "reason": "exchange_not_open",
+                    })
+                    continue
+                # XAU TV → Binance-bound API users only
+                if not exchange_allows_symbol(user_exchange(user), signal_symbol):
+                    results.append({
+                        "user_id": s.user_id,
+                        "symbol": signal_symbol,
+                        "status": "risk_blocked",
+                        "reason": "symbol_not_on_exchange",
                     })
                     continue
                 if is_user_paused(db, s.user_id) and not is_close:

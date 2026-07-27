@@ -10,6 +10,8 @@
 
 | 日期 | 标签 | 一句话 | 状态 |
 |------|------|--------|------|
+| 2026-07-27 | `xau-binance-only` | XAU 仅币安加载/分发；OKX/Gate/DeepCoin 只 ETH | 已修 · §10 |
+| 2026-07-27 | `tp-radar-resize-10s` | TP 部分成交缩雷达 + cool 排队；开平铁律 10s；DeepCoin TP1≥1 张 | 已修 · f80a27d |
 | 2026-07-27 | `pipeline-ledger-v1` | 统一 TradeLedger+岗位流水线+督察+REST阀门；补相位卡住/持仓再督察/硬止损公式/FLAT清pause | 已修 · §9 |
 | 2026-07-26 | `open_orders_gt_5` + `-1003` + TG 风暴 | 雷达 thrash + stale book + 暂停重复告警 → 硬帽熔断刷屏 | 已修 · 对照下方 §1 |
 | 2026-07-26 | `initial_qty` 压扁 | 监控中把开仓基线压成余仓 → TP 对账错乱 | 已修 · §2 |
@@ -348,6 +350,35 @@
 | 三方同步 | 本地 = GitHub `main` = VPS `git rev-parse --short HEAD` **同数字** |
 | VPS | `/home/panda/panda-quant-platform` · `docker compose` backend |
 | 部署后最小验证 | ① 账本相位 ② TP 自检 ③ pause/cool 无 REST ④ 通讯门禁 ⑤ 全交易所同行为 |
+
+---
+
+## §10 · 2026-07-27 · XAU 仅币安路由（防串所）
+
+### 现象 / 风险
+
+`enabled_trading_symbols()` 对**每个**用户加载 ETH+XAU supervisor。OKX/Gate/DeepCoin 若后台开放，会错误注册 XAU 并可能接到 XAU TV（与「仅币安跑黄金」运维铁律冲突）。
+
+### 根因
+
+分发与加载未按交易所过滤品种；注册表虽有各所 XAU native 映射，但产品政策是非币安不执行 XAU。
+
+### 修复
+
+| 项 | 行为 |
+|----|------|
+| `trading_symbols_for_exchange` | 币安 → ETH+XAU；其余 → 仅 ETH |
+| `exchange_allows_symbol` | 分发准入二次门禁 |
+| `SupervisorPool.add_user` | 按用户交易所加载品种 |
+| `SignalDispatcher.dispatch` | XAU + 非币安 → `symbol_not_on_exchange` |
+| 单测 | `test_trading_symbols_xau_binance_only` |
+
+### 复查点
+
+- [ ] 非币安用户启动日志只有 ETH supervisor，无 XAU。  
+- [ ] 人为向 OKX 用户打 XAU TV → 结果含 `symbol_not_on_exchange`，无开仓。  
+- [ ] 币安用户仍可收 ETH + XAU。  
+- [ ] README「多交易所实盘对齐」与本条一致。
 
 ---
 

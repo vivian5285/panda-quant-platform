@@ -1,4 +1,8 @@
-"""Dual-symbol registry: ETHUSDT + XAUUSDT across Binance / OKX / Gate / Deepcoin."""
+"""Dual-symbol registry: ETHUSDT (+ XAUUSDT on Binance only for live execution).
+
+OKX / Gate / DeepCoin run ETH perpetual only. XAU TV is routed exclusively to
+users bound to Binance API (see ``trading_symbols_for_exchange``).
+"""
 
 from __future__ import annotations
 
@@ -165,7 +169,7 @@ def extract_payload_symbol(payload: dict | None, *, require: bool = True) -> str
 
 
 def enabled_trading_symbols() -> list[str]:
-    """Ordered list of symbols the VPS runs for each user."""
+    """Ordered list of symbols configured for the platform (may include XAU)."""
     from app.config import get_settings
 
     settings = get_settings()
@@ -176,6 +180,30 @@ def enabled_trading_symbols() -> list[str]:
         if can and can not in out:
             out.append(can)
     return out or [DEFAULT_CANONICAL]
+
+
+def trading_symbols_for_exchange(exchange: str | None) -> list[str]:
+    """Symbols this exchange may run live.
+
+    Policy (ops 2026-07-27):
+      - Binance: ETH + XAU (when both in TRADING_SYMBOLS)
+      - OKX / Gate / DeepCoin: ETH only — no XAU TV execution
+    """
+    ex = (exchange or "binance").strip().lower()
+    if ex == "gateio":
+        ex = "gate"
+    all_syms = enabled_trading_symbols()
+    if ex == "binance":
+        return list(all_syms)
+    return [s for s in all_syms if s == CANONICAL_ETH] or [DEFAULT_CANONICAL]
+
+
+def exchange_allows_symbol(exchange: str | None, canonical: str | None) -> bool:
+    """True if this exchange may execute the canonical symbol."""
+    can = normalize_canonical_symbol(canonical, default=None)
+    if not can:
+        return False
+    return can in trading_symbols_for_exchange(exchange)
 
 
 def supervisor_state_key(exchange: str | None, user_id: int, canonical: str | None) -> str:

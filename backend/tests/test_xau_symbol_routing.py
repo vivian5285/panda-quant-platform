@@ -12,6 +12,24 @@ def test_xau_tv_ticker_normalizes():
     assert normalize_canonical_symbol("BINANCE:XAUUSDT.P") == CANONICAL_XAU
 
 
+def test_trading_symbols_xau_binance_only():
+    """Non-Binance exchanges must not load/run XAU supervisors."""
+    from app.core.symbol_registry import (
+        exchange_allows_symbol,
+        trading_symbols_for_exchange,
+    )
+
+    assert CANONICAL_XAU in trading_symbols_for_exchange("binance")
+    assert CANONICAL_ETH in trading_symbols_for_exchange("binance")
+    for ex in ("okx", "gate", "deepcoin", "gateio"):
+        syms = trading_symbols_for_exchange(ex)
+        assert CANONICAL_ETH in syms
+        assert CANONICAL_XAU not in syms
+        assert exchange_allows_symbol(ex, CANONICAL_ETH) is True
+        assert exchange_allows_symbol(ex, CANONICAL_XAU) is False
+    assert exchange_allows_symbol("binance", CANONICAL_XAU) is True
+
+
 def test_dingtalk_theme_xau_not_eth():
     theme = resolve_exchange_theme("binance", "XAUUSDT")
     assert theme["canonical_symbol"] == CANONICAL_XAU

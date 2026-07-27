@@ -18,6 +18,18 @@
 **两次 TV 只有三条路**：①TP1/TP2 止盈（+雷达兑现剩余）②雷达 BE/微赚扫出→更优价再入（≤1 次）③硬止损认输不重入。  
 验收必须以：交易所空仓零挂单 + 本地/GitHub/VPS **三方 commit 同数字** + 日志/订单 JSON / 钉钉为准。
 
+### 多交易所实盘对齐（2026-07-27 · 可候命真实 TV）
+
+| 交易所 | 品种 | 监督器 | 开关 | 说明 |
+|--------|------|--------|------|------|
+| **Binance** | **ETH + XAU** | `PositionSupervisor` + `AdverseRadarMixin` | `/admin` `enabled_exchanges` | 唯一执行 XAU TV 的所；XAU 只分发给绑定币安 API 的用户 |
+| **OKX** | **ETH only** | 同 Binance 共享 `PositionSupervisor` | 同上 | 不创建 XAU supervisor；收到 XAU → `symbol_not_on_exchange` 跳过 |
+| **Gate** | **ETH only** | 同上 | 同上 | 同上 |
+| **DeepCoin** | **ETH only** | `DeepcoinPositionSupervisor`（共享 mixin；合约张数 min=1） | 同上 | 先平后开+TP12+硬止损+雷达与币安同逻辑；张/精度按深币规则 |
+
+**对齐铁律（全所同一套）**：先平后开 → 净场核实撤单 → 开仓 → TP1/TP2 + 硬止损 + 雷达候命；**10s** OPEN/CLOSE 铁律；TP 全成/部分成交按实盘残仓缩雷达/硬止损（REST cool 下排队，cool 结束 flush）；限流共享 180s cool，哨兵 cool/pause **禁 REST**。  
+**管理员决策**：是否对某所「开放交易」只在后台开闸；代码侧须先保证逻辑已对齐、门禁不误拦、分发不串所。  
+事故复盘权威：`docs/SYSTEM_ISSUE_FIX_LOG.md`（含 §8 全所 harden · §10 XAU 仅币安路由）。
 ### 生产流水线验收清单（pipeline-ledger-v1 · 防今日复现）
 
 > 对照桌面《全域生产级工作流架构方案》+ `docs/SYSTEM_ISSUE_FIX_LOG.md` §9。  
@@ -78,7 +90,7 @@ SIGNAL_RECEIVED → PENDING_CLEAR → CLEARED → ENTRY_SUBMITTED
 | 三方 commit | `git rev-parse --short HEAD` 本地 = GitHub `main` = VPS **肉眼同数字** |
 | VPS 路径 | `/home/panda/panda-quant-platform` |
 | Webhook | `https://twinstar.pro/gemini/webhook` → `:6010` |
-| 交易对 | **ETH + XAU**（`TRADING_SYMBOLS=ETHUSDT,XAUUSDT`；图表 ETH 90m / XAU 45m） |
+| 交易对 | **币安 ETH+XAU**；**OKX/Gate/DeepCoin 仅 ETH**（`trading_symbols_for_exchange`；`TRADING_SYMBOLS` 仍可写 ETH,XAU，非币安自动滤掉 XAU） |
 | 再入场开关 | `SMART_REENTRY_ETH_ENABLED` / `SMART_REENTRY_XAU_ENABLED`（默认 True） |
 | E2E | 生产必须 `E2E_FORCE_NOTIONAL_USD=0`（烟雾后立刻还原） |
 | 日亏熔断 | **`DAILY_LOSS_CIRCUIT_ENABLED=False`（生产关闭）** — 曾误熔断挡真实 TV |
