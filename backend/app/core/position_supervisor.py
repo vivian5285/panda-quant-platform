@@ -1359,10 +1359,48 @@ class PositionSupervisor(
         except Exception:
             return -1
 
+    @staticmethod
+    def _classify_book_clean_result(
+        *,
+        raw_after: int | None,
+        orders_after: int | None,
+        cancel_leftover: int | None,
+    ) -> str:
+        """Return clean | dirty | unknown.
+
+        - clean: verified zero working orders
+        - dirty: confirmed residual > 0 (must abort reopen)
+        - unknown: list/mop returned -1 (cool-down / query fail) — must NOT
+          permanently block reopen after position is already flat
+        """
+        try:
+            raw = int(raw_after) if raw_after is not None else -1
+        except (TypeError, ValueError):
+            raw = -1
+        try:
+            filtered = int(orders_after) if orders_after is not None else -1
+        except (TypeError, ValueError):
+            filtered = -1
+        leftover = cancel_leftover
+        try:
+            leftover_i = int(leftover) if leftover is not None else None
+        except (TypeError, ValueError):
+            leftover_i = -1
+
+        if raw > 0 or filtered > 0 or (leftover_i is not None and leftover_i > 0):
+            return "dirty"
+        if raw == 0 and filtered == 0 and (leftover_i is None or leftover_i == 0):
+            return "clean"
+        return "unknown"
+
     def _ensure_book_clean_before_open(self, reason: str = "pre_open") -> dict:
         """
         After flat (or before OPEN): wipe residual TP/stop/ghost LIMIT so OPEN
-        only proceeds on a raw-empty book (no position AND no working orders).
+        only proceeds on a raw-empty book when verifiable.
+
+        Confirmed leftover (>0) → ok=False / allow_open=False.
+        Query unknown (-1, cool-down, list fail) after mop retries → degraded
+        allow_open=True so 先平后开 never becomes「只平不开」.
         """
         detail: dict = {
             "reason": reason,
@@ -1373,10 +1411,15 @@ class PositionSupervisor(
             "raw_before": 0,
             "raw_after": -1,
             "ok": False,
+            "allow_open": False,
+            "book_status": "unknown",
+            "degraded_unknown": False,
         }
         detail["orders_before"] = self._count_open_book_orders()
         detail["raw_before"] = self._count_raw_exchange_orders(force_refresh=True)
-        for round_i in range(3):
+        # Extra rounds when book list is unknown (cool-down / transient)
+        max_rounds = 5
+        for round_i in range(max_rounds):
             detail["rounds"] = round_i + 1
             if hasattr(self, "_purge_defense_orders_on_flat"):
                 self._purge_defense_orders_on_flat(f"pre_open_{reason}", notify=False)
@@ -1393,7 +1436,7 @@ class PositionSupervisor(
             self.consumed_tp_levels = []
             if hasattr(self, "radar_latched"):
                 self.radar_latched = False
-            time.sleep(0.35 + round_i * 0.15)
+            time.sleep(0.35 + round_i * 0.25)
             raw = self._count_raw_exchange_orders(force_refresh=True)
             filtered = self._count_open_book_orders()
             leftover_meta = (
@@ -1404,18 +1447,49 @@ class PositionSupervisor(
             detail["raw_after"] = raw
             detail["orders_after"] = filtered
             detail["cancel_leftover"] = leftover_meta
-            # Flat = raw empty AND known. Fail-closed: fetch error (-1) → dirty.
-            if raw == 0 and filtered == 0 and (leftover_meta is None or leftover_meta == 0):
+            status = self._classify_book_clean_result(
+                raw_after=raw,
+                orders_after=filtered,
+                cancel_leftover=leftover_meta,
+            )
+            detail["book_status"] = status
+            if status == "clean":
                 detail["ok"] = True
+                detail["allow_open"] = True
+                detail["degraded_unknown"] = False
                 break
-            if raw < 0 or filtered < 0 or (leftover_meta is not None and leftover_meta < 0):
+            if status == "dirty":
                 detail["ok"] = False
-                # keep trying mop rounds, but never mark clean on unknown
+                detail["allow_open"] = False
+                # keep mopping confirmed leftovers
                 continue
-        if not detail["ok"]:
-            rem = detail.get("raw_after")
-            if rem is None or rem < 0:
-                rem = detail.get("orders_after")
+            # unknown: keep retrying; do not mark dirty
+            detail["ok"] = False
+            detail["allow_open"] = False
+            continue
+
+        if detail["book_status"] == "unknown" and not detail["allow_open"]:
+            # Position-flat reopen path: unknown book after cancel mop must not
+            # permanently block the new TV open (incident: raw=-1 → 只平不开).
+            detail["degraded_unknown"] = True
+            detail["ok"] = False
+            detail["allow_open"] = True
+            detail["book_status"] = "unknown"
+            self._log(
+                "FLIP_CLEAN",
+                f"开仓前挂单状态未知(降级放行) raw={detail.get('raw_after')} "
+                f"filtered={detail.get('orders_after')} leftover={detail.get('cancel_leftover')} | {reason}",
+                detail,
+            )
+            self._alert(
+                "warning",
+                "FLIP_CLEAN_DEGRADED",
+                "开仓前挂单查询失败·降级继续开仓",
+                f"仓已平但挂单列表不可读(raw={detail.get('raw_after')}/"
+                f"filtered={detail.get('orders_after')})，已多次撤单后降级放行开仓 | {reason}",
+                detail,
+            )
+        elif not detail["allow_open"]:
             self._log(
                 "FLIP_CLEAN",
                 f"开仓前挂单未清零 raw={detail.get('raw_after')} filtered={detail.get('orders_after')} | {reason}",
@@ -1491,6 +1565,8 @@ class PositionSupervisor(
         注意：清场不得抹掉本笔 TV 已下发的 tv_sl（否则开仓算仓会 missing_tv_sl）。
         平仓失败：按 1s/3s/6s 重试；仍失败则中止开仓并暂停（严禁仓位不明时开新仓）。
         查仓 QUERY_FAILED：fail-closed 拒开（绝不把未知仓位当空仓）。
+        挂单列表未知(raw=-1 / cool-down)：仓已确认归零后降级放行开仓（禁止只平不开）。
+        挂单确认残留(>0)：仍中止开仓并暂停。
         """
         from app.core.exchange_errors import ExchangeTransientError
 
@@ -1571,7 +1647,7 @@ class PositionSupervisor(
                 self.radar_latched = False
             if hasattr(self, "_save_state"):
                 self._save_state()
-            if not bool(clean.get("ok", True)):
+            if not bool(clean.get("allow_open", clean.get("ok", True))):
                 return self._abort_force_flat(
                     reason,
                     fail_kind="空仓但挂单未清零",
@@ -1668,14 +1744,28 @@ class PositionSupervisor(
         recon = self._reconcile_live_vs_book(
             expect_flat=True, context="force_flat", notify_ok=False,
         )
-        book_ok = bool(clean.get("ok"))
+        book_allow = bool(clean.get("allow_open", clean.get("ok")))
         recon_ok = bool(recon.get("ok", True))
-        ok = book_ok and recon_ok
-        book_txt = "清零✓" if book_ok else f"残留{clean.get('orders_after')}"
+        # Reconcile query failure after confirmed flat must not block reopen
+        # (same class of bug as raw=-1 book unknown).
+        if not recon_ok and recon.get("error"):
+            recon_ok = True
+            clean = dict(clean)
+            clean["reconcile_degraded"] = True
+        ok = book_allow and recon_ok
+        book_txt = (
+            "清零✓"
+            if clean.get("ok")
+            else (
+                "未知·降级放行"
+                if clean.get("degraded_unknown")
+                else f"残留{clean.get('orders_after')}"
+            )
+        )
         recon_txt = "一致" if recon_ok else "异常"
         # 实盘清场核实后推送一次（开仓钉钉随后由 _open_position 再发）
         self._alert(
-            "info" if ok else "warning",
+            "info" if ok and not clean.get("degraded_unknown") else "warning",
             "FLIP_CLEAN",
             "先平后开：检测到已有持仓，已市价全平并撤单，准备执行新开仓"
             if ok
@@ -1886,7 +1976,9 @@ class PositionSupervisor(
             if purged:
                 self._log("SIGNAL", f"🧹 开仓前清残留硬止损/条件单 ×{purged}")
         time.sleep(0.4)
-        # Hard gate: never open on a non-empty book (ghost LIMIT / leftover STOP).
+        # Hard gate: abort only on *confirmed* leftovers.
+        # Unknown (-1 / cool-down list fail) must degrade-allow — otherwise
+        # 先平后开 becomes「只平不开」(user6 2026-07-26 trade127).
         leftover = (
             int(cancel_meta.get("leftover"))
             if isinstance(cancel_meta, dict) and cancel_meta.get("leftover") is not None
@@ -1897,7 +1989,12 @@ class PositionSupervisor(
             if hasattr(self, "_count_raw_exchange_orders")
             else -1
         )
-        if (leftover is not None and leftover != 0) or raw_left != 0:
+        book_status = self._classify_book_clean_result(
+            raw_after=raw_left,
+            orders_after=0 if raw_left == 0 else (-1 if raw_left < 0 else raw_left),
+            cancel_leftover=leftover,
+        )
+        if book_status != "clean":
             if hasattr(self.client, "_mop_up_leftover_orders"):
                 try:
                     leftover = int(self.client._mop_up_leftover_orders(self.symbol, rounds=2))
@@ -1905,11 +2002,16 @@ class PositionSupervisor(
                     leftover = -1
                 time.sleep(0.3)
                 raw_left = self._count_raw_exchange_orders(force_refresh=True)
-            if raw_left != 0 or (leftover is not None and leftover != 0):
+                book_status = self._classify_book_clean_result(
+                    raw_after=raw_left,
+                    orders_after=0 if raw_left == 0 else (-1 if raw_left < 0 else raw_left),
+                    cancel_leftover=leftover,
+                )
+            if book_status == "dirty":
                 self._log(
                     "ERROR",
                     f"开仓中止·盘口未清 raw={raw_left} leftover={leftover}",
-                    {"raw": raw_left, "leftover": leftover},
+                    {"raw": raw_left, "leftover": leftover, "book_status": book_status},
                 )
                 self._alert(
                     "critical",
@@ -1917,7 +2019,7 @@ class PositionSupervisor(
                     "开仓中止·盘口未清零",
                     f"{getattr(self, 'canonical_symbol', self.symbol)} "
                     f"仍有 raw={raw_left} 笔挂单，拒绝开仓",
-                    {"raw": raw_left, "leftover": leftover},
+                    {"raw": raw_left, "leftover": leftover, "book_status": book_status},
                 )
                 if hasattr(self, "_pause_trading"):
                     try:
@@ -1931,6 +2033,20 @@ class PositionSupervisor(
                     "raw_orders": raw_left,
                     "cancel_leftover": leftover,
                 }
+            if book_status == "unknown":
+                self._log(
+                    "WARN",
+                    f"开仓前盘口状态未知·降级继续 raw={raw_left} leftover={leftover}",
+                    {"raw": raw_left, "leftover": leftover, "book_status": book_status},
+                )
+                self._alert(
+                    "warning",
+                    "OPEN_BOOK_UNKNOWN",
+                    "开仓前挂单查询失败·降级继续开仓",
+                    f"{getattr(self, 'canonical_symbol', self.symbol)} "
+                    f"挂单列表不可读(raw={raw_left})，已撤单后降级开仓",
+                    {"raw": raw_left, "leftover": leftover, "book_status": book_status},
+                )
         # 双保险：先平后开清场若仍抹掉 tv_sl，从硬止损缓存/本笔字段恢复后再算仓
         # Restore Pine stop_loss ref only (never VPS hang price into tv_sl).
         if float(getattr(self, "tv_sl", 0) or 0) <= 0:

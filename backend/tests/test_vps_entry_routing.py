@@ -177,7 +177,14 @@ def test_force_flat_dirty_book_after_flat_aborts():
     sup._close_all = MagicMock()
     # Flat succeeds on first wait; dirty book must still abort open
     dirty = {
-        "ok": False, "orders_after": 2, "orders_before": 2, "rounds": 3, "reason": "x",
+        "ok": False,
+        "allow_open": False,
+        "book_status": "dirty",
+        "orders_after": 2,
+        "orders_before": 2,
+        "raw_after": 2,
+        "rounds": 3,
+        "reason": "x",
     }
     clean = MagicMock(return_value=dirty)
     recon = MagicMock(return_value={"ok": True})
@@ -192,6 +199,43 @@ def test_force_flat_dirty_book_after_flat_aborts():
     sup._pause_trading.assert_called()
     types = [c.args[1] for c in sup._alert.call_args_list]
     assert "FLIP_CLEAN_ABORT" in types
+
+
+def test_force_flat_unknown_book_after_flat_allows_reopen():
+    """仓已平 + raw=-1：降级放行开仓，禁止只平不开。"""
+    sup, _ = _make_supervisor()
+    sup.tv_sl = 3200.0
+    sup._get_active_position = MagicMock(
+        return_value={"size": 1.0, "side": "LONG", "entry_price": 3300.0},
+    )
+    sup._purge_defense_orders_on_flat = MagicMock()
+    sup._cancel_all_verified = MagicMock()
+    sup._close_all = MagicMock()
+    unknown = {
+        "ok": False,
+        "allow_open": True,
+        "degraded_unknown": True,
+        "book_status": "unknown",
+        "orders_after": -1,
+        "orders_before": 2,
+        "raw_after": -1,
+        "cancel_leftover": -1,
+        "rounds": 5,
+        "reason": "x",
+    }
+    clean = MagicMock(return_value=unknown)
+    recon = MagicMock(return_value={"ok": True})
+    sup._wait_until_flat = MagicMock(return_value=True)
+    sup._alert = MagicMock()
+    sup._pause_trading = MagicMock()
+    with patch.object(sup, "_ensure_book_clean_before_open", clean), \
+         patch.object(sup, "_reconcile_live_vs_book", recon), \
+         patch("app.core.position_supervisor.time.sleep", return_value=None):
+        ok = PositionSupervisor._force_flat_before_open(sup, "TV OPEN [LONG]")
+    assert ok is True
+    sup._pause_trading.assert_not_called()
+    types = [c.args[1] for c in sup._alert.call_args_list]
+    assert "FLIP_CLEAN_ABORT" not in types
 
 
 def test_atr_invalid_falls_back_when_tv_stop_present():

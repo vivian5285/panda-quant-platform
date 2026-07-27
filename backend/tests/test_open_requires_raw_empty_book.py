@@ -61,6 +61,8 @@ class TestOpenRequiresRawEmptyBook(unittest.TestCase):
                 with patch.object(sup, "_collect_adverse_stop_orders", return_value=[]):
                     detail = sup._ensure_book_clean_before_open("test_ghost")
         self.assertFalse(detail["ok"])
+        self.assertFalse(detail["allow_open"])
+        self.assertEqual(detail["book_status"], "dirty")
         self.assertEqual(detail["raw_after"], 1)
 
     def test_ensure_book_clean_ok_when_raw_empty(self):
@@ -70,7 +72,30 @@ class TestOpenRequiresRawEmptyBook(unittest.TestCase):
         with patch("app.core.position_supervisor.time.sleep", return_value=None):
             detail = sup._ensure_book_clean_before_open("test_clean")
         self.assertTrue(detail["ok"])
+        self.assertTrue(detail["allow_open"])
         self.assertEqual(detail["raw_after"], 0)
+
+    def test_ensure_book_clean_unknown_degrades_allow_open(self):
+        """raw=-1 must not permanently block reopen after flat (只平不开 incident)."""
+        sup, client = _sup()
+        client.cancel_all_open_orders.return_value = {"leftover": -1, "errors": ["list"]}
+        with patch("app.core.position_supervisor.time.sleep", return_value=None):
+            with patch.object(sup, "_count_raw_exchange_orders", return_value=-1):
+                with patch.object(sup, "_count_open_book_orders", return_value=-1):
+                    detail = sup._ensure_book_clean_before_open("test_unknown")
+        self.assertFalse(detail["ok"])
+        self.assertTrue(detail["allow_open"])
+        self.assertTrue(detail["degraded_unknown"])
+        self.assertEqual(detail["book_status"], "unknown")
+        types = [c.args[1] for c in sup._alert.call_args_list]
+        self.assertIn("FLIP_CLEAN_DEGRADED", types)
+
+    def test_classify_book_clean_result(self):
+        cls = PositionSupervisor._classify_book_clean_result
+        self.assertEqual(cls(raw_after=0, orders_after=0, cancel_leftover=0), "clean")
+        self.assertEqual(cls(raw_after=1, orders_after=0, cancel_leftover=0), "dirty")
+        self.assertEqual(cls(raw_after=-1, orders_after=-1, cancel_leftover=-1), "unknown")
+        self.assertEqual(cls(raw_after=-1, orders_after=0, cancel_leftover=0), "unknown")
 
 
 if __name__ == "__main__":
