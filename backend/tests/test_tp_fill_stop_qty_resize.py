@@ -317,3 +317,68 @@ def test_tp2_fill_stop_qty_seventy_percent_path():
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def test_tp_partial_fill_second_chunk_resizes_again():
+    """Continuous partial TP fills: stop qty follows live residual each drop."""
+    client = RecordingClient()
+    stop_px = 1895.79
+    initial_qty = 0.033
+    mid = 0.025
+    remaining = 0.017
+    h = _host(client, stop_px=stop_px, initial_qty=initial_qty, watched_qty=initial_qty)
+    hang_px = _hang_px(h, stop_px)
+    _seed_stop(client, 9200, initial_qty, hang_px)
+    h._pending_adverse_algo_ids = [9200]
+    h._classify_reduction_cause = lambda old, new, curr_px=None: "tp1_filled"
+
+    h._orchestrate_qty_change(initial_qty, mid, 1918.0, 1926.0)
+    places1 = [e for e in client.events if e["kind"] == "place_stop"]
+    assert places1
+    assert places1[-1]["quantity"] == pytest.approx(mid, abs=5e-4)
+    assert 1 in h._stop_qty_resized_levels
+    assert float(h._stop_qty_last_resized_to) == pytest.approx(mid, abs=5e-4)
+
+    # Clear pause so second orchestrate isn't blocked by breath pause elsewhere
+    h._breath_resize_pause_until = 0.0
+    h.watched_qty = mid
+    n0 = len(client.events)
+    h._orchestrate_qty_change(mid, remaining, 1918.0, 1927.0)
+    places2 = [e for e in client.events[n0:] if e["kind"] == "place_stop"]
+    assert places2, "second partial must resize stop again"
+    assert places2[-1]["quantity"] == pytest.approx(remaining, abs=5e-4)
+    assert float(h._stop_qty_last_resized_to) == pytest.approx(remaining, abs=5e-4)
+
+
+def test_stop_qty_resize_deferred_under_rest_cool(monkeypatch):
+    """Under REST cool: queue resize, no place/cancel; flush after cool ends."""
+    client = RecordingClient()
+    stop_px = 1895.79
+    initial_qty = 0.033
+    remaining = 0.017
+    h = _host(client, stop_px=stop_px, initial_qty=initial_qty, watched_qty=initial_qty)
+    hang_px = _hang_px(h, stop_px)
+    _seed_stop(client, 9300, initial_qty, hang_px)
+    h._pending_adverse_algo_ids = [9300]
+    h._classify_reduction_cause = lambda old, new, curr_px=None: "tp1_filled"
+
+    monkeypatch.setattr(
+        "app.core.rest_throttle_valve.rest_silent",
+        lambda **_k: True,
+    )
+    orch = h._orchestrate_qty_change(initial_qty, remaining, 1918.0, 1926.0)
+    assert orch["change_type"] == "tp1_filled"
+    assert not [e for e in client.events if e["kind"] in ("cancel", "place_stop")]
+    assert isinstance(h._deferred_stop_qty_resize, dict)
+    assert float(h._deferred_stop_qty_resize["live_qty"]) == pytest.approx(remaining, abs=5e-4)
+
+    monkeypatch.setattr(
+        "app.core.rest_throttle_valve.rest_silent",
+        lambda **_k: False,
+    )
+    h.watched_qty = remaining
+    assert h._flush_deferred_stop_qty_resize() is True
+    places = [e for e in client.events if e["kind"] == "place_stop"]
+    assert places
+    assert places[-1]["quantity"] == pytest.approx(remaining, abs=5e-4)
+    assert h._deferred_stop_qty_resize is None

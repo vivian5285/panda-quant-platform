@@ -3,6 +3,7 @@
 from app.core.tp_slice_guard import (
     compute_tp_slices,
     confirm_tp_tier_fill,
+    ensure_tp1_min_lot,
     infer_filled_tp_levels,
     match_qty_reduction_to_tp_level,
     price_reached_tp,
@@ -430,3 +431,33 @@ def test_resolve_tp_fill_by_book_when_qty_slightly_off():
         open_tp_prices=[1854.18],
     )
     assert level == 2
+
+
+def test_ensure_tp1_min_lot_deepcoin_one_contract():
+    """DeepCoin min lot = 1 contract (~0.1 ETH face): TP1 must not hang below 1."""
+    tps = [2000.0, 2020.0, 2050.0]
+    # Undersized TP1 stolen from fold / tiny ratio
+    raw = [(1, 0.0, 2000.0), (2, 3.0, 2020.0)]
+    out = ensure_tp1_min_lot(
+        raw,
+        total_qty=20.0,
+        tv_tps=tps,
+        min_lot=1.0,
+        round_qty_fn=lambda x: float(int(max(x, 0))),
+    )
+    by = {lv: q for lv, q, _ in out}
+    assert by.get(1) == 1.0
+    assert by.get(2, 0) >= 0
+
+
+def test_ensure_tp1_min_lot_empty_when_inventory_too_small():
+    """Cannot hang legal TP1 + radar residual → all radar (empty placeable)."""
+    out = ensure_tp1_min_lot(
+        [(1, 0.0, 2000.0)],
+        total_qty=2.0,
+        tv_tps=[2000.0, 2020.0],
+        min_lot=1.0,
+        round_qty_fn=lambda x: float(int(max(x, 0))),
+        max_placeable_frac=0.35,
+    )
+    assert out == []

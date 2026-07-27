@@ -1,4 +1,4 @@
-"""TV webhook symbol coalesce — 15s OPEN/CLOSE iron rule."""
+"""TV webhook symbol coalesce — 10s OPEN/CLOSE iron rule."""
 
 import time
 from unittest.mock import MagicMock
@@ -29,13 +29,13 @@ def _msg(action: str, symbol: str = "ETHUSDT", price: float = 3300.0, **extra):
     return d, compute_fingerprint(d)
 
 
-def test_coalesce_window_hard_capped_at_15s(monkeypatch):
+def test_coalesce_window_hard_capped_at_10s(monkeypatch):
     monkeypatch.setattr(
         "app.services.webhook_symbol_coalesce.get_settings",
         lambda: MagicMock(WEBHOOK_COALESCE_SEC=99.0),
     )
     c = WebhookSymbolCoalesce()
-    assert c.window_sec() == 15.0
+    assert c.window_sec() == 10.0
 
 
 def test_coalesce_window_default_clamped(monkeypatch):

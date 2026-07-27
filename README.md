@@ -194,7 +194,7 @@ TV 入队 → 解析 → ATR=webhook.atr → RISK20×5 算仓 → 市价开
 |----|--------|
 | TV action | 仅 `LONG` / `SHORT` / `CLOSE_QUICK_EXIT` / `CLOSE_RSI_EXIT`；**无 qty 字段** |
 | 算仓 | `qty = 合约本金 × 保证金占比 × 杠杆 / 价`；默认 **20% × 5x**（≈本金×1 名义）；**管理员可按用户改**；忽略 TV qty |
-| 15s 铁律 | OPEN 先到 → 15s 内 CLOSE **丢弃**；CLOSE 先到 → **先平后开**；>15s CLOSE 独立平仓 |
+| 10s 铁律 | OPEN 先到 → 10s 内 CLOSE **丢弃**；CLOSE 先到 → **先平后开**；>10s CLOSE 独立平仓 |
 | 净场 | 开仓前无仓无挂单；平仓后立即撤该 symbol 全部挂单；反手一律先平 |
 | ATR | **优先**交易所原生 1h；失败用 TV atr；雷达/开仓**不用** 90m 合成 |
 | 呼吸 / 雷达 | 启动=ADX 70%~90%×(1.35×ATR)；trail 档位弱/中/强；激活→entry±0.5ATR；步长/跟进见 `trend_tier_params` |

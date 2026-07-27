@@ -1,9 +1,9 @@
-"""Per-symbol TV webhook coalesce — whitepaper §二 15s OPEN/CLOSE iron rule.
+"""Per-symbol TV webhook coalesce — whitepaper OPEN/CLOSE iron rule (10s).
 
-Window default 15s. Rules (no TV timestamp comparison):
+Window default 10s. Rules (no TV timestamp comparison):
   - CLOSE first, OPEN within window → flush CLOSE once then latest OPEN
-  - OPEN first (buffered or already dispatched), CLOSE within 15s of OPEN → discard CLOSE
-  - CLOSE >15s after last OPEN → normal independent close
+  - OPEN first (buffered or already dispatched), CLOSE within 10s of OPEN → discard CLOSE
+  - CLOSE >10s after last OPEN → normal independent close
 """
 from __future__ import annotations
 
@@ -21,10 +21,10 @@ DispatchFn = Callable[[dict, str], None]
 
 CLOSE_ACTIONS = frozenset({"CLOSE_QUICK_EXIT", "CLOSE_RSI_EXIT"})
 ENTRY_ACTIONS = frozenset({"LONG", "SHORT"})
-# Whitepaper: 15s window for same-K OPEN/CLOSE pairing / discard
-COALESCE_WINDOW_MAX_SEC = 15.0
+# Whitepaper: 10s window for same-K OPEN/CLOSE pairing / discard
+COALESCE_WINDOW_MAX_SEC = 10.0
 COALESCE_WINDOW_MIN_SEC = 0.5
-POST_OPEN_CLOSE_DISCARD_SEC = 15.0
+POST_OPEN_CLOSE_DISCARD_SEC = 10.0
 
 
 @dataclass
@@ -61,7 +61,7 @@ class WebhookSymbolCoalesce:
             return sum(len(b.messages) for b in self._buckets.values())
 
     def window_sec(self) -> float:
-        raw = float(getattr(get_settings(), "WEBHOOK_COALESCE_SEC", 15.0) or 15.0)
+        raw = float(getattr(get_settings(), "WEBHOOK_COALESCE_SEC", 10.0) or 10.0)
         return max(COALESCE_WINDOW_MIN_SEC, min(COALESCE_WINDOW_MAX_SEC, raw))
 
     def discard_window_sec(self) -> float:
@@ -95,7 +95,7 @@ class WebhookSymbolCoalesce:
         now = time.time()
 
         with self._lock:
-            # OPEN already executed → CLOSE within 15s is discarded (whitepaper)
+            # OPEN already executed → CLOSE within 10s is discarded (whitepaper)
             if action in CLOSE_ACTIONS:
                 last_open = self._last_open_dispatched_at.get(symbol)
                 if last_open is not None and (now - last_open) < self.discard_window_sec():

@@ -63,7 +63,7 @@ docker compose exec -T -e PYTHONPATH=/app -e GIT_HEAD=$(git rev-parse --short HE
 5. **不应**出现固定 ~5s 的 `cancel algo order` ↔ `algo stop` 成对日志（硬止损禁止无故改价；ATR 加宽一次 / 雷达考核收紧除外）
 6. 发一条 `HARD_SL_MISSING` 或 `CLOSE` 测试告警，确认钉钉收到
 7. 若 `trading_paused=true`，人工确认原因后再恢复
-8. Webhook coalesce 窗口默认 **15s**；OPEN 后 15s 内 CLOSE 应被丢弃
+8. Webhook coalesce 窗口默认 **10s**；OPEN 后 10s 内 CLOSE 应被丢弃
 
 ## 回滚
 

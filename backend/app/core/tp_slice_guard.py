@@ -238,6 +238,68 @@ def compute_tp_slices(
     return slices
 
 
+def ensure_tp1_min_lot(
+    slices: list[tuple[int, float, float]],
+    *,
+    total_qty: float,
+    tv_tps: list[float] | None,
+    min_lot: float,
+    round_qty_fn=round_quantity,
+    max_placeable_frac: float = 0.35,
+) -> list[tuple[int, float, float]]:
+    """Guarantee TP1 hangs at least ``min_lot`` when inventory allows.
+
+    DeepCoin/contract exchanges: min_lot=1 (1 contract). Coin-margined ETH:
+    exchange ``min_order_qty``. Never let placeable TP1+TP2 exceed ~35% of book
+    (radar must keep the residual). If total is too small for TP1+radar residual,
+    return empty (all radar) rather than hanging an illegal/undersized TP1.
+    """
+    lot = float(min_lot or 0)
+    total = float(total_qty or 0)
+    if lot <= 0 or total <= 0:
+        return list(slices or [])
+    tps = list(tv_tps or [])
+    tp1_px = float(tps[0]) if tps else 0.0
+    if tp1_px <= 0:
+        return list(slices or [])
+
+    by_lv: dict[int, tuple[float, float]] = {
+        int(lv): (float(q), float(px)) for lv, q, px in (slices or [])
+    }
+    # Already OK
+    if 1 in by_lv and by_lv[1][0] + 1e-12 >= lot:
+        return [(lv, q, px) for lv, (q, px) in sorted(by_lv.items())]
+
+    # Need room: TP1 min + some residual for radar (≥ ~65%)
+    max_placeable = round_qty_fn(total * float(max_placeable_frac))
+    if max_placeable + 1e-12 < lot:
+        # Cannot hang legal TP1 without eating radar residual — all to radar
+        return []
+
+    # Steal from TP2 first, then drop TP2 if needed
+    need = lot - float(by_lv.get(1, (0.0, tp1_px))[0])
+    tp2_q, tp2_px = by_lv.get(2, (0.0, float(tps[1]) if len(tps) > 1 else 0.0))
+    take = min(float(tp2_q), need)
+    tp2_q = round_qty_fn(float(tp2_q) - take)
+    need -= take
+    if need > 1e-12:
+        # Still short — only proceed if leftover placeable budget allows fresh TP1
+        used_other = sum(float(q) for lv, (q, _) in by_lv.items() if lv != 1)
+        if used_other + lot > max_placeable + 1e-12:
+            return []
+    by_lv[1] = (lot, tp1_px)
+    if tp2_q > 0 and tp2_px > 0:
+        by_lv[2] = (tp2_q, tp2_px)
+    elif 2 in by_lv:
+        del by_lv[2]
+
+    out = [(lv, round_qty_fn(q), px) for lv, (q, px) in sorted(by_lv.items()) if q > 0]
+    used = sum(float(q) for _, q, _ in out)
+    if used + 1e-12 >= 0.95 * total:
+        return []
+    return out
+
+
 def _fold_notional_undersized(
     slices: list[tuple[int, float, float]],
     min_notional: float,

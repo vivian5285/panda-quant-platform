@@ -14,8 +14,8 @@ class Settings(BaseSettings):
     WEBHOOK_SEQ_IDEMPOTENCY_TTL_SEC: int = 86400
     # 同 bar 缺前置 seq 时暂存等待秒数，超时报警后按已有顺序释放
     WEBHOOK_SEQ_WAIT_SEC: float = 3.0
-    # TV 同 K 线多消息缓存窗口（硬封顶 15s）：白皮书开平铁律
-    WEBHOOK_COALESCE_SEC: float = 15.0
+    # TV 同 K 线多消息缓存窗口（硬封顶 10s）：白皮书开平铁律
+    WEBHOOK_COALESCE_SEC: float = 10.0
     # 内测专用：>0 时强制名义价值≈该 USD（压到交易所最小名义附近）。生产必须保持 0。
     E2E_FORCE_NOTIONAL_USD: float = 0.0
     # 日亏损熔断（−5.5% equity UTC 日）— 生产默认关闭，避免误熔断挡真实 TV

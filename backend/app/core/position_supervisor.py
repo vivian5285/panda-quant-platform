@@ -52,6 +52,7 @@ from app.core.position_exposure_guard import resolve_booked_side
 from app.core.tp_defense_reconcile import tp_price_matches
 from app.core.tp_slice_guard import (
     compute_tp_slices,
+    ensure_tp1_min_lot,
     infer_filled_tp_levels,
     match_qty_reduction_to_tp_level,
     resolve_tp_step_fill_level,
@@ -2419,6 +2420,19 @@ class PositionSupervisor(
             live_cap=live_cap,
         )
         out = [(lv, q, px) for lv, q, px in slices if lv in placeable]
+        # Exchange min lot (ETH 0.001 etc.): ensure TP1 meets min when inventory allows
+        try:
+            min_lot = float(getattr(self, "min_order_qty", 0) or 0)
+            if min_lot > 0:
+                out = ensure_tp1_min_lot(
+                    out,
+                    total_qty=qty_f if qty_f > 0 else base,
+                    tv_tps=list(self.tv_tps or []),
+                    min_lot=min_lot,
+                    round_qty_fn=self._round_qty,
+                )
+        except Exception:
+            pass
         used = sum(float(q) for _, q, _ in out)
         # Force-fail loud if placeable still ≈ full book (historical TP2-eats-radar bug).
         if qty_f > 0 and used + 1e-12 >= 0.95 * qty_f and 3 in exclude:
@@ -5310,6 +5324,12 @@ class PositionSupervisor(
                 if not self._lock.acquire(timeout=2.0):
                     continue
                 try:
+                    # Cool just ended: apply any TP-fill stop resize deferred under silence
+                    if hasattr(self, "_flush_deferred_stop_qty_resize"):
+                        try:
+                            self._flush_deferred_stop_qty_resize()
+                        except Exception:
+                            pass
                     try:
                         pos = self.position_manager.get_position(self.symbol)
                     except ExchangeTransientError as e:

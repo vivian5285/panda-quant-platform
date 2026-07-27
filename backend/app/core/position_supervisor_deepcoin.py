@@ -43,6 +43,7 @@ from app.core.tp_defense_reconcile import (
 )
 from app.core.tp_slice_guard import (
     compute_tp_slices,
+    ensure_tp1_min_lot,
     infer_filled_tp_levels,
     match_qty_reduction_to_tp_level,
     resolve_tp_step_fill_level,
@@ -1317,6 +1318,18 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             live_cap=live_cap,
         )
         out = [(lv, q, px) for lv, q, px in slices if lv in placeable]
+        # DeepCoin lotSz = 1 contract (face≈0.1 ETH): never leave TP1 undersized/missing
+        # when inventory can support min lot + radar residual.
+        try:
+            out = ensure_tp1_min_lot(
+                out,
+                total_qty=qty_f if qty_f > 0 else anchor,
+                tv_tps=list(self.tv_tps or []),
+                min_lot=1.0,
+                round_qty_fn=lambda x: float(max(self._safe_qty(x), 0)),
+            )
+        except Exception:
+            pass
         used = sum(float(q) for _, q, _ in out)
         if qty_f > 0 and used + 1e-12 >= 0.95 * qty_f and 3 in exclude:
             logger.error(
@@ -4147,6 +4160,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 if not self._lock.acquire(timeout=2.0):
                     continue
                 try:
+                    if hasattr(self, "_flush_deferred_stop_qty_resize"):
+                        try:
+                            self._flush_deferred_stop_qty_resize()
+                        except Exception:
+                            pass
                     from app.core.exchange_errors import ExchangeTransientError
                     try:
                         pos = self._get_active_position()

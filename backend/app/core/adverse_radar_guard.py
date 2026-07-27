@@ -374,6 +374,83 @@ class AdverseRadarMixin:
             self._stagnant_tighten_done = False
         if not hasattr(self, "_radar_opened_at"):
             self._radar_opened_at = 0.0
+        if not hasattr(self, "_deferred_stop_qty_resize"):
+            self._deferred_stop_qty_resize = None
+        if not hasattr(self, "_stop_qty_last_resized_to"):
+            self._stop_qty_last_resized_to = 0.0
+        if not hasattr(self, "_stop_qty_resized_levels"):
+            self._stop_qty_resized_levels = set()
+
+    def _adverse_rest_silent(self) -> bool:
+        """True while IP/REST cool-down forbids place/cancel/position REST."""
+        try:
+            from app.core.rest_throttle_valve import rest_silent
+
+            return bool(
+                rest_silent(
+                    exchange=getattr(self, "exchange_id", None),
+                    user_id=getattr(self, "user_id", None),
+                )
+            )
+        except Exception:
+            return False
+
+    def _queue_deferred_stop_qty_resize(
+        self,
+        change_type: str,
+        curr_px: float,
+        live_qty: float,
+    ) -> None:
+        """Remember latest live qty for stop resize; flush once cool ends (no REST storm)."""
+        qty = float(live_qty or 0)
+        if qty <= 0:
+            qty = float(getattr(self, "watched_qty", 0) or 0)
+        self._deferred_stop_qty_resize = {
+            "change_type": str(change_type or "qty_sync"),
+            "curr_px": float(curr_px or 0),
+            "live_qty": qty,
+            "queued_at": time.time(),
+        }
+        if qty > 0:
+            try:
+                self.watched_qty = qty
+            except Exception:
+                pass
+        logger.info(
+            "[User %s] defer stop-qty resize (rest cool) qty=%.6f cause=%s",
+            getattr(self, "user_id", "?"),
+            qty,
+            change_type,
+        )
+
+    def _flush_deferred_stop_qty_resize(self) -> bool:
+        """Apply queued TP/partial-fill stop resize after REST cool ends."""
+        pending = getattr(self, "_deferred_stop_qty_resize", None)
+        if not isinstance(pending, dict):
+            return False
+        if self._adverse_rest_silent():
+            return False
+        self._deferred_stop_qty_resize = None
+        qty = float(pending.get("live_qty") or 0)
+        wq = float(getattr(self, "watched_qty", 0) or 0)
+        if wq > 0:
+            qty = wq
+        if qty <= 0:
+            return False
+        cause = str(pending.get("change_type") or "qty_sync")
+        logger.info(
+            "[User %s] flush deferred stop-qty resize qty=%.6f cause=%s",
+            getattr(self, "user_id", "?"),
+            qty,
+            cause,
+        )
+        self._boost_radar_after_tp_fill(
+            cause,
+            float(pending.get("curr_px") or 0),
+            qty,
+            _from_flush=True,
+        )
+        return True
 
     def _exchange_stop_px(self) -> float:
         """Logical radar / breathing stop (hard floor is `_frozen_hard_stop_px`)."""
@@ -4661,19 +4738,26 @@ class AdverseRadarMixin:
                 return float(px)
         return 0.0
 
-    def _boost_radar_after_tp_fill(self, change_type: str, curr_px: float, live_qty: float) -> None:
-        """TP1/TP2 fill: update remaining pct, then atomically resize stop qty (no price bump).
+    def _boost_radar_after_tp_fill(
+        self,
+        change_type: str,
+        curr_px: float,
+        live_qty: float,
+        *,
+        _from_flush: bool = False,
+    ) -> None:
+        """TP1/TP2 fill (or live qty_sync): resize hard+radar stop qty to live headroom.
 
-        Idempotent: each TP level resizes the stop at most once. Re-entry (false
-        consumed clear/re-mark, duplicate notify) must NOT cancel↔rehang.
+        Continuous partial fills of the same TP also resize whenever live qty drifts
+        past tolerance vs last successful resize (not once-per-level only).
 
-        Simultaneous TP1+TP2 (or partial fills to ~70%): sync consumed from live
-        qty first, resize once to residual, mark all placeable consumed levels done.
+        Under REST cool-down: queue resize and return — never place/cancel (avoids
+        amplify rate-limit → cannot read position). Flush when cool ends.
         """
-        if change_type not in ("tp1_filled", "tp2_filled", "tp3_filled"):
+        if change_type not in ("tp1_filled", "tp2_filled", "tp3_filled", "qty_sync"):
             return
         # Exchange-first: live qty may already reflect TP1+TP2 together.
-        if hasattr(self, "_sync_consumed_tp_levels"):
+        if change_type != "qty_sync" and hasattr(self, "_sync_consumed_tp_levels"):
             try:
                 self._sync_consumed_tp_levels(float(live_qty or 0), float(curr_px or 0))
             except Exception:
@@ -4684,32 +4768,19 @@ class AdverseRadarMixin:
             consumed.append(level)
             self.consumed_tp_levels = consumed
         consumed_set = {int(x) for x in consumed}
-        self.remaining_qty_pct = self._remaining_qty_pct_from_consumed(consumed)
+        if change_type != "qty_sync":
+            self.remaining_qty_pct = self._remaining_qty_pct_from_consumed(consumed)
 
         done = getattr(self, "_stop_qty_resized_levels", None)
         if done is None:
             self._stop_qty_resized_levels = set()
             done = self._stop_qty_resized_levels
         pending = {lv for lv in (1, 2) if lv in consumed_set and lv not in done}
-        if not pending and level and int(level) in done:
-            logger.info(
-                "[User %s] skip TP stop resize — already done for TP%s (anti-thrash)",
-                getattr(self, "user_id", "?"),
-                level,
-            )
-            if hasattr(self, "_save_state"):
-                self._save_state()
-            return
-        if not pending and change_type != "tp3_filled":
-            # Cause named a level not yet in consumed/done edge — still try once below.
-            if level in (1, 2):
-                pending = {int(level)}
+        if not pending and change_type != "tp3_filled" and level in (1, 2):
+            pending = {int(level)}
 
         if hasattr(self, "_save_state"):
             self._save_state()
-
-        # Pause breathing price ticks while stop qty is resized (avoid race)
-        self._breath_resize_pause_until = time.time() + 8.0
 
         resize_qty = float(live_qty or 0)
         if resize_qty <= 0 and hasattr(self, "_resolve_adverse_live_qty"):
@@ -4737,6 +4808,34 @@ class AdverseRadarMixin:
             if hasattr(self, "_save_state"):
                 self._save_state()
             return
+
+        # Anti-thrash: same live qty already applied → no cancel↔rehang
+        last_resized = float(getattr(self, "_stop_qty_last_resized_to", 0) or 0)
+        if last_resized > 0 and resize_qty > 0:
+            tol = self._qty_match_tol(last_resized, resize_qty)
+            if abs(last_resized - resize_qty) <= tol:
+                for lv in pending:
+                    done.add(lv)
+                if level:
+                    done.add(int(level))
+                logger.info(
+                    "[User %s] skip stop resize — qty already synced %.6f (tol=%.6f) | %s",
+                    getattr(self, "user_id", "?"),
+                    resize_qty,
+                    tol,
+                    change_type,
+                )
+                if hasattr(self, "_save_state"):
+                    self._save_state()
+                return
+
+        # Cool-down: defer place/cancel; keep latest qty for flush
+        if not _from_flush and self._adverse_rest_silent():
+            self._queue_deferred_stop_qty_resize(change_type, curr_px, resize_qty)
+            return
+
+        # Pause breathing price ticks while stop qty is resized (avoid race)
+        self._breath_resize_pause_until = time.time() + 8.0
 
         stop_px = float(getattr(self, "current_sl", 0) or 0)
         if resize_qty > 0 and stop_px > 0:
@@ -4824,6 +4923,8 @@ class AdverseRadarMixin:
                 for lv in (1, 2):
                     if lv in consumed_set or (level and int(level) == lv):
                         done.add(lv)
+                self._stop_qty_last_resized_to = float(resize_qty)
+                self._deferred_stop_qty_resize = None
                 if hasattr(self, "_save_state"):
                     self._save_state()
             except Exception as exc:
@@ -4832,6 +4933,8 @@ class AdverseRadarMixin:
                     getattr(self, "user_id", "?"),
                     exc,
                 )
+                # Re-queue so cool-end / next tick can retry with live qty
+                self._queue_deferred_stop_qty_resize(change_type, curr_px, resize_qty)
         elif change_type == "tp3_filled":
             if level:
                 done.add(int(level))
@@ -4849,6 +4952,11 @@ class AdverseRadarMixin:
         """
         if curr_px <= 0:
             return
+        # Flush any TP-fill stop resize deferred during REST cool (no extra REST)
+        try:
+            self._flush_deferred_stop_qty_resize()
+        except Exception:
+            pass
         # Hard fuse: total open orders > 5 → pause (prevent 50+ LIMIT storms)
         try:
             if self._enforce_open_orders_hard_cap():
@@ -4948,7 +5056,13 @@ class AdverseRadarMixin:
                 self._process_radar_trailing(new_qty, curr_px)
             elif self._handoff_shield_to_radar(new_qty, curr_px):
                 pass
-            if not self._uses_dual_stop_track():
+            # Under REST cool, boost already queued resize — do not second-force place
+            deferred = getattr(self, "_deferred_stop_qty_resize", None)
+            if (
+                not self._uses_dual_stop_track()
+                and not deferred
+                and not self._adverse_rest_silent()
+            ):
                 radar = self._effective_radar_sl_for_merge() or None
                 if radar:
                     self._sync_binance_merged_stop(
@@ -4974,6 +5088,13 @@ class AdverseRadarMixin:
                     result,
                 )
             return result
+
+        if cause == "manual_reduce" and float(new_qty or 0) > 0:
+            # Partial TP fills / missed step-match still shrink stop qty to live book
+            try:
+                self._boost_radar_after_tp_fill("qty_sync", curr_px, new_qty)
+            except Exception:
+                pass
 
         if cause == "manual_add":
             if hasattr(self, "consumed_tp_levels"):
