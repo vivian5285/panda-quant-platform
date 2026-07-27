@@ -505,3 +505,37 @@ def test_small_xau_top_up_recovers_tp12_near_30pct():
     # Each hung leg must clear ~5U notional at XAU prices
     for _, q, px in out:
         assert float(q) * float(px) + 1e-9 >= 5.0
+
+
+def test_small_xau_long_and_short_both_hang_tp12():
+    """Incident was SHORT 0.014; LONG same size must not empty the TP book either."""
+    from app.core.symbol_precision import round_quantity
+    from app.core.pipeline_officers import ExecutionOfficer
+
+    qty = 0.014
+    entry = 4077.09
+    rs = {3: {"ratios": [0.10, 0.20, 0.70]}}
+    rq = lambda x: round_quantity(x, "XAUUSDT")
+    cases = {
+        "SHORT": [4062.36, 4049.15, 4036.52],
+        "LONG": [4091.82, 4105.03, 4117.66],
+    }
+    for label, tps in cases.items():
+        raw = compute_tp_slices(
+            qty, 3, tps, rs, exclude_levels={3}, round_qty_fn=rq,
+            min_qty=0.001, min_notional=5.0, ref_price=entry, live_cap=qty,
+        )
+        mid = ensure_tp1_min_lot(raw, total_qty=qty, tv_tps=tps, min_lot=0.001, round_qty_fn=rq)
+        out = top_up_tp12_to_target_ratio(
+            mid, base_qty=qty, tv_tps=tps, round_qty_fn=rq, min_lot=0.001, min_notional=5.0,
+        )
+        assert out, f"{label}: empty placeable would naked the book"
+        used = sum(q for _, q, _ in out)
+        assert abs(used / qty - 0.30) <= 0.04 + 1e-9, (label, out)
+        ok, detail = ExecutionOfficer.self_check_tp_slices(qty, out, relax_for_min_lot=True)
+        assert ok, (label, detail)
+        for _, q, px in out:
+            assert float(q) * float(px) + 1e-9 >= 5.0, (label, q, px)
+        # Without top-up the old path often failed strict 30% → returning [] → pause
+        ok_old, _ = ExecutionOfficer.self_check_tp_slices(qty, mid, relax_for_min_lot=False)
+        assert ok_old or out != mid

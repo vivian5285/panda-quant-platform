@@ -168,6 +168,26 @@ class ExecutionOfficer:
 
 class ChiefAuditor:
     @staticmethod
+    def _count_live_tp_limits(host: Any) -> int:
+        """How many reduce-only TP limits are on the exchange book right now."""
+        try:
+            if hasattr(host, "_collect_tp_limit_orders"):
+                return len(list(host._collect_tp_limit_orders() or []))
+            if hasattr(host, "_open_tp_prices_on_book"):
+                return len([p for p in (host._open_tp_prices_on_book() or []) if float(p or 0) > 0])
+            client = getattr(host, "client", None)
+            sym = getattr(host, "symbol", None)
+            if client and sym and hasattr(client, "get_open_orders"):
+                n = 0
+                for o in client.get_open_orders(sym) or []:
+                    if str(o.get("type") or "").upper() == "LIMIT":
+                        n += 1
+                return n
+        except Exception:
+            return -1
+        return 0
+
+    @staticmethod
     def _check_hard_stop(host: Any, s) -> AuditorFinding:
         hard_px = float(s.hard_sl_price or 0)
         hung = bool(s.hard_sl_hung or s.hard_sl_order_id)
@@ -260,15 +280,40 @@ class ChiefAuditor:
                 f"sum={tp_sum} iq={iq} ratio={ratio:.4f}",
             ))
         else:
+            # Ledger empty: plan slices, then require them on the live book.
+            # Small XAU used to plan [] → pause with naked position; after top-up,
+            # plan may be OK while place still failed — remount once before fail.
             try:
+                slices = []
+                detail = "deferred"
+                ok = True
                 if hasattr(host, "_compute_tp_slices") and iq > 0:
-                    slices = host._compute_tp_slices(iq, exclude_levels={3})
+                    slices = host._compute_tp_slices(iq, exclude_levels={3}) or []
                     ok, detail = ExecutionOfficer.self_check_tp_slices(
-                        iq, slices, relax_for_min_lot=relax,
+                        iq, slices, relax_for_min_lot=True,
                     )
-                    findings.append(AuditorFinding(ok, "tp_slices_30pct", detail))
-                else:
-                    findings.append(AuditorFinding(True, "tp_slices_30pct", "deferred"))
+                live_q = float(getattr(host, "watched_qty", 0) or s.qty or 0)
+                book_n = -1
+                if ok and slices and live_q > 0:
+                    book_n = ChiefAuditor._count_live_tp_limits(host)
+                    if book_n == 0 and hasattr(host, "_rebuild_tp_limit_orders"):
+                        try:
+                            entry = float(
+                                getattr(host, "watched_entry", 0)
+                                or getattr(host, "entry_price", 0)
+                                or s.entry_price
+                                or 0
+                            )
+                            host._rebuild_tp_limit_orders(live_q, entry, dynamic_sl=None)
+                        except Exception as e:
+                            detail = f"{detail}; remount_err={str(e)[:80]}"
+                        book_n = ChiefAuditor._count_live_tp_limits(host)
+                    if book_n == 0:
+                        ok = False
+                        detail = f"tp_book_empty after_plan ({detail})"
+                    elif book_n > 0:
+                        detail = f"{detail}; book_limits={book_n}"
+                findings.append(AuditorFinding(ok, "tp_slices_30pct", detail))
             except Exception as e:
                 findings.append(AuditorFinding(False, "tp_slices_30pct", str(e)[:120]))
 
