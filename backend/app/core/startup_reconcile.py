@@ -1459,9 +1459,13 @@ class StartupReconcileMixin:
         audit: dict[str, Any] = {"expected_sl": 0.0, "live": False, "placed": False}
         if pnl_track != "profit_radar" or live_qty <= 0:
             return audit
-        if hasattr(self, "_radar_activation_reached") and not self._radar_activation_reached(curr_px):
-            audit["deferred"] = "await_tp1_or_activation_ratio"
-            return audit
+        # Profit track (TP filled / already armed) → Stage1+: allow radar hang.
+        if hasattr(self, "_init_adverse_radar_fields"):
+            try:
+                self._init_adverse_radar_fields()
+            except Exception:
+                pass
+        self.radar_activated = True
 
         if hasattr(self, "_refresh_radar_state_on_recover") and curr_px > 0 and entry > 0:
             self._refresh_radar_state_on_recover(curr_px, entry)

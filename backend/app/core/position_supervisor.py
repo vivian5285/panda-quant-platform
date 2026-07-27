@@ -4051,7 +4051,7 @@ class PositionSupervisor(
 
     def _protect_and_monitor(self, qty: float, entry_price: float) -> dict:
         """
-        开仓后：硬止损(fill±TV距×buffer) → TP1/TP2(10/20) → TV atr 武装雷达（TP3=70%雷达管理）。
+        开仓后：硬止损(fill±TV距×buffer) → TP1/TP2(10/20) → TV atr 武装雷达参数（Stage0 不上簿；ADX arm 后挂 STOP；TP3=70%雷达管理）。
         返回 {ok, aborted, defense, shield}；硬止损挂失败则撤仓并 aborted=True（禁止裸奔）。
         """
         # Preserve TV atr + pine stop_loss across radar reset (wipe used to zero
@@ -4244,7 +4244,7 @@ class PositionSupervisor(
                     )
                     scenario_detail = {**scenario_detail, "ok": True, "degraded": True}
 
-            # ④ 确认硬止损仍在（永冻价）+ 独立挂雷达止损
+            # ④ 确认硬止损仍在（永冻价）。Stage0：仅硬止损上簿，不挂休眠雷达。
             hard_widened = bool((scenario_detail.get("hard_widen") or {}).get("widened"))
             shield = self._sync_tv_hard_stop(
                 pos["size"],
@@ -4252,22 +4252,13 @@ class PositionSupervisor(
                 force_replace=hard_widened,
             )
             self._last_shield_result = shield
-            radar_sl = float(
-                getattr(self, "current_sl", 0)
-                or getattr(self, "initial_stop", 0)
-                or 0
-            )
-            if radar_sl > 0 and hasattr(self, "_ensure_radar_sl"):
+            # Purge any leftover dormant radar from prior dual-hang bug (hard stays).
+            if hasattr(self, "_purge_stage0_dormant_radar"):
                 try:
-                    hang = (
-                        self._exchange_hang_stop_px(radar_sl)
-                        if hasattr(self, "_exchange_hang_stop_px")
-                        else radar_sl
-                    )
-                    self._ensure_radar_sl(hang, pos["size"])
+                    self._purge_stage0_dormant_radar()
                 except Exception as e:
                     logger.warning(
-                        "[User %s] open radar place failed: %s",
+                        "[User %s] open stage0 radar purge failed: %s",
                         getattr(self, "user_id", "?"),
                         e,
                     )

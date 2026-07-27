@@ -164,6 +164,7 @@ def test_ensure_radar_sl_blocked_before_tp1_on_manual_adopt():
         regime = 3
         tv_tps = [1850.0, 1900.0, 1950.0]
         current_atr = 20.0
+        radar_activated = False
         regime_settings = {3: {"activation": 0.90, "trail_offset": 1.35, "ratios": [0.18, 0.32, 0.5]}}
         client = MagicMock()
 
@@ -172,24 +173,6 @@ def test_ensure_radar_sl_blocked_before_tp1_on_manual_adopt():
 
         def _def_log(self, msg, level=0):
             pass
-
-        def _radar_activation_reached(self, curr_px):
-            from app.core.radar_trail import radar_may_arm
-            progress = self._radar_activation_progress(curr_px)
-
-            return radar_may_arm(
-                consumed_tp_levels=self.consumed_tp_levels,
-                progress=progress,
-                activation_ratio=0.90,
-                radar_active=False,
-            )
-
-        def _radar_activation_progress(self, curr_px):
-            entry = self.watched_entry
-            tp1_dist = abs(self.tv_tps[0] - entry)
-            required = entry + tp1_dist * 0.90
-            span = required - entry
-            return max(0.0, min(1.0, (curr_px - entry) / span))
 
     probe = Probe()
     assert probe._ensure_radar_sl(1808.5, 0.043) is False

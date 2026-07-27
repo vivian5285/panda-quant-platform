@@ -2396,15 +2396,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
     def _ensure_radar_sl(self, live_qty, sl_price):
         if not sl_price:
             return False
-        curr_px = self._current_tp_price() if hasattr(self, "_current_tp_price") else 0.0
-        latched = bool(getattr(self, "radar_latched", False))
-        if (
-            not latched
-            and hasattr(self, "_radar_activation_reached")
-            and not self._radar_activation_reached(curr_px)
-        ):
+        # Stage0 hard-only: never hang dormant radar before Layer-1 ADX arm.
+        if not bool(getattr(self, "radar_activated", False)):
             logger.info(
-                "⏸️ 雷达未达激活条件（待档位路径比例或TP成交），跳过保本 STOP @ %.2f",
+                "⏸️ Stage0仅硬止损·雷达未激活，跳过 STOP @ %.2f",
                 float(sl_price),
             )
             return False
@@ -3863,7 +3858,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
     def _protect_and_monitor(self, qty, entry_price):
         """
-        开仓后：硬止损(fill±TV距×buffer) → TP1/TP2(10/20) → TV atr 武装雷达（TP3=70%雷达管理）。
+        开仓后：硬止损(fill±TV距×buffer) → TP1/TP2(10/20) → TV atr 武装雷达参数（Stage0 不上簿；ADX arm 后挂 STOP；TP3=70%雷达管理）。
         返回 {ok, aborted, defense, shield}。
         """
         pending_tv_atr = float(getattr(self, "_tv_atr_ref", 0) or 0)
@@ -4013,28 +4008,18 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     logger.warning(f"atr degrade seed failed (keep position): {e}")
                     scenario_detail = {**scenario_detail, "ok": True, "degraded": True}
 
-            # ④ 确认硬止损仍在（永冻价）+ 独立挂雷达止损
+            # ④ 确认硬止损仍在（永冻价）。Stage0：仅硬止损上簿，不挂休眠雷达。
             shield = self._sync_tv_hard_stop(
                 live_qty,
                 at_open=False,
                 force_replace=bool((scenario_detail.get("hard_widen") or {}).get("widened")),
             )
             self._last_shield_result = shield
-            radar_sl = float(
-                getattr(self, "current_sl", 0)
-                or getattr(self, "initial_stop", 0)
-                or 0
-            )
-            if radar_sl > 0 and hasattr(self, "_ensure_radar_sl"):
+            if hasattr(self, "_purge_stage0_dormant_radar"):
                 try:
-                    hang = (
-                        self._exchange_hang_stop_px(radar_sl)
-                        if hasattr(self, "_exchange_hang_stop_px")
-                        else radar_sl
-                    )
-                    self._ensure_radar_sl(live_qty, hang)
+                    self._purge_stage0_dormant_radar()
                 except Exception as e:
-                    logger.warning(f"open radar place failed: {e}")
+                    logger.warning(f"open stage0 radar purge failed: {e}")
             armed = bool(
                 shield.get("placed", 0) > 0
                 or shield.get("armed")

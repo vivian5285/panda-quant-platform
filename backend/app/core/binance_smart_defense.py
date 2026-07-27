@@ -1170,16 +1170,10 @@ class BinanceSmartDefenseMixin:
         """Place independent radar STOP — never cancels frozen hard stop."""
         if not dynamic_sl:
             return False
-        curr_px = self._current_tp_price() if hasattr(self, "_current_tp_price") else 0.0
-        latched = bool(getattr(self, "radar_latched", False))
-        if (
-            not latched
-            and hasattr(self, "_radar_activation_reached")
-            and not self._radar_activation_reached(curr_px)
-        ):
+        # Stage0 hard-only: never hang dormant radar before Layer-1 ADX arm.
+        if not bool(getattr(self, "radar_activated", False)):
             self._def_log(
-                f"⏸️ 雷达未达激活条件（待档位路径比例或TP成交），"
-                f"跳过保本 STOP @ {float(dynamic_sl):.2f}",
+                f"⏸️ Stage0仅硬止损·雷达未激活，跳过 STOP @ {float(dynamic_sl):.2f}",
             )
             return False
         sl = float(dynamic_sl)

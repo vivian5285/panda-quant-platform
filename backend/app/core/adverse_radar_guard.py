@@ -376,6 +376,9 @@ class AdverseRadarMixin:
             self._stagnant_tighten_done = False
         if not hasattr(self, "_radar_opened_at"):
             self._radar_opened_at = 0.0
+        if not hasattr(self, "_stage0_radar_purged"):
+            # One-shot cancel of dormant radar STOP while Stage0 (hard-only).
+            self._stage0_radar_purged = False
         if not hasattr(self, "_deferred_stop_qty_resize"):
             self._deferred_stop_qty_resize = None
         if not hasattr(self, "_stop_qty_last_resized_to"):
@@ -1123,6 +1126,7 @@ class AdverseRadarMixin:
         self._breath_samples_since_open = 0
         self._stagnant_tighten_done = False
         self._radar_opened_at = 0.0
+        self._stage0_radar_purged = False
         self.tv_sl = preserved
         self._tv_hard_sl_price = preserved_tv
         self._frozen_hard_stop_px = preserved_frozen
@@ -2668,7 +2672,18 @@ class AdverseRadarMixin:
         return float(REGIME_RADAR.get(regime, REGIME_RADAR[3])["activation"])
 
     def _radar_activation_reached(self, curr_px: float) -> bool:
-        """Breathing stop is always active from open when monitoring with entry/ATR."""
+        """True only after Layer-1 ADX arm (radar_activated).
+
+        Stage 0 is hard-only on the book. Breathing still *evaluates* every tick
+        via `_breathing_eval_ready` / orchestrate; this gate means "radar may hang".
+        """
+        self._init_adverse_radar_fields()
+        if not getattr(self, "monitoring", False):
+            return False
+        return bool(getattr(self, "radar_activated", False))
+
+    def _breathing_eval_ready(self) -> bool:
+        """Entry+ATR present — breathing tick may evaluate arm (Stage0 → Stage1)."""
         self._init_adverse_radar_fields()
         if not getattr(self, "monitoring", False):
             return False
@@ -2679,6 +2694,54 @@ class AdverseRadarMixin:
             or 0
         )
         return entry > 0 and atr > 0
+
+    def _purge_stage0_dormant_radar(self) -> int:
+        """Cancel dormant radar STOPs while Stage0; never cancel frozen hard.
+
+        One-shot per position to avoid cancel spam. Safe on all exchanges.
+        """
+        self._init_adverse_radar_fields()
+        if bool(getattr(self, "radar_activated", False)):
+            return 0
+        if bool(getattr(self, "_stage0_radar_purged", False)):
+            return 0
+        cancelled = 0
+        try:
+            if getattr(self, "exchange_id", "") == "deepcoin" and hasattr(
+                self, "_cancel_radar_trigger_orders_only"
+            ):
+                cancelled = int(self._cancel_radar_trigger_orders_only() or 0)
+            elif hasattr(self, "_cancel_radar_stop_orders"):
+                cancelled = int(self._cancel_radar_stop_orders() or 0)
+        except Exception as exc:
+            logger.warning(
+                "[User %s] stage0 dormant radar purge failed: %s",
+                getattr(self, "user_id", "?"),
+                exc,
+            )
+            return 0
+        self._stage0_radar_purged = True
+        if cancelled:
+            try:
+                self._clear_defense_order_ids("radar")
+            except Exception:
+                pass
+            logger.info(
+                "%s [User %s] Stage0硬止损-only·已撤休眠雷达 STOP ×%s",
+                self._symbol_tag() if hasattr(self, "_symbol_tag") else "",
+                getattr(self, "user_id", "?"),
+                cancelled,
+            )
+            if hasattr(self, "_log"):
+                try:
+                    self._log(
+                        "RADAR_STAGE0",
+                        f"休眠雷达已撤（Stage0仅硬止损）×{cancelled}",
+                        {"cancelled": cancelled},
+                    )
+                except Exception:
+                    pass
+        return cancelled
 
     def _remaining_qty_pct_from_consumed(self, consumed: list | None = None) -> float:
         from app.core.tp_regime_targets import remaining_qty_pct_from_consumed
@@ -2816,6 +2879,7 @@ class AdverseRadarMixin:
         self._radar_opened_at = time.time()
         self._breath_samples_since_open = 0
         self._stagnant_tighten_done = False
+        self._stage0_radar_purged = False
 
     def _maybe_stagnant_radar_tighten(
         self,
@@ -2937,12 +3001,10 @@ class AdverseRadarMixin:
             if hasattr(self, "_exchange_hang_stop_px")
             else apply_stop_order_buffer(side, new_sl, sym)
         )
+        # Stage0 hard-only: stagnant is pre-arm by construction — memory tighten only,
+        # never hang a dormant radar STOP (hard already covers the book).
         placed = False
-        if float(live_qty or 0) > 0 and hasattr(self, "_ensure_radar_sl"):
-            try:
-                placed = bool(self._ensure_radar_sl(hang, float(live_qty)))
-            except Exception as exc:
-                logger.warning("stagnant radar tighten place failed: %s", exc)
+        out["stage0_memory_only"] = True
 
         frozen = float(self._frozen_hard_px() or 0)
         detail = {
@@ -3253,7 +3315,10 @@ class AdverseRadarMixin:
                 # Radar may only tighten vs frozen hard
                 self.current_sl = self._clamp_radar_sl_to_tv_floor(new_sl)
 
-        if stop_hit(side, px, float(getattr(self, "current_sl", 0) or 0)):
+        # Stage0: only exchange hard STOP protects — do not software-exit on dormant radar SL.
+        if bool(getattr(self, "radar_activated", False)) and stop_hit(
+            side, px, float(getattr(self, "current_sl", 0) or 0)
+        ):
             consumed = list(getattr(self, "consumed_tp_levels", None) or [])
             rem = float(getattr(self, "remaining_qty_pct", 1.0) or 1.0)
             after_tp = bool(consumed) or rem < 0.999
@@ -3292,6 +3357,14 @@ class AdverseRadarMixin:
 
         live_qty = self._resolve_adverse_live_qty(live_qty)
         if live_qty <= 0 or float(getattr(self, "current_sl", 0) or 0) <= 0:
+            return False
+
+        # Stage0 hard-only: purge leftover dormant radar; do not hang until ADX arm.
+        if not bool(getattr(self, "radar_activated", False)):
+            try:
+                self._purge_stage0_dormant_radar()
+            except Exception:
+                pass
             return False
 
         sl_px = float(self.current_sl)
@@ -3838,7 +3911,13 @@ class AdverseRadarMixin:
         """Ensure breathing stop is evaluated and placed (compat name for startup)."""
         if curr_px <= 0:
             return False
-        if not self._radar_activation_reached(curr_px):
+        # Evaluate when entry/ATR ready; hang only after radar_activated (inside ensure).
+        eval_ready = (
+            self._breathing_eval_ready()
+            if hasattr(self, "_breathing_eval_ready")
+            else True
+        )
+        if not eval_ready:
             return False
         live_qty = self._resolve_adverse_live_qty(live_qty)
         entry = float(getattr(self, "watched_entry", 0) or 0)
@@ -3850,6 +3929,9 @@ class AdverseRadarMixin:
         placed = False
         if hasattr(self, "_process_radar_trailing"):
             placed = bool(self._process_radar_trailing(live_qty, curr_px))
+
+        if not bool(getattr(self, "radar_activated", False)):
+            return False
 
         sl_px = float(getattr(self, "current_sl", 0) or 0)
         on_book = (
@@ -5116,7 +5198,9 @@ class AdverseRadarMixin:
         if hasattr(self, "_sync_consumed_tp_levels"):
             self._sync_consumed_tp_levels(live_qty, curr_px)
 
-        if self._radar_activation_reached(curr_px):
+        # Always evaluate breathing when entry/ATR ready (Stage0→Stage1 arm lives here).
+        # Place/hang is gated inside tick + `_ensure_radar_sl` by radar_activated.
+        if self._breathing_eval_ready() if hasattr(self, "_breathing_eval_ready") else self._radar_activation_reached(curr_px):
             # Breathing tick owns place/improve. Trailing return = stop PRICE improved only.
             if hasattr(self, "_process_radar_trailing"):
                 self._process_radar_trailing(live_qty, curr_px)

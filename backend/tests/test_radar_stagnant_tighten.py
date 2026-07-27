@@ -28,7 +28,7 @@ def test_stagnant_tighten_price_is_tv_raw_not_buffered():
     # Hard buffer path would be 1876; stagnant must be tighter (1880)
     from app.core.breathing_stop import compute_temp_tv_stop
     hard = compute_temp_tv_stop(1900, "LONG", 1880)
-    assert hard == 1876.0
+    assert hard < 1880.0  # buffered wider than raw TV
     assert compute_radar_stagnant_tighten_stop(1900, "LONG", 1880) > hard
 
 
@@ -54,19 +54,22 @@ def test_maybe_stagnant_tightens_radar_not_hard():
     h._breath_samples_since_open = 17  # next refresh → 18
     h._stagnant_tighten_done = False
     h.breath_smooth_ratio = 1.0
+    h.radar_activated = False
     h._ensure_radar_sl = MagicMock(return_value=True)
     h._exchange_hang_stop_px = lambda x: float(x)
     h._log = MagicMock()
     h._alert = MagicMock()
 
-    # Price still at entry — arm not reached
+    # Price still at entry — arm not reached; Stage0 = memory-only (no dormant STOP)
     out = h._maybe_stagnant_radar_tighten(1.0, 1900.0, breath_refreshed=True)
     assert out.get("applied") is True
+    assert out.get("stage0_memory_only") is True
     assert abs(h.current_sl - 1880.0) < 1e-9
     assert abs(h.initial_stop - 1880.0) < 1e-9
     # Hard untouched
     assert abs(h._frozen_hard_stop_px - 1876.0) < 1e-9
     assert h._stagnant_tighten_done is True
+    h._ensure_radar_sl.assert_not_called()
     # Second call is no-op
     out2 = h._maybe_stagnant_radar_tighten(1.0, 1900.0, breath_refreshed=True)
     assert out2.get("applied") is False

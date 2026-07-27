@@ -128,6 +128,9 @@ def test_startup_tp_reconcile_ok_without_radar_sl_on_book(supervisor):
 def test_ensure_radar_sl_uses_close_position_and_verifies(supervisor):
     supervisor.current_side = "LONG"
     supervisor.symbol = "ETHUSDT"
+    supervisor.radar_activated = True
+    # Dual-track is default; this test covers merged-slot path.
+    supervisor._uses_dual_stop_track = MagicMock(return_value=False)
     supervisor._sync_binance_merged_stop = MagicMock(
         return_value={"aligned": True, "armed": True, "merged": True},
     )
@@ -138,3 +141,11 @@ def test_ensure_radar_sl_uses_close_position_and_verifies(supervisor):
     supervisor._sync_binance_merged_stop.assert_called_once()
     args, kwargs = supervisor._sync_binance_merged_stop.call_args
     assert kwargs.get("radar_sl") == 1796.43
+
+
+def test_ensure_radar_sl_blocked_stage0_before_arm(supervisor):
+    supervisor.radar_activated = False
+    supervisor._sync_binance_merged_stop = MagicMock()
+    ok = supervisor._ensure_radar_sl(1796.43, 0.046)
+    assert ok is False
+    supervisor._sync_binance_merged_stop.assert_not_called()

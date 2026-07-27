@@ -11,6 +11,7 @@
 | 日期 | 标签 | 一句话 | 状态 |
 |------|------|--------|------|
 | 2026-07-28 | `marathon-radar-fee-be` | 雷达激活=fee+tick保本；ADX **70/80/90 弱早强晚**；取消 0.5ATR/TP1底线；TP只缩量 | 已修 · §17 |
+| 2026-07-28 | `stage0-hard-only` | Stage0 仅硬止损上簿；禁开仓挂休眠雷达；呼吸 tick 一键清休眠 STOP | 已修 · §18 |
 | 2026-07-27 | `deepcoin-equity-cashbal-zero` | 深币 cashBal/eq=0 但 avail+frozen有钱 → 算仓0；顺手封 MAX_ADD_TIMES_BY_REGIME | 已修 · §16 |
 | 2026-07-27 | `tv-open-no-skip-no-instant-flat` | TV有信号却跳过/开仓秒平：先平后开失败卡暂停、ATR武装失败误撤仓 | 已修 · §15 |
 | 2026-07-27 | `deepcoin-hedge-sterile-bind` | 深币强制 APP 开平仓双向；绑定探测拒单向；开仓再闸；不自动切模式 | 已修 · §14 |
@@ -569,6 +570,37 @@ DeepCoin 账户可能是**开平仓模式（双向）**或**买卖模式（单�
 - [x] 单测：`test_radar_arm_adx` / `test_breathing_stop` / `test_smart_reentry` 等绿。  
 - [ ] 实盘：硬止损仍在；雷达休眠则下一次激活走 fee BE + 70/80/90；TP12 份额不变。  
 - [ ] 日志无「entry±0.5ATR」激活文案；应为保本起步 / fee_cover_be。  
+- [ ] 本地 = GitHub `main` = VPS HEAD。
+
+---
+
+## §18 · 2026-07-28 · Stage0 仅硬止损（禁休眠雷达上簿）
+
+### 现象
+
+- 实盘 ETH/XAU 开仓后盘口同时有硬止损 +「雷达候命」STOP；用户指出雷达应快到 TP1（ADX arm）才激活上簿，休眠雷达多余。
+
+### 根因
+
+- `_radar_activation_reached` 在有 entry/ATR 时恒 `True` → `_ensure_radar_sl` 开仓即挂。
+- 开仓路径④主动 `_ensure_radar_sl`；停滞收紧也会挂休眠 STOP。
+
+### 修复（全交易所）
+
+| 项 | 行为 |
+|----|------|
+| `_radar_activation_reached` | 仅 `radar_activated`（ADX arm 后） |
+| `_breathing_eval_ready` | entry+ATR → 仍评估呼吸（可从 Stage0→1） |
+| `_ensure_radar_sl`（Binance/DeepCoin） | 未激活直接拒挂 |
+| 开仓④ | 只核实硬止损 + `_purge_stage0_dormant_radar`；不挂雷达 |
+| 呼吸 tick | 未激活：软件不平仓用 dormant SL；一键清休眠雷达；不上簿 |
+| 停滞收紧 | 仅改内存 `current_sl`，不上簿 |
+| 重启 profit_radar | finalize 置 `radar_activated=True` 再补挂 |
+
+### 验收清单
+
+- [x] 单测：Stage0 拒挂 / stagnant memory-only / latched+activated。  
+- [ ] 实盘：取消已挂休眠雷达，仅留硬止损；下一笔开仓盘口 STOP=1。  
 - [ ] 本地 = GitHub `main` = VPS HEAD。
 
 ---

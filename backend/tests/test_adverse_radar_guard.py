@@ -139,6 +139,7 @@ def test_latched_radar_never_revokes_on_path_collapse():
     probe.monitoring = True
     probe.initial_atr = 30.0
     probe.radar_latched = True
+    probe.radar_activated = True
     probe.current_sl = 2003.0
     probe.watched_entry = 2000.0
     probe.trade_opened_at = __import__("time").time() - 10.0
