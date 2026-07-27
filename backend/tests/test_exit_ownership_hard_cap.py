@@ -67,6 +67,37 @@ def test_pause_trading_idempotent_no_realert():
     assert len(h.alerts) == 2
 
 
+def test_stale_flip_fail_pause_reclaimed_on_new_tv_when_flat():
+    """先平后开失败 latch after already-flat must not skip next LONG forever."""
+    h = _H()
+    h._init_adverse_radar_fields()
+    h.trading_paused = True
+    h.trading_pause_reason = "先平后开失败·仓位已平但挂单/对账未干净"
+    h.monitoring = False
+    h.watched_qty = 0.0
+    h._confirm_exchange_flat = lambda: True
+    h._save_state = lambda: None
+    blocked = AdverseRadarMixin._block_if_trading_paused(h, "LONG")
+    assert blocked is None
+    assert h.trading_paused is False
+    assert any(a[1] == "AUTO_UNPAUSE_STALE" for a in h.alerts)
+
+
+def test_manual_pause_still_blocks_open():
+    h = _H()
+    h._init_adverse_radar_fields()
+    h.trading_paused = True
+    h.trading_pause_reason = "manual_ops_hold"
+    h.monitoring = False
+    h.watched_qty = 0.0
+    h._confirm_exchange_flat = lambda: True
+    h._save_state = lambda: None
+    blocked = AdverseRadarMixin._block_if_trading_paused(h, "LONG")
+    assert blocked is not None
+    assert blocked["reason"] == "trading_paused"
+    assert h.trading_paused is True
+
+
 def test_hard_cap_already_paused_no_recount_storm():
     h = _H()
     h._init_adverse_radar_fields()

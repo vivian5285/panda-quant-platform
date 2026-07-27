@@ -1273,6 +1273,12 @@ class StartupReconcileMixin:
         live_qty = float(pos.get("size", 0) or 0) if isinstance(pos, dict) else 0.0
 
         if live_qty <= 0:
+            # Idle + paused for auto-clearable reason → reclaim (covers latch after already-flat)
+            try:
+                if hasattr(self, "_try_reclaim_stale_auto_pause"):
+                    self._try_reclaim_stale_auto_pause()
+            except Exception:
+                pass
             if not self._idle_book_is_flat():
                 prev = float(getattr(self, "watched_qty", 0) or 0)
                 if self._idle_reconcile_stale_book_flat():

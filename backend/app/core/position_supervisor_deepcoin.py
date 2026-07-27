@@ -3078,8 +3078,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             from app.core.pipeline_officers import should_auto_unpause_on_flat
 
             if bool(getattr(self, "trading_paused", False)) and should_auto_unpause_on_flat(pause_reason):
-                self.trading_paused = False
-                self.trading_pause_reason = ""
+                if hasattr(self, "_clear_trading_pause"):
+                    self._clear_trading_pause(f"auto_unpause_on_flat:{pause_reason}")
+                else:
+                    self.trading_paused = False
+                    self.trading_pause_reason = ""
+                    if hasattr(self, "_save_state"):
+                        try:
+                            self._save_state()
+                        except Exception:
+                            pass
                 led.note_event("AUTO_UNPAUSE_ON_FLAT", {"was": pause_reason})
                 led.persist()
         except Exception:

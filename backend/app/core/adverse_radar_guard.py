@@ -565,16 +565,82 @@ class AdverseRadarMixin:
     def _clear_trading_pause(self, reason: str = "") -> None:
         self._init_adverse_radar_fields()
         was = bool(self.trading_paused)
+        was_reason = str(getattr(self, "trading_pause_reason", "") or "")
         self.trading_paused = False
         self.trading_pause_reason = ""
+        if hasattr(self, "_save_state"):
+            try:
+                self._save_state()
+            except Exception:
+                pass
         if was and hasattr(self, "_log"):
             try:
-                self._log("RESUME", f"交易暂停已解除 {reason}", {"reason": reason})
+                self._log(
+                    "RESUME",
+                    f"交易暂停已解除 {reason}",
+                    {"reason": reason, "was_reason": was_reason},
+                )
             except Exception:
                 pass
 
+    def _try_reclaim_stale_auto_pause(self, reason: str | None = None) -> bool:
+        """Clear latch-style pauses that are safe once flat (all exchanges).
+
+        Bug: ``先平后开失败·…`` (and peer auto-clear reasons) may pause AFTER the
+        book is already flat. Auto-unpause only runs on flat *transition*, so a
+        later TV OPEN stays skipped forever. Reclaim when still flat.
+        """
+        self._init_adverse_radar_fields()
+        if not bool(getattr(self, "trading_paused", False)):
+            return False
+        reason_s = str(reason if reason is not None else getattr(self, "trading_pause_reason", "") or "")
+        try:
+            from app.core.pipeline_officers import should_auto_unpause_on_flat
+        except Exception:
+            return False
+        if not should_auto_unpause_on_flat(reason_s):
+            return False
+        # Local book must look flat
+        if bool(getattr(self, "monitoring", False)):
+            return False
+        if float(getattr(self, "watched_qty", 0) or 0) > 1e-12:
+            return False
+        # Exchange flat — fail-closed (unknown → do not reclaim)
+        try:
+            if hasattr(self, "_confirm_exchange_flat"):
+                if not bool(self._confirm_exchange_flat()):
+                    return False
+            else:
+                client = getattr(self, "client", None)
+                symbol = getattr(self, "symbol", None)
+                if not client or not symbol or not hasattr(client, "get_position"):
+                    return False
+                pos = client.get_position(symbol)
+                amt = abs(float((pos or {}).get("positionAmt") or 0))
+                if amt > 1e-12:
+                    return False
+        except Exception:
+            return False
+        self._clear_trading_pause(f"reclaim_stale:{reason_s}")
+        if hasattr(self, "_alert"):
+            try:
+                self._alert(
+                    "info",
+                    "AUTO_UNPAUSE_STALE",
+                    "过期暂停已自动解除",
+                    f"空仓且原因可自动清：{reason_s}（新TV可开仓）",
+                    {"was_reason": reason_s},
+                )
+            except Exception:
+                pass
+        return True
+
     def _block_if_trading_paused(self, action: str) -> dict | None:
-        """Block OPEN when paused; allow force-flat exits and reconcile closes."""
+        """Block OPEN when paused; allow force-flat exits and reconcile closes.
+
+        Stale auto-clearable pauses (e.g. 先平后开失败 after already flat) are
+        reclaimed on LONG/SHORT so the next TV is not permanently skipped.
+        """
         self._init_adverse_radar_fields()
         if not self.trading_paused:
             return None
@@ -584,6 +650,8 @@ class AdverseRadarMixin:
             return None
         if act in ("LONG", "SHORT", "UPDATE_TP"):
             reason = self.trading_pause_reason or "trading_paused"
+            if act in ("LONG", "SHORT") and self._try_reclaim_stale_auto_pause(reason):
+                return None
             if hasattr(self, "_log"):
                 self._log("SIGNAL", f"⏸️ 交易已暂停，忽略 {act}: {reason}", {"action": act})
             return {
