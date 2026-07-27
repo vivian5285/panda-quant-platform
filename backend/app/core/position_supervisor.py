@@ -407,6 +407,7 @@ class PositionSupervisor(
                     "atr_mismatch_streak": int(getattr(self, "atr_mismatch_streak", 0) or 0),
                     "atr_fallback_active": bool(getattr(self, "atr_fallback_active", False)),
                     "current_trade_id": getattr(self, "current_trade_id", None),
+                    "trade_opened_at": float(getattr(self, "trade_opened_at", 0) or 0) or None,
                     "canonical_symbol": getattr(self, "canonical_symbol", None),
                     **(self._smart_reentry_state_dict() if hasattr(self, "_smart_reentry_state_dict") else {}),
                 }, f)
@@ -558,6 +559,11 @@ class PositionSupervisor(
                             self.current_trade_id = int(tid)
                         except (TypeError, ValueError):
                             pass
+                    try:
+                        toa = float(s.get("trade_opened_at") or 0)
+                    except (TypeError, ValueError):
+                        toa = 0.0
+                    self.trade_opened_at = toa if toa > 0 else None
                     self._infer_radar_latched_from_state()
                     if hasattr(self, "_load_smart_reentry_state"):
                         self._load_smart_reentry_state(s)
@@ -2135,6 +2141,11 @@ class PositionSupervisor(
                 )
             except Exception:
                 pass
+            if hasattr(self, "_save_state"):
+                try:
+                    self._save_state()
+                except Exception:
+                    pass
             self.base_qty = real_qty
             if hasattr(self, "_set_open_qty_baseline"):
                 self._set_open_qty_baseline(real_qty, reason="tv_open")

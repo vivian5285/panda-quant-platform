@@ -808,6 +808,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "trading_paused": bool(getattr(self, "trading_paused", False)),
                     "trading_pause_reason": str(getattr(self, "trading_pause_reason", "") or ""),
                     "current_trade_id": getattr(self, "current_trade_id", None),
+                    "trade_opened_at": float(getattr(self, "trade_opened_at", 0) or 0) or None,
                     "canonical_symbol": getattr(self, "canonical_symbol", None),
                 }, f)
         except Exception as e:
@@ -3800,6 +3801,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 )
             except Exception:
                 pass
+            if hasattr(self, "_save_state"):
+                try:
+                    self._save_state()
+                except Exception:
+                    pass
             self.base_qty = real_qty
             if hasattr(self, "_set_open_qty_baseline"):
                 self._set_open_qty_baseline(real_qty, reason="tv_open")
@@ -4884,6 +4890,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                             self.current_trade_id = int(tid)
                         except (TypeError, ValueError):
                             pass
+                    try:
+                        toa = float(s.get("trade_opened_at") or 0)
+                    except (TypeError, ValueError):
+                        toa = 0.0
+                    self.trade_opened_at = toa if toa > 0 else None
                     self._infer_radar_latched_from_state()
 
             if self._scan_and_sweep_dust_on_startup():
