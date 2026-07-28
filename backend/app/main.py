@@ -307,6 +307,7 @@ def health():
         "version": "1.0.0",
         "supervisors_loading": supervisor_pool.startup_in_progress,
         "supervisors_ready": supervisor_pool.startup_complete,
+        "recovering": supervisor_pool.recovering,
         "active_supervisors": len(supervisor_pool.get_all()),
         "startup_audits": len(audits),
         "users_with_position": with_position,

@@ -46,9 +46,12 @@ class UserSupervisorPool:
         self.last_startup_failures: list[dict] = []
         self.startup_in_progress = False
         self.startup_complete = False
+        # Spec §8.4: block non-CLOSE signals during multi-user recovery
+        self.recovering = False
 
     def load_active_users(self, db: Session):
         self.startup_in_progress = True
+        self.recovering = True  # Spec §8.4: block non-CLOSE signals during recovery
         try:
             users = db.query(User).filter(
                 User.is_active == True,
@@ -56,24 +59,41 @@ class UserSupervisorPool:
                 User.api_key_enc.isnot(None),
             ).all()
             users = [u for u in users if user_has_api_credentials(u) and is_exchange_enabled(user_exchange(u))]
-            audits = []
-            failed = []
-            for user in users:
-                audit = self.add_user(user, db=db)
-                if audit is None:
-                    failed.append({
-                        "user_id": user.id,
-                        "uid": user.uid,
-                        "reason": "supervisor_init_failed",
-                    })
-                else:
-                    if audit.get("error"):
-                        failed.append({
-                            "user_id": user.id,
-                            "uid": user.uid,
-                            "reason": audit.get("error"),
-                        })
-                    audits.append(audit)
+
+            # Spec §3.3 & §8.3: concurrent recovery — each user independently recovers,
+            # one user's failure doesn't block others. Pass db=None so each thread
+            # creates its own session (SessionLocal is thread-safe).
+            audits: list[dict] = []
+            failed: list[dict] = []
+            if users:
+                max_workers = min(len(users), 20)
+
+                def _recover_one(user: User) -> tuple[User, dict | None]:
+                    try:
+                        audit = self.add_user(user, db=None)  # each thread → own session
+                        return (user, audit)
+                    except Exception as e:
+                        return (user, {"error": str(e)})
+
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(_recover_one, u): u for u in users}
+                    for future in as_completed(futures):
+                        user, audit = future.result()
+                        if audit is None:
+                            failed.append({
+                                "user_id": user.id,
+                                "uid": user.uid,
+                                "reason": "supervisor_init_failed",
+                            })
+                        elif audit.get("error"):
+                            failed.append({
+                                "user_id": user.id,
+                                "uid": user.uid,
+                                "reason": audit.get("error"),
+                            })
+                        else:
+                            audits.append(audit)
+
             self.last_startup_audits = audits
             self.last_startup_failures = failed
             logger.info("Loaded %d active supervisors", len(self._supervisors))
@@ -84,6 +104,7 @@ class UserSupervisorPool:
         finally:
             self.startup_complete = True
             self.startup_in_progress = False
+            self.recovering = False  # Spec §8.4: all users recovered, unblock signals
 
     def add_user(self, user: User, db: Session | None = None) -> dict | None:
         own_db = db is None
@@ -317,6 +338,17 @@ class SignalDispatcher:
                 {"payload_action": payload.get("action"), "symbol": signal_symbol},
             )
             return {"dispatched": 0, "results": [], "reason": "global_pause", "symbol": signal_symbol}
+
+        # Spec §8.4: block non-CLOSE signals during multi-user recovery
+        if self.pool.recovering and not is_close:
+            logger.warning("Signal rejected: recovering=True, non-CLOSE blocked")
+            notify_system(
+                "warning", "RECOVERY_BLOCK",
+                "重启恢复中·信号暂存",
+                f"收到 {payload.get('action', '?')} · {signal_symbol}，重启恢复期间暂存待全部用户就绪后处理",
+                {"payload_action": payload.get("action"), "symbol": signal_symbol},
+            )
+            return {"dispatched": 0, "results": [], "reason": "recovering", "symbol": signal_symbol}
 
         # Only supervisors for this symbol
         supervisors = [
