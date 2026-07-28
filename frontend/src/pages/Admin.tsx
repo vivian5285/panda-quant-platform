@@ -127,7 +127,7 @@ export default function Admin() {
   const [webhookSettingsLoadError, setWebhookSettingsLoadError] = useState(false)
   const [webhookSecretDraft, setWebhookSecretDraft] = useState('')
   const [platformPublicSettings, setPlatformPublicSettings] = useState<any>(null)
-  const [platformPublicDraft, setPlatformPublicDraft] = useState({ enabled_exchanges: ['binance'] as string[], support_telegram: '' })
+  const [platformPublicDraft, setPlatformPublicDraft] = useState({ enabled_exchanges: ['binance'] as string[], support_telegram: '', perf_fee_mode: 'strict' as string })
   const [chainRpcSettings, setChainRpcSettings] = useState<any>(null)
   const [chainRpcDraft, setChainRpcDraft] = useState<Record<string, string>>({
     ERC20: '', BEP20: '', ARBITRUM: '', POLYGON: '', tron_api_url: '', tron_api_key: '',
@@ -528,11 +528,13 @@ export default function Admin() {
       const res = await adminApi.updatePlatformPublicSettings({
         enabled_exchanges: platformPublicDraft.enabled_exchanges,
         support_telegram: platformPublicDraft.support_telegram.trim(),
+        perf_fee_mode: platformPublicDraft.perf_fee_mode,
       })
       setPlatformPublicSettings(res)
       setPlatformPublicDraft({
         enabled_exchanges: res.enabled_exchanges || ['binance'],
         support_telegram: res.support_telegram || '',
+        perf_fee_mode: res.perf_fee_mode || 'strict',
       })
       toast.success(
         res.removed_supervisors || res.added_supervisors

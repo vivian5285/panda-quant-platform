@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.models import ApiStatus, ExchangeAccountRegistry, ExchangeSubAccountFiling, User
 from app.services.settlement import user_has_unsettled_payment
 from app.services.trading_control import get_user_control
+from app.services.platform_public_settings import is_perf_fee_enforced
 
 
 def user_is_credit_default(db: Session, user_id: int) -> bool:
@@ -95,7 +96,9 @@ def referral_block_reason(db: Session, user_id: int) -> str | None:
 
 
 def user_credit_default_blocks_referral(db: Session, user_id: int) -> bool:
-    """失信或下线未缴绩效费 → 禁止推广拉新（管理员可特批）。"""
+    """失信或下线未缴绩效费 → 禁止推广拉新（管理员可特批）；内测期间静默。"""
+    if not is_perf_fee_enforced():
+        return False
     return referral_block_reason(db, user_id) is not None
 
 
@@ -175,7 +178,9 @@ def user_entry_blocked_by_settlement(db: Session, user_id: int) -> tuple[bool, s
 
 
 def user_api_bind_blocked(db: Session, user_id: int) -> tuple[bool, str | None]:
-    """失信用户禁止绑定/重绑/解绑 API（本人未缴绩效费）。"""
+    """失信用户禁止绑定/重绑/解绑 API（本人未缴绩效费）；内测期间静默。"""
+    if not is_perf_fee_enforced():
+        return False, None
     if user_is_credit_default(db, user_id):
         ctrl = get_user_control(db, user_id)
         if not ctrl.get("settlement_fee_deferred"):
@@ -194,7 +199,10 @@ def user_trading_blocked_by_credit(db: Session, user_id: int) -> tuple[bool, str
     """
     Returns (blocked, reason).
     Blocks own unpaid bill (unless deferred) or any family member's unpaid bill (unless deferred).
+    Gate is controlled by perf_fee_mode and ENABLE_PERF_FEE_GATE (default True); beta/open mode disables.
     """
+    if not is_perf_fee_enforced():
+        return False, None
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         return False, None
@@ -213,7 +221,9 @@ def user_trading_blocked_by_credit(db: Session, user_id: int) -> tuple[bool, str
 
 
 def is_master_uid_credit_blocked(db: Session, exchange: str, master_uid: str) -> bool:
-    """Bind-time: reject if master UID family has unpaid performance fee (non-deferred)."""
+    """Bind-time: reject if master UID family has unpaid performance fee (non-deferred); beta-gated."""
+    if not is_perf_fee_enforced():
+        return False
     return family_has_credit_default_trading_block(db, exchange, _normalize_uid(master_uid))
 
 

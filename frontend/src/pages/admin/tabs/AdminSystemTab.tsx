@@ -149,6 +149,34 @@ export default function AdminSystemTab() {
             />
             <p className="text-muted form-hint-sm">{t('admin.supportTelegramHint')}</p>
           </div>
+          <div className="form-field section-mt-sm">
+            <p className="text-sm-strong section-mb-xs">{t('admin.perfFeeModeTitle')}</p>
+            <p className="text-muted text-xs section-mb-sm">{t('admin.perfFeeModeHint')}</p>
+            <div className="perf-fee-mode-cards">
+              <label className={`perf-fee-mode-card ${platformPublicDraft?.perf_fee_mode === 'open_beta' ? 'selected' : ''}`}>
+                <input
+                  type="radio"
+                  name="perf_fee_mode"
+                  value="open_beta"
+                  checked={platformPublicDraft?.perf_fee_mode === 'open_beta'}
+                  onChange={() => setPlatformPublicDraft({ ...platformPublicDraft, perf_fee_mode: 'open_beta' })}
+                />
+                <div className="perf-fee-mode-card-title">{t('admin.perfFeeModeOpenBeta')}</div>
+                <div className="perf-fee-mode-card-desc">{t('admin.perfFeeModeOpenBetaDesc')}</div>
+              </label>
+              <label className={`perf-fee-mode-card ${platformPublicDraft?.perf_fee_mode === 'strict' ? 'selected' : ''}`}>
+                <input
+                  type="radio"
+                  name="perf_fee_mode"
+                  value="strict"
+                  checked={platformPublicDraft?.perf_fee_mode === 'strict'}
+                  onChange={() => setPlatformPublicDraft({ ...platformPublicDraft, perf_fee_mode: 'strict' })}
+                />
+                <div className="perf-fee-mode-card-title">{t('admin.perfFeeModeStrict')}</div>
+                <div className="perf-fee-mode-card-desc">{t('admin.perfFeeModeStrictDesc')}</div>
+              </label>
+            </div>
+          </div>
           <button className="btn btn-primary btn-sm" type="submit">{t('common.save')}</button>
         </form>
       </GlassCard>

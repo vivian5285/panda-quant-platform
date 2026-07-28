@@ -1,11 +1,21 @@
-"""Admin-configurable public platform settings: open exchanges and support Telegram."""
+"""Admin-configurable public platform settings: open exchanges, support Telegram, and performance fee mode."""
 
 from __future__ import annotations
 
+from enum import Enum
 from app.services.platform_runtime import read_runtime_file, write_runtime_file
 
 ALL_EXCHANGES = ("binance", "okx", "gate", "deepcoin")
 DEFAULT_ENABLED = ("binance",)
+
+
+class PerfFeeMode(str, Enum):
+    """绩效费模式：
+    - open_beta: 内测开放模式，所有用户免绩效费交易（管理员可针对单个用户特批豁免）
+    - strict: 严格模式，所有用户必须缴纳绩效费（管理员可针对单个用户特批豁免，否则失信）
+    """
+    OPEN_BETA = "open_beta"
+    STRICT = "strict"
 
 
 def _normalize_exchange(val: str) -> str | None:
@@ -44,6 +54,11 @@ def get_platform_public_settings() -> dict:
     if not enabled:
         enabled = list(DEFAULT_ENABLED)
     telegram = (block.get("support_telegram") or "").strip()
+    perf_fee_mode_raw = block.get("perf_fee_mode", PerfFeeMode.STRICT.value)
+    try:
+        perf_fee_mode = PerfFeeMode(perf_fee_mode_raw)
+    except (ValueError, TypeError):
+        perf_fee_mode = PerfFeeMode.STRICT
     try:
         coverage = exchange_symbol_coverage()
     except Exception:
@@ -53,6 +68,7 @@ def get_platform_public_settings() -> dict:
         "all_exchanges": list(ALL_EXCHANGES),
         "exchange_symbols": coverage,
         "support_telegram": telegram,
+        "perf_fee_mode": perf_fee_mode.value,
     }
 
 
@@ -123,6 +139,7 @@ def update_platform_public_settings(
     *,
     enabled_exchanges: list[str] | None = None,
     support_telegram: str | None = None,
+    perf_fee_mode: PerfFeeMode | None = None,
 ) -> dict:
     data = read_runtime_file()
     block = dict(data.get("platform_public") or {})
@@ -140,6 +157,27 @@ def update_platform_public_settings(
     if support_telegram is not None:
         block["support_telegram"] = (support_telegram or "").strip()[:128]
 
+    if perf_fee_mode is not None:
+        block["perf_fee_mode"] = perf_fee_mode.value
+
     data["platform_public"] = block
     write_runtime_file(data)
     return get_platform_public_settings()
+
+
+def get_perf_fee_mode() -> PerfFeeMode:
+    """Get current performance fee enforcement mode."""
+    settings = get_platform_public_settings()
+    try:
+        return PerfFeeMode(settings.get("perf_fee_mode", PerfFeeMode.STRICT.value))
+    except (ValueError, TypeError):
+        return PerfFeeMode.STRICT
+
+
+def is_perf_fee_enforced() -> bool:
+    """True when performance fee gate is active (strict mode and no global beta flag)."""
+    mode = get_perf_fee_mode()
+    if mode == PerfFeeMode.OPEN_BETA:
+        return False
+    from app.config import get_settings
+    return get_settings().ENABLE_PERF_FEE_GATE

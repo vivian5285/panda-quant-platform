@@ -663,6 +663,7 @@ class PlatformPublicSettingsOut(BaseModel):
     enabled_exchanges: list[str]
     all_exchanges: list[str]
     support_telegram: str = ""
+    perf_fee_mode: str = "strict"
     removed_supervisors: int = 0
     added_supervisors: int = 0
 
@@ -670,6 +671,7 @@ class PlatformPublicSettingsOut(BaseModel):
 class PlatformPublicSettingsUpdate(BaseModel):
     enabled_exchanges: Optional[list[str]] = None
     support_telegram: Optional[str] = None
+    perf_fee_mode: Optional[str] = None
 
 
 class ChainRpcChainOut(BaseModel):

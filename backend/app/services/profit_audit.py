@@ -333,24 +333,25 @@ def run_startup_dual_audit(db: Session, user: User) -> dict:
     db.commit()
 
     if warn or rebase_snap:
-        notify_admin(
-            user.id,
-            "warning",
-            "PROFIT_DIVERGENCE",
-            "账户对账：疑似资金划转/他币盈亏" + (" · 本金已校正" if rebase_snap else ""),
-            (
-                f"合约交易PnL ${report['trade_pnl_cycle']:.2f} · "
-                f"权益变动 ${report['equity_delta']:.2f} · "
-                f"划转净额 ${float(report.get('estimated_net_transfer') or 0):.2f} "
-                f"({report.get('transfer_source')})"
-                + (
-                    f" · 新本金 ${float(report.get('principal_after_rebase') or 0):.2f}"
-                    if rebase_snap else ""
-                )
-                + " — 结算仍以交易订单为准"
-            ),
-            report,
-        )
+        if settings.ENABLE_PROFIT_DIVERGENCE_ALERT:
+            notify_admin(
+                user.id,
+                "warning",
+                "PROFIT_DIVERGENCE",
+                "账户对账：疑似资金划转/他币盈亏" + (" · 本金已校正" if rebase_snap else ""),
+                (
+                    f"合约交易PnL ${report['trade_pnl_cycle']:.2f} · "
+                    f"权益变动 ${report['equity_delta']:.2f} · "
+                    f"划转净额 ${float(report.get('estimated_net_transfer') or 0):.2f} "
+                    f"({report.get('transfer_source')})"
+                    + (
+                        f" · 新本金 ${float(report.get('principal_after_rebase') or 0):.2f}"
+                        if rebase_snap else ""
+                    )
+                    + " — 结算仍以交易订单为准"
+                ),
+                report,
+            )
         logger.warning(
             "[DualAudit] user=%s exchange=%s trade_cycle=%.2f equity_delta=%.2f "
             "net_transfer=%.2f source=%s rebase=%s hypotheses=%s",

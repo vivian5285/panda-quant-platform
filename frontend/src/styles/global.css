@@ -5077,6 +5077,51 @@ html[lang="zh-CN"] .framer-logo-text strong {
   font-size: 0.875rem;
 }
 
+/* ── Perf Fee Mode Radio Cards ── */
+.perf-fee-mode-cards {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.perf-fee-mode-card {
+  flex: 1;
+  min-width: 200px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: all var(--transition);
+  background: var(--bg-secondary);
+}
+
+.perf-fee-mode-card:hover {
+  border-color: var(--accent);
+  background: var(--bg-glow-1);
+}
+
+.perf-fee-mode-card.selected {
+  border-color: var(--accent);
+  background: var(--accent-glow-soft);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.perf-fee-mode-card input[type="radio"] {
+  display: none;
+}
+
+.perf-fee-mode-card-title {
+  font-weight: 600;
+  font-size: 0.875rem;
+  margin-bottom: 4px;
+}
+
+.perf-fee-mode-card-desc {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
 .admin-account-detail-cell {
   background: color-mix(in srgb, var(--surface-2, #111) 92%, transparent);
   padding: 0 12px 16px !important;

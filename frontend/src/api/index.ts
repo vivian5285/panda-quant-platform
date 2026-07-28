@@ -245,7 +245,7 @@ export const adminApi = {
   complianceAuditLogs: (params?: { q?: string; limit?: number }) =>
     api.get('/admin/compliance/audit-logs', { params }).then(r => r.data),
   platformPublicSettings: () => api.get('/admin/platform/public-settings').then(r => r.data),
-  updatePlatformPublicSettings: (data: { enabled_exchanges?: string[]; support_telegram?: string }) =>
+  updatePlatformPublicSettings: (data: { enabled_exchanges?: string[]; support_telegram?: string; perf_fee_mode?: string }) =>
     api.patch('/admin/platform/public-settings', data).then(r => r.data),
   referralsOverview: () => api.get('/admin/referrals/overview').then(r => r.data),
   syncUserExchangeLogs: (id: number, days = 90) =>

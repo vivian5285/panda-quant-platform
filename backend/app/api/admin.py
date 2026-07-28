@@ -1118,12 +1118,24 @@ def admin_update_platform_public_settings(
     admin=Depends(get_admin_user),
     db: Session = Depends(get_db),
 ):
-    from app.services.platform_public_settings import update_platform_public_settings, sync_supervisors_for_enabled_exchanges
+    from app.services.platform_public_settings import (
+        update_platform_public_settings,
+        sync_supervisors_for_enabled_exchanges,
+        PerfFeeMode,
+    )
+
+    perf_fee_mode = None
+    if req.perf_fee_mode is not None:
+        try:
+            perf_fee_mode = PerfFeeMode(req.perf_fee_mode)
+        except ValueError:
+            raise HTTPException(400, f"Invalid perf_fee_mode: {req.perf_fee_mode}")
 
     try:
         updated = update_platform_public_settings(
             enabled_exchanges=req.enabled_exchanges,
             support_telegram=req.support_telegram,
+            perf_fee_mode=perf_fee_mode,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -1139,6 +1151,7 @@ def admin_update_platform_public_settings(
         detail={
             "enabled_exchanges": updated.get("enabled_exchanges"),
             "has_support_telegram": bool(updated.get("support_telegram")),
+            "perf_fee_mode": updated.get("perf_fee_mode"),
             **sync_result,
         },
         request=request,

@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     WEBHOOK_COALESCE_SEC: float = 10.0
     # 内测专用：>0 时强制名义价值≈该 USD（压到交易所最小名义附近）。生产必须保持 0。
     E2E_FORCE_NOTIONAL_USD: float = 0.0
+    # 内测：true 时静默「账户对账·疑似资金划转/他币盈亏」钉钉告警
+    ENABLE_PROFIT_DIVERGENCE_ALERT: bool = True
+    # 内测：true 时启用绩效费门禁（未缴费用户禁止开仓/API绑定/推广）；内测期间设为 False 放行
+    ENABLE_PERF_FEE_GATE: bool = True
     # 日亏损熔断（−5.5% equity UTC 日）— 生产默认关闭，避免误熔断挡真实 TV
     DAILY_LOSS_CIRCUIT_ENABLED: bool = False
     DAILY_LOSS_LIMIT_PCT: float = 0.055

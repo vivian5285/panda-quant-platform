@@ -1,0 +1,1 @@
+import{j as e}from"./index-p_SzbQ-U.js";function n({tabs:r,active:s,onChange:t,trailing:i}){return e.jsxs("div",{className:"tab-bar-row",children:[e.jsx("div",{className:"tab-bar",children:r.map(a=>e.jsx("button",{type:"button",className:`tab-bar-item${s===a.key?" active":""}`,onClick:()=>t(a.key),children:a.label},a.key))}),i]})}export{n as T};

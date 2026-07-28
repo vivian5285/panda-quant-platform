@@ -61,7 +61,7 @@ export type AdminTabSetters = {
   setComplianceReferralBlocks?: (v: any[]) => void
   setComplianceAuditLogs?: (v: any[]) => void
   setPlatformPublicSettings?: (v: any) => void
-  setPlatformPublicDraft?: (v: { enabled_exchanges: string[]; support_telegram: string }) => void
+  setPlatformPublicDraft?: (v: { enabled_exchanges: string[]; support_telegram: string; perf_fee_mode: string }) => void
 }
 
 export async function loadUsersList(filters: UserListFilters): Promise<any[]> {
@@ -326,6 +326,7 @@ export async function loadAdminTab(
         setters.setPlatformPublicDraft?.({
           enabled_exchanges: platformPublic.enabled_exchanges || ['binance'],
           support_telegram: platformPublic.support_telegram || '',
+          perf_fee_mode: platformPublic.perf_fee_mode || 'strict',
         })
       }
       break
