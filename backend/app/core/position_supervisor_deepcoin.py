@@ -3084,6 +3084,34 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 self._handle_tv_reconcile_close(raw_action, payload, tv_reason=tv_reason)
                 return
             if is_force_flat_close(raw_action):
+                # === v1.0: side字段过期检测（平仓指令处理指南 §3.1/§3.2） ===
+                msg_side = payload.get("side")  # CLOSE消息才有此字段
+                if msg_side:
+                    msg_side = str(msg_side).upper().strip()
+                    current_side = self.current_side
+                    # 方向不匹配 → 过期指令，忽略（不告警）
+                    if current_side and current_side != msg_side:
+                        self._log(
+                            "INFO",
+                            f"检测到过期平仓指令·忽略（消息side={msg_side} 实盘={current_side}）",
+                            {"tv_side": msg_side, "live_side": current_side, "action": raw_action}
+                        )
+                        return
+                    # 无持仓 → 过期指令，忽略（不告警）
+                    if not current_side:
+                        self._log(
+                            "INFO",
+                            f"检测到过期平仓指令·忽略（无持仓，消息side={msg_side}）",
+                            {"tv_side": msg_side, "action": raw_action}
+                        )
+                        return
+                else:
+                    # 无side字段 → 旧格式兼容，提醒更新TV警报
+                    self._log(
+                        "INFO",
+                        "收到不含side字段的平仓消息，建议更新TradingView警报到最新脚本版本"
+                    )
+                # === 原有平仓逻辑 ===
                 self._close_all(
                     f"⚡ 策略反转全平：{tv_reason or raw_action}",
                     **_tv_close_kwargs(),
