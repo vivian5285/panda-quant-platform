@@ -514,40 +514,31 @@ def calculate_stop_long(
     smooth_ratio: float | None = None,
     **_legacy: Any,
 ) -> tuple[float, float, bool, dict[str, Any]]:
-    """Layer-1 ADX arm 70/80/90%×(1.35ATR) 弱早强晚; activate fee+tick BE; then ladder trail."""
+    """Spec §6.0/§6.1: 提前保本检查点 + 绝对价格锚定雷达激活.
+
+    Phase 1 (提前保本检查点):
+      价格到达 entry + tp1_distance × 0.5 时，移动止损到保本位
+      不启动雷达跟踪状态
+
+    Phase 2 (雷达激活):
+      首次开仓: 价格到达 (TP1 + TP2) / 2 时激活
+      重入开仓: 价格到达 TP2 时激活
+      激活后 fee+tick BE，然后按档位参数跟踪
+    """
     from app.core.radar_trail import fee_cover_breakeven_stop
     from app.core.trend_tier_params import (
-        RADAR_ARM_MODE_ADX,
+        RADAR_ARM_MODE_ABSOLUTE,
         is_reentry_attempt,
-        radar_arm_ratio_by_adx,
-        radar_arm_trigger_price,
-        radar_armed_by_price,
+        early_breakeven_trigger_price,
+        early_breakeven_reached,
+        radar_arm_absolute_trigger,
+        radar_armed_by_absolute_price,
     )
 
     p = profile_for_symbol(symbol)
     ov = _tier_overrides(_legacy, p)
     step_adv_atr = float(ov["step_advance_atr"] if ov["step_advance_atr"] is not None else p.step_advance_atr)
     step_trig = float(ov["step_trigger_atr"] if ov["step_trigger_atr"] is not None else p.step_trigger_atr)
-    try:
-        adx_raw = _legacy.get("adx")
-        if adx_raw is None:
-            adx_raw = ov.get("adx")
-        adx_f = float(adx_raw) if adx_raw is not None else None
-    except (TypeError, ValueError):
-        adx_f = None
-    # LIVE: ADX drives ratio when adx present; else optional arm_tp1_pct override (tests).
-    if adx_f is not None and float(adx_f) > 0:
-        arm_pct = float(radar_arm_ratio_by_adx(adx_f))
-    elif ov["arm_tp1_pct"] is not None:
-        arm_pct = float(ov["arm_tp1_pct"])
-    else:
-        arm_pct = float(radar_arm_ratio_by_adx(None))
-    cmin = ov["coef_min"]
-    cmax = ov["coef_max"]
-    breath12 = float(ov["breath_tp1_tp2_atr"] or 1.2)
-    breath23 = float(ov["breath_tp2_tp3_atr"] or 1.6)
-    tv_e = float(ov["tv_entry"] or 0)
-    tp1_d = float(ov["tp1_dist"] or 0)
     try:
         re_att = int(ov.get("reentry_attempt") or 0)
     except (TypeError, ValueError):
@@ -562,9 +553,8 @@ def calculate_stop_long(
     highest_price = float(highest_price or entry_price or 0)
     coef = resolve_coef(
         breathing_coefficient, p,
-        coef_min=cmin, coef_max=cmax,
+        coef_min=ov["coef_min"], coef_max=ov["coef_max"],
     )
-    sr = float(smooth_ratio if smooth_ratio is not None else COLD_START_RATIO)
     tp1, tp2, tp3 = _resolve_tp_prices(entry_price, initial_atr, "LONG", symbol, ov)
 
     new_highest = max(highest_price, price) if price > 0 else highest_price
@@ -575,60 +565,72 @@ def calculate_stop_long(
         "mode": "phase2" if new_phase else "phase1",
         "breathing_coefficient": coef,
         "symbol_tag": p.symbol_tag,
-        "arm_tp1_pct": arm_pct,
         "step_trigger_atr": step_trig,
         "step_advance_atr": step_adv_atr,
         "early_breakeven_atr": None,
         "activate_mode": "fee_cover_be",
-        "coef_min": float(cmin if cmin is not None else p.coef_min),
-        "coef_max": float(cmax if cmax is not None else p.coef_max),
-        "breath_tp1_tp2_atr": breath12,
-        "breath_tp2_tp3_atr": breath23,
-        "tv_entry": tv_e,
-        "tp1_dist": tp1_d,
+        "coef_min": float(ov["coef_min"] if ov["coef_min"] is not None else p.coef_min),
+        "coef_max": float(ov["coef_max"] if ov["coef_max"] is not None else p.coef_max),
+        "breath_tp1_tp2_atr": float(ov["breath_tp1_tp2_atr"] or 1.2),
+        "breath_tp2_tp3_atr": float(ov["breath_tp2_tp3_atr"] or 1.6),
         "is_reentry": reentry,
         "tp1": tp1,
         "tp2": tp2,
-        "adx": adx_f,
+        "tp3": tp3,
+        "early_breakeven_trigger": 0.0,
+        "early_breakeven_armed": False,
+        "radar_arm_trigger": 0.0,
+        "radar_armed": False,
+        "radar_arm_mode": RADAR_ARM_MODE_ABSOLUTE,
     }
 
-    arm_kw = dict(
+    # === Phase 0: 提前保本检查点 (Spec §6.0) ===
+    # 在雷达完全激活之前，检查是否到达提前保本检查点
+    early_trig = early_breakeven_trigger_price(entry_price, tp1, "LONG")
+    early_armed = early_breakeven_reached(price, entry_price, tp1, "LONG")
+    meta["early_breakeven_trigger"] = early_trig
+    meta["early_breakeven_armed"] = early_armed
+
+    if early_armed and not reentry:
+        # 触发提前保本检查点：移动止损到保本位（不启动雷达跟踪）
+        eb_stop = fee_cover_breakeven_stop(entry_price, "LONG", symbol)
+        if eb_stop > new_stop + 1e-12 or new_stop <= 0:
+            new_stop = eb_stop
+            if event == "none":
+                event = "early_breakeven"
+            meta["event"] = event
+            meta["step_count"] = 0
+            meta["early_breakeven_atr"] = 0.5
+            # 不设置 radar_armed，雷达继续等待激活
+            return new_stop, new_highest, new_phase, meta
+
+    # === Phase 1: 雷达激活检查 (Spec §6.1) ===
+    # 绝对价格锚定：首次=(TP1+TP2)/2，重入=TP2
+    arm_trig = radar_arm_absolute_trigger(tp1, tp2, is_reentry=reentry)
+    armed = bool(ov.get("radar_activated")) or radar_armed_by_absolute_price(
         side="LONG",
-        fill_entry=entry_price,
+        price=price,
         tp1=tp1,
         tp2=tp2,
-        tv_entry=tv_e if tv_e > 0 else None,
-        tp1_dist=tp1_d if tp1_d > 0 else None,
-        atr=initial_atr,
-        symbol=symbol,
-        arm_pct=arm_pct,
-        adx=adx_f,
         is_reentry=reentry,
     )
-    arm_trig = radar_arm_trigger_price(**arm_kw)
-    arm_dist = abs(arm_trig - entry_price) if arm_trig > 0 else 0.0
-    meta["radar_arm_dist"] = arm_dist
     meta["radar_arm_trigger"] = arm_trig
-    meta["radar_arm_ratio"] = arm_pct
-    meta["radar_arm_mode"] = RADAR_ARM_MODE_ADX
-    already = bool(ov.get("radar_activated"))
-    armed = already or radar_armed_by_price(price=price, **arm_kw)
     meta["radar_armed"] = armed
 
     if not armed:
-        meta["event"] = "waiting_arm"
+        meta["event"] = "waiting_radar_arm"
         meta["step_count"] = 0
         return new_stop, new_highest, new_phase, meta
 
-    # Marathon: activate lift = fee+tick BE (ladder origin); never entry+0.5ATR
+    # 雷达激活：移动到 fee+tick BE
     activate_stop = fee_cover_breakeven_stop(entry_price, "LONG", symbol)
     meta["activate_stop"] = activate_stop
     trail_dist = initial_atr * coef
     step_advance = step_adv_atr * initial_atr
     step_size = step_trig * initial_atr if step_trig > 0 else 0.0
 
-    if not already:
-        # First activation: lift stop to fee-cover breakeven
+    if not bool(ov.get("radar_activated")):
+        # 首次激活：lift stop to fee-cover breakeven
         candidate = max(new_stop, activate_stop) if new_stop > 0 else activate_stop
         if candidate > current_stop + 1e-12 or current_stop <= 0:
             event = "radar_activate"
@@ -636,45 +638,40 @@ def calculate_stop_long(
         meta["event"] = event
         meta["step_count"] = 0
         meta["just_activated"] = True
-        # May continue into same-tick trail if already deep in profit
-        already = True
-
-    move = max(0.0, price - entry_price) if price > 0 else 0.0
-    extra = max(0.0, move - arm_dist)
-    steps_after = max(0, int(math.floor(extra / step_size))) if step_size > 0 else 0
-    step_count = steps_after
-    step_stop = activate_stop + step_count * step_advance
 
     # Breath zone by TP path
     if price + 1e-12 >= tp3:
-        breath = coef  # phase2 uses continuous coef band
+        breath = coef
         new_phase = True
         zone = "tp3_trail"
     elif price + 1e-12 >= tp2:
-        breath = breath23
+        breath = float(ov["breath_tp2_tp3_atr"] or 1.6)
         zone = "tp2_tp3"
     else:
-        breath = breath12
+        breath = float(ov["breath_tp1_tp2_atr"] or 1.2)
         zone = "tp1_tp2"
     meta["breath_zone"] = zone
     meta["breath_atr"] = breath
     trail_stop = new_highest - breath * initial_atr
-    # Floor = fee BE only — no TP1 0.5ATR forced floor
-    candidate = max(new_stop, step_stop, trail_stop, activate_stop)
+
+    # 追踪止损
     if new_phase:
         trailed = new_highest - trail_dist
-        candidate = max(candidate, trailed)
+        candidate = max(new_stop, activate_stop, trailed)
         if event == "none":
             event = "phase2_enter" if not breakeven_phase else "trail"
         meta["mode"] = "phase2"
         meta["trail_dist_atr"] = coef
         meta["trail_distance"] = trail_dist
-    elif candidate > new_stop + 1e-12 and event == "none":
-        event = "step" if step_count > 0 else "trail"
+    else:
+        # Phase 1 追踪
+        step_stop = new_highest - step_size if step_size > 0 else new_highest
+        candidate = max(new_stop, activate_stop, step_stop, trail_stop)
+        if candidate > new_stop + 1e-12 and event == "none":
+            event = "step" if step_size > 0 else "trail"
 
     new_stop = candidate
     meta["event"] = event
-    meta["step_count"] = step_count
     return new_stop, new_highest, new_phase, meta
 
 
@@ -691,39 +688,31 @@ def calculate_stop_short(
     smooth_ratio: float | None = None,
     **_legacy: Any,
 ) -> tuple[float, float, bool, dict[str, Any]]:
-    """Layer-1 ADX arm 70/80/90%×(1.35ATR) 弱早强晚; activate fee+tick BE; then ladder trail."""
+    """Spec §6.0/§6.1: 提前保本检查点 + 绝对价格锚定雷达激活.
+
+    Phase 1 (提前保本检查点):
+      价格到达 entry - tp1_distance × 0.5 时，移动止损到保本位
+      不启动雷达跟踪状态
+
+    Phase 2 (雷达激活):
+      首次开仓: 价格到达 (TP1 + TP2) / 2 时激活
+      重入开仓: 价格到达 TP2 时激活
+      激活后 fee+tick BE，然后按档位参数跟踪
+    """
     from app.core.radar_trail import fee_cover_breakeven_stop
     from app.core.trend_tier_params import (
-        RADAR_ARM_MODE_ADX,
+        RADAR_ARM_MODE_ABSOLUTE,
         is_reentry_attempt,
-        radar_arm_ratio_by_adx,
-        radar_arm_trigger_price,
-        radar_armed_by_price,
+        early_breakeven_trigger_price,
+        early_breakeven_reached,
+        radar_arm_absolute_trigger,
+        radar_armed_by_absolute_price,
     )
 
     p = profile_for_symbol(symbol)
     ov = _tier_overrides(_legacy, p)
     step_adv_atr = float(ov["step_advance_atr"] if ov["step_advance_atr"] is not None else p.step_advance_atr)
     step_trig = float(ov["step_trigger_atr"] if ov["step_trigger_atr"] is not None else p.step_trigger_atr)
-    try:
-        adx_raw = _legacy.get("adx")
-        if adx_raw is None:
-            adx_raw = ov.get("adx")
-        adx_f = float(adx_raw) if adx_raw is not None else None
-    except (TypeError, ValueError):
-        adx_f = None
-    if adx_f is not None and float(adx_f) > 0:
-        arm_pct = float(radar_arm_ratio_by_adx(adx_f))
-    elif ov["arm_tp1_pct"] is not None:
-        arm_pct = float(ov["arm_tp1_pct"])
-    else:
-        arm_pct = float(radar_arm_ratio_by_adx(None))
-    cmin = ov["coef_min"]
-    cmax = ov["coef_max"]
-    breath12 = float(ov["breath_tp1_tp2_atr"] or 1.0)
-    breath23 = float(ov["breath_tp2_tp3_atr"] or 1.4)
-    tv_e = float(ov["tv_entry"] or 0)
-    tp1_d = float(ov["tp1_dist"] or 0)
     try:
         re_att = int(ov.get("reentry_attempt") or 0)
     except (TypeError, ValueError):
@@ -738,10 +727,8 @@ def calculate_stop_short(
     lowest_price = float(lowest_price or entry_price or 0)
     coef = resolve_coef(
         breathing_coefficient, p,
-        coef_min=cmin, coef_max=cmax,
+        coef_min=ov["coef_min"], coef_max=ov["coef_max"],
     )
-    sr = float(smooth_ratio if smooth_ratio is not None else COLD_START_RATIO)
-    _ = sr
     tp1, tp2, tp3 = _resolve_tp_prices(entry_price, initial_atr, "SHORT", symbol, ov)
 
     new_lowest = min(lowest_price, price) if price > 0 else lowest_price
@@ -754,48 +741,56 @@ def calculate_stop_short(
         "mode": "phase2" if new_phase else "phase1",
         "breathing_coefficient": coef,
         "symbol_tag": p.symbol_tag,
-        "arm_tp1_pct": arm_pct,
         "step_trigger_atr": step_trig,
         "step_advance_atr": step_adv_atr,
         "early_breakeven_atr": None,
         "activate_mode": "fee_cover_be",
-        "coef_min": float(cmin if cmin is not None else p.coef_min),
-        "coef_max": float(cmax if cmax is not None else p.coef_max),
-        "breath_tp1_tp2_atr": breath12,
-        "breath_tp2_tp3_atr": breath23,
-        "tv_entry": tv_e,
-        "tp1_dist": tp1_d,
+        "coef_min": float(ov["coef_min"] if ov["coef_min"] is not None else p.coef_min),
+        "coef_max": float(ov["coef_max"] if ov["coef_max"] is not None else p.coef_max),
+        "breath_tp1_tp2_atr": float(ov["breath_tp1_tp2_atr"] or 1.0),
+        "breath_tp2_tp3_atr": float(ov["breath_tp2_tp3_atr"] or 1.4),
         "is_reentry": reentry,
         "tp1": tp1,
         "tp2": tp2,
-        "adx": adx_f,
+        "tp3": tp3,
+        "early_breakeven_trigger": 0.0,
+        "early_breakeven_armed": False,
+        "radar_arm_trigger": 0.0,
+        "radar_armed": False,
+        "radar_arm_mode": RADAR_ARM_MODE_ABSOLUTE,
     }
 
-    arm_kw = dict(
+    # === Phase 0: 提前保本检查点 (Spec §6.0) ===
+    early_trig = early_breakeven_trigger_price(entry_price, tp1, "SHORT")
+    early_armed = early_breakeven_reached(price, entry_price, tp1, "SHORT")
+    meta["early_breakeven_trigger"] = early_trig
+    meta["early_breakeven_armed"] = early_armed
+
+    if early_armed and not reentry:
+        eb_stop = fee_cover_breakeven_stop(entry_price, "SHORT", symbol)
+        if eb_stop < new_stop - 1e-12 or new_stop <= 0:
+            new_stop = eb_stop
+            if event == "none":
+                event = "early_breakeven"
+            meta["event"] = event
+            meta["step_count"] = 0
+            meta["early_breakeven_atr"] = 0.5
+            return new_stop, new_lowest, new_phase, meta
+
+    # === Phase 1: 雷达激活检查 (Spec §6.1) ===
+    arm_trig = radar_arm_absolute_trigger(tp1, tp2, is_reentry=reentry)
+    armed = bool(ov.get("radar_activated")) or radar_armed_by_absolute_price(
         side="SHORT",
-        fill_entry=entry_price,
+        price=price,
         tp1=tp1,
         tp2=tp2,
-        tv_entry=tv_e if tv_e > 0 else None,
-        tp1_dist=tp1_d if tp1_d > 0 else None,
-        atr=initial_atr,
-        symbol=symbol,
-        arm_pct=arm_pct,
-        adx=adx_f,
         is_reentry=reentry,
     )
-    arm_trig = radar_arm_trigger_price(**arm_kw)
-    arm_dist = abs(entry_price - arm_trig) if arm_trig > 0 else 0.0
-    meta["radar_arm_dist"] = arm_dist
     meta["radar_arm_trigger"] = arm_trig
-    meta["radar_arm_ratio"] = arm_pct
-    meta["radar_arm_mode"] = RADAR_ARM_MODE_ADX
-    already = bool(ov.get("radar_activated"))
-    armed = already or radar_armed_by_price(price=price, **arm_kw)
     meta["radar_armed"] = armed
 
     if not armed:
-        meta["event"] = "waiting_arm"
+        meta["event"] = "waiting_radar_arm"
         meta["step_count"] = 0
         return new_stop, new_lowest, new_phase, meta
 
@@ -805,7 +800,7 @@ def calculate_stop_short(
     step_advance = step_adv_atr * initial_atr
     step_size = step_trig * initial_atr if step_trig > 0 else 0.0
 
-    if not already:
+    if not bool(ov.get("radar_activated")):
         if current_stop <= 0:
             candidate = activate_stop
         else:
@@ -816,45 +811,38 @@ def calculate_stop_short(
         meta["event"] = event
         meta["step_count"] = 0
         meta["just_activated"] = True
-        already = True
 
-    move = max(0.0, entry_price - price) if price > 0 else 0.0
-    extra = max(0.0, move - arm_dist)
-    steps_after = max(0, int(math.floor(extra / step_size))) if step_size > 0 else 0
-    step_count = steps_after
-    step_stop = activate_stop - step_count * step_advance
-
+    # Breath zone by TP path
     if price - 1e-12 <= tp3:
         breath = coef
         new_phase = True
         zone = "tp3_trail"
     elif price - 1e-12 <= tp2:
-        breath = breath23
+        breath = float(ov["breath_tp2_tp3_atr"] or 1.4)
         zone = "tp2_tp3"
     else:
-        breath = breath12
+        breath = float(ov["breath_tp1_tp2_atr"] or 1.0)
         zone = "tp1_tp2"
     meta["breath_zone"] = zone
     meta["breath_atr"] = breath
     trail_stop = new_lowest + breath * initial_atr
-    if new_stop <= 0:
-        candidate = min(step_stop, trail_stop, activate_stop)
-    else:
-        candidate = min(new_stop, step_stop, trail_stop, activate_stop)
+
     if new_phase:
         trailed = new_lowest + trail_dist
-        candidate = min(candidate, trailed) if candidate > 0 else trailed
+        candidate = min(new_stop, activate_stop, trailed)
         if event == "none":
             event = "phase2_enter" if not breakeven_phase else "trail"
         meta["mode"] = "phase2"
         meta["trail_dist_atr"] = coef
         meta["trail_distance"] = trail_dist
-    elif (new_stop <= 0 or candidate < new_stop - 1e-12) and event == "none":
-        event = "step" if step_count > 0 else "trail"
+    else:
+        step_stop = new_lowest + step_size if step_size > 0 else new_lowest
+        candidate = min(new_stop, activate_stop, step_stop, trail_stop)
+        if candidate < new_stop - 1e-12 and event == "none":
+            event = "step" if step_size > 0 else "trail"
 
     new_stop = candidate
     meta["event"] = event
-    meta["step_count"] = step_count
     return new_stop, new_lowest, new_phase, meta
 
 

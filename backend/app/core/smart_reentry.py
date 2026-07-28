@@ -155,26 +155,47 @@ def arm_distance(
     arm_tp1_pct: float | None = None,
     step_trigger_atr: float | None = None,
     tp1: float | None = None,
+    tp2: float | None = None,
     entry: float | None = None,
     tv_entry: float | None = None,
     tp1_dist: float | None = None,
     adx_tier: int | None = None,
     adx: float | None = None,
+    is_reentry: bool = False,
 ) -> float:
-    """Favorable move to arm radar = (1.35×ATR) × ADX_ratio (or override pct)."""
-    from app.core.breathing_profile import profile_for_symbol
-    from app.core.trend_tier_params import radar_arm_ratio_by_adx, radar_arm_trigger_price
+    """Spec §6.1: 绝对价格锚定雷达激活距离.
 
-    a = float(atr or 0)
+    首次开仓: 激活点 = (TP1 + TP2) / 2，距离 = |激活点 - entry|
+    重入开仓: 激活点 = TP2，距离 = |TP2 - entry|
+
+    注意: 重入时直接使用 TP2 绝对价格，不再使用 ADX 百分比路径。
+    """
+    from app.core.trend_tier_params import radar_arm_absolute_trigger
+
     fill = float(entry or 0)
     t1 = float(tp1 or 0)
+    t2 = float(tp2 or 0)
+
+    # 优先使用绝对价格锚定
+    if t1 > 0 and t2 > 0:
+        trig = radar_arm_absolute_trigger(t1, t2, is_reentry=is_reentry)
+        if trig > 0 and fill > 0:
+            return abs(trig - fill)
+
+    # 回退: 使用 ADX 百分比路径 (向后兼容)
+    from app.core.breathing_profile import profile_for_symbol
+    from app.core.trend_tier_params import radar_arm_ratio_by_adx
+
+    a = float(atr or 0)
     if arm_tp1_pct is not None:
         pct = float(arm_tp1_pct)
     elif adx is not None:
         pct = float(radar_arm_ratio_by_adx(adx))
     else:
         pct = float(arm_ratio_for_attempt(attempt))
+
     if fill > 0 and (t1 > 0 or float(tp1_dist or 0) > 0 or a > 0 or float(tv_entry or 0) > 0):
+        from app.core.trend_tier_params import radar_arm_trigger_price
         trig = radar_arm_trigger_price(
             side="LONG",
             fill_entry=fill,

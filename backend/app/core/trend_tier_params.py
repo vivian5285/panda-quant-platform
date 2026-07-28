@@ -41,6 +41,7 @@ RADAR_ACTIVATE_BE_ATR = 0.0
 MAX_REENTRY = 1
 HARD_STOP_BUFFER_FIXED = 1.15  # v3: unified, not tiered
 RADAR_ARM_MODE_ADX = "adx_70_80_90"
+RADAR_ARM_MODE_ABSOLUTE = "absolute_price_anchor"  # Spec §6.1
 # Deprecated mode tags kept for log parsers / old tests imports
 RADAR_ARM_MODE_FIRST = RADAR_ARM_MODE_ADX
 RADAR_ARM_MODE_REENTRY = RADAR_ARM_MODE_ADX
@@ -282,9 +283,131 @@ def is_reentry_attempt(attempt: int = 0, *, is_reentry: bool | None = None) -> b
 
 
 def radar_arm_absolute_trigger(tp1: float, tp2: float, *, is_reentry: bool) -> float:
-    """DEPRECATED — absolute mid/TP2 arm removed. Always returns 0 (force ADX path)."""
-    _ = (tp1, tp2, is_reentry)
-    return 0.0
+    """Spec §6.1 绝对价格锚定雷达激活价格.
+
+    首次开仓: (TP1 + TP2) / 2 (所有用户共用同一份TV信号)
+    重入开仓: TP2 (必须价格真正到达TP2)
+
+    Args:
+        tp1: TV信号的TP1绝对价格
+        tp2: TV信号的TP2绝对价格
+        is_reentry: True表示重入开仓
+
+    Returns:
+        雷达激活触发价格（绝对价格）
+    """
+    t1 = float(tp1 or 0)
+    t2 = float(tp2 or 0)
+    if t1 <= 0 or t2 <= 0:
+        return 0.0
+    if is_reentry:
+        # 重入：必须等价格真正到达TP2
+        return t2
+    else:
+        # 首次开仓：TP1-TP2区间中点
+        return (t1 + t2) / 2.0
+
+
+# Spec §6.0 提前保本检查点参数
+EARLY_BREAKEVEN_TP1_RATIO = 0.5  # TP1距离的50%处触发保本移动
+
+
+def early_breakeven_trigger_price(
+    entry: float,
+    tp1: float,
+    side: str,
+) -> float:
+    """Spec §6.0 提前保本检查点触发价格.
+
+    计算公式：
+      tp1_distance = |tp1 - entry|
+      多单：保本检查点 = entry + tp1_distance × 0.5
+      空单：保本检查点 = entry - tp1_distance × 0.5
+
+    触发后只移动止损到保本位，不启动雷达跟踪状态。
+
+    Args:
+        entry: 用户实际成交价
+        tp1: TV信号的TP1绝对价格
+        side: LONG 或 SHORT
+
+    Returns:
+        提前保本检查点触发价格
+    """
+    e = float(entry or 0)
+    t1 = float(tp1 or 0)
+    side_u = str(side or "").upper()
+
+    if e <= 0 or t1 <= 0 or side_u not in ("LONG", "SHORT"):
+        return 0.0
+
+    tp1_dist = abs(t1 - e)
+    if side_u == "LONG":
+        return e + tp1_dist * EARLY_BREAKEVEN_TP1_RATIO
+    else:
+        return e - tp1_dist * EARLY_BREAKEVEN_TP1_RATIO
+
+
+def early_breakeven_reached(
+    curr_px: float,
+    entry: float,
+    tp1: float,
+    side: str,
+) -> bool:
+    """检查是否达到提前保本检查点.
+
+    Args:
+        curr_px: 当前价格
+        entry: 用户实际成交价
+        tp1: TV信号的TP1绝对价格
+        side: LONG 或 SHORT
+
+    Returns:
+        True表示已达到提前保本检查点
+    """
+    trig = early_breakeven_trigger_price(entry, tp1, side)
+    if trig <= 0:
+        return False
+    px = float(curr_px or 0)
+    side_u = str(side or "").upper()
+    if side_u == "LONG":
+        return px >= trig
+    else:
+        return px <= trig
+
+
+def radar_armed_by_absolute_price(
+    *,
+    side: str,
+    price: float,
+    tp1: float,
+    tp2: float,
+    is_reentry: bool = False,
+) -> bool:
+    """Spec §6.1 检查价格是否达到绝对价格锚定的雷达激活点.
+
+    首次开仓: 价格 >= (TP1 + TP2) / 2 (多单) 或 <= (多单)
+    重入开仓: 价格 >= TP2 (多单) 或 <= (空单)
+
+    Args:
+        side: LONG 或 SHORT
+        price: 当前价格
+        tp1: TV信号的TP1绝对价格
+        tp2: TV信号的TP2绝对价格
+        is_reentry: True表示重入开仓
+
+    Returns:
+        True表示已达到雷达激活价格
+    """
+    trig = radar_arm_absolute_trigger(tp1, tp2, is_reentry=is_reentry)
+    if trig <= 0:
+        return False
+    px = float(price or 0)
+    side_u = str(side or "").upper()
+    if side_u == "LONG":
+        return px >= trig
+    else:
+        return px <= trig
 
 
 def reentry_zone_atr(symbol: str | None = None) -> float:
