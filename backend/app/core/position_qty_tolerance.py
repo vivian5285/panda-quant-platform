@@ -6,8 +6,29 @@ CAP_EXCESS_RATIO = 0.10
 # 哨兵异动：忽略 ETH/XAU 市价波动引起的细微数量噪声（默认 8%）
 # TP 是否成交以「价到 + 该档限价消失」为主，不以微小 qty 漂移为准
 QTY_DRIFT_RATIO = 0.08
+# 止损单缩量：必须紧贴实时残仓；TP1=10%，8% 容差会吞掉一半 TP1。
+STOP_RESIZE_DRIFT_RATIO = 0.01  # 1% 相对容差，下限由 qty_step 控制
 # 向后兼容别名
 CAP_DRIFT_RATIO = QTY_DRIFT_RATIO
+
+
+def stop_resize_drift_tolerance(
+    qty_a: float,
+    qty_b: float,
+    *,
+    is_contracts: bool = False,
+) -> float:
+    """Tight band ONLY for deciding whether to rehang a stop order to live qty.
+
+    Does NOT affect TP cause classification (still uses QTY_DRIFT_RATIO).
+    """
+    anchor = max(abs(float(qty_a)), abs(float(qty_b)), 1e-9)
+    rel_tol = anchor * STOP_RESIZE_DRIFT_RATIO
+    if is_contracts:
+        floor = 1.0  # contracts are integer lots
+    else:
+        floor = 0.001  # ETH qty_step
+    return max(floor, rel_tol)
 
 
 def qty_drift_tolerance(

@@ -15,6 +15,25 @@ def _normalize_exchange(val: str) -> str | None:
     return v if v in ALL_EXCHANGES else None
 
 
+def exchange_symbol_coverage() -> dict[str, list[str]]:
+    """Short symbol units each exchange may run live (single source of truth).
+
+    Mirrors ``symbol_registry.trading_symbols_for_exchange`` so the UI never
+    hardcodes the "XAU is Binance-only" policy.
+    """
+    from app.core.symbol_registry import symbol_meta, trading_symbols_for_exchange
+
+    out: dict[str, list[str]] = {}
+    for ex in ALL_EXCHANGES:
+        units: list[str] = []
+        for canonical in trading_symbols_for_exchange(ex):
+            unit = str((symbol_meta(canonical) or {}).get("qty_unit") or canonical)
+            if unit not in units:
+                units.append(unit)
+        out[ex] = units
+    return out
+
+
 def get_platform_public_settings() -> dict:
     block = read_runtime_file().get("platform_public") or {}
     raw_enabled = block.get("enabled_exchanges")
@@ -25,9 +44,14 @@ def get_platform_public_settings() -> dict:
     if not enabled:
         enabled = list(DEFAULT_ENABLED)
     telegram = (block.get("support_telegram") or "").strip()
+    try:
+        coverage = exchange_symbol_coverage()
+    except Exception:
+        coverage = {}
     return {
         "enabled_exchanges": enabled,
         "all_exchanges": list(ALL_EXCHANGES),
+        "exchange_symbols": coverage,
         "support_telegram": telegram,
     }
 
