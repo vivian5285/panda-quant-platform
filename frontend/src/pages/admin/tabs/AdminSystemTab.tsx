@@ -37,6 +37,8 @@ export default function AdminSystemTab() {
     deepcoin: 'api.exchangeDeepcoin',
   }
 
+  const exchangeSymbols: Record<string, string[]> = platformPublicSettings?.exchange_symbols || {}
+
   const toggleExchange = (id: string) => {
     const cur = platformPublicDraft?.enabled_exchanges || ['binance']
     const next = cur.includes(id)
@@ -118,6 +120,7 @@ export default function AdminSystemTab() {
             <p className="text-sm-strong section-mb-xs">{t('admin.enabledExchangesTitle')}</p>
             <p className="text-muted text-xs section-mb-sm">{t('admin.enabledExchangesHint')}</p>
             <p className="text-muted text-xs section-mb-sm">{t('admin.enabledExchangesTradingHint')}</p>
+            <p className="text-muted text-xs section-mb-sm">{t('admin.enabledExchangesSymbolHint')}</p>
             <div className="platform-exchange-toggles">
               {allExchanges.map((id: string) => (
                 <label key={id} className="platform-exchange-toggle">
@@ -127,6 +130,11 @@ export default function AdminSystemTab() {
                     onChange={() => toggleExchange(id)}
                   />
                   <span>{t(exchangeLabelKeys[id] as any) || id}</span>
+                  {(exchangeSymbols[id] || []).length > 0 && (
+                    <span className={`exchange-picker-symbols exchange-picker-${id}`}>
+                      {(exchangeSymbols[id] || []).join(' + ')}
+                    </span>
+                  )}
                 </label>
               ))}
             </div>

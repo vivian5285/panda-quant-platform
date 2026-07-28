@@ -126,6 +126,7 @@ export default function ApiManage() {
   const [devEmail, setDevEmail] = useState('')
   const [devPhone, setDevPhone] = useState('')
   const [enabledExchanges, setEnabledExchanges] = useState<ExchangeId[]>(['binance'])
+  const [exchangeSymbols, setExchangeSymbols] = useState<Record<string, string[]>>({})
   const [supportTelegram, setSupportTelegram] = useState('')
   const [tradingCtrl, setTradingCtrl] = useState<{
     api_bind_blocked?: boolean
@@ -138,6 +139,10 @@ export default function ApiManage() {
 
   const isExchangeSelectable = (id: ExchangeId) => enabledExchanges.includes(id)
 
+  const symbolsFor = (id: ExchangeId) => exchangeSymbols[id] || []
+  const selectedSymbols = symbolsFor(exchange)
+  const missingSymbols = (exchangeSymbols.binance || []).filter(s => !selectedSymbols.includes(s))
+
   const openExchangeLabels = enabledExchanges
     .map(id => t(EXCHANGE_LABEL_KEYS[id as ExchangeId] || id))
     .join(locale === 'zh' ? '、' : ', ')
@@ -146,6 +151,10 @@ export default function ApiManage() {
   const boundExchangeDisabled = profile?.api_status === 'active'
     && boundExchange
     && !enabledExchanges.includes(boundExchange)
+  const boundSymbols = symbolsFor(boundExchange)
+  const boundMissingSymbols = profile?.api_status === 'active'
+    ? (exchangeSymbols.binance || []).filter(s => !boundSymbols.includes(s))
+    : []
 
   const telegramHref = (raw: string) => {
     const v = raw.trim()
@@ -268,6 +277,7 @@ export default function ApiManage() {
       publicApi.platformConfig().then(cfg => {
         const enabled = (cfg?.enabled_exchanges || ['binance']).map((e: string) => normalizeExchangeFromApi(e))
         setEnabledExchanges(enabled)
+        setExchangeSymbols(cfg?.exchange_symbols || {})
         setSupportTelegram(cfg?.support_telegram || '')
         setExchange(prev => (enabled.includes(prev) ? prev : (enabled[0] || 'binance')))
       }).catch(() => {})
@@ -660,6 +670,19 @@ export default function ApiManage() {
           </GlassCard>
         )}
 
+        {boundMissingSymbols.length > 0 && (
+          <GlassCard className="p-4 section-mb-md api-support-banner">
+            <p className="text-sm-strong section-mb-xs">{t('api.boundSymbolScopeTitle')}</p>
+            <p className="text-sm text-muted">
+              {t('api.boundSymbolScopeBody', {
+                exchange: t(EXCHANGE_LABEL_KEYS[boundExchange]),
+                supported: boundSymbols.join(' + '),
+                missing: boundMissingSymbols.join(' + '),
+              })}
+            </p>
+          </GlassCard>
+        )}
+
         <form onSubmit={handleBind}>
           {supportTelegram && (
             <GlassCard className="p-4 section-mb-sm api-support-banner">
@@ -704,6 +727,11 @@ export default function ApiManage() {
                     }}
                   >
                     <span className="exchange-picker-name">{t(EXCHANGE_LABEL_KEYS[id])}</span>
+                    {symbolsFor(id).length > 0 && (
+                      <span className="exchange-picker-symbols">
+                        {t('api.exchangeSymbolsBadge', { list: symbolsFor(id).join(' + ') })}
+                      </span>
+                    )}
                     {!enabledExchanges.includes(id) && (
                       <span className="exchange-picker-badge">{t('api.exchangeComingSoon')}</span>
                     )}
@@ -716,6 +744,15 @@ export default function ApiManage() {
                 ? t('api.exchangeOpenNoteDynamic', { list: openExchangeLabels })
                 : t('api.exchangeOpenNote')}
             </p>
+            {missingSymbols.length > 0 && (
+              <p className="form-hint-sm section-mt-sm exchange-symbol-warning">
+                {t('api.exchangeSymbolLimitNote', {
+                  exchange: t(EXCHANGE_LABEL_KEYS[exchange]),
+                  supported: selectedSymbols.join(' + '),
+                  missing: missingSymbols.join(' + '),
+                })}
+              </p>
+            )}
           </div>
 
           <div className="form-field">

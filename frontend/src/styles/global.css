@@ -5044,6 +5044,21 @@ html[lang="zh-CN"] .framer-logo-text strong {
   background: color-mix(in srgb, var(--surface-3, #222) 80%, transparent);
 }
 
+.exchange-picker-symbols {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--exchange-accent, var(--accent, #3b82f6));
+  background: color-mix(in srgb, var(--exchange-accent, #3b82f6) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--exchange-accent, #3b82f6) 30%, transparent);
+}
+
+.exchange-symbol-warning {
+  color: var(--warning, #f59e0b);
+}
+
 .api-support-banner {
   border: 1px solid color-mix(in srgb, var(--accent, #3b82f6) 25%, transparent);
   background: color-mix(in srgb, var(--accent, #3b82f6) 6%, transparent);
