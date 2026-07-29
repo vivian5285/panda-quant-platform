@@ -1291,7 +1291,7 @@ class PositionSupervisor(
             )
         return detail
 
-    def _count_open_book_orders(self) -> int:
+    def _count_open_book_orders(self, *, force_refresh: bool = False) -> int:
         """Filtered TP limits + adverse stops (defense audit). Prefer raw count for open gate.
 
         Returns -1 on fetch failure (FAIL CLOSED) or under REST cool-down.
@@ -1309,9 +1309,9 @@ class PositionSupervisor(
         n = 0
         try:
             if hasattr(self, "_collect_tp_limit_orders"):
-                n += len(self._collect_tp_limit_orders() or [])
+                n += len(self._collect_tp_limit_orders(force_refresh=force_refresh) or [])
             elif hasattr(self.client, "get_open_orders"):
-                n += len(self.client.get_open_orders(self.symbol) or [])
+                n += len(self.client.get_open_orders(self.symbol, force_refresh=force_refresh) or [])
         except Exception:
             return -1
         try:
@@ -1451,7 +1451,7 @@ class PositionSupervisor(
             "book_status": "unknown",
             "degraded_unknown": False,
         }
-        detail["orders_before"] = self._count_open_book_orders()
+        detail["orders_before"] = self._count_open_book_orders(force_refresh=force_refresh)
         detail["raw_before"] = self._count_raw_exchange_orders(force_refresh=True)
         # Extra rounds when book list is unknown (cool-down / transient)
         max_rounds = 5
@@ -2155,14 +2155,17 @@ class PositionSupervisor(
             pass
 
         # 市价单成交后REST可能滞后，重试查询持仓直到确认
+        # 关键修复: IP限流时stale cache导致误判空仓，必须force_refresh绕过
         pos = None
         retry_delays = (0.5, 1.0, 2.0, 3.0)  # 渐进退避
         last_err = ""
         for attempt, delay in enumerate(retry_delays, start=1):
             if delay > 0:
                 time.sleep(delay)
+            # 第二次重试起强制刷新，避免IP限流时stale cache误判
+            force = (attempt > 1)
             try:
-                pos = self.position_manager.get_position(self.symbol)
+                pos = self.position_manager.get_position(self.symbol, force_refresh=force)
                 if pos and float(pos.get("positionAmt", 0)) != 0:
                     break  # 持仓确认
             except Exception as e:
@@ -2543,15 +2546,15 @@ class PositionSupervisor(
             pass
         return out
 
-    def _open_tp_prices_on_book(self) -> list[float]:
+    def _open_tp_prices_on_book(self, *, force_refresh: bool = False) -> list[float]:
         prices: list[float] = []
         if hasattr(self, "_collect_tp_limit_orders"):
-            for o in self._collect_tp_limit_orders():
+            for o in self._collect_tp_limit_orders(force_refresh=force_refresh) or []:
                 px = float(o.get("price", 0) or 0)
                 if px > 0:
                     prices.append(round_price(px))
         elif hasattr(self.client, "get_open_orders"):
-            for o in self.client.get_open_orders(self.symbol) or []:
+            for o in self.client.get_open_orders(self.symbol, force_refresh=force_refresh) or []:
                 if str(o.get("type", "")).upper() != "LIMIT":
                     continue
                 px = float(o.get("price", 0) or 0)
@@ -2606,7 +2609,7 @@ class PositionSupervisor(
             and not past_early
         ):
             open_pxs = (
-                self._open_tp_prices_on_book()
+                self._open_tp_prices_on_book(force_refresh=self._force_refresh_guard(True) if hasattr(self, "_force_refresh_guard") else True)
                 if hasattr(self, "_open_tp_prices_on_book")
                 else []
             )
@@ -2648,7 +2651,7 @@ class PositionSupervisor(
             regime=self.regime,
             tv_tps=self.tv_tps,
             regime_settings=self.regime_settings,
-            open_tp_prices=self._open_tp_prices_on_book(),
+            open_tp_prices=self._open_tp_prices_on_book(force_refresh=self._force_refresh_guard(True) if hasattr(self, "_force_refresh_guard") else True),
             qty_tol=tol,
             is_contracts=is_dc,
             peak_px=float(getattr(self, "best_price", 0) or 0),
@@ -2688,7 +2691,7 @@ class PositionSupervisor(
             regime=self.regime,
             tv_tps=self.tv_tps,
             regime_settings=self.regime_settings,
-            open_tp_prices=self._open_tp_prices_on_book(),
+            open_tp_prices=self._open_tp_prices_on_book(force_refresh=self._force_refresh_guard(True) if hasattr(self, "_force_refresh_guard") else True),
             qty_tol=tol,
             is_contracts=self.exchange_id == "deepcoin",
             peak_px=float(getattr(self, "best_price", 0) or 0),
@@ -2715,7 +2718,7 @@ class PositionSupervisor(
             if lvl not in PLACEABLE_TP_LEVELS:
                 exclude.add(lvl)
         open_prices = (
-            self._open_tp_prices_on_book()
+            self._open_tp_prices_on_book(force_refresh=self._force_refresh_guard(True) if hasattr(self, "_force_refresh_guard") else True)
             if hasattr(self, "_open_tp_prices_on_book")
             else []
         )
@@ -3293,7 +3296,10 @@ class PositionSupervisor(
             time.sleep(0.35)
             if hasattr(self.client, "_invalidate_book_cache"):
                 try:
-                    self.client._invalidate_book_cache("tp_retry_verify")
+                    # Invalidate BOTH pos AND orders cache so retry sees fresh state
+                    self.client._invalidate_book_cache("tp_retry_verify_pos")
+                    from app.core.rest_book_cache import invalidate
+                    invalidate("binance", self.user_id, reason="tp_retry_verify_orders")
                 except Exception:
                     pass
             if hasattr(self, "_tp_limit_exists_near"):
@@ -3636,8 +3642,11 @@ class PositionSupervisor(
             mark = float(self.client.get_current_price(self.symbol) or 0)
         except Exception:
             mark = 0.0
+        # Guard force_refresh: prevents REST hammering under IP cooldown while still ensuring
+        # fresh data at least once per FORCE_REFRESH_GUARD_SEC.
+        guarded_fr = self._force_refresh_guard(True) if hasattr(self, "_force_refresh_guard") else True
         open_prices = (
-            self._open_tp_prices_on_book()
+            self._open_tp_prices_on_book(force_refresh=guarded_fr)
             if hasattr(self, "_open_tp_prices_on_book")
             else []
         )
@@ -3663,35 +3672,54 @@ class PositionSupervisor(
             )
             place_px = float(price)
             if skip and skip_reason in ("consumed", "price_book_filled", "qty_book_implies_filled", "price_past_tp"):
-                self._log("TP_SKIP_REHANG", f"全量重挂跳过 TP{level}: {skip_reason}")
-                if int(level) and int(level) not in consumed and skip_reason != "consumed":
-                    consumed.add(int(level))
-                    self.consumed_tp_levels = sorted(consumed)
-                    if hasattr(self, "_save_state"):
-                        self._save_state()
-                continue
+                # Only mark as consumed if we have POSITIVE confirmation TP is on book.
+                # This prevents false consumed when TP was never placed (stale cached state).
+                if int(level) and int(level) not in consumed and skip_reason not in ("consumed",):
+                    confirmed_on_book = False
+                    if hasattr(self, "_tp_limit_exists_near"):
+                        exists = self._tp_limit_exists_near(float(price))
+                        if exists is True:
+                            confirmed_on_book = True
+                    if confirmed_on_book:
+                        consumed.add(int(level))
+                        self.consumed_tp_levels = sorted(consumed)
+                        if hasattr(self, "_save_state"):
+                            self._save_state()
+                # CRITICAL: when _tp_limit_exists_near returns None (throttle, book unreadable),
+                # we MUST NOT skip placement — the TP was likely filled and needs rehang.
+                # Only skip if confirmed_on_book=True or the original skip_reason was "consumed".
+                if skip_reason != "consumed" and (
+                    not hasattr(self, "_tp_limit_exists_near")
+                    or self._tp_limit_exists_near(float(price)) is not True
+                ):
+                    # Book unreadable or TP not confirmed on book → place it
+                    pass  # fall through to placement
+                else:
+                    self._log("TP_SKIP_REHANG", f"全量重挂跳过 TP{level}: {skip_reason} + 确认在簿")
+                    continue
             if skip and skip_reason == "no_mark_price":
                 failed.append({"ok": False, "label": f"TP{level}", "reason": "no_mark_price"})
                 continue
             from app.core.tp_slice_guard import tp_would_instant_fill
             # 现价已过 → 禁止推离补挂（防 TP1 死亡螺旋）
+            # CRITICAL: mark_past 仅表示"暂不补挂"，不得假记账 consumed（TP 可能被撤销/未挂）
+            # Under IP throttle: if book is unreadable, we must place to avoid leaving position unguarded.
             if tp_would_instant_fill(self.current_side, place_px, mark):
-                self._log("TP_SKIP_REHANG", f"全量重挂跳过 TP{level}: mark_past")
-                if int(level) and int(level) not in consumed:
-                    consumed.add(int(level))
-                    self.consumed_tp_levels = sorted(consumed)
-                    if hasattr(self, "_save_state"):
-                        self._save_state()
-                continue
+                # Only skip if book confirms TP is actually on book
+                if hasattr(self, "_tp_limit_exists_near"):
+                    exists = self._tp_limit_exists_near(float(price))
+                    if exists is True:
+                        self._log("TP_SKIP_REHANG", f"全量重挂跳过 TP{level}: mark_past + confirmed_on_book")
+                        continue
+                    # exists is False or None → book doesn't confirm TP, must place
+                else:
+                    self._log("TP_SKIP_REHANG", f"全量重挂跳过 TP{level}: mark_past")
+                    continue
             # 穿价 → 拒绝挂出（不再 push-and-place）
+            # DO NOT mark as consumed — price may have since stabilized.
             place_px, adj = sanitize_tp_limit_price(self.current_side, place_px, mark)
             if place_px <= 0 or adj.startswith("pushed"):
                 self._log("TP_SKIP_REHANG", f"全量重挂跳过 TP{level}: {adj or 'unsafe'}")
-                if int(level) and int(level) not in consumed:
-                    consumed.add(int(level))
-                    self.consumed_tp_levels = sorted(consumed)
-                    if hasattr(self, "_save_state"):
-                        self._save_state()
                 continue
             # Max-1 per price: already on book → never place another (TP storm root).
             from app.core.tp_defense_reconcile import tp_price_matches
@@ -3928,7 +3956,7 @@ class PositionSupervisor(
                 SKIP_REHANG_PERSIST_CONSUMED,
             )
             open_prices = (
-                self._open_tp_prices_on_book()
+                self._open_tp_prices_on_book(force_refresh=self._force_refresh_guard(True) if hasattr(self, "_force_refresh_guard") else True)
                 if hasattr(self, "_open_tp_prices_on_book")
                 else []
             )
@@ -4628,15 +4656,16 @@ class PositionSupervisor(
         except (TypeError, ValueError):
             return float(default)
 
-    def _get_active_position(self) -> dict | None:
+    def _get_active_position(self, force_refresh: bool = False) -> dict | None:
         """Confirmed live position, or None if exchange reports flat.
 
         Raises ExchangeTransientError on API failure — never invents flat.
+        Set force_refresh=True for critical startup reconciliation to bypass stale cache.
         """
         from app.core.exchange_errors import ExchangeTransientError
 
         try:
-            pos = self.position_manager.get_position(self.symbol)
+            pos = self.position_manager.get_position(self.symbol, force_refresh=force_refresh)
         except ExchangeTransientError as e:
             self._handle_position_query_failure(e)
             raise
@@ -4770,7 +4799,23 @@ class PositionSupervisor(
         alert_sev: str = "info",
         extra_detail: dict | None = None,
     ) -> None:
+        # CRITICAL FIX: even if current_trade_id is missing (manual close before open was recorded),
+        # we must still clear position-local state so zombie fields don't cause false flat-reconcile
+        # on next VPS restart.
         if not self.current_trade_id:
+            self._log("CLOSE", f"记录平仓（无 trade_id）: {reason}", {"exit_price": exit_price})
+            self.monitoring = False
+            self.watched_qty = 0.0
+            self.watched_entry = 0.0
+            self.initial_qty = 0.0
+            self.base_qty = 0.0
+            self.add_count = 0
+            self.current_side = None
+            self.best_price = 0.0
+            self.consumed_tp_levels = []
+            self.current_trade_id = None
+            self.trade_opened_at = None
+            self._save_state()
             return
         pnl = 0.0
         live_pnl_pct = None
@@ -4973,8 +5018,9 @@ class PositionSupervisor(
         self.client.cancel_all_open_orders(self.symbol)
         time.sleep(0.4)
         had_market_close = False
+        # Use force_refresh=True: dust is real position that must be confirmed by exchange
         for round_i in range(4):
-            pos = self._get_active_position()
+            pos = self._get_active_position(force_refresh=True)
             if not pos or pos["size"] <= 0:
                 break
             close_side = "SELL" if pos["side"] == "LONG" else "BUY"
@@ -5020,8 +5066,9 @@ class PositionSupervisor(
         """重启首检蚂蚁仓。查仓失败 / 非 dict 行绝不下标崩溃、绝不误强平。"""
         from app.core.exchange_errors import ExchangeTransientError
 
+        # Critical: bypass stale REST cache during startup dust scan.
         try:
-            pos = self._get_active_position()
+            pos = self._get_active_position(force_refresh=True)
         except ExchangeTransientError as e:
             logger.error(
                 "[User %s] startup dust scan skipped — QUERY_FAILED: %s",
@@ -5052,8 +5099,9 @@ class PositionSupervisor(
     def _recover_missed_flat_on_startup(self, was_monitoring: bool = False) -> bool:
         from app.core.exchange_errors import ExchangeTransientError
 
+        # Critical: bypass stale REST cache during startup flat-reconcile.
         try:
-            pos = self._get_active_position()
+            pos = self._get_active_position(force_refresh=True)
         except ExchangeTransientError:
             logger.error(
                 "[User %s] skip flat reconcile on startup — position query unavailable "
@@ -5970,7 +6018,9 @@ class PositionSupervisor(
                 self.monitoring = False
                 return audit
 
-            pos = self.position_manager.get_position(self.symbol)
+            # Critical: bypass stale cache during startup position reconciliation.
+            # Stale cache = wrong empty = wrong flat = zombie state after restart.
+            pos = self.position_manager.get_position(self.symbol, force_refresh=True)
             if not pos or float(pos.get("positionAmt", 0)) == 0:
                 self.monitoring = False
                 if not self._idle_book_is_flat():

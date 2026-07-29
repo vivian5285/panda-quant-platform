@@ -2,6 +2,7 @@
 
 import logging
 import time
+import threading
 
 from app.core.symbol_precision import round_price
 from app.core.tp_slice_guard import compute_tp_slices, infer_filled_tp_levels, slices_to_level_dicts
@@ -22,6 +23,13 @@ from app.core.tp_defense_reconcile import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Module-level rate limiter for force_refresh usage — prevents the
+# "force_refresh → fetch → call_count++ → cooldown extends → repeat" spiral.
+# At most 1 force_refresh per FORCE_REFRESH_GUARD_SEC while IP is cooling.
+_FORCE_REFRESH_LOCK = threading.Lock()
+_FORCE_REFRESH_LAST: dict[str, float] = {}
+FORCE_REFRESH_GUARD_SEC = 30.0  # seconds between force_refresh bursts
 
 
 class BinanceSmartDefenseMixin:
@@ -201,7 +209,9 @@ class BinanceSmartDefenseMixin:
         return detail
 
     def _resolve_live_qty(self, fallback_qty: float) -> float:
-        pos = self._get_active_position()
+        # Guard force_refresh to prevent REST hammering under IP cooldown.
+        guarded_fr = self._force_refresh_guard(True)
+        pos = self._get_active_position(force_refresh=guarded_fr)
         if pos and pos["size"] > 0:
             live = round(pos["size"], 3)
             if abs(live - fallback_qty) > 0.001:
@@ -262,20 +272,59 @@ class BinanceSmartDefenseMixin:
         return None
 
     def _count_reduce_only_limits(self) -> int:
+        # Use force_refresh=True via guard: stale cache = wrong "TP still on book" = false skip on rehang.
+        # Guard prevents REST hammering under IP cooldown.
         try:
-            return len(self._collect_tp_limit_orders() or [])
+            return len(self._collect_tp_limit_orders(force_refresh=self._force_refresh_guard(True)) or [])
         except Exception:
             return -1
 
+    def _force_refresh_guard(self, force_refresh: bool) -> bool:
+        """Prevent force_refresh from hammering REST under IP cooldown.
+
+        When force_refresh=True and IP is in cool-down, only honor it at most once
+        per FORCE_REFRESH_GUARD_SEC. This breaks the death spiral:
+          force_refresh → fetch_anyway → call_count++ → cooldown extends → repeat
+        Returns the effective (possibly demoted) force_refresh value.
+        """
+        if not force_refresh:
+            return False
+        try:
+            from app.core.ip_rest_cooldown import remaining_sec
+
+            k = f"{getattr(self, 'exchange_id', 'binance')}:{getattr(self, 'user_id', 0)}"
+            cool = remaining_sec(exchange=getattr(self, 'exchange_id', 'binance'),
+                                user_id=getattr(self, 'user_id', None))
+            if cool <= 0:
+                return True  # No cooldown — always honor force_refresh
+            with _FORCE_REFRESH_LOCK:
+                last = float(_FORCE_REFRESH_LAST.get(k, 0) or 0)
+                now = time.time()
+                if now - last >= FORCE_REFRESH_GUARD_SEC:
+                    _FORCE_REFRESH_LAST[k] = now
+                    return True  # Guard passed — honor this force_refresh
+                return False  # Guard active — demote to cached read
+        except Exception:
+            return force_refresh  # Fallback: honor as-is
+
     def _tp_book_readable(self) -> bool:
-        """False when open-order book cannot be fetched (never treat as empty)."""
+        """False when open-order book cannot be fetched (never treat as empty).
+
+        Uses force_refresh=True to avoid false "readable" from stale cache under throttle.
+        """
         return self._count_reduce_only_limits() >= 0
 
-    def _tp_limit_exists_near(self, price: float, *, tol: float | None = None) -> bool | None:
-        """True/False when book known; None when unreadable (caller must refuse place)."""
+    def _tp_limit_exists_near(self, price: float, *, tol: float | None = None, force_refresh: bool = True) -> bool | None:
+        """True/False when book known; None when unreadable (caller must refuse place).
+
+        force_refresh=True (default): bypass stale cache under IP throttle so we never
+        skip rehangs due to cached "TP still on book" when it's actually filled/truly absent.
+        Uses _force_refresh_guard to prevent REST hammering under IP cool-down.
+        """
+        effective = self._force_refresh_guard(force_refresh)
         price_tol = float(tol if tol is not None else self._tp_price_tol())
         try:
-            orders = self._collect_tp_limit_orders() or []
+            orders = self._collect_tp_limit_orders(force_refresh=effective) or []
         except Exception:
             return None
         return any(tp_price_matches(float(o.get("price") or 0), price, price_tol) for o in orders)
@@ -386,9 +435,9 @@ class BinanceSmartDefenseMixin:
                 prices.append(round(px, 2))
         return sorted(prices)
 
-    def _collect_tp_limit_orders(self) -> list[dict]:
+    def _collect_tp_limit_orders(self, *, force_refresh: bool = False) -> list[dict]:
         orders = []
-        for o in self.client.get_open_orders(self.symbol) or []:
+        for o in self.client.get_open_orders(self.symbol, force_refresh=force_refresh) or []:
             if not self._is_tp_limit_order(o):
                 continue
             px = float(o.get("price", 0) or 0)
@@ -417,11 +466,16 @@ class BinanceSmartDefenseMixin:
         tolerance: float | None = None,
         qty_tol: float | None = None,
         curr_px: float | None = None,
+        force_refresh: bool = True,
     ) -> dict:
         live_qty = self._resolve_live_qty(live_qty)
         price_tol = self._tp_price_tol() if tolerance is None else float(tolerance)
+        # Guard force_refresh: prevents REST hammering under IP cooldown while still ensuring
+        # fresh data at least once per FORCE_REFRESH_GUARD_SEC.
+        guarded_fr = self._force_refresh_guard(force_refresh)
         try:
-            orders = self._collect_tp_limit_orders()
+            # Bypass stale cache: stale = wrong "TP missing" alarm under IP throttle.
+            orders = self._collect_tp_limit_orders(force_refresh=guarded_fr)
         except Exception as e:
             return {
                 "expected": 0,
@@ -748,7 +802,7 @@ class BinanceSmartDefenseMixin:
                 time.sleep(0.2)
             # refresh local snapshot after cancels at this price
             try:
-                book = self._collect_tp_limit_orders()
+                book = self._collect_tp_limit_orders(force_refresh=self._force_refresh_guard(True))
             except Exception as e:
                 self._def_log(f"✗ 同价去重中途簿记丢失: {e}", logging.WARNING)
                 return cancelled if cancelled else -1
@@ -760,9 +814,11 @@ class BinanceSmartDefenseMixin:
         """Lightweight patrol: keep 1 reduce-only LIMIT per price cluster (any price).
 
         Runs before nuclear. Unreadable book → return -1 and NEVER cancel_all.
+        Uses _force_refresh_guard to prevent REST hammering under IP cooldown.
         """
         try:
-            orders = list(self._collect_tp_limit_orders() or [])
+            # Guarded force_refresh: ensures fresh data at least once per 30s under IP cooldown.
+            orders = list(self._collect_tp_limit_orders(force_refresh=self._force_refresh_guard(True)) or [])
         except Exception as e:
             self._def_log(
                 f"✗ 轻量同价去重中止·盘口不可读（禁 cancel_all）: {e}",
@@ -840,10 +896,13 @@ class BinanceSmartDefenseMixin:
         levels = self._expected_tp_levels(live_qty, px_now)
         placed = 0
         skipped = 0
+        # Guard force_refresh: prevents REST hammering under IP cooldown while still ensuring
+        # fresh data at least once per FORCE_REFRESH_GUARD_SEC.
+        guarded_fr = self._force_refresh_guard(True)
         open_prices = (
-            self._open_tp_prices_on_book()
+            self._open_tp_prices_on_book(force_refresh=guarded_fr)
             if hasattr(self, "_open_tp_prices_on_book")
-            else [float(o.get("price", 0) or 0) for o in self._collect_tp_limit_orders()]
+            else [float(o.get("price", 0) or 0) for o in self._collect_tp_limit_orders(force_refresh=guarded_fr)]
         )
         consumed = self._consumed_tp_level_set()
 
@@ -879,30 +938,39 @@ class BinanceSmartDefenseMixin:
                     if skip_reason in (
                         "price_book_filled", "qty_book_implies_filled", "price_past_tp",
                     ):
-                        consumed.add(level)
-                        if hasattr(self, "consumed_tp_levels"):
-                            merged = sorted(consumed)
-                            if merged != sorted(getattr(self, "consumed_tp_levels", []) or []):
-                                self.consumed_tp_levels = merged
-                                if hasattr(self, "_save_state"):
-                                    self._save_state()
-                                if hasattr(self, "_alert"):
-                                    self._alert(
-                                        "warning",
-                                        "TP_SKIP_REHANG",
-                                        f"现价已过/已成交·拒绝补挂TP{level}",
-                                        f"原因={skip_reason} | 现价{px_now:.2f} | 实盘{live_qty} | "
-                                        f"已消费{merged}",
-                                        {
-                                            "level": level,
-                                            "tp_price": px,
-                                            "skip_reason": skip_reason,
-                                            "curr_px": px_now,
-                                            "live_qty": live_qty,
-                                            "consumed_tp_levels": merged,
-                                            "exchange": getattr(self, "exchange_id", None),
-                                        },
-                                    )
+                        # CRITICAL: only mark consumed if TP is POSITIVELY confirmed on the exchange book.
+                        # Without confirmation, stale cache would falsely mark a filled/missing TP as "still on book"
+                        # causing the system to skip rehang and leave the position unguarded.
+                        confirmed_on_book = False
+                        if hasattr(self, "_tp_limit_exists_near"):
+                            exists = self._tp_limit_exists_near(float(px))
+                            if exists is True:
+                                confirmed_on_book = True
+                        if confirmed_on_book:
+                            consumed.add(level)
+                            if hasattr(self, "consumed_tp_levels"):
+                                merged = sorted(consumed)
+                                if merged != sorted(getattr(self, "consumed_tp_levels", []) or []):
+                                    self.consumed_tp_levels = merged
+                                    if hasattr(self, "_save_state"):
+                                        self._save_state()
+                                    if hasattr(self, "_alert"):
+                                        self._alert(
+                                            "warning",
+                                            "TP_SKIP_REHANG",
+                                            f"确认TP{level}仍在簿·拒绝补挂",
+                                            f"原因={skip_reason} | 现价{px_now:.2f} | 实盘{live_qty} | "
+                                            f"已消费{merged}",
+                                            {
+                                                "level": level,
+                                                "tp_price": px,
+                                                "skip_reason": skip_reason,
+                                                "curr_px": px_now,
+                                                "live_qty": live_qty,
+                                                "consumed_tp_levels": merged,
+                                                "exchange": getattr(self, "exchange_id", None),
+                                            },
+                                        )
                 continue
             if skip and skip_reason == "no_mark_price":
                 skipped += 1
@@ -913,10 +981,18 @@ class BinanceSmartDefenseMixin:
             if tp_would_instant_fill(self.current_side, px, px_now):
                 skipped += 1
                 if level and level not in consumed:
-                    consumed.add(level)
-                    self.consumed_tp_levels = sorted(consumed)
-                    if hasattr(self, "_save_state"):
-                        self._save_state()
+                    # CRITICAL: only mark consumed if we have POSITIVE confirmation TP is on the book.
+                    # Without confirmation, stale cache causes false skip leaving position unguarded.
+                    confirmed_on_book = False
+                    if hasattr(self, "_tp_limit_exists_near"):
+                        exists = self._tp_limit_exists_near(float(px))
+                        if exists is True:
+                            confirmed_on_book = True
+                    if confirmed_on_book:
+                        consumed.add(level)
+                        self.consumed_tp_levels = sorted(consumed)
+                        if hasattr(self, "_save_state"):
+                            self._save_state()
                 self._def_log(
                     f"  ⏭ 现价已过 TP{level} @ {px:.2f} mark={px_now:.2f}·禁止推离补挂",
                     logging.WARNING,
@@ -1408,10 +1484,12 @@ class BinanceSmartDefenseMixin:
         placed = 0
         consumed = self._consumed_tp_level_set()
         price_tol = self._tp_price_tol()
+        # Guard force_refresh: prevents REST hammering under IP cooldown.
+        guarded_fr = self._force_refresh_guard(True)
         open_prices = (
-            self._open_tp_prices_on_book()
+            self._open_tp_prices_on_book(force_refresh=guarded_fr)
             if hasattr(self, "_open_tp_prices_on_book")
-            else [float(o.get("price", 0) or 0) for o in self._collect_tp_limit_orders()]
+            else [float(o.get("price", 0) or 0) for o in self._collect_tp_limit_orders(force_refresh=guarded_fr)]
         )
         level_desc = " ".join(
             f"TP{lv['level']}={lv['qty']}@{lv['price']:.2f}" for lv in levels if lv["qty"] > 0
@@ -1447,14 +1525,21 @@ class BinanceSmartDefenseMixin:
                     f"  ⏭ 重建跳过 TP{level} @ {px:.2f}（{skip_reason}）",
                     logging.WARNING,
                 )
-                if level and level not in consumed:
+                # CRITICAL: only mark consumed if POSITIVELY confirmed on the exchange book.
+                # Without confirmation, stale cache would falsely skip rehang and leave position unguarded.
+                confirmed_on_book = False
+                if hasattr(self, "_tp_limit_exists_near"):
+                    exists = self._tp_limit_exists_near(float(px))
+                    if exists is True:
+                        confirmed_on_book = True
+                if level and level not in consumed and confirmed_on_book:
                     consumed.add(level)
                     self.consumed_tp_levels = sorted(consumed)
                     if hasattr(self, "_save_state"):
                         self._save_state()
                 continue
-            # Fresh book check — identical to _patch_missing_tp_levels
-            orders = self._collect_tp_limit_orders()
+            # Fresh book check — identical to _patch_missing_tp_levels (guarded force_refresh)
+            orders = self._collect_tp_limit_orders(force_refresh=guarded_fr)
             at_px = [o for o in orders if tp_price_matches(o["price"], px, price_tol)]
             if len(at_px) == 1 and tp_qty_matches(q, at_px[0]["qty"], live_qty):
                 self._def_log(f"  ✓ TP{level} @ {px:.2f} 已存在 {at_px[0]['qty']}，跳过（防重复挂单）")
@@ -1463,7 +1548,7 @@ class BinanceSmartDefenseMixin:
                 continue
             if len(at_px) > 1:
                 self._purge_duplicate_tp_orders(live_qty)
-                orders = self._collect_tp_limit_orders()
+                orders = self._collect_tp_limit_orders(force_refresh=guarded_fr)
                 at_px = [o for o in orders if tp_price_matches(o["price"], px, price_tol)]
                 if len(at_px) == 1 and tp_qty_matches(q, at_px[0]["qty"], live_qty):
                     continue
@@ -1474,7 +1559,7 @@ class BinanceSmartDefenseMixin:
                     time.sleep(0.25)
             # Verify-before-place: cancel lag must not create a second LIMIT @ same px
             time.sleep(0.25)
-            orders = self._collect_tp_limit_orders()
+            orders = self._collect_tp_limit_orders(force_refresh=guarded_fr)
             still = [o for o in orders if tp_price_matches(o["price"], px, price_tol)]
             if still:
                 self._def_log(
