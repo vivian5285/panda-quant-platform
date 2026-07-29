@@ -2153,9 +2153,25 @@ class PositionSupervisor(
             ExecutionOfficer.mark_entry_submitted(self)
         except Exception:
             pass
-        time.sleep(1.2)
 
-        pos = self.position_manager.get_position(self.symbol)
+        # 市价单成交后REST可能滞后，重试查询持仓直到确认
+        pos = None
+        retry_delays = (0.5, 1.0, 2.0, 3.0)  # 渐进退避
+        last_err = ""
+        for attempt, delay in enumerate(retry_delays, start=1):
+            if delay > 0:
+                time.sleep(delay)
+            try:
+                pos = self.position_manager.get_position(self.symbol)
+                if pos and float(pos.get("positionAmt", 0)) != 0:
+                    break  # 持仓确认
+            except Exception as e:
+                last_err = str(e)
+                self._log("WARNING", f"持仓查询重试 {attempt}/{len(retry_delays)} 仍失败: {e}")
+                continue
+            # 查询返回None/空 = 重试
+            self._log("WARNING", f"持仓查询重试 {attempt}/{len(retry_delays)} 仍空")
+
         if pos and float(pos.get("positionAmt", 0)) != 0:
             self.current_side = action
             real_qty = abs(float(pos["positionAmt"]))
