@@ -35,7 +35,6 @@ from app.core.open_atr_scenario import (
 from app.core.market_engine import (
     atr_mismatch_ratio,
     ensure_fresh,
-    force_refresh,
     implied_atr_from_tv_stop,
 )
 from app.core.position_qty_tolerance import qty_drift_tolerance
@@ -507,11 +506,7 @@ class AdverseRadarMixin:
             or getattr(self, "symbol", None)
             or getattr(client, "trading_symbol", None)
         )
-        snap = (
-            force_refresh(client=client, exchange=ex, symbol=sym)
-            if force
-            else ensure_fresh(client=client, exchange=ex, symbol=sym)
-        )
+        snap = ensure_fresh(client=client, exchange=ex, symbol=sym)
         atr = float(snap.get("atr") or 0)
         adx = float(snap.get("adx") or 0)
         if atr > 0:
