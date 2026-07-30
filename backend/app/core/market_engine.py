@@ -212,6 +212,12 @@ def force_refresh(
     )
 
 
+# Backward-compatible alias — any code that still calls force_refresh()
+# directly (not via the function) will gracefully fall through to ensure_fresh.
+# This prevents NameError from circular import scenarios.
+force_refresh = ensure_fresh
+
+
 def get_cached(
     *,
     exchange: str | None = None,
