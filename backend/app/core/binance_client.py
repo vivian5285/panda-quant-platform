@@ -369,9 +369,9 @@ class BinanceClient:
 
     def estimate_atr(self, symbol=None, period: int = 14) -> float:
         """Legacy helper — prefer market_engine 90m ATR for breathing stop."""
-        from app.core.market_engine import force_refresh
+        from app.core.market_engine import ensure_fresh
 
-        snap = force_refresh(client=self, exchange="binance", symbol=symbol)
+        snap = ensure_fresh(client=self, exchange="binance", symbol=symbol)
         atr = float(snap.get("atr") or 0)
         if atr > 0:
             return round(atr, 4)
