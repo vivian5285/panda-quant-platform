@@ -11,8 +11,8 @@ class PositionManager:
     def _symbol(self, symbol: str | None = None) -> str:
         return symbol or self.default_symbol
 
-    def get_position(self, symbol: str | None = None) -> Optional[Dict[str, Any]]:
-        return self.client.get_position(self._symbol(symbol))
+    def get_position(self, symbol: str | None = None, *, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
+        return self.client.get_position(self._symbol(symbol), force_refresh=force_refresh)
 
     def has_position(self, symbol: str | None = None) -> bool:
         pos = self.get_position(symbol)
@@ -41,8 +41,8 @@ class PositionManager:
             return 0.0
         return float(pos.get("unRealizedProfit", 0))
 
-    def get_open_orders(self, symbol: str | None = None) -> List[Dict]:
-        return self.client.get_open_orders(self._symbol(symbol))
+    def get_open_orders(self, symbol: str | None = None, *, force_refresh: bool = False) -> List[Dict]:
+        return self.client.get_open_orders(self._symbol(symbol), force_refresh=force_refresh)
 
     def get_position_status(self, symbol: str | None = None) -> Dict[str, Any]:
         sym = self._symbol(symbol)

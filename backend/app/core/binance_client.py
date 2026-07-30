@@ -187,6 +187,17 @@ class BinanceClient:
         try:
             from app.core.rest_book_cache import invalidate
             invalidate("binance", self.user_id, reason=reason)
+            # Also invalidate orders and algo caches so TP place/retry sees fresh book
+            from app.core.rest_book_cache import _lock as _c_lock, _orders, _algo
+            from app.core.rest_book_cache import _key as _mk
+            k = _mk("binance", self.user_id)
+            with _c_lock:
+                for store in (_orders, _algo):
+                    hit = store.get(k)
+                    if isinstance(hit, dict):
+                        hit["fetched_at"] = 0.0
+                    else:
+                        store.pop(k, None)
         except Exception:
             pass
 
@@ -305,13 +316,17 @@ class BinanceClient:
             "can_trade": bool(account.get("canTrade", True)),
         }
 
-    def get_position(self, symbol=None):
+    def get_position(self, symbol=None, *, force_refresh: bool = False):
         """Return Binance position row, or None only when exchange reports flat.
 
         API/network failures raise ExchangeTransientError — never return None on
         failure (None previously meant flat and could wipe live books).
 
         Dual-symbol: shared REST cache — one all-position fetch serves ETH+XAU.
+
+        Args:
+            symbol: trading symbol (auto-detected if None)
+            force_refresh: bypass IP cool-down for critical verify operations.
         """
         from app.core.exchange_errors import raise_exchange_transient
         from app.core.rest_book_cache import get_cached_position
@@ -323,6 +338,7 @@ class BinanceClient:
                 user_id=self.user_id,
                 symbol=symbol,
                 fetch_all=lambda: self.client.futures_position_information() or [],
+                force_refresh=force_refresh,
             )
         except Exception as e:
             from app.core.exchange_errors import ExchangeTransientError
@@ -428,7 +444,7 @@ class BinanceClient:
             logger.debug(f"[User {self.user_id}] get algo order {algo_id} failed: {e}")
             return None
 
-    def get_open_algo_orders(self, symbol=None) -> list[dict]:
+    def get_open_algo_orders(self, symbol=None, *, force_refresh: bool = False) -> list[dict]:
         """Conditional STOP/TP orders live on the algo book after 2025-12 migration.
 
         Raises BookFetchError when the requested symbol's algo book cannot be fetched.
@@ -470,6 +486,7 @@ class BinanceClient:
                 symbol=symbol,
                 fetch_for_symbols=_fetch,
                 symbols=symbols,
+                force_refresh=force_refresh,
             )
         except BookFetchError:
             raise
@@ -477,7 +494,7 @@ class BinanceClient:
             logger.warning(f"[User {self.user_id}] get algo orders failed: {e}")
             raise BookFetchError(f"algo_book:{symbol}:{e}") from e
 
-    def get_open_orders(self, symbol=None):
+    def get_open_orders(self, symbol=None, *, force_refresh: bool = False):
         """Regular + algo open orders. Raises BookFetchError on fetch failure (fail-closed)."""
         from app.core.rest_book_cache import get_cached_open_orders
 
@@ -488,12 +505,13 @@ class BinanceClient:
                 user_id=self.user_id,
                 symbol=symbol,
                 fetch_all=lambda: self.client.futures_get_open_orders() or [],
+                force_refresh=force_refresh,
             )
         except Exception as e:
             logger.error(f"[User {self.user_id}] get orders failed: {e}")
             raise BookFetchError(f"regular_book:{symbol}:{e}") from e
         try:
-            algo = self.get_open_algo_orders(symbol=symbol)
+            algo = self.get_open_algo_orders(symbol=symbol, force_refresh=force_refresh)
         except BookFetchError:
             raise
         except Exception as e:
@@ -822,6 +840,7 @@ class BinanceClient:
                 return -1
             require_rest_or_transient(
                 exchange="binance", user_id=self.user_id, op="mop_up_orders",
+                priority="emergency",
             )
         except Exception as e:
             logger.warning("[User %s] mop-up rest gate: %s", self.user_id, e)
