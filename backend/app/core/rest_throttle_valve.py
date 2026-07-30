@@ -43,8 +43,9 @@ _lock = threading.RLock()
 _calls: dict[str, list[float]] = {}
 
 # Soft budget before we refuse — multi-user shared IP; stay well under exchange caps.
-# Binance ~2400 weight/min; openOrders~40 → 80 calls/min was still too hot with WS ticks.
-DEFAULT_BUDGET_PER_MIN = 40
+# Binance ~2400 weight/min; openOrders~40 → raised to 60 to reduce spurious denials
+# while still keeping well under limits. Combined with WS for ticks, this is safe.
+DEFAULT_BUDGET_PER_MIN = 60
 # When budget trips, cool for the full shared window (not a short 60s blip).
 BUDGET_COOL_SEC = float(DEFAULT_COOL_SEC)
 

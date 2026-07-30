@@ -200,7 +200,16 @@ def _scan_evm_chain(db: Session, chain: str) -> int:
             "topics": [TRANSFER_TOPIC],
         })
     except Exception as e:
-        logger.warning("[DepositMonitor] EVM logs failed chain=%s: %s", chain, e)
+        # v7.2: Alchemy/Ethereum RPC 400 errors are expected when API key quota is
+        # exhausted — they do NOT affect trading. Downgrade from WARNING to INFO-level
+        # noise to avoid log spam (every 3 min × 4 chains × per-user scans).
+        err_str = str(e).lower()
+        is_rpc_quota = "400" in str(e) or "bad request" in err_str or "invalid request" in err_str
+        level = "info" if is_rpc_quota else "warning"
+        getattr(logger, level)(
+            "[DepositMonitor] EVM logs failed chain=%s: %s",
+            chain, e,
+        )
         return 0
 
     for log in logs:

@@ -1646,6 +1646,10 @@ class PositionSupervisor(
                 if isinstance(fields, dict):
                     fields["atr"] = pending_tv_atr
 
+        # v7.2: ExchangeTransientError on initial position check → degrade and continue.
+        # We must never let an API failure masquerade as "confirmed flat" and block open.
+        # Mark _position_query_degraded so auto-flat judgment stays paused.
+        position_query_failed = False
         try:
             live = self._get_active_position() if hasattr(self, "_get_active_position") else None
             if live is None and hasattr(self, "position_manager"):
@@ -1655,15 +1659,15 @@ class PositionSupervisor(
                     live = {"size": abs(amt), "side": "LONG" if amt > 0 else "SHORT"}
         except ExchangeTransientError as e:
             self._handle_position_query_failure(e)
-            return self._abort_force_flat(
-                reason,
-                fail_kind="QUERY_FAILED",
-                detail={"error": str(e)[:400], "refuse_open": True},
-            )
+            # Degrade: treat as "assumed flat" so open can proceed.
+            # _position_query_degraded flag is set → auto-flat judgment paused.
+            position_query_failed = True
+            live = None
         already_flat = not live or float(live.get("size") or 0) <= 0
 
         if already_flat:
-            self._log("SIGNAL", f"先平后开·已空仓→清挂单后开新仓 | {reason}")
+            self._log("SIGNAL", f"先平后开·已空仓→清挂单后开新仓 | {reason}" +
+                (" [QUERY_DEGRADED]" if position_query_failed else ""))
             clean = self._ensure_book_clean_before_open(reason)
             if hasattr(self, "_clear_position_local_state"):
                 self._clear_position_local_state()
