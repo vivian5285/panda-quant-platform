@@ -691,8 +691,7 @@ class PositionSupervisor(
         held_atr = self.current_atr
         prev_tv_tps = list(self.tv_tps)
         self._signal_prev_tv_tps = prev_tv_tps
-        self.regime = int(payload.get("regime", 3))
-        self.regime = clamp_regime(self.regime)
+        self.regime = clamp_regime(payload.get("regime", 3))
 
         # Open path: stash TV atr ref; open protect resolves VPS 1h vs TV fallback
         position_open = bool(
