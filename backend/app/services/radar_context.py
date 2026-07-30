@@ -7,6 +7,7 @@ import logging
 
 from sqlalchemy.orm import Session
 
+from app.core.regime_utils import clamp_regime
 from app.core.symbol_precision import normalize_tv_targets
 from app.models import Trade, TradeLog
 from app.models.platform import SignalDispatchLog, SignalDispatchUserResult, WebhookReceiveLog
@@ -15,6 +16,14 @@ logger = logging.getLogger(__name__)
 
 TV_ACTIONS_POSITION = {"LONG", "SHORT"}
 TV_ACTIONS_CLOSE = {"CLOSE", "CLOSE_TP3", "CLOSE_PROTECT", "CLOSE_STOPLOSS"}
+
+
+def _safe_regime(raw) -> int:
+    """Parse regime from raw value (int, str like 'strong', etc.) → 1-4 or default 3."""
+    try:
+        return clamp_regime(raw, default=3)
+    except Exception:
+        return 3
 
 
 def _parse_webhook_tv_row(row: WebhookReceiveLog) -> dict:
@@ -27,7 +36,7 @@ def _parse_webhook_tv_row(row: WebhookReceiveLog) -> dict:
         "id": row.id,
         "action": action,
         "created_at": row.created_at.isoformat() if row.created_at else None,
-        "regime": int(summary.get("regime", 0) or 0),
+        "regime": _safe_regime(summary.get("regime")),
         "atr": float(summary.get("atr", 0) or 0),
         "price": float(summary.get("price", 0) or 0),
         "tv_tps": normalize_tv_targets([
@@ -54,7 +63,7 @@ def _parse_dispatch_log_row(row: SignalDispatchLog) -> dict | None:
         "id": row.id,
         "action": action,
         "created_at": row.created_at.isoformat() if row.created_at else None,
-        "regime": int(payload.get("regime", 0) or 0),
+        "regime": _safe_regime(payload.get("regime")),
         "atr": float(payload.get("atr", 0) or 0),
         "price": float(payload.get("price", 0) or 0),
         "tv_tps": normalize_tv_targets([
@@ -70,7 +79,7 @@ def _parse_dispatch_log_row(row: SignalDispatchLog) -> dict | None:
 
 
 def get_latest_tv_entry_signal_for_user(db: Session, user_id: int) -> dict | None:
-    """Latest LONG/SHORT webhook for this user — used when latest overall signal is CLOSE."""
+    """Latest LONG/SHORT webhook for this user - used when latest overall signal is CLOSE."""
     row = (
         db.query(WebhookReceiveLog)
         .join(SignalDispatchLog, WebhookReceiveLog.dispatch_log_id == SignalDispatchLog.id)
@@ -191,7 +200,7 @@ def get_open_trade_log_detail(db: Session, user_id: int, trade_id: int | None = 
         "side": detail.get("side"),
         "qty": float(detail.get("qty", 0) or 0),
         "entry": float(detail.get("entry", 0) or 0),
-        "regime": int(detail.get("regime", 0) or 0),
+        "regime": _safe_regime(detail.get("regime")),
         "atr": float(detail.get("atr", 0) or 0),
         "tv_tps": normalize_tv_targets(detail.get("tv_tps") or []),
         "tv_price": float(detail.get("tv_price", 0) or 0),
