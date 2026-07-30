@@ -53,7 +53,7 @@ def _acct_key(exchange: str | None, user_id: int | str | None) -> str:
     return f"{(exchange or 'binance').lower()}:{user_id if user_id is not None else 'ip'}"
 
 
-def record_rest_call(*, exchange: str | None, user_id: int | str | None = None) -> None:
+def record_rest_call(*, exchange: str | None, user_id: int | str | None = None, _emergency: bool = False) -> None:
     k = _acct_key(exchange, user_id)
     now = time.time()
     with _lock:
@@ -87,25 +87,40 @@ def acquire_rest_permit(
     op: str = "rest",
     budget_per_min: int = DEFAULT_BUDGET_PER_MIN,
     ledger: Any = None,
+    priority: str = "normal",
 ) -> None:
-    """Raise ThrottleDenied if REST must not proceed."""
+    """Raise ThrottleDenied if REST must not proceed.
+
+    ``priority`` controls whether the call bypasses the budget cap:
+    - "emergency": bypasses per-minute budget entirely — for HARD_SL_FAIL_ABORT,
+      close_protect, and other fund-safety-critical operations.
+      Still subject to IP-level cooling (rate-limit cooldown from exchange).
+    - "normal": normal budget gate (DEFAULT_BUDGET_PER_MIN per minute).
+    """
     left = remaining_sec(exchange=exchange, user_id=user_id)
     if left > 0:
         raise ThrottleDenied(f"{exchange} cool-down {left:.0f}s ({op})", remaining=left)
-    n = calls_last_min(exchange=exchange, user_id=user_id)
-    if n >= int(budget_per_min):
-        # Full cool — stop thrash across ETH+XAU / all users on IP
-        note_rate_limit(
-            exchange=exchange,
-            user_id=user_id,
-            cool_sec=BUDGET_COOL_SEC,
-        )
-        raise ThrottleDenied(
-            f"{exchange} REST budget exceeded {n}/{budget_per_min} ({op})",
-            remaining=BUDGET_COOL_SEC,
-        )
+    # Emergency / fund-safety calls bypass budget but must still obey IP cool-down
+    if priority != "emergency":
+        n = calls_last_min(exchange=exchange, user_id=user_id)
+        if n >= int(budget_per_min):
+            note_rate_limit(
+                exchange=exchange,
+                user_id=user_id,
+                cool_sec=BUDGET_COOL_SEC,
+            )
+            raise ThrottleDenied(
+                f"{exchange} REST budget exceeded {n}/{budget_per_min} ({op})",
+                remaining=BUDGET_COOL_SEC,
+            )
     raise_if_cooling(exchange=exchange, user_id=user_id, op=op)
-    record_rest_call(exchange=exchange, user_id=user_id)
+    # Emergency calls bypass the budget check above but still record the call
+    # so audit trail is complete. Normal calls record.
+    if priority != "emergency":
+        record_rest_call(exchange=exchange, user_id=user_id)
+    else:
+        # Record emergency call for audit only; does not consume budget
+        record_rest_call(exchange=exchange, user_id=user_id, _emergency=True)
     if ledger is not None and hasattr(ledger, "note_api_call"):
         try:
             ledger.note_api_call()
@@ -118,10 +133,11 @@ def require_rest_or_transient(
     exchange: str | None,
     user_id: int | str | None = None,
     op: str = "rest",
+    priority: str = "normal",
 ) -> None:
     """Client entry: deny → ExchangeTransientError so callers fail-closed / use stale."""
     try:
-        acquire_rest_permit(exchange=exchange, user_id=user_id, op=op)
+        acquire_rest_permit(exchange=exchange, user_id=user_id, op=op, priority=priority)
     except ThrottleDenied as e:
         from app.core.exchange_errors import ExchangeTransientError
 
@@ -139,13 +155,20 @@ def rest_silent(*, exchange: str | None, user_id: int | str | None = None) -> bo
     return float(remaining_sec(exchange=exchange, user_id=user_id) or 0) > 0
 
 
-def sentinel_may_rest(*, exchange: str | None, user_id: int | str | None, trading_paused: bool) -> tuple[bool, str]:
-    """巡检/哨兵：暂停、冷却或预算耗尽时禁止 REST；只读账本。"""
+def sentinel_may_rest(*, exchange: str | None, user_id: int | str | None, trading_paused: bool, priority: str = "normal") -> tuple[bool, str]:
+    """巡检/哨兵：暂停、冷却或预算耗尽时禁止 REST；只读账本。
+
+    ``priority="emergency"`` bypasses budget check so fund-safety operations
+    (HARD_SL_FAIL_ABORT, close_protect) are never blocked by routine traffic.
+    IP-level cool-down is always enforced regardless of priority.
+    """
     if trading_paused:
         return False, "trading_paused"
     left = remaining_sec(exchange=exchange, user_id=user_id)
     if left > 0:
         return False, f"cool:{left:.0f}s"
+    if priority == "emergency":
+        return True, "emergency_ok"
     n = calls_last_min(exchange=exchange, user_id=user_id)
     if n >= DEFAULT_BUDGET_PER_MIN:
         return False, f"budget:{n}/{DEFAULT_BUDGET_PER_MIN}"

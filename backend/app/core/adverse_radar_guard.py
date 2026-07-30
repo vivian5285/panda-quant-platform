@@ -1257,7 +1257,12 @@ class AdverseRadarMixin:
         Hard = fill ± (|TV.price−TV.stop_loss| × buffer); no ATR floor / slip pad.
         ATR breathing only arms/updates radar ``initial_stop`` / ``current_sl``.
         """
+        # Preserve ATR from state file / live position before _init clears it
+        preserved_atr_ref = float(getattr(self, "_tv_atr_ref", 0.0) or 0.0)
         self._init_adverse_radar_fields()
+        current = float(getattr(self, "_tv_atr_ref", 0.0) or 0.0)
+        if preserved_atr_ref > 0.0 and current <= 0.0:
+            self._tv_atr_ref = preserved_atr_ref
         entry = float(
             entry_px
             or getattr(self, "watched_entry", 0)
@@ -1431,7 +1436,14 @@ class AdverseRadarMixin:
         """Ignore TV stop_loss/atr/adx for decisions; pull VPS indicators and recompute stop at open."""
         if not payload:
             return None
+        # CRITICAL: preserve _tv_atr_ref BEFORE _init_adverse_radar_fields clears it.
+        # State file may have restored this from a live position; close signals have no atr in payload.
+        preserved_atr_ref = float(getattr(self, "_tv_atr_ref", 0.0) or 0.0)
         self._init_adverse_radar_fields()
+        # Restore after init so ATR from state/live position survives close-signal handler
+        current = float(getattr(self, "_tv_atr_ref", 0.0) or 0.0)
+        if preserved_atr_ref > 0.0 and current <= 0.0:
+            self._tv_atr_ref = preserved_atr_ref
         # Live breathing position: never reset stop from TV / mid-trade atr
         live_breath = (
             float(getattr(self, "initial_stop", 0) or 0) > 0
@@ -2813,6 +2825,57 @@ class AdverseRadarMixin:
                 "reason": "hard_stop_unavailable_need_tv_stop_loss",
                 "stop_price": 0.0,
                 "tv_stop_loss": tv_sl,
+                **log_meta,
+            }
+        # --- BUG-FIX-REF: XAU-2026-07-28 root-cause-1 ---
+        # Guard: validate the raw TradingView tv_sl signal against the fill price.
+        # LONG tv_sl must be BELOW entry (TV says "exit long if price falls to tv_sl").
+        # SHORT tv_sl must be ABOVE entry (TV says "exit short if price rises to tv_sl").
+        # If tv_sl is on the wrong side of entry, the TV signal itself is invalid —
+        # no buffer multiplier or formula fix can compensate for a wrong-direction signal.
+        # Reject fail-closed and alert immediately.
+        side_u2 = str(side or "").upper()
+        signal_ok = (
+            (side_u2 == "LONG" and tv_sl < fill)
+            or (side_u2 == "SHORT" and tv_sl > fill)
+        )
+        if not signal_ok:
+            _dist = float(dist_meta.get("final_dist") or 0)
+            logger.error(
+                "[User %s] %s HARD SL TV_SIGNAL WRONG SIDE: side=%s entry=%.2f "
+                "tv_sl=%.2f computed_stop=%.2f dist=%.4f — SIGNAL INVALID (stop must be on %s side of entry)",
+                getattr(self, "user_id", "?"),
+                getattr(self, "canonical_symbol", getattr(self, "symbol", "?")),
+                side_u2, fill, tv_sl, temp, _dist,
+                "loss" if side_u2 == "LONG" else "profit",
+            )
+            _crit = (
+                f"硬止损TV信号方向错误：{side_u2} 开仓价={fill:.2f} TV止损={tv_sl:.2f}"
+                f" → TV信号要求在开仓价{'上方' if side_u2 == 'LONG' else '下方'}设置止损，"
+                f"实际TV信号在开仓价另一侧，立即检查TradingView脚本配置"
+            )
+            if hasattr(self, "_alert"):
+                self._alert(
+                    "critical",
+                    "HARD_SL_SIGNAL_WRONG_SIDE",
+                    _crit,
+                    {
+                        "side": side_u2,
+                        "entry": fill,
+                        "tv_sl": tv_sl,
+                        "computed_stop": temp,
+                        "dist": _dist,
+                        "symbol": sym,
+                    },
+                )
+            return {
+                "ok": False,
+                "reason": "tv_sl_wrong_side_of_entry",
+                "stop_price": 0.0,
+                "tv_stop_loss": tv_sl,
+                "entry": fill,
+                "computed_stop": float(temp),
+                "dist": _dist,
                 **log_meta,
             }
         # Hard floor is frozen here — radar uses current_sl / initial_stop separately

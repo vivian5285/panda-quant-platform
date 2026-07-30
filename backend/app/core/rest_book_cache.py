@@ -122,13 +122,20 @@ def get_cached_position(
     symbol: str,
     fetch_all: Callable[[], list],
     ttl: float = POS_TTL_SEC,
+    force_refresh: bool = False,
 ) -> dict | None:
-    """Return one symbol row from a shared all-position snapshot."""
+    """Return one symbol row from a shared all-position snapshot.
+
+    Args:
+        force_refresh: bypass IP cool-down and serve fresh data. Use for
+            critical operations like post-open verification where stale data
+            could cause false failures.
+    """
     from app.core.ip_rest_cooldown import raise_if_cooling
 
     k = _key(exchange, user_id)
     left = _cool_left(exchange, user_id)
-    if left > 0:
+    if left > 0 and not force_refresh:
         with _lock:
             hit = _pos.get(k)
             if hit is not None:
@@ -139,7 +146,7 @@ def get_cached_position(
     now = time.time()
     with _lock:
         hit = _pos.get(k) or {}
-        if hit and (now - float(hit.get("fetched_at") or 0)) < ttl:
+        if hit and (now - float(hit.get("fetched_at") or 0)) < ttl and not force_refresh:
             return (hit.get("by_symbol") or {}).get(symbol)
 
     leader, ev = _begin_flight(_pos_flight, k)
@@ -162,14 +169,21 @@ def get_cached_position(
                 exchange=exchange, user_id=user_id, op="get_position",
             )
         except ThrottleDenied as td:
-            with _lock:
-                hit = _pos.get(k)
-                if hit is not None:
-                    logger.warning(
-                        "get_position throttle denied — serving stale (%s)",
-                        str(td)[:160],
-                    )
-                    return (hit.get("by_symbol") or {}).get(symbol)
+            if force_refresh:
+                # Critical post-open verify: ignore throttle, fetch anyway
+                logger.warning(
+                    "get_position throttle denied + force_refresh — proceeding anyway (%s)",
+                    str(td)[:160],
+                )
+            else:
+                with _lock:
+                    hit = _pos.get(k)
+                    if hit is not None:
+                        logger.warning(
+                            "get_position throttle denied — serving stale (%s)",
+                            str(td)[:160],
+                        )
+                        return (hit.get("by_symbol") or {}).get(symbol)
             raise_if_cooling(exchange=exchange, user_id=user_id, op="get_position")
             raise
         rows = list(fetch_all() or [])
@@ -206,13 +220,19 @@ def get_cached_open_orders(
     symbol: str,
     fetch_all: Callable[[], list],
     ttl: float = ORDER_TTL_SEC,
+    force_refresh: bool = False,
 ) -> list[dict]:
-    """Return open orders for one symbol from a shared all-orders snapshot."""
+    """Return open orders for one symbol from a shared all-orders snapshot.
+
+    Args:
+        force_refresh: bypass IP cool-down and serve fresh data. Use for
+            critical operations like post-place verification.
+    """
     from app.core.ip_rest_cooldown import raise_if_cooling
 
     k = _key(exchange, user_id)
     left = _cool_left(exchange, user_id)
-    if left > 0:
+    if left > 0 and not force_refresh:
         with _lock:
             hit = _orders.get(k)
             if hit is not None:
@@ -223,7 +243,7 @@ def get_cached_open_orders(
     now = time.time()
     with _lock:
         hit = _orders.get(k) or {}
-        if hit and (now - float(hit.get("fetched_at") or 0)) < ttl:
+        if hit and (now - float(hit.get("fetched_at") or 0)) < ttl and not force_refresh:
             return list((hit.get("by_symbol") or {}).get(symbol) or [])
 
     leader, ev = _begin_flight(_orders_flight, k)
@@ -245,14 +265,20 @@ def get_cached_open_orders(
                 exchange=exchange, user_id=user_id, op="get_open_orders",
             )
         except ThrottleDenied as td:
-            with _lock:
-                hit = _orders.get(k)
-                if hit is not None:
-                    logger.warning(
-                        "get_open_orders throttle denied — serving stale (%s)",
-                        str(td)[:160],
-                    )
-                    return list((hit.get("by_symbol") or {}).get(symbol) or [])
+            if force_refresh:
+                logger.warning(
+                    "get_open_orders throttle denied + force_refresh — proceeding anyway (%s)",
+                    str(td)[:160],
+                )
+            else:
+                with _lock:
+                    hit = _orders.get(k)
+                    if hit is not None:
+                        logger.warning(
+                            "get_open_orders throttle denied — serving stale (%s)",
+                            str(td)[:160],
+                        )
+                        return list((hit.get("by_symbol") or {}).get(symbol) or [])
             return []
         rows = list(fetch_all() or [])
         by_sym: dict[str, list[dict]] = {}
@@ -289,11 +315,12 @@ def get_cached_algo_orders(
     fetch_for_symbols: Callable[[list[str]], dict[str, list]],
     symbols: list[str],
     ttl: float = ALGO_TTL_SEC,
+    force_refresh: bool = False,
 ) -> list[dict]:
     """Refresh algo books for all configured symbols in one cache window."""
     k = _key(exchange, user_id)
     left = _cool_left(exchange, user_id)
-    if left > 0:
+    if left > 0 and not force_refresh:
         with _lock:
             hit = _algo.get(k)
             if hit is not None:
@@ -303,7 +330,7 @@ def get_cached_algo_orders(
     now = time.time()
     with _lock:
         hit = _algo.get(k) or {}
-        if hit and (now - float(hit.get("fetched_at") or 0)) < ttl:
+        if hit and (now - float(hit.get("fetched_at") or 0)) < ttl and not force_refresh:
             return list((hit.get("by_symbol") or {}).get(symbol) or [])
 
     leader, ev = _begin_flight(_algo_flight, k)
@@ -323,14 +350,20 @@ def get_cached_algo_orders(
                 exchange=exchange, user_id=user_id, op="get_algo_orders",
             )
         except ThrottleDenied as td:
-            with _lock:
-                hit = _algo.get(k)
-                if hit is not None:
-                    logger.warning(
-                        "get_algo_orders throttle denied — serving stale (%s)",
-                        str(td)[:160],
-                    )
-                    return list((hit.get("by_symbol") or {}).get(symbol) or [])
+            if force_refresh:
+                logger.warning(
+                    "get_algo_orders throttle denied + force_refresh — proceeding anyway (%s)",
+                    str(td)[:160],
+                )
+            else:
+                with _lock:
+                    hit = _algo.get(k)
+                    if hit is not None:
+                        logger.warning(
+                            "get_algo_orders throttle denied — serving stale (%s)",
+                            str(td)[:160],
+                        )
+                        return list((hit.get("by_symbol") or {}).get(symbol) or [])
             return []
         by_sym = dict(fetch_for_symbols(list(symbols)) or {})
         with _lock:

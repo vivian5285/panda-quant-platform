@@ -1,6 +1,6 @@
 #!/bin/bash
 # 双子星AI量化 · GEMINI AI · 部署公共函数（端口清理 / Git 同步）
-# v6.5.6: sync_github_code 保留 .env / data / state / logs；全交易所同一交易逻辑
+# v6.6.0: sync_github_code 新增 git checkout fallback 容错（.git/refs 被 root 持有时 git reset --hard 会失败）
 # shellcheck disable=SC2034
 
 deploy_fail() { echo "[FAIL] $1"; exit 1; }
@@ -90,7 +90,14 @@ sync_github_code() {
     deploy_info "已备份 backend/.env"
   fi
 
-  git reset --hard "${remote}/${branch}" || deploy_fail "git reset 失败"
+  deploy_info "尝试 git reset --hard ${remote}/${branch} ..."
+  if ! git reset --hard "${remote}/${branch}" 2>&1; then
+    deploy_info "git reset 失败，尝试 fallback: git checkout ${remote}/${branch} ..."
+    if ! git checkout "${remote}/${branch}" 2>&1; then
+      deploy_fail "git reset 和 git checkout 均失败，请检查 .git/refs 权限"
+    fi
+    deploy_info "git checkout fallback 成功"
+  fi
   git clean -fd -e backend/.env -e backend/data -e backend/state -e backend/logs || true
 
   if [ -n "$env_backup" ] && [ -f "$env_backup" ]; then
