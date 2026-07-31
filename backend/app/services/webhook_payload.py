@@ -22,6 +22,28 @@ _PINE_CLOSE_SIDE_REASON_GENERIC = re.compile(
     r'"side":"(LONG|SHORT|NONE),("reason":")([^"]*?)(,"(?:pnl_pct|price)":)'
 )
 _TRAILING_COMMA = re.compile(r",(\s*[}\]])")
+_BACKSLASH_COLON = re.compile(r'\\([:]+)')
+_BACKSLASH_COMMA = re.compile(r'\\([,]+)')
+_LEADING_SPACE_KEY = re.compile(r'{\s*"')
+_TRAILING_SPACE_VALUE = re.compile(r'":\s*"')
+
+
+def repair_shell_escaped_json(raw: str) -> str | None:
+    """修复 SSH/Shell 双引号转义导致的畸形 JSON（如 secret\:\test\，action\:\LONG\）。
+
+    症状：JSON key 被 \: 分割，如 ` secret\:\test\` 变成 `"secret":"test"` 的错误版本。
+    """
+    if r'\:' not in raw and r'\,' not in raw:
+        return None
+    fixed = _BACKSLASH_COLON.sub(r':', raw)
+    fixed = _BACKSLASH_COMMA.sub(r',', fixed)
+    # 修复 leading space in first key: "{\" secret" -> "{\"secret"
+    fixed = _LEADING_SPACE_KEY.sub(r'{"', fixed)
+    try:
+        json.loads(fixed)
+        return fixed
+    except json.JSONDecodeError:
+        return None
 
 
 def repair_pine_close_protect_json(raw: str) -> str | None:
@@ -166,6 +188,22 @@ def parse_webhook_payload(raw_text: str) -> tuple[dict | None, str | None]:
             return data, None
         return None, "JSON root must be an object"
     except json.JSONDecodeError as first_err:
+        # 尝试修复 Shell 转义导致的畸形 JSON（如 secret\:\test\）
+        repaired = repair_shell_escaped_json(text)
+        if repaired:
+            try:
+                data = json.loads(repaired)
+                if isinstance(data, dict):
+                    logger.warning(
+                        "[Webhook] Repaired shell-escaped JSON (SSH double-quote escape artifact)"
+                    )
+                    data = normalize_tv_payload(data)
+                    data = enrich_tv_signal(data)
+                    return data, None
+            except json.JSONDecodeError:
+                pass
+
+        # 尝试修复 Pine 侧/原因引号 bug 导致的畸形 JSON
         repaired = repair_pine_close_protect_json(text)
         if repaired:
             try:
