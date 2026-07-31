@@ -1,9 +1,0 @@
-chore: remove obsolete VPS monitoring scripts and test data
-
-Deleted 40+ obsolete files:
-- VPS monitoring scripts (_vps_*.py, _vps_*.sh)
-- Backtest reports and observations (.jsonl, .json)
-- Test/verification scripts
-- Old supervisor state files
-
-Kept: production scripts and core modules per spec alignment

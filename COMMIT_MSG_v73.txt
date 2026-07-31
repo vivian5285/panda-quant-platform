@@ -1,0 +1,19 @@
+fix: stop force_refresh death spiral under IP cool-down + pending-order merge
+
+Core bug: when IP is cooling, force_refresh was still honored after
+FORCE_REFRESH_GUARD_SEC (30s), causing REST hammering that kept
+extending the cool-down. This produced the "刚挂2笔但审计0命中"
+spiral every 30s.
+
+Changes:
+- _force_refresh_guard: deny ALL force_refresh when IP is cooling
+  (even after guard interval). Cache is fresh enough.
+- _mark_tp_placed: record locally-placed TP orders in _pending_tp_orders
+- _collect_tp_limit_orders: merge pending local orders so audit
+  sees them even during IP cool-down (when REST returns empty)
+- FORCE_REFRESH_GUARD_SEC: 30s -> 60s
+- Sentinel poll: 60s->90s normal, 35s->60s arming/radar
+- REST budget: 60/min -> 15/min
+- Cache TTL: POS 15s->60s, ORDER 25s->90s, ALGO 25s->90s
+- Shared endpoint gap: 2s -> 8s
+- Add throttle check [14] to check_system.py

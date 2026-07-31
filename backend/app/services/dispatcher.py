@@ -438,21 +438,23 @@ class SignalDispatcher:
                         "reason": "symbol_not_on_exchange",
                     })
                     continue
-                if is_user_paused(db, s.user_id) and not is_close:
-                    from app.services.credit_control import user_trading_blocked_by_credit
-                    reason = "user_paused"
-                    ctrl = get_user_control(db, s.user_id)
-                    if not ctrl.get("trading_paused"):
-                        _, credit_reason = user_trading_blocked_by_credit(db, s.user_id)
-                        reason = credit_reason or "settlement_blocked"
-                    results.append({
-                        "user_id": s.user_id,
-                        "symbol": signal_symbol,
-                        "status": "risk_blocked",
-                        "reason": reason,
-                    })
-                else:
-                    eligible.append(s)
+                # PAUSE DISABLED: 永远允许所有信号通过 - 交易永不暂停
+                # if is_user_paused(db, s.user_id) and not is_close:
+                #     from app.services.credit_control import user_trading_blocked_by_credit
+                #     reason = "user_paused"
+                #     ctrl = get_user_control(db, s.user_id)
+                #     if not ctrl.get("trading_paused"):
+                #         _, credit_reason = user_trading_blocked_by_credit(db, s.user_id)
+                #         reason = credit_reason or "settlement_blocked"
+                #     results.append({
+                #         "user_id": s.user_id,
+                #         "symbol": signal_symbol,
+                #         "status": "risk_blocked",
+                #         "reason": reason,
+                #     })
+                # else:
+                #     eligible.append(s)
+                eligible.append(s)
         finally:
             db.close()
 

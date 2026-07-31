@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""Deploy fixed radar_context.py to VPS container via heredoc (ASCII only)."""
+import subprocess
+
+# NOTE: All strings use ASCII only to avoid encoding issues
+CODE = '''"""Radar recovery context: open trade log + latest TV webhook cross-check."""
+
+from __future__ import annotations
+
+import json
+import logging
+
+from sqlalchemy.orm import Session
+
+from app.core.regime_utils import clamp_regime
+from app.core.symbol_precision import normalize_tv_targets
+from app.models import Trade, TradeLog
+from app.models.platform import SignalDispatchLog, SignalDispatchUserResult, WebhookReceiveLog
+
+logger = logging.getLogger(__name__)
+
+TV_ACTIONS_POSITION = {"LONG", "SHORT"}
+TV_ACTIONS_CLOSE = {"CLOSE", "CLOSE_TP3", "CLOSE_PROTECT", "CLOSE_STOPLOSS"}
+
+
+def _safe_regime(raw) -> int:
+    """Parse regime from raw value (int, str like 'strong', etc.) -> 1-4 or default 3."""
+    try:
+        return clamp_regime(raw, default=3)
+    except Exception:
+        return 3
+
+
+def _parse_webhook_tv_row(row: WebhookReceiveLog) -> dict:
+    try:
+        summary = json.loads(row.tv_summary_json or "{}")
+    except json.JSONDecodeError:
+        summary = {}
+    action = (row.action or summary.get("action") or "").upper()
+    return {
+        "id": row.id,
+        "action": action,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "regime": _safe_regime(summary.get("regime")),
+        "atr": float(summary.get("atr", 0) or 0),
+        "price": float(summary.get("price", 0) or 0),
+        "tv_tps": normalize_tv_targets([
+            summary.get("tv_tp1", 0),
+            summary.get("tv_tp2", 0),
+            summary.get("tv_tp3", 0),
+        ]),
+        "tv_sl": float(summary.get("tv_sl", 0) or 0),
+        "entry_type": (summary.get("entry_type") or "").upper() or None,
+        "reason": summary.get("reason"),
+        "source": "webhook_receive_log",
+    }
+
+
+def _parse_dispatch_log_row(row: SignalDispatchLog) -> dict | None:
+    try:
+        payload = json.loads(row.payload_json or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    action = (row.action or payload.get("action") or "").upper()
+    if not action:
+        return None
+    return {
+        "id": row.id,
+        "action": action,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "regime": _safe_regime(payload.get("regime")),
+        "atr": float(payload.get("atr", 0) or 0),
+        "price": float(payload.get("price", 0) or 0),
+        "tv_tps": normalize_tv_targets([
+            payload.get("tv_tp1", 0),
+            payload.get("tv_tp2", 0),
+            payload.get("tv_tp3", 0),
+        ]),
+        "tv_sl": float(payload.get("tv_sl", 0) or 0),
+        "entry_type": (payload.get("entry_type") or "").upper() or None,
+        "reason": payload.get("reason"),
+        "source": "signal_dispatch_log",
+    }
+
+
+def get_latest_tv_entry_signal_for_user(db: Session, user_id: int) -> dict | None:
+    row = (
+        db.query(WebhookReceiveLog)
+        .join(SignalDispatchLog, WebhookReceiveLog.dispatch_log_id == SignalDispatchLog.id)
+        .join(
+            SignalDispatchUserResult,
+            SignalDispatchUserResult.dispatch_log_id == SignalDispatchLog.id,
+        )
+        .filter(
+            SignalDispatchUserResult.user_id == user_id,
+            WebhookReceiveLog.event_status.in_(("dispatched", "accepted")),
+            WebhookReceiveLog.action.in_(("LONG", "SHORT")),
+        )
+        .order_by(WebhookReceiveLog.created_at.desc())
+        .first()
+    )
+    if row:
+        parsed = _parse_webhook_tv_row(row)
+        parsed["user_id"] = user_id
+        return parsed
+
+    dispatch_row = (
+        db.query(SignalDispatchLog)
+        .join(
+            SignalDispatchUserResult,
+            SignalDispatchUserResult.dispatch_log_id == SignalDispatchLog.id,
+        )
+        .filter(
+            SignalDispatchUserResult.user_id == user_id,
+            SignalDispatchLog.action.in_(("LONG", "SHORT")),
+        )
+        .order_by(SignalDispatchLog.created_at.desc())
+        .first()
+    )
+    if dispatch_row:
+        parsed = _parse_dispatch_log_row(dispatch_row)
+        if parsed:
+            parsed["user_id"] = user_id
+            return parsed
+    return None
+
+
+def get_latest_tv_signal_for_user(db: Session, user_id: int) -> dict | None:
+    row = (
+        db.query(WebhookReceiveLog)
+        .join(SignalDispatchLog, WebhookReceiveLog.dispatch_log_id == SignalDispatchLog.id)
+        .join(
+            SignalDispatchUserResult,
+            SignalDispatchUserResult.dispatch_log_id == SignalDispatchLog.id,
+        )
+        .filter(
+            SignalDispatchUserResult.user_id == user_id,
+            WebhookReceiveLog.event_status.in_(("dispatched", "accepted")),
+            WebhookReceiveLog.action.isnot(None),
+        )
+        .order_by(WebhookReceiveLog.created_at.desc())
+        .first()
+    )
+    if row:
+        parsed = _parse_webhook_tv_row(row)
+        parsed["user_id"] = user_id
+        return parsed
+
+    dispatch_row = (
+        db.query(SignalDispatchLog)
+        .join(
+            SignalDispatchUserResult,
+            SignalDispatchUserResult.dispatch_log_id == SignalDispatchLog.id,
+        )
+        .filter(SignalDispatchUserResult.user_id == user_id)
+        .order_by(SignalDispatchLog.created_at.desc())
+        .first()
+    )
+    if dispatch_row:
+        parsed = _parse_dispatch_log_row(dispatch_row)
+        if parsed:
+            parsed["user_id"] = user_id
+            return parsed
+    return None
+
+
+def get_latest_tv_signal(db: Session) -> dict | None:
+    row = (
+        db.query(WebhookReceiveLog)
+        .filter(
+            WebhookReceiveLog.event_status.in_(("dispatched", "accepted")),
+            WebhookReceiveLog.action.isnot(None),
+        )
+        .order_by(WebhookReceiveLog.created_at.desc())
+        .first()
+    )
+    if not row:
+        return None
+    parsed = _parse_webhook_tv_row(row)
+    parsed["source"] = "platform_wide"
+    return parsed
+
+
+def get_open_trade_log_detail(db: Session, user_id: int, trade_id: int | None = None) -> dict | None:
+    q = db.query(TradeLog).filter(
+        TradeLog.user_id == user_id,
+        TradeLog.event_type == "OPEN",
+    )
+    if trade_id:
+        q = q.filter(TradeLog.trade_id == trade_id)
+    row = q.order_by(TradeLog.created_at.desc()).first()
+    if not row:
+        return None
+    try:
+        detail = json.loads(row.detail_json or "{}")
+    except json.JSONDecodeError:
+        detail = {}
+    return {
+        "trade_id": row.trade_id,
+        "opened_at": row.created_at.isoformat() if row.created_at else None,
+        "side": detail.get("side"),
+        "qty": float(detail.get("qty", 0) or 0),
+        "entry": float(detail.get("entry", 0) or 0),
+        "regime": _safe_regime(detail.get("regime")),
+        "atr": float(detail.get("atr", 0) or 0),
+        "tv_tps": normalize_tv_targets(detail.get("tv_tps") or []),
+        "tv_price": float(detail.get("tv_price", 0) or 0),
+        "tv_sl": float(detail.get("tv_sl", 0) or 0),
+    }
+
+
+def get_open_trade_context(db: Session, user_id: int, symbol: str | None = None) -> dict | None:
+    from app.core.symbol_registry import normalize_canonical_symbol
+
+    q = db.query(Trade).filter(Trade.user_id == user_id, Trade.status == "open")
+    can = normalize_canonical_symbol(symbol, default=None) if symbol else None
+    if can:
+        q = q.filter(Trade.symbol == can)
+    trade = q.order_by(Trade.created_at.desc()).first()
+    if not trade:
+        return None
+    return {
+        "id": trade.id,
+        "side": trade.side,
+        "symbol": trade.symbol,
+        "regime": trade.regime,
+        "quantity": float(trade.quantity or 0),
+        "entry_price": float(trade.entry_price or 0),
+        "tv_tps": [trade.tv_tp1, trade.tv_tp2, trade.tv_tp3],
+        "created_at": trade.created_at.isoformat() if trade.created_at else None,
+    }
+
+
+def build_radar_recovery_context(db: Session, user_id: int, symbol: str | None = None) -> dict:
+    trade = get_open_trade_context(db, user_id, symbol=symbol)
+    trade_id = trade["id"] if trade else None
+    open_log = get_open_trade_log_detail(db, user_id, trade_id)
+    latest_tv = get_latest_tv_signal_for_user(db, user_id)
+    tv_scope = "user"
+    if not latest_tv:
+        latest_tv = get_latest_tv_signal(db)
+        tv_scope = "platform_fallback" if latest_tv else "none"
+    latest_entry_tv = get_latest_tv_entry_signal_for_user(db, user_id)
+
+    checks = []
+    if tv_scope == "platform_fallback":
+        checks.append("tv_signal_platform_fallback")
+    if trade and open_log:
+        if open_log.get("side") and trade.get("side") and open_log["side"] != trade["side"]:
+            checks.append("open_log_side_mismatch")
+        if open_log.get("entry") and trade.get("entry_price"):
+            if abs(open_log["entry"] - trade["entry_price"]) > 0.05:
+                checks.append("open_log_entry_mismatch")
+
+    if latest_tv and trade:
+        tv_action = latest_tv.get("action", "")
+        if tv_action in TV_ACTIONS_POSITION and tv_action != trade.get("side"):
+            checks.append("tv_direction_vs_trade")
+        if tv_action in TV_ACTIONS_CLOSE:
+            checks.append("tv_close_while_trade_open")
+
+    return {
+        "trade": trade,
+        "open_log": open_log,
+        "latest_tv": latest_tv,
+        "latest_entry_tv": latest_entry_tv,
+        "tv_signal_scope": tv_scope,
+        "checks": checks,
+        "symbol": symbol,
+    }
+'''
+
+# Use heredoc to write file (ASCII only)
+cmd = f'cat > /app/app/services/radar_context.py << \'PYEOF\'\n{CODE}\nPYEOF'
+result = subprocess.run(
+    ["ssh", "-o", "StrictHostKeyChecking=no", "root@187.77.130.144", cmd],
+    capture_output=True, text=True
+)
+if result.returncode != 0:
+    print(f"ERROR: {result.stderr}")
+    sys.exit(1)
+print("File written successfully")
+
+result = subprocess.run(
+    ["ssh", "-o", "StrictHostKeyChecking=no", "root@187.77.130.144",
+     "docker restart panda-quant-platform-backend-1"],
+    capture_output=True, text=True
+)
+print(f"Container restart: {result.stdout.strip()}")
+print("Done!")

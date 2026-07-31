@@ -59,6 +59,31 @@ def _coerce_float(out: dict, key: str) -> None:
         pass
 
 
+def _coerce_int(out: dict, key: str, default: int = 0) -> None:
+    """Coerce regime/side ordinals: 'strong'->3, 'moderate'->2, 'quiet'->1."""
+    if key not in out or out[key] is None or out[key] == "":
+        return
+    val = out[key]
+    if isinstance(val, int) and not isinstance(val, bool):
+        return
+    try:
+        if isinstance(val, str):
+            val = val.strip().lower()
+            if val in ("strong", "3"):
+                out[key] = 3
+                return
+            elif val in ("moderate", "2"):
+                out[key] = 2
+                return
+            elif val in ("quiet", "1"):
+                out[key] = 1
+                return
+            val = val.replace(",", "")
+        out[key] = int(float(val))
+    except (TypeError, ValueError):
+        out[key] = default
+
+
 def normalize_tv_payload(data: dict) -> dict:
     """Coerce v6.5.6 fields + legacy aliases into supervisor-ready shape."""
     out = dict(data)
@@ -105,6 +130,9 @@ def normalize_tv_payload(data: dict) -> dict:
                 out[key] = int(float(str(out[key]).strip()))
             except (TypeError, ValueError):
                 pass
+
+    # Regime: accept int (1-3), "strong"/"moderate"/"quiet", or numeric strings
+    _coerce_int(out, "regime", 3)
 
     # Optional bar_time (ms); Pine `time` often = bar open — fine for monotonic order
     raw_bt = out.get("bar_time")

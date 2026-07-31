@@ -1,0 +1,11 @@
+import sys
+c = open("/app/app/core/adverse_radar_guard.py").read()
+old = "force_refresh(client=client, exchange=ex, symbol=sym)\n            if force\n            else ensure_fresh(client=client, exchange=ex, symbol=sym)"
+new = "ensure_fresh(client=client, exchange=ex, symbol=sym)"
+if old in c:
+    c = c.replace(old, new)
+    open("/app/app/core/adverse_radar_guard.py", "w").write(c)
+    print("patched ok")
+else:
+    print("pattern not found")
+    sys.exit(1)

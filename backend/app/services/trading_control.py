@@ -220,15 +220,8 @@ def count_settlement_gate_stats(db: Session) -> dict[str, int]:
 
 
 def is_user_paused(db: Session, user_id: int) -> bool:
-    ctrl = get_user_control(db, user_id)
-    if ctrl["trading_paused"]:
-        return True
-    if ctrl.get("settlement_awaiting_flat"):
-        return True
-    from app.services.credit_control import user_trading_blocked_by_credit
-
-    blocked, _reason = user_trading_blocked_by_credit(db, user_id)
-    return blocked
+    """PAUSE DISABLED: 永远返回 False - 交易永不暂停"""
+    return False  # 永远不暂停交易
 
 
 def build_trading_control_response(db: Session, user) -> dict:

@@ -201,7 +201,7 @@ def ensure_fresh(
     )
 
 
-def force_refresh(
+def _force_refresh_impl(
     *,
     client: Any = None,
     exchange: str | None = None,
@@ -212,9 +212,9 @@ def force_refresh(
     )
 
 
-# Backward-compatible alias — any code that still calls force_refresh()
-# directly (not via the function) will gracefully fall through to ensure_fresh.
-# This prevents NameError from circular import scenarios.
+# force_refresh — aliased to ensure_fresh for backward compatibility.
+# Any code that imports force_refresh from this module will get ensure_fresh,
+# which has identical behavior (force=True internally).
 force_refresh = ensure_fresh
 
 

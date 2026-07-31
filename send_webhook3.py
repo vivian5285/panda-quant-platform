@@ -1,0 +1,8 @@
+import json,urllib.request
+payload={"secret":"528586","action":"LONG","symbol":"XAUUSDT","price":2410.50,"atr":15.2,"stop_loss":2385.00,"tp1":2430.00,"tp2":2450.00,"tp3":2480.00,"regime":"strong","reason":"cursor_test","tv_tp1":2430.00,"tv_tp2":2450.00,"tv_tp3":2480.00,"tv_sl":2385.00}
+url="https://twinstar.pro/gemini/webhook"
+data=json.dumps(payload).encode("utf-8")
+req=urllib.request.Request(url,data=data,headers={"Content-Type":"application/json"})
+resp=urllib.request.urlopen(req,timeout=20)
+print("Status: %d" % resp.status)
+print("Response: %s" % resp.read().decode("utf-8"))

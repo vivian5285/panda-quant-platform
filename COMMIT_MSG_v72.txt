@@ -1,0 +1,11 @@
+fix: radical API rate-limit reduction across all exchanges
+
+- Sentinel poll: NORMAL 60s->90s, ARMING/RADAR 35s->60s, ORDER_AUDIT 45s->120s, JITTER 1s->3s
+- REST budget: 60/min -> 15/min (per user per exchange)
+- Separate emergency budget (30/min) for force_refresh calls
+- Cache TTL: POS 15s->60s, ORDER 25s->90s, ALGO 25s->90s
+- Shared endpoint gap: 2s -> 8s (openOrders ~40 weight)
+- Add throttle verification to check_system.py [14]
+
+Root cause: Binance IP rate-limit triggered by sentinel hammering
+get_open_orders every 35-60s + cache misses = force_refresh storm
