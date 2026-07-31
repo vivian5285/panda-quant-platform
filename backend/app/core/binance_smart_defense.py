@@ -1182,8 +1182,27 @@ class BinanceSmartDefenseMixin:
         self._cancel_tp_orders_for_consumed_levels()
         rebuilt = False
 
+        # Diagnostic: log state before audit
+        uid = getattr(self, "user_id", "?")
+        sym = getattr(self, "symbol", "?")
+        tv_tps = list(getattr(self, "tv_tps", []) or [])
+        consumed = list(getattr(self, "consumed_tp_levels", []) or [])
+        self._def_log(
+            f"[重启TP对账] {uid}@{sym} | live_qty={live_qty:.4f} curr_px={curr_px:.2f} "
+            f"tv_tps={tv_tps} consumed={consumed} "
+            f"initial_qty={getattr(self, 'initial_qty', 0)} side={getattr(self, 'current_side', '?')}"
+        )
+
         for attempt in range(STARTUP_ORDER_FETCH_RETRIES):
             audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
+            # Diagnostic: log first audit result
+            if attempt == 0:
+                self._def_log(
+                    f"[重启TP审计#1] {uid}@{sym} | "
+                    f"expected={audit.get('expected', 0)} matched={audit.get('matched_full', 0)} | "
+                    f"levels={[f'TP{lv.get(\"level\")}@{lv.get(\"price\")} qty={lv.get(\"qty\")} st={lv.get(\"status\")}' for lv in (audit.get('levels') or [])]} | "
+                    f"issues={audit.get('issues', [])} orphans={[f'@{o.get(\"price\")} qty={o.get(\"qty\")}' for o in (audit.get('orphans') or [])]}"
+                )
             if self._defenses_fully_ok(
                 live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
             ):
@@ -1191,6 +1210,17 @@ class BinanceSmartDefenseMixin:
                     f"✅ 重启对账：盘口已齐，跳过补挂 | {self._format_audit_summary(audit)}"
                 )
                 return self._defense_result_from_audit(audit, skipped=True)
+
+            # Diagnostic: why _defenses_fully_ok failed
+            if attempt == 0:
+                from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
+                exp_lvls = self._expected_tp_levels(live_qty, curr_px)
+                self._def_log(
+                    f"[重启TP] {uid}@{sym} | _defenses_fully_ok=False | "
+                    f"expected={[f'TP{lv.get(\"level\")}@{lv.get(\"price\")} qty={lv.get(\"qty\")}' for lv in exp_lvls]} | "
+                    f"consumed={consumed} placeable={sorted(PLACEABLE_TP_LEVELS)} | "
+                    f"matched={audit.get('matched_full', 0)} expected={audit.get('expected', 0)}"
+                )
 
             if self._has_duplicate_tp_orders() or any(
                 lv.get("status") == "duplicate" for lv in audit.get("levels", [])
@@ -1218,7 +1248,12 @@ class BinanceSmartDefenseMixin:
                 time.sleep(STARTUP_ORDER_FETCH_DELAY)
 
         self._cancel_orphan_tp_orders(live_qty)
+        self._def_log(
+            f"[重启TP] {uid}@{sym} | 准备补挂 | live_qty={live_qty:.4f} "
+            f"curr_px={curr_px:.2f} consumed={list(getattr(self, 'consumed_tp_levels', []) or [])}"
+        )
         placed = self._patch_missing_tp_levels(live_qty, curr_px=curr_px)
+        self._def_log(f"[重启TP] {uid}@{sym} | 补挂完成 placed={placed} rebuilt={rebuilt}")
         if placed:
             rebuilt = True
         time.sleep(0.6)

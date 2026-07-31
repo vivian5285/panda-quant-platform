@@ -2259,8 +2259,39 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self._cancel_tp_orders_for_consumed_levels()
         rebuilt = False
 
+        # Diagnostic: log state before audit
+        logger.info(
+            "[User %s] [重启TP对账] live_qty=%.4f curr_px=%.2f tv_tps=%s "
+            "consumed_tp_levels=%s tv_tps_0=%.2f tv_tps_1=%.2f tv_tps_2=%.2f",
+            getattr(self, "user_id", "?"),
+            live_qty, curr_px,
+            getattr(self, "tv_tps", []),
+            getattr(self, "consumed_tp_levels", []),
+            float(getattr(self, "tv_tps", [0,0,0])[0] or 0) if len(getattr(self, "tv_tps", [])) > 0 else 0.0,
+            float(getattr(self, "tv_tps", [0,0,0])[1] or 0) if len(getattr(self, "tv_tps", [])) > 1 else 0.0,
+            float(getattr(self, "tv_tps", [0,0,0])[2] or 0) if len(getattr(self, "tv_tps", [])) > 2 else 0.0,
+        )
+
         for attempt in range(STARTUP_ORDER_FETCH_RETRIES):
             audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
+            # Diagnostic: log every audit result
+            if attempt == 0:
+                logger.info(
+                    "[User %s] [重启TP审计#%d] expected=%d matched=%d levels=%s issues=%s orphans=%s",
+                    getattr(self, "user_id", "?"),
+                    attempt + 1,
+                    audit.get("expected", 0),
+                    audit.get("matched_full", 0),
+                    [
+                        f"TP{lv.get('level')}@{lv.get('price')} qty={lv.get('qty')} st={lv.get('status')}"
+                        for lv in (audit.get("levels") or [])
+                    ],
+                    audit.get("issues", []),
+                    [
+                        f"@{o.get('price')} qty={o.get('qty')}"
+                        for o in (audit.get("orphans") or [])
+                    ],
+                )
             if self._defenses_fully_ok(
                 live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
             ):
@@ -2268,6 +2299,23 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     f"✅ 重启对账：盘口已齐，跳过补挂 | {self._format_audit_summary(audit)}"
                 )
                 return self._defense_result_from_audit(audit, skipped=True)
+
+            # Diagnostic: why did _defenses_fully_ok fail?
+            if attempt == 0:
+                from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
+                expected_lvls = self._expected_tp_levels(live_qty, curr_px)
+                consumed = getattr(self, "consumed_tp_levels", []) or []
+                logger.info(
+                    "[User %s] [重启TP] _defenses_fully_ok=False | "
+                    "expected_levels=%s consumed=%s placeable=%s "
+                    "matched=%d expected=%d",
+                    getattr(self, "user_id", "?"),
+                    [(f"TP{lv.get('level')}@{lv.get('price')} qty={lv.get('qty')}") for lv in expected_lvls],
+                    consumed,
+                    sorted(PLACEABLE_TP_LEVELS),
+                    audit.get("matched_full", 0),
+                    audit.get("expected", 0),
+                )
 
             if self._has_duplicate_tp_orders() or any(
                 lv.get("status") == "duplicate" for lv in audit.get("levels", [])
@@ -2295,7 +2343,18 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 time.sleep(STARTUP_ORDER_FETCH_DELAY)
 
         self._cancel_orphan_tp_orders(live_qty)
+        logger.info(
+            "[User %s] [重启TP] 准备补挂 | live_qty=%.4f curr_px=%.2f consumed=%s",
+            getattr(self, "user_id", "?"),
+            live_qty, curr_px,
+            getattr(self, "consumed_tp_levels", []),
+        )
         placed = self._patch_missing_tp_levels(live_qty, curr_px=curr_px)
+        logger.info(
+            "[User %s] [重启TP] 补挂完成 placed=%d rebuilt=%s",
+            getattr(self, "user_id", "?"),
+            placed, rebuilt,
+        )
         if placed:
             rebuilt = True
         time.sleep(0.6)
