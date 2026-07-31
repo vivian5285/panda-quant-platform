@@ -520,6 +520,8 @@ class BinanceClient:
 
     def _place_algo_stop_market(self, params: dict) -> dict | None:
         try:
+            # Throttle: prevent API rate limit hits
+            self._pace_rest(params.get("symbol"))
             # Dual-symbol: small jitter so ETH/XAU amend peaks don't align
             import random
             time.sleep(random.uniform(0.0, 0.15))
@@ -798,6 +800,8 @@ class BinanceClient:
         Bulk cancel can fail partially (rate limit / algo book lag) — always verify.
         """
         symbol = self._sym(symbol)
+        # Throttle: prevent API rate limit hits
+        self._pace_rest(symbol)
         errors: list[str] = []
         try:
             self.client.futures_cancel_all_open_orders(symbol=symbol)

@@ -20,20 +20,8 @@ settings = get_settings()
 
 
 def _dingtalk_url() -> str:
-    from app.services.dingtalk_secrets import get_dingtalk_webhook, get_dingtalk_secret
-
-    webhook = get_dingtalk_webhook()
-    secret = get_dingtalk_secret()
-    if not webhook:
-        return ""
-    if not secret:
-        return webhook
-    ts = str(round(time.time() * 1000))
-    sign_raw = f"{ts}\n{secret}".encode()
-    sig = hmac.new(secret.encode(), sign_raw, hashlib.sha256).digest()
-    sign = urllib.parse.quote_plus(base64.b64encode(sig))
-    sep = "&" if "?" in webhook else "?"
-    return f"{webhook}{sep}timestamp={ts}&sign={sign}"
+    """钉钉已禁用 - 只使用 Telegram。返回空字符串跳过所有钉钉推送。"""
+    return ""
 
 
 def _post_dingtalk(title: str, body: str) -> bool:

@@ -224,6 +224,9 @@ def _position_from_raw_client(supervisor) -> dict[str, Any]:
         return {"has_position": False}
     symbol = getattr(supervisor, "symbol", None) or getattr(client, "trading_symbol", settings.SYMBOL)
     try:
+        # Throttle: prevent Binance API rate limit hits
+        if hasattr(client, "_pace_rest"):
+            client._pace_rest(symbol)
         pos = client.get_position(symbol)
         if not pos or float(pos.get("positionAmt", 0) or 0) == 0:
             return {"has_position": False}

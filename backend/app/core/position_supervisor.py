@@ -28,6 +28,7 @@ from app.core.position_cap_guard import PositionCapGuardMixin
 from app.core.position_manager import PositionManager
 from app.core.radar_trail import clamp_stop_market_safe, tp_path_progress
 from app.core.breathing_stop import load_breathing_coef, resolve_breathing_coef
+from app.core.market_engine import force_refresh
 from app.core.vps_radar_stages import (
     detect_radar_stage,
     tp1_filled_from_consumed,
@@ -79,12 +80,12 @@ CANCEL_VERIFY_ROUNDS = 5
 HEAL_PLACE_ROUNDS = 2
 SIGNAL_QUEUE_TTL = 120.0
 SIGNAL_LOCK_SLICE = 5.0
-SENTINEL_POLL_NORMAL = 45.0  # multi-user REST headroom (was 30)
+SENTINEL_POLL_NORMAL = 60.0  # multi-user REST headroom (was 45, increased to reduce Binance API calls)
 # Near TP1 / radar: still slower than before — WS owns trail
-SENTINEL_POLL_ARMING = 20.0
-SENTINEL_POLL_RADAR = 20.0
+SENTINEL_POLL_ARMING = 35.0
+SENTINEL_POLL_RADAR = 35.0
 # Order-book / TP audit REST cadence
-SENTINEL_ORDER_AUDIT_SEC = 30.0
+SENTINEL_ORDER_AUDIT_SEC = 45.0
 # WS tick → radar evaluate (NO REST on this path)
 RADAR_WS_TICK_MIN_SEC = 2.0
 SENTINEL_POLL_JITTER_SEC = 1.0

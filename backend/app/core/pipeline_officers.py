@@ -15,7 +15,7 @@ from app.core.trade_ledger import (
 
 logger = logging.getLogger(__name__)
 
-API_BUDGET_PER_MIN = 40
+API_BUDGET_PER_MIN = 300  # increased from 40 to allow more REST calls per minute
 TP_PLACEABLE_SUM_TOL = 0.04
 HARD_STOP_PX_TOL_FRAC = 0.05  # 5% of expected distance
 HARD_STOP_PX_TOL_ABS_FRAC = 0.002  # or 0.2% of entry
