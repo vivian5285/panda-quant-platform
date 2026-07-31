@@ -1,6 +1,10 @@
 """Tests for TradingView webhook JSON parsing."""
 
-from app.services.webhook_payload import parse_webhook_payload, repair_pine_close_protect_json
+from app.services.webhook_payload import (
+    parse_webhook_payload,
+    repair_pine_close_protect_json,
+    repair_shell_escaped_json,
+)
 from app.services.webhook_guard import validate_signal_payload
 
 
@@ -204,3 +208,32 @@ def test_v69108_update_tp_requires_tps():
     })
     assert not ok
     assert "tv_tp2" in msg
+
+
+def test_shell_escaped_json_repair():
+    """SSH double-quote escaping 产生 secret\\:\\test\\ 等畸形 JSON。"""
+    # 这种格式来自 SSH 命令行双引号转义
+    raw = r'{" secret\:\test\,\action\:\LONG\,\symbol\:\ETHUSDT.P\,\price\:3200}'
+    repaired = repair_shell_escaped_json(raw)
+    assert repaired is not None
+    data, err = parse_webhook_payload(raw)
+    assert err is None, err
+    assert data["secret"] == "test"
+    assert data["action"] == "LONG"
+    assert data["symbol"] == "ETHUSDT.P"
+
+
+def test_shell_escaped_json_with_comma():
+    raw = r'{"action\:\LONG\,"symbol"\:"ETHUSDT","price":3200}'
+    repaired = repair_shell_escaped_json(raw)
+    assert repaired is not None
+    data, err = parse_webhook_payload(raw)
+    assert err is None, err
+    assert data["action"] == "LONG"
+
+
+def test_valid_json_not_repaired():
+    """正常 JSON 不应被修改。"""
+    raw = '{"action":"LONG","symbol":"ETHUSDT","price":3200}'
+    repaired = repair_shell_escaped_json(raw)
+    assert repaired is None  # 无需修复
