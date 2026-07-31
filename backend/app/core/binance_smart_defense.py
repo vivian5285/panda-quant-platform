@@ -1212,45 +1212,49 @@ class BinanceSmartDefenseMixin:
                     "levels=" + str(lv_parts) + " | "
                     "issues=" + str(audit.get("issues", [])) + " orphans=" + str(orphan_parts)
                 )
-                # ROOT CAUSE FIX: When initial_qty was lost (0) but live position exists,
-                # _infer_filled_tp_levels cannot confirm TP1 consumed → excludes it by price.
-                # If audit shows only TP2 expected (TP1 excluded) but live_qty confirms partial TP1,
-                # force-include TP1 in expected by patching it directly.
+                # ROOT CAUSE FIX: When live_qty ≈ anchor (no TP1 fill) but TP1 was excluded by price
+                # (mark past TP1), force-patch TP1 back. The price-past skip is a false positive
+                # when there is no evidence of actual TP1 fill.
+                # Condition: live_qty very close to anchor AND TP1 excluded from expected.
                 if (
                     attempt == 0
                     and live_qty > 0
-                    and float(getattr(self, "initial_qty", 0) or 0) == 0
-                    and audit.get("expected", 0) == 1
-                    and audit.get("matched_full", 0) == 1
                 ):
                     tv_tps = list(getattr(self, "tv_tps", []) or [])
+                    initial_qty_val = float(getattr(self, "initial_qty", 0) or 0)
+                    anchor = initial_qty_val if initial_qty_val > 0 else live_qty
+                    no_fill_evidence = (
+                        initial_qty_val == 0
+                        or live_qty >= anchor * 0.95
+                    )
                     tp1_price = float(tv_tps[0]) if len(tv_tps) > 0 and float(tv_tps[0] or 0) > 0 else 0
-                    if tp1_price > 0 and not self._tp_limit_exists_near(tp1_price):
+                    tp1_excluded = (
+                        audit.get("expected", 0) == 1
+                        and tp1_price > 0
+                        and not self._tp_limit_exists_near(tp1_price)
+                    )
+                    if no_fill_evidence and tp1_excluded:
                         self._def_log(
-                            "[重启TP] initial_qty=0 + TP1 excluded by price → force-patch TP1@" + str(tp1_price)
+                            "[重启TP] live_qty=" + str(round(live_qty, 4)) + " ≈ anchor=" + str(round(anchor, 4))
+                            + " (no fill) + TP1 excluded by price → force-patch TP1@" + str(tp1_price)
                         )
-                        # Mark TP1 as needing placement
-                        consumed_set = set(getattr(self, "consumed_tp_levels", []) or [])
-                        if 1 not in consumed_set:
-                            # Include TP1 in the patched levels by temporarily removing it from exclude
-                            exclude_backup = list(getattr(self, "consumed_tp_levels", []) or [])
-                            # Directly place TP1 via _place_limit_with_retry
-                            tp1_qty = self._resolve_live_qty(live_qty) * 0.10
+                        close_side = self._tp_close_side_label()
+                        if close_side:
                             from app.core.symbol_precision import round_quantity
-                            tp1_qty = round_quantity(tp1_qty)
+                            tp1_qty = round_quantity(live_qty * 0.10)
                             if tp1_qty < 1.0:
                                 tp1_qty = 1.0
                             result = self._place_limit_with_retry(
-                                self._tp_close_side_label(),
+                                close_side,
                                 float(tp1_qty),
                                 float(tp1_price),
                                 "TP1",
                             )
                             if result.get("ok"):
                                 self._def_log(
-                                    "[重启TP] force-patch TP1@" + str(tp1_price) + " placed OK qty=" + str(tp1_qty)
+                                    "[重启TP] force-patch TP1@" + str(tp1_price)
+                                    + " placed OK qty=" + str(tp1_qty)
                                 )
-                                # Re-audit after placement
                                 time.sleep(0.5)
                                 audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
                             else:
