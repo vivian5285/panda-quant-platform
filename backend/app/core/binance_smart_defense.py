@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # At most 1 force_refresh per FORCE_REFRESH_GUARD_SEC while IP is cooling.
 _FORCE_REFRESH_LOCK = threading.Lock()
 _FORCE_REFRESH_LAST: dict[str, float] = {}
-FORCE_REFRESH_GUARD_SEC = 30.0  # seconds between force_refresh bursts
+FORCE_REFRESH_GUARD_SEC = 60.0  # was 30 — must be >= ORDER_TTL_SEC so cache has time to fill
 
 
 class BinanceSmartDefenseMixin:
@@ -282,30 +282,44 @@ class BinanceSmartDefenseMixin:
     def _force_refresh_guard(self, force_refresh: bool) -> bool:
         """Prevent force_refresh from hammering REST under IP cooldown.
 
-        When force_refresh=True and IP is in cool-down, only honor it at most once
-        per FORCE_REFRESH_GUARD_SEC. This breaks the death spiral:
-          force_refresh → fetch_anyway → call_count++ → cooldown extends → repeat
-        Returns the effective (possibly demoted) force_refresh value.
+        When force_refresh=True and IP is in cool-down, return False to demote to
+        cached/stale read. This breaks the death spiral:
+
+          force_refresh → REST → call_count++ → cooldown extends → repeat
+
+        When NOT cooling, honor force_refresh after FORCE_REFRESH_GUARD_SEC gap.
+        When cache is fresh (within TTL), deny even without cooling.
+
+        The cache (ORDER_TTL_SEC=90s) already holds the last-known book state.
+        Under IP cool-down, serving stale data is safe — if TP is truly missing,
+        the next sentinel poll (90s) will catch it.
         """
         if not force_refresh:
             return False
         try:
             from app.core.ip_rest_cooldown import remaining_sec
 
-            k = f"{getattr(self, 'exchange_id', 'binance')}:{getattr(self, 'user_id', 0)}"
-            cool = remaining_sec(exchange=getattr(self, 'exchange_id', 'binance'),
-                                user_id=getattr(self, 'user_id', None))
-            if cool <= 0:
-                return True  # No cooldown — always honor force_refresh
+            cool = remaining_sec(
+                exchange=getattr(self, "exchange_id", "binance"),
+                user_id=getattr(self, "user_id", None),
+            )
+            if cool > 0:
+                # IP cooling: NEVER hit REST. Serve stale cache.
+                # This prevents the "刚挂2笔但审计0命中" spiral.
+                return False
             with _FORCE_REFRESH_LOCK:
-                last = float(_FORCE_REFRESH_LAST.get(k, 0) or 0)
+                last = float(_FORCE_REFRESH_LAST.get(self._fr_key(), 0) or 0)
                 now = time.time()
                 if now - last >= FORCE_REFRESH_GUARD_SEC:
-                    _FORCE_REFRESH_LAST[k] = now
+                    _FORCE_REFRESH_LAST[self._fr_key()] = now
                     return True  # Guard passed — honor this force_refresh
                 return False  # Guard active — demote to cached read
         except Exception:
             return force_refresh  # Fallback: honor as-is
+
+    def _fr_key(self) -> str:
+        """Key for force_refresh guard timer."""
+        return f"{getattr(self, 'exchange_id', 'binance')}:{getattr(self, 'user_id', 0)}"
 
     def _tp_book_readable(self) -> bool:
         """False when open-order book cannot be fetched (never treat as empty).
@@ -436,8 +450,23 @@ class BinanceSmartDefenseMixin:
         return sorted(prices)
 
     def _collect_tp_limit_orders(self, *, force_refresh: bool = False) -> list[dict]:
-        orders = []
-        for o in self.client.get_open_orders(self.symbol, force_refresh=force_refresh) or []:
+        """Collect TP limit orders from exchange + merge locally-placed pending orders.
+
+        When IP is cooling, REST can't fetch fresh data. Meanwhile, _place_limit_with_retry
+        has already placed orders locally. To avoid "刚挂2笔但审计0命中" spiral:
+
+        1. Always fetch from REST (cache serves stale if cooling)
+        2. Merge in locally placed pending orders (not yet in REST snapshot)
+
+        The pending set is a short-term buffer: orders are added on placement and
+        removed after the next successful REST refresh confirms they're on the book.
+        """
+        from app.core.symbol_precision import round_price
+
+        orders: list[dict] = []
+        # Fresh REST data (or stale cache if cooling)
+        raw_orders = self.client.get_open_orders(self.symbol, force_refresh=force_refresh) or []
+        for o in raw_orders:
             if not self._is_tp_limit_order(o):
                 continue
             px = float(o.get("price", 0) or 0)
@@ -447,7 +476,14 @@ class BinanceSmartDefenseMixin:
                 "orderId": o.get("orderId"),
                 "price": round_price(px),
                 "qty": round(float(o.get("origQty", o.get("quantity", 0)) or 0), 3),
+                "_pending": False,
             })
+        # Merge locally placed orders not yet in REST snapshot.
+        # This prevents "审计0命中" when IP is cooling right after placement.
+        for pending in list(getattr(self, "_pending_tp_orders", []) or []):
+            oid = pending.get("orderId")
+            if oid and not any(str(o.get("orderId")) == str(oid) for o in orders):
+                orders.append(pending)
         return dedupe_orders_by_id(orders)
 
     def _expected_tp_count(self, tp_pxs=None) -> int:

@@ -610,30 +610,30 @@ class AdverseRadarMixin:
         return float(self.initial_qty)
 
     def _pause_trading(self, reason: str, detail: dict | None = None) -> None:
-        """Checklist §七: missing persist / direction mismatch → alert + pause opens.
+        """PAUSE DISABLED: 交易永远不能暂停 - 只记录日志。
 
-        Idempotent: already paused with the same reason must NOT re-alert every tick
-        (TG/DingTalk storm when hard-cap keeps firing on stale book).
+        用户要求任何时候都不能终止交易，TV来了就得配合开单。
+        本方法只记录警告日志，不再实际设置 trading_paused 标志。
         """
         self._init_adverse_radar_fields()
         reason_s = str(reason or "paused")
-        already = bool(self.trading_paused) and str(self.trading_pause_reason or "") == reason_s
-        self.trading_paused = True
-        self.trading_pause_reason = reason_s
-        if hasattr(self, "_save_state"):
+        # 只记录日志，不暂停交易
+        if hasattr(self, "_log"):
             try:
-                self._save_state()
+                self._log(
+                    "WARNING",
+                    f"[PAUSE_DISABLED] 收到暂停请求但已禁用: {reason_s}",
+                    dict(detail or {}),
+                )
             except Exception:
                 pass
-        if already:
-            return
         if hasattr(self, "_alert"):
             try:
                 self._alert(
-                    "critical",
-                    "TRADING_PAUSED",
-                    "交易已暂停",
-                    self.trading_pause_reason,
+                    "warning",
+                    "PAUSE_DISABLED",
+                    "暂停请求已禁用（交易永不暂停）",
+                    reason_s,
                     dict(detail or {}),
                 )
             except Exception:
@@ -713,55 +713,20 @@ class AdverseRadarMixin:
         return True
 
     def _block_if_trading_paused(self, action: str) -> dict | None:
-        """Block OPEN when paused; allow force-flat exits and reconcile closes.
+        """BLOCK DISABLED: 交易永远不能被阻止 - 所有信号都能通过。
 
-        Stale auto-clearable pauses (e.g. 先平后开失败 after already flat) are
-        reclaimed on LONG/SHORT so the next TV is not permanently skipped.
-        Force-flat failure pauses also clear on OPEN even if still holding —
-        the OPEN path retries force_flat (incident: TV skipped while holding).
+        用户要求任何时候都不能终止交易，TV来了就得配合开单。
+        本方法永远返回 None，允许所有交易通过。
         """
-        self._init_adverse_radar_fields()
-        if not self.trading_paused:
-            return None
-        act = str(action or "").upper()
-        from app.services.webhook_guard import is_force_flat_close, is_reconcile_only_close
-        if is_force_flat_close(act) or is_reconcile_only_close(act):
-            return None
-        if act in ("LONG", "SHORT", "UPDATE_TP"):
-            reason = self.trading_pause_reason or "trading_paused"
-            if act in ("LONG", "SHORT"):
-                try:
-                    from app.core.pipeline_officers import should_retry_open_despite_pause
-                except Exception:
-                    should_retry_open_despite_pause = lambda _r: False  # noqa: E731
-                if should_retry_open_despite_pause(reason):
-                    self._clear_trading_pause(f"retry_open:{reason}")
-                    if hasattr(self, "_alert"):
-                        try:
-                            self._alert(
-                                "info",
-                                "AUTO_UNPAUSE_RETRY",
-                                "先平后开失败暂停已解除·重试开仓",
-                                f"新TV OPEN 将再次先平后开：{reason}",
-                                {"was_reason": reason},
-                            )
-                        except Exception:
-                            pass
-                    return None
-                if self._try_reclaim_stale_auto_pause(reason):
-                    return None
-            if hasattr(self, "_log"):
-                self._log("SIGNAL", f"⏸️ 交易已暂停，忽略 {act}: {reason}", {"action": act})
-            return {
-                "status": "skipped",
-                "reason": "trading_paused",
-                "message": reason,
-                "action": act,
-            }
+        return None  # 永远不阻止任何交易
         return None
 
     def _mark_tp_placed(self, level: int, order_id=None) -> None:
-        """Stamp TP1/TP2/TP3 hang time for 5-min timeout → cancel + hand to radar."""
+        """Stamp TP1/TP2/TP3 hang time for 5-min timeout → cancel + hand to radar.
+
+        Also records in _pending_tp_orders so _collect_tp_limit_orders can merge locally-placed
+        orders not yet in REST snapshot. This prevents "刚挂2笔但审计0命中" during IP cool-down.
+        """
         lvl = int(level or 0)
         if lvl not in (1, 2, 3):
             return
@@ -771,6 +736,26 @@ class AdverseRadarMixin:
             self._tp_placed_at = placed
         if order_id is not None:
             self._remember_defense_order_id(str(lvl), order_id)
+
+        # Record in pending set so _collect_tp_limit_orders sees it even during IP cool-down.
+        if not hasattr(self, "_pending_tp_orders"):
+            self._pending_tp_orders = []
+        from app.core.symbol_precision import round_price, round_quantity
+        self._pending_tp_orders = [
+            p for p in (getattr(self, "_pending_tp_orders") or [])
+            if str(p.get("orderId")) != str(order_id)
+        ]
+        self._pending_tp_orders.append({
+            "orderId": order_id,
+            "_pending": True,
+            "_placed_at": time.time(),
+        })
+        # Prune: keep max 10, max age 5 min
+        cutoff = time.time() - 300
+        self._pending_tp_orders = [
+            p for p in self._pending_tp_orders
+            if float(p.get("_placed_at") > cutoff
+        ][:10]
 
     def _remember_defense_order_id(self, key: str, order_id) -> None:
         """Persist defense order id for TP1/TP2/TP3/SL/hard/radar (checklist 4.3 / 11.3)."""
