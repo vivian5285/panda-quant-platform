@@ -1197,11 +1197,20 @@ class BinanceSmartDefenseMixin:
             audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
             # Diagnostic: log first audit result
             if attempt == 0:
+                lv_parts = []
+                for lv in (audit.get("levels") or []):
+                    lv_parts.append(
+                        "TP" + str(lv.get("level")) + "@" + str(lv.get("price"))
+                        + " qty=" + str(lv.get("qty")) + " st=" + str(lv.get("status"))
+                    )
+                orphan_parts = []
+                for o in (audit.get("orphans") or []):
+                    orphan_parts.append("@" + str(o.get("price")) + " qty=" + str(o.get("qty")))
                 self._def_log(
-                    f"[重启TP审计#1] {uid}@{sym} | "
-                    f"expected={audit.get('expected', 0)} matched={audit.get('matched_full', 0)} | "
-                    f"levels={[f'TP{lv.get(\"level\")}@{lv.get(\"price\")} qty={lv.get(\"qty\")} st={lv.get(\"status\")}' for lv in (audit.get('levels') or [])]} | "
-                    f"issues={audit.get('issues', [])} orphans={[f'@{o.get(\"price\")} qty={o.get(\"qty\")}' for o in (audit.get('orphans') or [])]}"
+                    "[重启TP审计#1] " + str(uid) + "@" + str(sym) + " | "
+                    "expected=" + str(audit.get("expected", 0)) + " matched=" + str(audit.get("matched_full", 0)) + " | "
+                    "levels=" + str(lv_parts) + " | "
+                    "issues=" + str(audit.get("issues", [])) + " orphans=" + str(orphan_parts)
                 )
             if self._defenses_fully_ok(
                 live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
@@ -1215,11 +1224,17 @@ class BinanceSmartDefenseMixin:
             if attempt == 0:
                 from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
                 exp_lvls = self._expected_tp_levels(live_qty, curr_px)
+                exp_parts = []
+                for lv in exp_lvls:
+                    exp_parts.append(
+                        "TP" + str(lv.get("level")) + "@" + str(lv.get("price"))
+                        + " qty=" + str(lv.get("qty"))
+                    )
                 self._def_log(
-                    f"[重启TP] {uid}@{sym} | _defenses_fully_ok=False | "
-                    f"expected={[f'TP{lv.get(\"level\")}@{lv.get(\"price\")} qty={lv.get(\"qty\")}' for lv in exp_lvls]} | "
-                    f"consumed={consumed} placeable={sorted(PLACEABLE_TP_LEVELS)} | "
-                    f"matched={audit.get('matched_full', 0)} expected={audit.get('expected', 0)}"
+                    "[重启TP] " + str(uid) + "@" + str(sym) + " | _defenses_fully_ok=False | "
+                    "expected=" + str(exp_parts) + " | "
+                    "consumed=" + str(consumed) + " placeable=" + str(sorted(PLACEABLE_TP_LEVELS)) + " | "
+                    "matched=" + str(audit.get("matched_full", 0)) + " expected=" + str(audit.get("expected", 0))
                 )
 
             if self._has_duplicate_tp_orders() or any(
