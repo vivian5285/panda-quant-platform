@@ -754,7 +754,7 @@ class AdverseRadarMixin:
         cutoff = time.time() - 300
         self._pending_tp_orders = [
             p for p in self._pending_tp_orders
-            if float(p.get("_placed_at") > cutoff
+            if float(p.get("_placed_at") or 0) > cutoff
         ][:10]
 
     def _remember_defense_order_id(self, key: str, order_id) -> None:
