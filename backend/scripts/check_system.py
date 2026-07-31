@@ -321,6 +321,78 @@ def check_wallet_hub() -> None:
         fail(f"wallet_overview 导入失败: {e}")
 
 
+def check_throttle_settings() -> None:
+    print("\n[14] REST 频率管制配置 (API 限流根治)")
+    from app.core.rest_throttle_valve import DEFAULT_BUDGET_PER_MIN, EMERGENCY_BUDGET_PER_MIN
+    from app.core.position_supervisor import (
+        SENTINEL_POLL_NORMAL, SENTINEL_POLL_ARMING, SENTINEL_POLL_RADAR,
+        SENTINEL_ORDER_AUDIT_SEC, SENTINEL_POLL_JITTER_SEC,
+    )
+    from app.core.rest_book_cache import POS_TTL_SEC, ORDER_TTL_SEC, ALGO_TTL_SEC
+    from app.core.rest_symbol_pace import MIN_GAP_SEC, SHARED_ACCOUNT_GAP_SEC
+
+    # REST budget
+    if DEFAULT_BUDGET_PER_MIN <= 20:
+        ok(f"REST budget {DEFAULT_BUDGET_PER_MIN}/min (安全: ≤20)")
+    else:
+        warn(f"REST budget {DEFAULT_BUDGET_PER_MIN}/min (建议 ≤20 防止触发交易所限流)")
+
+    if EMERGENCY_BUDGET_PER_MIN <= 40:
+        ok(f"Emergency budget {EMERGENCY_BUDGET_PER_MIN}/min (安全: ≤40)")
+    else:
+        warn(f"Emergency budget {EMERGENCY_BUDGET_PER_MIN}/min (建议 ≤40)")
+
+    # Sentinel poll cadence
+    if SENTINEL_POLL_NORMAL >= 60:
+        ok(f"哨兵轮询 NORMAL={SENTINEL_POLL_NORMAL}s (≥60s 安全)")
+    else:
+        warn(f"哨兵轮询 NORMAL={SENTINEL_POLL_NORMAL}s (建议 ≥60s)")
+
+    if SENTINEL_POLL_ARMING >= 45:
+        ok(f"哨兵轮询 ARMING={SENTINEL_POLL_ARMING}s (≥45s)")
+    else:
+        warn(f"哨兵轮询 ARMING={SENTINEL_POLL_ARMING}s (建议 ≥45s)")
+
+    if SENTINEL_POLL_RADAR >= 45:
+        ok(f"哨兵轮询 RADAR={SENTINEL_POLL_RADAR}s (≥45s)")
+    else:
+        warn(f"哨兵轮询 RADAR={SENTINEL_POLL_RADAR}s (建议 ≥45s)")
+
+    if SENTINEL_ORDER_AUDIT_SEC >= 90:
+        ok(f"订单簿审计间隔={SENTINEL_ORDER_AUDIT_SEC}s (≥90s 安全)")
+    else:
+        warn(f"订单簿审计间隔={SENTINEL_ORDER_AUDIT_SEC}s (建议 ≥90s)")
+
+    if SENTINEL_POLL_JITTER_SEC >= 2.0:
+        ok(f"哨兵抖动={SENTINEL_POLL_JITTER_SEC}s (≥2s 防止集中突发)")
+    else:
+        warn(f"哨兵抖动={SENTINEL_POLL_JITTER_SEC}s (建议 ≥2s)")
+
+    # Cache TTLs
+    if POS_TTL_SEC >= 30:
+        ok(f"Position 缓存 TTL={POS_TTL_SEC}s (≥30s)")
+    else:
+        warn(f"Position 缓存 TTL={POS_TTL_SEC}s (建议 ≥30s)")
+
+    if ORDER_TTL_SEC >= 60:
+        ok(f"Order 缓存 TTL={ORDER_TTL_SEC}s (≥60s)")
+    else:
+        warn(f"Order 缓存 TTL={ORDER_TTL_SEC}s (建议 ≥60s)")
+
+    if ALGO_TTL_SEC >= 60:
+        ok(f"Algo 缓存 TTL={ALGO_TTL_SEC}s (≥60s)")
+    else:
+        warn(f"Algo 缓存 TTL={ALGO_TTL_SEC}s (建议 ≥60s)")
+
+    # Shared endpoint gap
+    if SHARED_ACCOUNT_GAP_SEC >= 5.0:
+        ok(f"共享端点间隔={SHARED_ACCOUNT_GAP_SEC}s (≥5s, 防止 openOrders 权重风暴)")
+    else:
+        warn(f"共享端点间隔={SHARED_ACCOUNT_GAP_SEC}s (建议 ≥5s)")
+
+    ok("频率管制: REST budget + TTL + 哨兵轮询 三层协同降频")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="双子星AI量化 · GEMINI AI 生产级全域自检")
     parser.add_argument("--strict", action="store_true", help="存在 FAIL 或 WARN 时 exit 1")
@@ -345,6 +417,7 @@ def main() -> int:
     check_deposit_and_scheduler()
     check_txhash_guard()
     check_wallet_hub()
+    check_throttle_settings()
 
     print("\n" + "=" * 64)
     print(f"结果: FAIL={len(failures)}  WARN={len(warnings)}")

@@ -24,6 +24,7 @@ from app.core.ip_rest_cooldown import (
 # Re-export for callers / tests
 __all__ = [
     "DEFAULT_BUDGET_PER_MIN",
+    "EMERGENCY_BUDGET_PER_MIN",
     "ThrottleDenied",
     "acquire_rest_permit",
     "require_rest_or_transient",
@@ -33,19 +34,26 @@ __all__ = [
     "remaining_sec",
     "record_rest_call",
     "calls_last_min",
+    "emergency_calls_last_min",
     "reset_for_tests",
 ]
 
 logger = logging.getLogger(__name__)
 
-_lock = threading.RLock()
-# key -> list of call timestamps (last 60s)
+_lock = threading.Lock()
+# key -> list of call timestamps (last 60s) — NORMAL calls only (consume budget)
 _calls: dict[str, list[float]] = {}
+# Emergency/force_refresh calls tracked separately (don't consume budget but still limited)
+_emergency_calls: dict[str, list[float]] = {}
 
 # Soft budget before we refuse — multi-user shared IP; stay well under exchange caps.
-# Binance ~2400 weight/min; openOrders~40 → raised to 60 to reduce spurious denials
-# while still keeping well under limits. Combined with WS for ticks, this is safe.
-DEFAULT_BUDGET_PER_MIN = 60
+# Binance ~2400 weight/min; openOrders~40 weight.
+# TARGET: stay under ~15 calls/min (≈600 weight/min) so even dual supervisors are safe.
+# Combined with WS for ticks and rest_book_cache TTL, this is safe.
+DEFAULT_BUDGET_PER_MIN = 15   # was 60 — 大幅降低，每次REST都很珍贵 (was 45→60)
+# Emergency/force_refresh calls have a separate hard cap to prevent abuse.
+# With 90s sentinel poll + cache TTL, this should be very rarely hit.
+EMERGENCY_BUDGET_PER_MIN = 30
 # When budget trips, cool for the full shared window (not a short 60s blip).
 BUDGET_COOL_SEC = float(DEFAULT_COOL_SEC)
 
@@ -57,10 +65,16 @@ def _acct_key(exchange: str | None, user_id: int | str | None) -> str:
 def record_rest_call(*, exchange: str | None, user_id: int | str | None = None, _emergency: bool = False) -> None:
     k = _acct_key(exchange, user_id)
     now = time.time()
-    with _lock:
-        arr = [t for t in _calls.get(k, []) if t >= now - 60.0]
-        arr.append(now)
-        _calls[k] = arr[-200:]
+    if _emergency:
+        with _lock:
+            arr = [t for t in _emergency_calls.get(k, []) if t >= now - 60.0]
+            arr.append(now)
+            _emergency_calls[k] = arr[-200:]
+    else:
+        with _lock:
+            arr = [t for t in _calls.get(k, []) if t >= now - 60.0]
+            arr.append(now)
+            _calls[k] = arr[-200:]
 
 
 def calls_last_min(*, exchange: str | None, user_id: int | str | None = None) -> int:
@@ -70,9 +84,18 @@ def calls_last_min(*, exchange: str | None, user_id: int | str | None = None) ->
         return sum(1 for t in _calls.get(k, []) if t >= now - 60.0)
 
 
+def emergency_calls_last_min(*, exchange: str | None, user_id: int | str | None = None) -> int:
+    """Count force_refresh/emergency calls in last minute (they don't consume normal budget)."""
+    k = _acct_key(exchange, user_id)
+    now = time.time()
+    with _lock:
+        return sum(1 for t in _emergency_calls.get(k, []) if t >= now - 60.0)
+
+
 def reset_for_tests() -> None:
     with _lock:
         _calls.clear()
+        _emergency_calls.clear()
 
 
 class ThrottleDenied(RuntimeError):
@@ -120,7 +143,18 @@ def acquire_rest_permit(
     if priority != "emergency":
         record_rest_call(exchange=exchange, user_id=user_id)
     else:
-        # Record emergency call for audit only; does not consume budget
+        # Record emergency call in separate bucket; enforce separate hard cap.
+        emergency_n = emergency_calls_last_min(exchange=exchange, user_id=user_id)
+        if emergency_n >= EMERGENCY_BUDGET_PER_MIN:
+            note_rate_limit(
+                exchange=exchange,
+                user_id=user_id,
+                cool_sec=BUDGET_COOL_SEC,
+            )
+            raise ThrottleDenied(
+                f"{exchange} emergency budget exceeded {emergency_n}/{EMERGENCY_BUDGET_PER_MIN} ({op})",
+                remaining=BUDGET_COOL_SEC,
+            )
         record_rest_call(exchange=exchange, user_id=user_id, _emergency=True)
     if ledger is not None and hasattr(ledger, "note_api_call"):
         try:

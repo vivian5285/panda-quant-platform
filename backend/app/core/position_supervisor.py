@@ -80,15 +80,20 @@ CANCEL_VERIFY_ROUNDS = 5
 HEAL_PLACE_ROUNDS = 2
 SIGNAL_QUEUE_TTL = 120.0
 SIGNAL_LOCK_SLICE = 5.0
-SENTINEL_POLL_NORMAL = 60.0  # multi-user REST headroom (was 45, increased to reduce Binance API calls)
-# Near TP1 / radar: still slower than before — WS owns trail
-SENTINEL_POLL_ARMING = 35.0
-SENTINEL_POLL_RADAR = 35.0
-# Order-book / TP audit REST cadence
-SENTINEL_ORDER_AUDIT_SEC = 45.0
+# Sentinel REST cadence: conservative to minimize exchange API calls.
+# WS user-data channel handles fills/positions in real-time — REST is only for
+# periodic health-check and recovery scenarios. Staying well under Binance's
+# 2400 weight/min limit even with dual supervisors.
+SENTINEL_POLL_NORMAL = 90.0   # 正常持仓: 每90秒一次REST (was 60s)
+# Near TP1 / radar: WS owns trailing; REST is backup only
+SENTINEL_POLL_ARMING = 60.0   # 临战状态 (was 35s)
+SENTINEL_POLL_RADAR = 60.0    # 雷达激活状态 (was 35s)
+# Order-book / TP audit REST cadence (heavier operation — runs less often)
+SENTINEL_ORDER_AUDIT_SEC = 120.0  # 订单簿审计: 每120秒 (was 45s)
 # WS tick → radar evaluate (NO REST on this path)
 RADAR_WS_TICK_MIN_SEC = 2.0
-SENTINEL_POLL_JITTER_SEC = 1.0
+# Jitter: spread sentinel polls so they don't cluster at round intervals
+SENTINEL_POLL_JITTER_SEC = 3.0  # was 1.0 — spread REST over ±3s to prevent bursts
 DUST_QTY_ETH = 0.004
 TP_COMPLETE_RESIDUAL_RATIO = 0.12
 RADAR_SL_MIN_MOVE = 1.0

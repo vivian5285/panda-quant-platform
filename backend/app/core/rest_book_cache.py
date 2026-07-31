@@ -22,11 +22,14 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-# Dual ETH+XAU supervisors share one IP budget. Longer TTL + single-flight
-# prevents markPrice WS from weight-storming openOrders(~40).
-POS_TTL_SEC = 15.0
-ORDER_TTL_SEC = 25.0
-ALGO_TTL_SEC = 25.0
+# REST budget is now very conservative (15/min). Cache TTLs are increased to match:
+# - Sentinel poll at 90s → POS_TTL at least 60s
+# - Order audit at 120s → ORDER_TTL at least 90s
+# - Dual ETH+XAU supervisors share one IP budget
+# Longer TTLs drastically reduce REST hits while WS handles fills in real-time.
+POS_TTL_SEC = 60.0    # was 15.0 — position snapshot stays valid 60s
+ORDER_TTL_SEC = 90.0  # was 25.0 — open orders snapshot stays valid 90s
+ALGO_TTL_SEC = 90.0   # was 25.0 — algo orders snapshot stays valid 90s
 
 _lock = threading.RLock()
 # key = f"{exchange}:{user_id}"
@@ -170,9 +173,10 @@ def get_cached_position(
             )
         except ThrottleDenied as td:
             if force_refresh:
-                # Critical post-open verify: ignore throttle, fetch anyway
+                # Critical post-open verify: ignore throttle, proceed to fetch anyway.
+                # Log only once to avoid log spam during throttle storm.
                 logger.warning(
-                    "get_position throttle denied + force_refresh — proceeding anyway (%s)",
+                    "get_position throttle denied + force_refresh — bypassing throttle to fetch (%s)",
                     str(td)[:160],
                 )
             else:
@@ -184,8 +188,9 @@ def get_cached_position(
                             str(td)[:160],
                         )
                         return (hit.get("by_symbol") or {}).get(symbol)
-            raise_if_cooling(exchange=exchange, user_id=user_id, op="get_position")
-            raise
+                raise_if_cooling(exchange=exchange, user_id=user_id, op="get_position")
+                raise
+        # Continue to fetch data (force_refresh bypasses the raise above)
         rows = list(fetch_all() or [])
         by_sym: dict[str, dict] = {}
         for row in rows:
@@ -266,8 +271,9 @@ def get_cached_open_orders(
             )
         except ThrottleDenied as td:
             if force_refresh:
+                # Critical post-place verify: ignore throttle, proceed to fetch anyway.
                 logger.warning(
-                    "get_open_orders throttle denied + force_refresh — proceeding anyway (%s)",
+                    "get_open_orders throttle denied + force_refresh — bypassing throttle to fetch (%s)",
                     str(td)[:160],
                 )
             else:
@@ -279,7 +285,8 @@ def get_cached_open_orders(
                             str(td)[:160],
                         )
                         return list((hit.get("by_symbol") or {}).get(symbol) or [])
-            return []
+                return []
+        # Continue to fetch data (force_refresh bypasses the return [] above)
         rows = list(fetch_all() or [])
         by_sym: dict[str, list[dict]] = {}
         for row in rows:
@@ -351,8 +358,9 @@ def get_cached_algo_orders(
             )
         except ThrottleDenied as td:
             if force_refresh:
+                # Critical post-place verify: ignore throttle, proceed to fetch anyway.
                 logger.warning(
-                    "get_algo_orders throttle denied + force_refresh — proceeding anyway (%s)",
+                    "get_algo_orders throttle denied + force_refresh — bypassing throttle to fetch (%s)",
                     str(td)[:160],
                 )
             else:
@@ -364,7 +372,8 @@ def get_cached_algo_orders(
                             str(td)[:160],
                         )
                         return list((hit.get("by_symbol") or {}).get(symbol) or [])
-            return []
+                return []
+        # Continue to fetch data (force_refresh bypasses the return [] above)
         by_sym = dict(fetch_for_symbols(list(symbols)) or {})
         with _lock:
             _algo[k] = {"fetched_at": time.time(), "by_symbol": by_sym}

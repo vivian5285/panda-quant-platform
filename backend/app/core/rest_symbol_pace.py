@@ -13,9 +13,11 @@ import threading
 import time
 from typing import Any
 
-MIN_GAP_SEC = 0.100  # whitepaper §8.3
-# Shared all-account endpoints (openOrders ~weight 40) need stronger pacing.
-SHARED_ACCOUNT_GAP_SEC = 2.0
+MIN_GAP_SEC = 0.100  # whitepaper §8.3 — per-symbol gap
+# Shared all-account endpoints (openOrders ~weight 40, position ~weight 5).
+# Increased from 2s → 8s to prevent dual supervisors from hammering heavy endpoints.
+# With 15/min budget and 90s poll cadence, this is safe.
+SHARED_ACCOUNT_GAP_SEC = 8.0   # was 2.0
 
 _lock = threading.RLock()
 # key -> last_request_monotonic
