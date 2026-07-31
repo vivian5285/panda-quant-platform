@@ -1221,7 +1221,7 @@ class BinanceSmartDefenseMixin:
                     and live_qty > 0
                 ):
                     tv_tps = list(getattr(self, "tv_tps", []) or [])
-                    initial_qty_val = (float(getattr(self, "initial_qty", 0) or 0)
+                    initial_qty_val = (float(getattr(self, "initial_qty", 0) or 0))
                     anchor = initial_qty_val if initial_qty_val > 0 else live_qty
                     no_fill_evidence = (
                         initial_qty_val == 0
