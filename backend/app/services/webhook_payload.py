@@ -22,8 +22,7 @@ _PINE_CLOSE_SIDE_REASON_GENERIC = re.compile(
     r'"side":"(LONG|SHORT|NONE),("reason":")([^"]*?)(,"(?:pnl_pct|price)":)'
 )
 _TRAILING_COMMA = re.compile(r",(\s*[}\]])")
-_BACKSLASH_COLON = re.compile(r'\\([:]+)')
-_BACKSLASH_COMMA = re.compile(r'\\([,]+)')
+_BACKSLASH_ESCAPE = re.compile(r'\\([:,\s])')
 _LEADING_SPACE_KEY = re.compile(r'{\s*"')
 _TRAILING_SPACE_VALUE = re.compile(r'":\s*"')
 
@@ -32,11 +31,11 @@ def repair_shell_escaped_json(raw: str) -> str | None:
     """修复 SSH/Shell 双引号转义导致的畸形 JSON（如 secret\:\test\，action\:\LONG\）。
 
     症状：JSON key 被 \: 分割，如 ` secret\:\test\` 变成 `"secret":"test"` 的错误版本。
+    也处理组合模式如 `\,\` -> `,`
     """
-    if r'\:' not in raw and r'\,' not in raw:
+    if r'\:' not in raw and r'\,' not in raw and r'\ ' not in raw:
         return None
-    fixed = _BACKSLASH_COLON.sub(r':', raw)
-    fixed = _BACKSLASH_COMMA.sub(r',', fixed)
+    fixed = _BACKSLASH_ESCAPE.sub(r'\1', raw)
     # 修复 leading space in first key: "{\" secret" -> "{\"secret"
     fixed = _LEADING_SPACE_KEY.sub(r'{"', fixed)
     try:

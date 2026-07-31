@@ -293,14 +293,15 @@ def check_dingtalk() -> None:
     from app.services.alert_service import notify_system
 
     s = get_settings()
-    if s.DINGTALK_WEBHOOK.strip():
+    webhook = s.DINGTALK_WEBHOOK.strip() if s.DINGTALK_WEBHOOK else ""
+    if webhook:
         url = _dingtalk_url()
         if url:
             ok("钉钉 Webhook URL 可构建")
         else:
             fail("钉钉 URL 构建失败")
     else:
-        warn("DINGTALK_WEBHOOK 未配置")
+        ok("钉钉已禁用 (DINGTALK_WEBHOOK 未配置)")
 
     if callable(notify_system):
         ok("notify_system 系统级告警已就绪")
