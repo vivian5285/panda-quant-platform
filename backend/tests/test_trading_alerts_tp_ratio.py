@@ -100,14 +100,16 @@ def test_open_detail_no_legacy_radar_words():
 def test_close_titles_mom_style():
     assert resolve_close_alert_title("CLOSE_QUICK_EXIT", "评分反转") == "反转保护（快速退出）"
     assert "风控拦截" not in resolve_close_alert_title("CLOSE_PROTECT", "风控拦截：xxx")
+    # breakeven_phase=True = radar in adaptive tracking mode
     t1 = resolve_close_alert_title(
-        "CLOSE_BREATH_STOP", "止损平仓(阶段一)", {"breakeven_phase": False},
+        "CLOSE_BREATH_STOP", "止损平仓", {"breakeven_phase": False},
     )
-    assert "阶段一" in t1
+    assert "自适应追踪止损" not in t1  # not radar-activated
+    # breakeven_phase=True = adaptive tracking active
     t2 = resolve_close_alert_title(
-        "CLOSE_BREATH_STOP", "阶段二", {"breakeven_phase": True},
+        "CLOSE_BREATH_STOP", "", {"breakeven_phase": True},
     )
-    assert "阶段二" in t2
+    assert "自适应追踪止损平仓（雷达激活）" == t2
 
 
 def test_alert_body_open_uses_short_detail():

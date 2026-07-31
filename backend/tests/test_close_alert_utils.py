@@ -19,11 +19,17 @@ def test_titles_no_legacy_protect_keywords():
 
 
 def test_breath_stop_phase_titles():
-    assert "阶段一" in resolve_close_alert_title(
+    # breakeven_phase=True means radar is in adaptive tracking mode
+    assert "自适应追踪止损平仓（雷达激活）" == resolve_close_alert_title(
+        "CLOSE_BREATH_STOP", "", {"breakeven_phase": True},
+    )
+    # breakeven_phase=False means only early breakeven checkpoint triggered
+    assert "保本止损平仓（提前检查点）" == resolve_close_alert_title(
         "CLOSE_BREATH_STOP", "", {"breakeven_phase": False},
     )
-    assert "阶段二" in resolve_close_alert_title(
-        "CLOSE_BREATH_STOP", "", {"breakeven_phase": True},
+    # radar_activated takes priority over breakeven_phase
+    assert "自适应追踪止损平仓（雷达激活）" == resolve_close_alert_title(
+        "CLOSE_BREATH_STOP", "", {"radar_activated": True, "breakeven_phase": False},
     )
 
 

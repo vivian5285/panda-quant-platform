@@ -97,21 +97,21 @@ def resolve_close_alert_title(
     confidence = str(attr.get("confidence") or "")
 
     if hint == "CLOSE_TP3" or origin == "radar_tp3_trail" or act == "CLOSE_TP3":
-        return "余仓止盈（阶段二）"
+        return "余仓止盈（雷达管理）"
     if act == "CLOSE_BREATH_STOP" or origin == "breathing_stop":
-        phase2 = bool(
-            attr.get("breakeven_phase")
+        # breakeven_phase=True during close = radar already in adaptive tracking mode
+        radar_active = bool(
+            attr.get("radar_activated")
+            or attr.get("breakeven_phase")
             or attr.get("breakeven_active")
-            or "阶段二" in reason
-            or "追踪" in reason
         )
-        if phase2:
-            return "追踪止损平仓（阶段二）"
+        if radar_active:
+            return "自适应追踪止损平仓（雷达激活）"
         if "TP后" in reason or "保本" in reason:
-            return "保本止损平仓（阶段一·TP后）"
-        if "初始" in reason:
-            return "初始止损平仓（阶段一）"
-        return "呼吸止损平仓（阶段一）"
+            return "保本止损平仓（TP后）"
+        if "初始" in reason or "硬止损" in reason:
+            return "硬止损平仓"
+        return "保本止损平仓（提前检查点）"
     if "CLOSE_QUICK_EXIT" in act:
         return "反转保护（快速退出）"
     if "CLOSE_RSI_EXIT" in act:
@@ -122,9 +122,9 @@ def resolve_close_alert_title(
             return f"TP{','.join(str(x) for x in matched)} 止盈成交"
         return "止盈成交"
     if origin == "exchange_stop":
-        if "初始" in reason:
-            return "初始止损平仓（阶段一）"
-        return "保本/移动止损平仓"
+        if "初始" in reason or "硬止损" in reason:
+            return "硬止损平仓"
+        return "保本止损平仓"
     if origin == "platform_market":
         return "平台主动平仓"
     if origin == "unknown" or confidence == "insufficient" or "待核实" in reason:

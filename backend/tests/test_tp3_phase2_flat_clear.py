@@ -177,7 +177,7 @@ def test_phase2_trail_hit_clears_all_local_state(phase2_supervisor):
     assert hit is True
     assert close_kwargs.get("close_action") == "CLOSE_BREATH_STOP"
     assert close_kwargs.get("close_trigger") == "breathing_stop_hit"
-    assert "阶段二" in str(close_kwargs.get("reason") or "")
+    assert "自适应追踪止损" in str(close_kwargs.get("reason") or "")
 
     # Critical: no half-wipe residue (the prior incident class)
     assert float(sup.watched_entry) == 0.0
@@ -253,7 +253,7 @@ def test_close_all_always_clears_even_if_already_flat(phase2_supervisor):
     ), patch.object(sup, "_alert"), patch.object(sup, "_log"):
         PositionSupervisor._close_all(
             sup,
-            "止损平仓(阶段二/趋势追踪)",
+            "自适应追踪止损平仓（雷达激活）",
             close_action="CLOSE_BREATH_STOP",
             close_trigger="breathing_stop_hit",
         )

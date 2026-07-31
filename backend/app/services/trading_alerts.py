@@ -93,7 +93,8 @@ ALERT_TYPE_TAGS = {
     "RADAR_REVOKE": "止损移动",
     "BREATH_STEP": "止损移动",
     "BREATH_FLOOR": "止损移动",
-    "BREATH_PHASE2": "阶段切换",
+    "BREATH_PHASE2": "止损移动",
+    "BREATH_ENTER": "止损移动",
     "BREATH_TRAIL": "止损移动",
     "CLOSE_BREATH_STOP": "止损触发",
     "ATR_MISMATCH": "异常告警",
@@ -463,7 +464,7 @@ def format_radar_arm_detail_cn(detail: dict, exchange: str | None = None) -> str
 
     if event == "phase2_enter":
         return _with_tier(
-            f"阶段切换：止损已进入阶段二（自适应追踪），"
+            f"雷达激活：止损已切换为自适应追踪，"
             f"追踪距离={float(trail or 0):.2f}×initial_atr",
             detail,
         )
@@ -482,7 +483,6 @@ def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
     price = detail.get("exit_price") or detail.get("tv_price") or detail.get("price") or detail.get("curr_px") or 0
     stop = detail.get("current_sl") or detail.get("stop") or detail.get("tv_sl") or 0
     pnl = detail.get("live_pnl_pct") or detail.get("pnl_pct") or detail.get("tv_pnl_pct")
-    phase2 = bool(detail.get("breakeven_phase") or detail.get("breakeven_active"))
     action = str(detail.get("close_action") or detail.get("action") or "").upper()
     origin = str(detail.get("close_origin") or (detail.get("attribution") or {}).get("close_origin") or "")
     confidence = str(
@@ -493,14 +493,12 @@ def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
     pnl_txt = f"{float(pnl):+.2f}" if pnl is not None else "—"
 
     if "BREATH" in action or detail.get("close_trigger") == "breathing_stop_hit":
-        if phase2 or "阶段二" in str(reason):
-            kind = "追踪止损（阶段二）"
-        elif "TP后" in str(reason) or "保本" in str(reason):
-            kind = "保本止损（阶段一·TP后）"
-        elif "初始" in str(reason):
-            kind = "初始止损（阶段一）"
+        # breakeven_phase/breath active during close = radar already in adaptive tracking mode
+        rad = bool(detail.get("radar_activated") or detail.get("breakeven_phase") or detail.get("breakeven_active"))
+        if rad:
+            kind = "自适应追踪止损（雷达激活）"
         else:
-            kind = "呼吸止损（阶段一）"
+            kind = "保本止损（提前检查点）"
         return _with_tier(
             f"{kind}触发：价格 {float(price):.2f} 触及止损 {float(stop):.2f}，"
             f"盈亏 {pnl_txt}%",
@@ -519,7 +517,7 @@ def format_close_detail_cn(detail: dict, exchange: str | None = None) -> str:
         if 3 in levels or action == "CLOSE_TP3" or origin == "radar_tp3_trail":
             prefix = "（推断）" if confidence in ("inferred", "low") else ""
             return _with_tier(
-                f"{prefix}余仓止盈成交（阶段二），全部平仓，盈亏 {pnl_txt}%",
+                f"{prefix}余仓止盈成交（雷达管理），全部平仓，盈亏 {pnl_txt}%",
                 detail,
             )
         if 2 in levels:
@@ -700,19 +698,13 @@ def format_trading_alert_body(
     # Breathing stop close title depends on phase
     resolved_title = title
     if alert_type == "CLOSE_BREATH_STOP":
-        phase2 = bool(d.get("breakeven_phase") or d.get("breakeven_active"))
-        msg = str(message or "")
-        if "阶段二" in msg or "追踪" in msg:
-            phase2 = True
-        if phase2:
-            resolved_title = "追踪止损平仓（阶段二）"
-        elif "TP后" in msg or "保本" in msg:
-            resolved_title = "保本止损平仓（阶段一·TP后）"
-        elif "初始" in msg:
-            resolved_title = "初始止损平仓（阶段一）"
+        rad = d.get("radar_activated") or d.get("breakeven_active") or d.get("breakeven_phase")
+        if rad:
+            resolved_title = "自适应追踪止损平仓（雷达激活）"
+            type_label = resolved_title
         else:
-            resolved_title = "呼吸止损平仓（阶段一）"
-        type_label = resolved_title
+            resolved_title = "保本止损平仓（提前检查点）"
+            type_label = resolved_title
     detail_block = format_admin_detail_lines(alert_type, detail, exchange=ex)
     tier_lbl = resolve_tier_label(d)
     tier_header = f" · **档位·{tier_lbl}**" if tier_lbl else ""

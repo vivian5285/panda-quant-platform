@@ -3366,11 +3366,11 @@ class AdverseRadarMixin:
             rem = float(getattr(self, "remaining_qty_pct", 1.0) or 1.0)
             after_tp = bool(consumed) or rem < 0.999
             if bool(getattr(self, "breakeven_phase", False)) or was_phase:
-                phase_label = "追踪止损平仓（阶段二）"
+                phase_label = "自适应追踪止损平仓（雷达激活）"
             elif after_tp:
-                phase_label = "保本止损平仓（阶段一·TP后）"
+                phase_label = "保本止损平仓（TP后）"
             else:
-                phase_label = "初始止损平仓（阶段一）"
+                phase_label = "保本止损平仓（提前检查点）"
             # Mutex: radar/breath first → cancel TP3 before market flatten
             if hasattr(self, "_mutex_cancel_tp3_on_radar_exit"):
                 try:
@@ -3563,7 +3563,8 @@ class AdverseRadarMixin:
             "step": ("BREATH_STEP", "呼吸止损·步进上移"),
             "floor_tp1": ("BREATH_FLOOR", "呼吸止损·TP1底限"),
             "floor_tp2": ("BREATH_FLOOR", "呼吸止损·TP2底限"),
-            "phase2_enter": ("BREATH_PHASE2", "呼吸止损·阶段切换"),
+            "breath_enter": ("BREATH_ENTER", "保本检查点触发"),
+            "phase2_enter": ("BREATH_ENTER", "雷达激活"),
             "trail": ("BREATH_TRAIL", "呼吸止损·自适应追踪"),
         }
         should_alert = event in alert_map and (
