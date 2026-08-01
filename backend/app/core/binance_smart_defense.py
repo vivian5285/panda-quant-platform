@@ -1409,74 +1409,74 @@ class BinanceSmartDefenseMixin:
                                     )
 
                 if self._defenses_fully_ok(
-                live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
-            ):
-                self._def_log(
-                    f"✅ 重启对账：盘口已齐，跳过补挂 | {self._format_audit_summary(audit)}"
-                )
-                result = self._defense_result_from_audit(audit, skipped=True)
-                result["tv_position_audit"] = tv_audit  # 附加TV对账结果
-                return result
-
-            # Diagnostic: why _defenses_fully_ok failed
-            if attempt == 0:
-                from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
-                exp_lvls = self._expected_tp_levels(live_qty, curr_px)
-                exp_parts = []
-                for lv in exp_lvls:
-                    exp_parts.append(
-                        "TP" + str(lv.get("level")) + "@" + str(lv.get("price"))
-                        + " qty=" + str(lv.get("qty"))
+                    live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
+                ):
+                    self._def_log(
+                        f"✅ 重启对账：盘口已齐，跳过补挂 | {self._format_audit_summary(audit)}"
                     )
-                self._def_log(
-                    "[重启TP] " + str(uid) + "@" + str(sym) + " | _defenses_fully_ok=False | "
-                    "expected=" + str(exp_parts) + " | "
-                    "consumed=" + str(consumed) + " placeable=" + str(sorted(PLACEABLE_TP_LEVELS)) + " | "
-                    "matched=" + str(audit.get("matched_full", 0)) + " expected=" + str(audit.get("expected", 0))
-                )
+                    result = self._defense_result_from_audit(audit, skipped=True)
+                    result["tv_position_audit"] = tv_audit  # 附加TV对账结果
+                    return result
 
-            if self._has_duplicate_tp_orders() or any(
-                lv.get("status") == "duplicate" for lv in audit.get("levels", [])
-            ):
-                if self._purge_duplicate_tp_orders(live_qty):
-                    time.sleep(0.5)
+                # Diagnostic: why _defenses_fully_ok failed
+                if attempt == 0:
+                    from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
+                    exp_lvls = self._expected_tp_levels(live_qty, curr_px)
+                    exp_parts = []
+                    for lv in exp_lvls:
+                        exp_parts.append(
+                            "TP" + str(lv.get("level")) + "@" + str(lv.get("price"))
+                            + " qty=" + str(lv.get("qty"))
+                        )
+                    self._def_log(
+                        "[重启TP] " + str(uid) + "@" + str(sym) + " | _defenses_fully_ok=False | "
+                        "expected=" + str(exp_parts) + " | "
+                        "consumed=" + str(consumed) + " placeable=" + str(sorted(PLACEABLE_TP_LEVELS)) + " | "
+                        "matched=" + str(audit.get("matched_full", 0)) + " expected=" + str(audit.get("expected", 0))
+                    )
+
+                if self._has_duplicate_tp_orders() or any(
+                    lv.get("status") == "duplicate" for lv in audit.get("levels", [])
+                ):
+                    if self._purge_duplicate_tp_orders(live_qty):
+                        time.sleep(0.5)
+                        continue
+
+                # Guard: same as outer — skip orphan cancel when all active levels are missing
+                # (likely consumed but not yet reflected in consumed_tp_levels after restart)
+                inner_active_missing = sum(
+                    1 for lv in audit.get("levels", [])
+                    if lv.get("level") not in (audit.get("consumed_tp_levels") or [])
+                    and lv.get("status") in ("missing", "qty_mismatch")
+                )
+                inner_active_total = sum(
+                    1 for lv in audit.get("levels", [])
+                    if lv.get("level") not in (audit.get("consumed_tp_levels") or [])
+                )
+                inner_skip = (
+                    inner_active_total > 0
+                    and inner_active_missing == inner_active_total
+                    and len(audit.get("orphans", [])) > 0
+                )
+                if inner_skip:
+                    self._def_log(f"[重启TP] ⚠️ 重试环跳过孤儿撤单：活跃缺失={inner_active_missing}/{inner_active_total}")
+                elif audit.get("orphans"):
+                    self._cancel_orphan_tp_orders(live_qty)
+                    time.sleep(0.4)
                     continue
 
-            # Guard: same as outer — skip orphan cancel when all active levels are missing
-            # (likely consumed but not yet reflected in consumed_tp_levels after restart)
-            inner_active_missing = sum(
-                1 for lv in audit.get("levels", [])
-                if lv.get("level") not in (audit.get("consumed_tp_levels") or [])
-                and lv.get("status") in ("missing", "qty_mismatch")
-            )
-            inner_active_total = sum(
-                1 for lv in audit.get("levels", [])
-                if lv.get("level") not in (audit.get("consumed_tp_levels") or [])
-            )
-            inner_skip = (
-                inner_active_total > 0
-                and inner_active_missing == inner_active_total
-                and len(audit.get("orphans", [])) > 0
-            )
-            if inner_skip:
-                self._def_log(f"[重启TP] ⚠️ 重试环跳过孤儿撤单：活跃缺失={inner_active_missing}/{inner_active_total}")
-            elif audit.get("orphans"):
-                self._cancel_orphan_tp_orders(live_qty)
-                time.sleep(0.4)
-                continue
-
-            has_gap = any(
-                lv.get("status") in ("missing", "qty_mismatch")
-                for lv in audit.get("levels", [])
-            )
-            if has_gap:
-                break
-
-            if attempt < STARTUP_ORDER_FETCH_RETRIES - 1:
-                self._def_log(
-                    f"⏳ 重启对账：挂单列表未稳，重试 {attempt + 1}/{STARTUP_ORDER_FETCH_RETRIES}"
+                has_gap = any(
+                    lv.get("status") in ("missing", "qty_mismatch")
+                    for lv in audit.get("levels", [])
                 )
-                time.sleep(STARTUP_ORDER_FETCH_DELAY)
+                if has_gap:
+                    break
+
+                if attempt < STARTUP_ORDER_FETCH_RETRIES - 1:
+                    self._def_log(
+                        f"⏳ 重启对账：挂单列表未稳，重试 {attempt + 1}/{STARTUP_ORDER_FETCH_RETRIES}"
+                    )
+                    time.sleep(STARTUP_ORDER_FETCH_DELAY)
 
         # === Guard: skip orphan cancel when orphans are likely mis-identified after VPS restart ===
         # After restart, consumed_tp_levels may be stale/empty while TP levels were actually
