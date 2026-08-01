@@ -46,11 +46,12 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
     SYMBOL: str = "ETHUSDT"
-    # Dual-symbol: comma-separated canonical IDs (ETHUSDT,XAUUSDT)
+    # Triple-symbol: comma-separated canonical IDs (ETHUSDT,XAUUSDT,BNBUSDT)
     TRADING_SYMBOLS: str = "ETHUSDT,XAUUSDT"
     XAU_SYMBOL: str = "XAUUSDT"
     # Display/fallback only — live OPEN always binds FIXED_LEVERAGE=5 (tv_entry_sizing).
     LEVERAGE: int = 5
+    BNB_SYMBOL: str = "BNBUSDT"
     DEEPCOIN_SYMBOL: str = "ETH-USDT-SWAP"
     DEEPCOIN_XAU_SYMBOL: str = "XAU-USDT-SWAP"
     DEEPCOIN_LEVERAGE: int = 5

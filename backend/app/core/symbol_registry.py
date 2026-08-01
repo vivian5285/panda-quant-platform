@@ -1,7 +1,8 @@
-"""Dual-symbol registry: ETHUSDT (+ XAUUSDT on Binance only for live execution).
+"""Triple-symbol registry: ETHUSDT + XAUUSDT (+ BNBUSDT on Binance for live execution).
 
 OKX / Gate / DeepCoin run ETH perpetual only. XAU TV is routed exclusively to
 users bound to Binance API (see ``trading_symbols_for_exchange``).
+BNB TV is routed to Binance users (same policy as XAU).
 """
 
 from __future__ import annotations
@@ -12,7 +13,8 @@ from typing import Any
 # Canonical IDs used in DB, webhooks, UI, supervisor keys
 CANONICAL_ETH = "ETHUSDT"
 CANONICAL_XAU = "XAUUSDT"
-SUPPORTED_CANONICAL = frozenset({CANONICAL_ETH, CANONICAL_XAU})
+CANONICAL_BNB = "BNBUSDT"
+SUPPORTED_CANONICAL = frozenset({CANONICAL_ETH, CANONICAL_XAU, CANONICAL_BNB})
 DEFAULT_CANONICAL = CANONICAL_ETH
 
 # Per-exchange native instrument IDs
@@ -20,6 +22,7 @@ EXCHANGE_SYMBOLS: dict[str, dict[str, str]] = {
     "binance": {
         CANONICAL_ETH: "ETHUSDT",
         CANONICAL_XAU: "XAUUSDT",
+        CANONICAL_BNB: "BNBUSDT",
     },
     "okx": {
         CANONICAL_ETH: "ETH-USDT-SWAP",
@@ -61,6 +64,18 @@ SYMBOL_PRECISION: dict[str, dict[str, Any]] = {
         "label": "XAU 永续",
         "dingtalk_unit": "盎司",
     },
+    CANONICAL_BNB: {
+        "price_tick": Decimal("0.01"),
+        "qty_step": Decimal("0.01"),
+        "price_decimals": 2,
+        "qty_decimals": 2,
+        "min_qty": 0.01,
+        "min_notional": 10.0,  # Binance USDT-M BNBUSDT MIN_NOTIONAL
+        "min_tp_notional": 5.0,
+        "qty_unit": "BNB",
+        "label": "BNB 永续",
+        "dingtalk_unit": "BNB",
+    },
 }
 
 # Aliases TV / Pine / exchanges may send
@@ -84,6 +99,13 @@ _SYMBOL_ALIASES: dict[str, str] = {
     "XAU": CANONICAL_XAU,
     "GOLD": CANONICAL_XAU,
     "PAXGUSDT": CANONICAL_XAU,
+    "BNBUSDT": CANONICAL_BNB,
+    "BNBUSDT.P": CANONICAL_BNB,
+    "BNBUSDT.PERP": CANONICAL_BNB,
+    "BNB-USDT": CANONICAL_BNB,
+    "BNB-USDT-SWAP": CANONICAL_BNB,
+    "BNB_USDT": CANONICAL_BNB,
+    "BNB": CANONICAL_BNB,
 }
 
 
@@ -185,9 +207,9 @@ def enabled_trading_symbols() -> list[str]:
 def trading_symbols_for_exchange(exchange: str | None) -> list[str]:
     """Symbols this exchange may run live.
 
-    Policy (ops 2026-07-27):
-      - Binance: ETH + XAU (when both in TRADING_SYMBOLS)
-      - OKX / Gate / DeepCoin: ETH only — no XAU TV execution
+    Policy (ops 2026-07-27 + 2026-08-01):
+      - Binance: ETH + XAU + BNB (when in TRADING_SYMBOLS)
+      - OKX / Gate / DeepCoin: ETH only — no XAU/BNB TV execution
     """
     ex = (exchange or "binance").strip().lower()
     if ex == "gateio":
