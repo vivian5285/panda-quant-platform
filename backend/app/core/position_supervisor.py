@@ -1728,6 +1728,21 @@ class PositionSupervisor(
         flat_ok = False
         last_err: str | None = None
         for attempt, delay in enumerate(delays, start=1):
+            # IP cooldown: wait before cancel to avoid immediate throttle rejection
+            try:
+                from app.core.ip_rest_cooldown import remaining_sec
+                from app.core.rest_throttle_valve import require_rest_or_transient
+                cool = float(remaining_sec(exchange=self.exchange_id, user_id=self.user_id) or 0)
+                if cool > 0:
+                    wait = min(cool, 20.0)
+                    self._log("SIGNAL", f"先平后开·IP冷却中等候 {wait:.1f}s")
+                    time.sleep(wait)
+                    require_rest_or_transient(
+                        exchange=self.exchange_id, user_id=self.user_id,
+                        op="force_flat_cancel", priority="emergency",
+                    )
+            except Exception:
+                pass
             # 先撤单再平仓，减少平仓瞬间旧 TP 误成
             if hasattr(self, "_purge_defense_orders_on_flat"):
                 self._purge_defense_orders_on_flat(
