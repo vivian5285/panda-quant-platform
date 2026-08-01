@@ -420,7 +420,15 @@ def _fold_notional_undersized(
     min_notional: float,
     round_qty_fn,
 ) -> list[tuple[int, float, float]]:
-    """Merge early TP tiers whose notional < min_notional into later tiers."""
+    """Merge early TP tiers whose notional < min_notional into later tiers.
+
+    IMPORTANT: TP1 (level 1) is NEVER folded — it is the first profit-taking
+    target and must always be placed as a separate order. Only middle tiers
+    (TP2 etc.) can be folded into the next tier when undersized.
+
+    Root-cause fix: small positions (BNB etc.) had TP1 notional < 5 USDT min_notional,
+    causing TP1 to be merged into TP2 → only 1 order at TP2 price instead of 2 orders.
+    """
     if not slices or float(min_notional or 0) <= 0:
         return slices
     out: list[tuple[int, float, float]] = []
@@ -430,7 +438,11 @@ def _fold_notional_undersized(
         carry = 0.0
         is_last = idx == len(slices) - 1
         notion = float(q) * float(price or 0)
-        if not is_last and notion + 1e-9 < float(min_notional):
+        # TP1 (level 1) is always placed as separate tier — never fold into TP2
+        # even if notional is below min_notional threshold.
+        is_tp1 = int(level) == 1
+        undersized = not is_last and notion + 1e-9 < float(min_notional)
+        if undersized and not is_tp1:
             carry = float(q)
             continue
         if q > 0:

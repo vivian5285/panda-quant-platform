@@ -1058,33 +1058,18 @@ class StartupReconcileMixin:
                 detail["cancel_all_leftover"] = int(cancel_meta.get("leftover") or 0)
                 detail["cancel_all_errors"] = list(cancel_meta.get("errors") or [])
 
-        # Hard verify: flat must leave zero working/conditional orders
+        # Hard verify: flat must leave zero working/conditional orders.
+        # cancel_all_open_orders already includes mop(3) internally.
+        # Single extra mop round is sufficient — _ensure_book_clean_before_open's
+        # outer loop provides 5 retry rounds if anything slips through.
+        # We skip the extra 3×(cancel_all + mop(2)) block that caused the original
+        # ~84-second delay on BNB (was 11 redundant API rounds, now 1).
         leftover_n = 0
         try:
-            # Aggressive mop: historical ghost LIMITs survived 2 rounds under rate-limit lag
-            mop_rounds = 5
             if hasattr(self.client, "_mop_up_leftover_orders"):
-                leftover_n = int(self.client._mop_up_leftover_orders(sym, rounds=mop_rounds))
+                leftover_n = int(self.client._mop_up_leftover_orders(sym, rounds=1))
             elif hasattr(self.client, "get_open_orders"):
-                # force_refresh=True: startup must detect real leftovers, not stale cache.
                 leftover_n = len(self.client.get_open_orders(sym, force_refresh=True) or [])
-            # Extra cancel_all passes if still dirty
-            for _extra in range(3):
-                if leftover_n == 0:
-                    break
-                if leftover_n < 0:
-                    break
-                if hasattr(self.client, "cancel_all_open_orders"):
-                    try:
-                        self.client.cancel_all_open_orders(sym)
-                    except Exception:
-                        pass
-                time.sleep(0.4)
-                if hasattr(self.client, "_mop_up_leftover_orders"):
-                    leftover_n = int(self.client._mop_up_leftover_orders(sym, rounds=2))
-                elif hasattr(self.client, "get_open_orders"):
-                    # force_refresh=True: startup must detect real leftovers, not stale cache.
-                    leftover_n = len(self.client.get_open_orders(sym, force_refresh=True) or [])
         except Exception as e:
             detail["leftover_verify_error"] = str(e)[:200]
             leftover_n = -1

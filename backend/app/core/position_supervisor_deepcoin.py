@@ -4783,6 +4783,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         tv_reason: str | None = None,
         close_trigger: str | None = None,
         attribution: dict | None = None,
+        skip_purge: bool = False,
     ):
         """三重把关之二：TV 全平/保护性全平 → 先撤单释放冻结仓位，6 轮阶梯强平至归零"""
         _ = close_trigger, attribution  # accepted for mixin / Binance signature parity
@@ -4790,8 +4791,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         qty_snapshot = float(self.watched_qty or 0)
         side_snapshot = self.current_side
         trade_id_snapshot = self.current_trade_id
-        self._purge_defense_orders_on_flat("code_close_all", notify=False)
-        time.sleep(0.5)
+        if not skip_purge:
+            self._purge_defense_orders_on_flat("code_close_all", notify=False)
+            time.sleep(0.5)
         closed_successfully = self._flat_all_position_sides(rounds=6, reason=reason or "close_all")
 
         if not closed_successfully:

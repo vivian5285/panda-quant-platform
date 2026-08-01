@@ -1480,17 +1480,18 @@ class PositionSupervisor(
         }
         detail["orders_before"] = self._count_open_book_orders(force_refresh=True)
         detail["raw_before"] = self._count_raw_exchange_orders(force_refresh=True)
-        # Extra rounds when book list is unknown (cool-down / transient)
-        max_rounds = 5
+        # Single aggressive cancel pass per round.  _purge_defense_orders_on_flat already
+        # calls cancel_all_open_orders (which includes mop(3) internally), so there is
+        # no need to call _cancel_all_verified or a second cancel_all here — doing so
+        # was the core cause of the ~84-second BNB delay (duplicate API rounds × 5 loops).
+        max_rounds = 3
         for round_i in range(max_rounds):
             detail["rounds"] = round_i + 1
             if hasattr(self, "_purge_defense_orders_on_flat"):
-                self._purge_defense_orders_on_flat(f"pre_open_{reason}", notify=False)
-            cancel_meta = None
-            if hasattr(self, "_cancel_all_verified"):
-                self._cancel_all_verified()
-            if hasattr(self.client, "cancel_all_open_orders"):
-                cancel_meta = self.client.cancel_all_open_orders(self.symbol)
+                purge_detail = self._purge_defense_orders_on_flat(f"pre_open_{reason}", notify=False)
+            else:
+                purge_detail = {}
+            cancel_leftover = int(purge_detail.get("cancel_all_leftover") or 0)
             if hasattr(self, "_disarm_adverse_staged_stops"):
                 self._disarm_adverse_staged_stops(reason="pre_open_clean", notify=False)
             # 必须保留本笔 TV 刚写入的 tv_sl（清的是旧仓雷达状态，不是新信号硬止损）
@@ -1499,21 +1500,16 @@ class PositionSupervisor(
             self.consumed_tp_levels = []
             if hasattr(self, "radar_latched"):
                 self.radar_latched = False
-            time.sleep(0.25 + round_i * 0.15)
+            time.sleep(0.5)
             raw = self._count_raw_exchange_orders(force_refresh=True)
             filtered = self._count_open_book_orders(force_refresh=True)
-            leftover_meta = (
-                int(cancel_meta.get("leftover"))
-                if isinstance(cancel_meta, dict) and cancel_meta.get("leftover") is not None
-                else None
-            )
             detail["raw_after"] = raw
             detail["orders_after"] = filtered
-            detail["cancel_leftover"] = leftover_meta
+            detail["cancel_leftover"] = cancel_leftover
             status = self._classify_book_clean_result(
                 raw_after=raw,
                 orders_after=filtered,
-                cancel_leftover=leftover_meta,
+                cancel_leftover=cancel_leftover,
             )
             detail["book_status"] = status
             if status == "clean":
@@ -1524,9 +1520,8 @@ class PositionSupervisor(
             if status == "dirty":
                 detail["ok"] = False
                 detail["allow_open"] = False
-                # keep mopping confirmed leftovers
                 continue
-            # unknown: keep retrying; do not mark dirty
+            # unknown: keep retrying
             detail["ok"] = False
             detail["allow_open"] = False
             continue
@@ -1748,21 +1743,13 @@ class PositionSupervisor(
                 self._purge_defense_orders_on_flat(
                     f"force_flat_pre_{attempt}", notify=False,
                 )
-            try:
-                if hasattr(self, "_cancel_all_verified"):
-                    self._cancel_all_verified()
-                else:
-                    self.client.cancel_all_open_orders(self.symbol)
-            except Exception as e:
-                last_err = str(e)
-                logger.warning(
-                    "[User %s] force_flat cancel attempt %s: %s",
-                    self.user_id, attempt, e,
-                )
+            # cancel_all already done inside _purge_defense_orders_on_flat (includes mop).
+            # sleep lets exchange confirm before we attempt _close_all.
             time.sleep(0.25)
             try:
                 close_status = self._close_all(
                     reason if attempt == 1 else f"{reason}·残仓扫尾#{attempt}",
+                    skip_purge=True,
                 )
                 if isinstance(close_status, dict) and close_status.get("status") == "QUERY_FAILED":
                     return self._abort_force_flat(
@@ -5765,6 +5752,7 @@ class PositionSupervisor(
         tv_close_ctx: dict | None = None,
         attribution: dict | None = None,
         close_trigger: str | None = None,
+        skip_purge: bool = False,
     ):
         from app.core.exchange_errors import ExchangeTransientError
 
@@ -5796,10 +5784,11 @@ class PositionSupervisor(
         had_position = bool(
             pos_before and float(pos_before.get("positionAmt", 0) or 0) != 0
         )
-        self._purge_defense_orders_on_flat(
-            close_trigger or "code_close_all", notify=False,
-        )
-        time.sleep(0.5)
+        if not skip_purge:
+            self._purge_defense_orders_on_flat(
+                close_trigger or "code_close_all", notify=False,
+            )
+            time.sleep(0.5)
         closed_successfully = False
         try:
             exit_price = self.client.get_current_price(self.symbol)
