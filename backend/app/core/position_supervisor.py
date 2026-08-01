@@ -5499,9 +5499,9 @@ class PositionSupervisor(
                             self._flush_deferred_stop_qty_resize()
                         except Exception:
                             pass
-            # force_refresh=True: stale cache causes wrong flat/size detection in sentinel loop.
-            try:
-                pos = self.position_manager.get_position(self.symbol, force_refresh=True)
+                    # force_refresh=True: stale cache causes wrong flat/size detection in sentinel loop.
+                    try:
+                        pos = self.position_manager.get_position(self.symbol, force_refresh=True)
                     except ExchangeTransientError as e:
                         self._handle_position_query_failure(e)
                         # Do NOT treat as flat — sleep first, then next poll
@@ -5664,7 +5664,6 @@ class PositionSupervisor(
                             if self.current_side == "LONG"
                             else min(self.best_price, curr_px)
                         )
-                        # 先按「价到+限价消失」记账，再决定是否补挂（避免误补 TP1）
                         before_c = set(int(x) for x in (self.consumed_tp_levels or []))
                         self._sync_consumed_tp_levels(actual_qty, curr_px)
                         after_c = set(int(x) for x in (self.consumed_tp_levels or []))
@@ -5674,13 +5673,11 @@ class PositionSupervisor(
                                 gained_c[0], self.watched_qty, actual_qty, curr_px,
                             )
 
-                    # Order-book REST audit ≤ every 2s (fills prefer user-data WS)
                     if (
                         not qty_changed
                         and (now_ts - last_audit) >= SENTINEL_ORDER_AUDIT_SEC
                     ):
                         self._last_tp_audit_ts = now_ts
-                        # Flat safety: never heal/place when exchange qty is 0
                         if actual_qty <= 0:
                             self._purge_defense_orders_on_flat(
                                 "sentinel_audit_flat", notify=True,
@@ -5688,7 +5685,6 @@ class PositionSupervisor(
                             continue
                         audit = self._audit_tp_levels(actual_qty, curr_px=curr_px or None)
                         if audit["issues"]:
-                            # Cap storm: if book already saturated, purge dupes only — no place
                             if (
                                 hasattr(self, "_refuse_tp_place_if_saturated")
                                 and self._refuse_tp_place_if_saturated()
@@ -5709,7 +5705,6 @@ class PositionSupervisor(
                             )
                             if sl_to_pass and hasattr(self, "_ensure_radar_sl"):
                                 self._ensure_radar_sl(sl_to_pass, actual_qty)
-                            # Dual-track: never fall through to merged cancel-all
 
                     if curr_px > 0:
                         self._orchestrate_defense_monitoring(actual_qty, curr_px)
