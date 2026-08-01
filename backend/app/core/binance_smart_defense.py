@@ -1384,6 +1384,7 @@ class BinanceSmartDefenseMixin:
                             if close_side:
                                 from app.core.symbol_precision import round_quantity
                                 # FIX: apply min AFTER round so small qty stays small (Binance allows it)
+                                # min(pct_qty, live_qty) guarantees qty <= position → no Binance -4118
                                 pct_qty = round_quantity(live_qty * 0.20)
                                 tp2_qty = min(pct_qty, live_qty)
                                 result = self._place_limit_with_retry(
