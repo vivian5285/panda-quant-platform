@@ -4185,6 +4185,38 @@ class AdverseRadarMixin:
             except Exception as tag_exc:
                 logger.warning("hard local-tag gate: %s", tag_exc)
 
+        # === ROOT CAUSE FIX (restart): before placing closePosition STOP, verify it is not
+        # already on the book. After VPS restart, _defense_order_ids is stale but the exchange
+        # already has the order. Placing again hits -4130 (duplicate closePosition direction).
+        # Binance allows ONE stop with closePosition=true per side — we must not re-place.
+        if hasattr(self, "_defense_order_ids") or True:
+            try:
+                book = self.client.get_open_orders(symbol, force_refresh=True) if hasattr(self, "client") else []
+                if book:
+                    for o in (book or []):
+                        if not isinstance(o, dict):
+                            continue
+                        otype = str(o.get("type") or o.get("orderType") or "").upper()
+                        is_stop = otype in ("STOP_MARKET", "STOP") or (
+                            o.get("isAlgoOrder") and bool(_order_stop_price(o))
+                        )
+                        if not is_stop:
+                            continue
+                        is_close_px = bool(o.get("closePosition"))
+                        if is_close_px:
+                            logger.info(
+                                "[User %s] %s hard STOP closePosition already on book oid=%s, skip place",
+                                getattr(self, "user_id", "?"),
+                                getattr(self, "canonical_symbol", symbol),
+                                o.get("orderId"),
+                            )
+                            self._last_hard_sl_order_style = "skipped_already_live_closePosition"
+                            if hasattr(self, "_remember_defense_order_id"):
+                                self._remember_defense_order_id("hard", o.get("orderId"))
+                            return True
+            except Exception as pre_chk_exc:
+                logger.warning("pre-existence check failed: %s", pre_chk_exc)
+
         close_side = self._adverse_close_side()
 
         def _release_hard_tag(reason: str) -> None:

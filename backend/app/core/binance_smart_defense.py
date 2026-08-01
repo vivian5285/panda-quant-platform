@@ -1376,7 +1376,25 @@ class BinanceSmartDefenseMixin:
                     time.sleep(0.5)
                     continue
 
-            if audit.get("orphans"):
+            # Guard: same as outer — skip orphan cancel when all active levels are missing
+            # (likely consumed but not yet reflected in consumed_tp_levels after restart)
+            inner_active_missing = sum(
+                1 for lv in audit.get("levels", [])
+                if lv.get("level") not in (audit.get("consumed_tp_levels") or [])
+                and lv.get("status") in ("missing", "qty_mismatch")
+            )
+            inner_active_total = sum(
+                1 for lv in audit.get("levels", [])
+                if lv.get("level") not in (audit.get("consumed_tp_levels") or [])
+            )
+            inner_skip = (
+                inner_active_total > 0
+                and inner_active_missing == inner_active_total
+                and len(audit.get("orphans", [])) > 0
+            )
+            if inner_skip:
+                self._def_log(f"[重启TP] ⚠️ 重试环跳过孤儿撤单：活跃缺失={inner_active_missing}/{inner_active_total}")
+            elif audit.get("orphans"):
                 self._cancel_orphan_tp_orders(live_qty)
                 time.sleep(0.4)
                 continue
@@ -1394,7 +1412,35 @@ class BinanceSmartDefenseMixin:
                 )
                 time.sleep(STARTUP_ORDER_FETCH_DELAY)
 
-        self._cancel_orphan_tp_orders(live_qty)
+        # === Guard: skip orphan cancel when orphans are likely mis-identified after VPS restart ===
+        # After restart, consumed_tp_levels may be stale/empty while TP levels were actually
+        # already consumed (book shows them gone). Cancelling orphans in this case destroys
+        # valid TPs that were never orphan. Only cancel orphans when we have positive
+        # evidence active levels are present and some are genuine orphans.
+        active_missing = sum(
+            1 for lv in audit.get("levels", [])
+            if lv.get("level") not in (audit.get("consumed_tp_levels") or [])
+            and lv.get("status") in ("missing", "qty_mismatch")
+        )
+        # If ALL non-consumed active levels are missing, orphans are likely mis-identified
+        # (book says they are gone because they were consumed — but we don't know that yet)
+        active_total = sum(
+            1 for lv in audit.get("levels", [])
+            if lv.get("level") not in (audit.get("consumed_tp_levels") or [])
+        )
+        skip_orphan_cancel = (
+            active_total > 0
+            and active_missing == active_total
+            and len(audit.get("orphans", [])) > 0
+        )
+        if skip_orphan_cancel:
+            self._def_log(
+                f"[重启TP] ⚠️ 跳过孤儿撤单：consumed={audit.get('consumed_tp_levels')} "
+                f"活跃缺失={active_missing}/{active_total} "
+                f"孤儿={len(audit.get('orphans', []))} (疑似误判·consumed_tp_levels未恢复)"
+            )
+        else:
+            self._cancel_orphan_tp_orders(live_qty)
         self._def_log(
             f"[重启TP] {uid}@{sym} | 准备补挂 | live_qty={live_qty:.4f} "
             f"curr_px={curr_px:.2f} consumed={list(getattr(self, 'consumed_tp_levels', []) or [])}"
