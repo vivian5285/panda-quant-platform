@@ -1,4 +1,4 @@
-"""Per-symbol tick / step formatting (ETHUSDT + XAUUSDT)."""
+"""Per-symbol tick / step formatting (ETHUSDT + XAUUSDT + BNBUSDT)."""
 
 from __future__ import annotations
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from app.core.symbol_registry import CANONICAL_ETH, CANONICAL_XAU, normalize_canonical_symbol
+from app.core.symbol_registry import CANONICAL_BNB, CANONICAL_ETH, CANONICAL_XAU, normalize_canonical_symbol
 from app.core.trend_tier_params import (
     MAX_REENTRY,
     RADAR_ACTIVATE_BE_ATR,
@@ -38,6 +38,7 @@ MAX_DEV_FROM_TV_PCT = 0.01
 REENTRY_ZONE_ATR = {
     CANONICAL_ETH: 0.5,
     CANONICAL_XAU: 0.3,
+    CANONICAL_BNB: 0.4,   # between ETH (0.5) and XAU (0.3)
 }
 
 
@@ -77,6 +78,8 @@ def smart_reentry_enabled_for(symbol: str | None) -> bool:
         can = _canon(symbol)
         if can == CANONICAL_XAU:
             return bool(getattr(s, "SMART_REENTRY_XAU_ENABLED", True))
+        if can == CANONICAL_BNB:
+            return bool(getattr(s, "SMART_REENTRY_BNB_ENABLED", True))
         return bool(getattr(s, "SMART_REENTRY_ETH_ENABLED", True))
     except Exception:
         return True

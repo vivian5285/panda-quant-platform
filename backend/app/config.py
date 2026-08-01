@@ -73,11 +73,13 @@ class Settings(BaseSettings):
     # Smart re-entry (wave roll): both symbols code-ready; env can disable one for staged observe
     SMART_REENTRY_ETH_ENABLED: bool = True
     SMART_REENTRY_XAU_ENABLED: bool = True
+    SMART_REENTRY_BNB_ENABLED: bool = True   # BNB uses same smart reentry as ETH
 
     # Hard stop = |TV.price−TV.stop_loss| × buffer, hung from fill (no ATR floor / slip pad)
     HARD_STOP_BUFFER_MULT: float = 1.15
     HARD_STOP_BUFFER_MULT_ETH: float = 1.15
     HARD_STOP_BUFFER_MULT_XAU: float = 1.15
+    HARD_STOP_BUFFER_MULT_BNB: float = 1.15  # same as ETH/XAU; BNB fast moves need same pad
     HARD_STOP_MIN_TICKS: int = 5
 
     # TP qty fractions (tp3 = 1 − tp1 − tp2); hang TP1+TP2 only — TP3 is radar-managed
@@ -87,6 +89,8 @@ class Settings(BaseSettings):
     TP2_QTY_PCT_ETH: float = 0.20
     TP1_QTY_PCT_XAU: float = 0.10
     TP2_QTY_PCT_XAU: float = 0.20
+    TP1_QTY_PCT_BNB: float = 0.10  # same as ETH/XAU for now; BNB is mid-tier
+    TP2_QTY_PCT_BNB: float = 0.20
 
     # DEPRECATED — live OPEN ignores REGIME_MARGIN_* (use TV risk_pct / qty_ratio / leverage)
     REGIME_MARGIN_1: float = 0.0
@@ -103,6 +107,7 @@ class Settings(BaseSettings):
     MIN_VPS_RISK_PCT: float = 0.0
     MIN_ORDER_QTY_ETH: float = 0.001
     MIN_ORDER_QTY_XAU: float = 0.01
+    MIN_ORDER_QTY_BNB: float = 0.01   # Binance USDT-M BNBUSDT min qty = 0.01
     MAX_POSITION_QTY: float = 9999.0
     # DEPRECATED — do not scale TV risk_pct
     REGIME_SCALE_1: float = 1.0

@@ -1,4 +1,4 @@
-"""Process-wide Binance REST cool-down after -1003 (shared by ETH+XAU).
+"""Process-wide Binance REST cool-down after -1003 (shared by ETH+XAU+BNB).
 
 Binance often returns -1003 without a ``banned until`` timestamp. Without a
 shared cool-down, dual sentinels sleep 15s then hammer again → permanent 2400/min.
@@ -15,7 +15,7 @@ _lock = threading.RLock()
 _cool_until: dict[str, float] = {}
 
 DEFAULT_COOL_SEC = 180.0
-# Cross-user / cross-symbol IP fuse — ETH+XAU (and any dual supervisors) share one stop.
+# Cross-user / cross-symbol IP fuse — ETH+XAU+BNB (all supervisors) share one stop.
 GLOBAL_SUFFIX = "_GLOBAL"
 
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from app.core.symbol_registry import CANONICAL_ETH, CANONICAL_XAU, normalize_canonical_symbol
+from app.core.symbol_registry import CANONICAL_BNB, CANONICAL_ETH, CANONICAL_XAU, normalize_canonical_symbol
 
 ADX_WEAK = 20.0
 ADX_STRONG = 30.0
@@ -152,6 +152,30 @@ _XAU: tuple[TrendTierParams, ...] = (
     ),
 )
 
+# BNBUSDT — volatility between ETH and XAU; trail/breath midway between both.
+# BNB moves faster than ETH: tighter initial steps, wider breath than XAU.
+# chart_tf_min=60 between ETH (90) and XAU (45).
+_BNB: tuple[TrendTierParams, ...] = (
+    _tier_row(
+        tier=0, step_trigger_atr=0.38, step_advance_atr=0.22,
+        breath_tp1_tp2_atr=0.75, breath_tp2_tp3_atr=0.95,
+        trail_coef_min=1.1, trail_coef_max=1.5,
+        reentry_bars=2, reentry_zone_atr=0.4, chart_tf_min=60.0,
+    ),
+    _tier_row(
+        tier=1, step_trigger_atr=0.45, step_advance_atr=0.32,
+        breath_tp1_tp2_atr=1.10, breath_tp2_tp3_atr=1.50,
+        trail_coef_min=1.8, trail_coef_max=2.3,
+        reentry_bars=2, reentry_zone_atr=0.4, chart_tf_min=60.0,
+    ),
+    _tier_row(
+        tier=2, step_trigger_atr=0.55, step_advance_atr=0.38,
+        breath_tp1_tp2_atr=1.40, breath_tp2_tp3_atr=1.90,
+        trail_coef_min=2.3, trail_coef_max=3.2,
+        reentry_bars=2, reentry_zone_atr=0.4, chart_tf_min=60.0,
+    ),
+)
+
 
 def _canon(symbol: str | None) -> str:
     return normalize_canonical_symbol(symbol) or CANONICAL_ETH
@@ -225,7 +249,12 @@ def effective_radar_tier(adx_tier: int, boost: int = 0) -> int:
 
 def params_for_tier(tier: int, symbol: str | None = None) -> TrendTierParams:
     can = _canon(symbol)
-    table = _XAU if can == CANONICAL_XAU else _ETH
+    if can == CANONICAL_XAU:
+        table = _XAU
+    elif can == CANONICAL_BNB:
+        table = _BNB
+    else:
+        table = _ETH
     return table[clamp_tier(tier)]
 
 

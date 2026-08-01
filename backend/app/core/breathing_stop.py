@@ -1,4 +1,4 @@
-"""Breathing stop — shared engine; ETH/XAU differ only via breathing_profile.
+"""Breathing stop — shared engine; ETH/XAU/BNB differ only via breathing_profile.
 
 Phase 1: early BE + ATR step ladder × locked initial_atr (no breath coef)
 Phase 2: trail = initial_atr × trailDistanceMultiplier(smoothedRatio)
@@ -15,6 +15,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 from app.core.breathing_profile import (
+    BNB_PROFILE,
     ETH_PROFILE,
     cold_start_multiplier,
     effective_radar_arm_distance,

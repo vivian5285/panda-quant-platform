@@ -268,7 +268,7 @@ def match_adverse_tier_fill(
 
 class AdverseRadarMixin:
     """
-    Dual-track defense (all exchanges / ETH+XAU) — whitepaper coexistence:
+    Dual-track defense (all exchanges / ETH+XAU+BNB) — whitepaper coexistence:
     - Hard stop: fill±(|TV.price−TV.stop_loss|×1.15) at open, price frozen until flat (qty may shrink)
     - Radar stop: independent ATR breathing (scenario1=VPS 1h, scenario2=TV atr)
     - TP1/TP2 always; TP3 only scenario2

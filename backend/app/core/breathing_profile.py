@@ -1,6 +1,7 @@
 """Per-symbol breathing profiles — continuous trailDistanceMultiplier (final spec).
 
-ETH/XAU share ratioFloor/ratioCeiling; only minMult/maxMult differ.
+ETH/XAU/BNB share ratioFloor/ratioCeiling; only minMult/maxMult differ.
+BNB is mid-tier volatility (between ETH and XAU).
 XAU tightness is entirely in min/max — no extra trail_tighten layer.
 
 XAU min/max were retuned after production backtest (continuous 0.8~1.8
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.core.symbol_registry import (
+    CANONICAL_BNB,
     CANONICAL_ETH,
     CANONICAL_XAU,
     normalize_canonical_symbol,
@@ -80,9 +82,27 @@ XAU_PROFILE = BreathingProfile(
     stagnant_window_min=60.0,  # 45×~1.33 buffer ≈ one bar + slack
 )
 
+# BNBUSDT — volatility between ETH and XAU (BNB is mid-cap, ~2-3× ETH amplitude).
+# BNB moves faster than ETH: tighter initial SL (1.3×) and higher breath (midway ETH/XAU).
+# stop_order_buffer=0.3 same as ETH (both on Binance USDT-M).
+BNB_PROFILE = BreathingProfile(
+    symbol_tag="BNB",
+    initial_sl_atr=1.3,       # tighter than ETH (1.5) — BNB spikes fast
+    stop_order_buffer=0.3,     # Binance USDT-M buffer (same as ETH)
+    early_breakeven_atr=0.0,
+    step_trigger_atr=0.45,
+    step_advance_atr=0.30,
+    phase2_trigger_atr=3.0,
+    coef_min=1.6,              # between ETH (2.0) and XAU (1.5)
+    coef_max=2.2,              # between ETH (2.5) and XAU (2.0)
+    chart_tf_min=60.0,         # BNB often traded on lower TF than ETH
+    stagnant_window_min=60.0,  # between ETH (90m) and XAU (45m)
+)
+
 _PROFILES: dict[str, BreathingProfile] = {
     CANONICAL_ETH: ETH_PROFILE,
     CANONICAL_XAU: XAU_PROFILE,
+    CANONICAL_BNB: BNB_PROFILE,
 }
 
 

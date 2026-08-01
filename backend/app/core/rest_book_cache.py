@@ -1,6 +1,6 @@
 """Shared REST book cache — one fetch serves all symbols for a user.
 
-Dual ETH+XAU supervisors previously each polled position/orders every 0.5s,
+Dual ETH+XAU+BNB supervisors each previously polled position/orders every 0.5s,
 doubling Binance IP weight and triggering -1003. Cache merges:
   • positions: one futures_position_information() (all symbols)
   • open orders: one futures_get_open_orders() (all symbols)

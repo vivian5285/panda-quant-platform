@@ -1,4 +1,4 @@
-"""Combined ETH+XAU notional exposure guard (≤ equity × MAX_COMBINED_NOTIONAL_MULT)."""
+"""Combined ETH+XAU+BNB notional exposure guard (≤ equity × MAX_COMBINED_NOTIONAL_MULT)."""
 
 from __future__ import annotations
 
