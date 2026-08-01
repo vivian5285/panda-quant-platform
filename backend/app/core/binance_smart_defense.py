@@ -1319,10 +1319,10 @@ class BinanceSmartDefenseMixin:
                         if close_side:
                             from app.core.symbol_precision import round_quantity
                             # FIX: cap qty at live_qty to avoid Binance -4118 (reduceOnly > position)
-                            # ETH: live_qty=0.032, 10%=0.0032→1.0 → overflow; cap to live_qty
-                            tp1_qty = round_quantity(min(live_qty, live_qty * 0.10))
-                            if tp1_qty < 1.0:
-                                tp1_qty = 1.0
+                            # ETH: live_qty=0.032, 10%=0.0032→round→0.003→if<1.0→1.0>pos→fail
+                            # Correct: apply min AFTER round so small qty stays small (Binance allows it)
+                            pct_qty = round_quantity(live_qty * 0.10)
+                            tp1_qty = min(pct_qty, live_qty)
                             result = self._place_limit_with_retry(
                                 close_side,
                                 float(tp1_qty),
@@ -1383,11 +1383,9 @@ class BinanceSmartDefenseMixin:
                             close_side = self._tp_close_side_label()
                             if close_side:
                                 from app.core.symbol_precision import round_quantity
-                                # FIX: cap qty at live_qty to avoid Binance -4118
-                                # ETH: live_qty=0.032, 20%=0.0064→1.0 → overflow; cap to live_qty
-                                tp2_qty = round_quantity(min(live_qty, live_qty * 0.20))
-                                if tp2_qty < 1.0:
-                                    tp2_qty = 1.0
+                                # FIX: apply min AFTER round so small qty stays small (Binance allows it)
+                                pct_qty = round_quantity(live_qty * 0.20)
+                                tp2_qty = min(pct_qty, live_qty)
                                 result = self._place_limit_with_retry(
                                     close_side,
                                     float(tp2_qty),
