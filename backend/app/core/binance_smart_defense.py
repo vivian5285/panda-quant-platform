@@ -243,7 +243,7 @@ class BinanceSmartDefenseMixin:
         try:
             pm = getattr(self, "position_manager", None)
             if pm and hasattr(pm, "get_position"):
-                pos = pm.get_position(getattr(self, "symbol", None)) or {}
+                pos = pm.get_position(getattr(self, "symbol", None), force_refresh=True) or {}
                 return float(pos.get("positionAmt") or 0)
         except Exception:
             pass
@@ -441,7 +441,8 @@ class BinanceSmartDefenseMixin:
 
     def _collect_limit_tp_prices(self) -> list[float]:
         prices: list[float] = []
-        for o in self.client.get_open_orders(self.symbol) or []:
+        # force_refresh=True: stale order cache causes phantom fills / missed cancellations.
+        for o in self.client.get_open_orders(self.symbol, force_refresh=True) or []:
             if not self._is_tp_limit_order(o):
                 continue
             px = float(o.get("price", 0) or 0)
@@ -635,7 +636,8 @@ class BinanceSmartDefenseMixin:
 
     def _cancel_stop_orders(self) -> int:
         cancelled = 0
-        for o in self.client.get_open_orders(self.symbol) or []:
+        # force_refresh=True: stale cache would miss just-cancelled or just-filled stops.
+        for o in self.client.get_open_orders(self.symbol, force_refresh=True) or []:
             if o.get("type") not in ("STOP_MARKET", "STOP"):
                 continue
             oid = o.get("orderId")
@@ -663,8 +665,9 @@ class BinanceSmartDefenseMixin:
         CRITICAL: never return True on unreadable book (that lied as「已有」→ 裸仓续开).
         Callers must treat None as unknown — refuse place AND refuse「已保护」skip.
         """
+        # force_refresh=True: stale cache causes false-negative (stop on book looks empty).
         try:
-            book = self.client.get_open_orders(self.symbol)
+            book = self.client.get_open_orders(self.symbol, force_refresh=True)
         except Exception:
             return None
         if book is None:
@@ -799,7 +802,8 @@ class BinanceSmartDefenseMixin:
             except Exception:
                 adverse_prices = set()
         cancelled = 0
-        for o in self.client.get_open_orders(self.symbol) or []:
+        # force_refresh=True: stale cache would miss stale ghost stops.
+        for o in self.client.get_open_orders(self.symbol, force_refresh=True) or []:
             if o.get("type") not in ("STOP_MARKET", "STOP"):
                 continue
             stop_px = self._order_stop_price(o)
@@ -1429,8 +1433,10 @@ class BinanceSmartDefenseMixin:
         """Cancel TP LIMITs only. Unreadable book → -1 and NEVER cancel_all (protect STOP)."""
         cancelled = 0
         side_snap = self._flat_purge_side_snapshot() if flat_purge else None
+        # Critical: force_refresh=True — stale order cache (ORDER_TTL=90s) causes us
+        # to miss just-filled TPs, leading to wrong TP state and ghost cancellation.
         try:
-            book = self.client.get_open_orders(self.symbol)
+            book = self.client.get_open_orders(self.symbol, force_refresh=True)
         except Exception as e:
             self._def_log(
                 f"✗ 撤TP中止·盘口不可读（禁 cancel_all，防误伤STOP/-1003）: {e}",

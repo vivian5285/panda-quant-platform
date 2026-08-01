@@ -857,13 +857,15 @@ class BinanceClient:
             rows: list[dict] = []
             reg_ok = algo_ok = True
             try:
-                # Prefer throttled cached path — never raw futures_get_open_orders
-                rows.extend(self.get_open_orders(symbol=symbol) or [])
+                # force_refresh=True: invalidate above set fetched_at=0 but the in-memory
+                # dict still holds old rows. Without force_refresh the cache check returns
+                # those stale rows immediately without hitting exchange.
+                rows.extend(self.get_open_orders(symbol=symbol, force_refresh=True) or [])
             except Exception as e:
                 logger.warning("[User %s] mop-up list regular failed: %s", self.user_id, e)
                 reg_ok = False
             try:
-                rows.extend(self.get_open_algo_orders(symbol=symbol) or [])
+                rows.extend(self.get_open_algo_orders(symbol=symbol, force_refresh=True) or [])
             except Exception as e:
                 logger.warning("[User %s] mop-up list algo failed: %s", self.user_id, e)
                 algo_ok = False

@@ -876,7 +876,8 @@ class PositionSupervisor(
         live_qty = float((pos or {}).get("size") or (pos or {}).get("qty") or 0)
         # Prefer live exchange qty via position_manager when available
         try:
-            live_pos = self.position_manager.get_position(self.symbol)
+            # force_refresh=True: stale cache would cause wrong qty in reconciliation log.
+            live_pos = self.position_manager.get_position(self.symbol, force_refresh=True)
             if live_pos is not None:
                 live_qty = abs(float(live_pos.get("positionAmt") or live_pos.get("size") or 0))
         except Exception:
@@ -1211,7 +1212,8 @@ class PositionSupervisor(
                 side = "LONG" if ps == "long" else ("SHORT" if ps == "short" else None)
             entry = float(pos.get("entry_price") or pos.get("entryPrice") or 0)
             return side, qty, entry
-        pos = self.position_manager.get_position(self.symbol)
+        # force_refresh=True: stale cache would cause wrong open-size on same-direction TV.
+        pos = self.position_manager.get_position(self.symbol, force_refresh=True)
         live_amt = float(pos.get("positionAmt", 0) or 0) if pos else 0.0
         live_side = "LONG" if live_amt > 0 else ("SHORT" if live_amt < 0 else None)
         return live_side, abs(live_amt), float(pos.get("entryPrice", 0) or 0) if pos else 0.0
@@ -1476,7 +1478,7 @@ class PositionSupervisor(
             "book_status": "unknown",
             "degraded_unknown": False,
         }
-        detail["orders_before"] = self._count_open_book_orders(force_refresh=force_refresh)
+        detail["orders_before"] = self._count_open_book_orders(force_refresh=True)
         detail["raw_before"] = self._count_raw_exchange_orders(force_refresh=True)
         # Extra rounds when book list is unknown (cool-down / transient)
         max_rounds = 5
@@ -1497,9 +1499,9 @@ class PositionSupervisor(
             self.consumed_tp_levels = []
             if hasattr(self, "radar_latched"):
                 self.radar_latched = False
-            time.sleep(0.35 + round_i * 0.25)
+            time.sleep(0.25 + round_i * 0.15)
             raw = self._count_raw_exchange_orders(force_refresh=True)
-            filtered = self._count_open_book_orders()
+            filtered = self._count_open_book_orders(force_refresh=True)
             leftover_meta = (
                 int(cancel_meta.get("leftover"))
                 if isinstance(cancel_meta, dict) and cancel_meta.get("leftover") is not None
@@ -1678,7 +1680,8 @@ class PositionSupervisor(
         try:
             live = self._get_active_position() if hasattr(self, "_get_active_position") else None
             if live is None and hasattr(self, "position_manager"):
-                raw = self.position_manager.get_position(self.symbol)
+                # force_refresh=True: stale cache would mask a live residual → zombie open.
+                raw = self.position_manager.get_position(self.symbol, force_refresh=True)
                 if raw and float(raw.get("positionAmt", 0) or 0) != 0:
                     amt = float(raw["positionAmt"])
                     live = {"size": abs(amt), "side": "LONG" if amt > 0 else "SHORT"}
@@ -1741,7 +1744,7 @@ class PositionSupervisor(
                     "[User %s] force_flat cancel attempt %s: %s",
                     self.user_id, attempt, e,
                 )
-            time.sleep(0.45)
+            time.sleep(0.25)
             try:
                 close_status = self._close_all(
                     reason if attempt == 1 else f"{reason}·残仓扫尾#{attempt}",
@@ -1866,7 +1869,8 @@ class PositionSupervisor(
         held_regime = held_regime if held_regime is not None else self.regime
         held_atr = float(held_atr if held_atr is not None else self.current_atr)
 
-        pos = self.position_manager.get_position(self.symbol)
+        # force_refresh=True: stale cache would cause wrong side detection → missed force-flat.
+        pos = self.position_manager.get_position(self.symbol, force_refresh=True)
         has_pos = bool(pos and float(pos.get("positionAmt", 0)) != 0)
         current_side = None
         entry_price = float(self.watched_entry or 0)
@@ -2040,7 +2044,7 @@ class PositionSupervisor(
             purged = int(self._cancel_binance_all_close_stops() or 0)
             if purged:
                 self._log("SIGNAL", f"🧹 开仓前清残留硬止损/条件单 ×{purged}")
-        time.sleep(0.4)
+        time.sleep(0.2)
         # Hard gate: abort only on *confirmed* leftovers.
         # Unknown (-1 / cool-down list fail) must degrade-allow — otherwise
         # 先平后开 becomes「只平不开」(user6 2026-07-26 trade127).
@@ -2065,7 +2069,7 @@ class PositionSupervisor(
                     leftover = int(self.client._mop_up_leftover_orders(self.symbol, rounds=2))
                 except Exception:
                     leftover = -1
-                time.sleep(0.3)
+                time.sleep(0.15)
                 raw_left = self._count_raw_exchange_orders(force_refresh=True)
                 book_status = self._classify_book_clean_result(
                     raw_after=raw_left,
@@ -3605,8 +3609,12 @@ class PositionSupervisor(
         cancelled_ids: list[int] = []
         try:
             for round_i in range(CANCEL_VERIFY_ROUNDS):
+                # Critical: force_refresh=True — stale order cache causes us to miss
+                # TP fills that just happened (ORDER_TTL=90s). Missing them means we
+                # cancel stale TPs that already filled (harmless) OR think the book is
+                # empty when it's not (dangerous — subsequent _close_all uses wrong qty).
                 try:
-                    open_orders = self.client.get_open_orders(self.symbol) or []
+                    open_orders = self.client.get_open_orders(self.symbol, force_refresh=True) or []
                 except Exception as e:
                     return {
                         "ok": False,
@@ -3621,7 +3629,7 @@ class PositionSupervisor(
                 time.sleep(0.4 + round_i * 0.25)
 
                 try:
-                    remaining = self.client.get_open_orders(self.symbol) or []
+                    remaining = self.client.get_open_orders(self.symbol, force_refresh=True) or []
                 except Exception as e:
                     return {
                         "ok": False,
@@ -3639,7 +3647,7 @@ class PositionSupervisor(
                 time.sleep(0.35)
 
             try:
-                remaining = self.client.get_open_orders(self.symbol) or []
+                remaining = self.client.get_open_orders(self.symbol, force_refresh=True) or []
             except Exception as e:
                 return {
                     "ok": False,
@@ -4711,13 +4719,19 @@ class PositionSupervisor(
         }
 
     def _wait_until_flat(self, timeout: float = FLAT_WAIT_TIMEOUT, poll: float = FLAT_WAIT_POLL) -> bool:
-        """确认交易所持仓归零后再新开，避免残仓叠加。查询失败视为未确认空仓。"""
+        """确认交易所持仓归零后再新开，避免残仓叠加。查询失败视为未确认空仓。
+
+        Critical: force_refresh=True on every poll — stale cache (60s POS_TTL) would cause
+        us to think the exchange is flat when a market close just opened a residual opposite
+        position (the exact bug that produced the 2026-08-01 21:31 ghost LONG).
+        """
         from app.core.exchange_errors import ExchangeTransientError
 
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
-                pos = self._get_active_position()
+                # Critical: force_refresh=True bypasses stale cache so we always see live position.
+                pos = self._get_active_position(force_refresh=True)
             except ExchangeTransientError:
                 time.sleep(poll)
                 continue
@@ -4725,7 +4739,7 @@ class PositionSupervisor(
                 return True
             time.sleep(poll)
         try:
-            pos = self._get_active_position()
+            pos = self._get_active_position(force_refresh=True)
         except ExchangeTransientError:
             return False
         return not pos or pos["size"] <= 0
@@ -4750,9 +4764,13 @@ class PositionSupervisor(
         return False
 
     def _confirm_exchange_flat(self, polls: int = FLAT_CONFIRM_POLLS, delay: float = FLAT_CONFIRM_DELAY) -> bool:
-        """Require consecutive zero-amt reads to avoid transient API glitches."""
+        """Require consecutive zero-amt reads to avoid transient API glitches.
+
+        Critical: force_refresh=True — stale cache would confirm flat when a market close
+        just created a residual position.
+        """
         for i in range(polls):
-            pos = self.position_manager.get_position(self.symbol)
+            pos = self.position_manager.get_position(self.symbol, force_refresh=True)
             amt = float(pos.get("positionAmt", 0)) if pos else 0.0
             if amt != 0:
                 return False
@@ -5000,7 +5018,8 @@ class PositionSupervisor(
             )
             return False
 
-        pos_before = self.position_manager.get_position(self.symbol)
+        # force_refresh=True: stale cache would make _close_all use wrong qty.
+        pos_before = self.position_manager.get_position(self.symbol, force_refresh=True)
         had_position = bool(
             pos_before and float(pos_before.get("positionAmt", 0) or 0) != 0
         )
@@ -5009,7 +5028,8 @@ class PositionSupervisor(
         self._close_all(reason, attribution=attribution, close_trigger=trigger)
 
         time.sleep(0.35)
-        pos_after = self.position_manager.get_position(self.symbol)
+        # force_refresh=True: stale cache would incorrectly report flat after close.
+        pos_after = self.position_manager.get_position(self.symbol, force_refresh=True)
         still_amt = float(pos_after.get("positionAmt", 0)) if pos_after else 0.0
         if still_amt != 0:
             side = "LONG" if still_amt > 0 else "SHORT"
@@ -5479,8 +5499,9 @@ class PositionSupervisor(
                             self._flush_deferred_stop_qty_resize()
                         except Exception:
                             pass
-                    try:
-                        pos = self.position_manager.get_position(self.symbol)
+            # force_refresh=True: stale cache causes wrong flat/size detection in sentinel loop.
+            try:
+                pos = self.position_manager.get_position(self.symbol, force_refresh=True)
                     except ExchangeTransientError as e:
                         self._handle_position_query_failure(e)
                         # Do NOT treat as flat — sleep first, then next poll
@@ -5738,8 +5759,11 @@ class PositionSupervisor(
         from app.core.exchange_errors import ExchangeTransientError
 
         self._last_close_all_status = "ok"
+        # Critical: always bypass stale cache when closing — TP partial fills may have
+        # reduced position since the last REST poll (60s POS_TTL). Stale qty → reverse
+        # open → phantom opposite position. See: 2026-08-01 21:31 ghost LONG root cause.
         try:
-            pos_before = self.position_manager.get_position(self.symbol)
+            pos_before = self.position_manager.get_position(self.symbol, force_refresh=True)
         except ExchangeTransientError as e:
             self._handle_position_query_failure(e)
             self._last_close_all_status = "QUERY_FAILED"
@@ -5773,8 +5797,10 @@ class PositionSupervisor(
             exit_price = 0.0
 
         for _ in range(5):
+            # Critical: force_refresh=True every iteration — TP fills between iterations
+            # would otherwise use stale cached positionAmt and oversize the close.
             try:
-                pos = self.position_manager.get_position(self.symbol)
+                pos = self.position_manager.get_position(self.symbol, force_refresh=True)
             except ExchangeTransientError as e:
                 self._handle_position_query_failure(e)
                 self._last_close_all_status = "QUERY_FAILED"
@@ -5791,12 +5817,21 @@ class PositionSupervisor(
             if live_close_qty <= 0:
                 closed_successfully = True
                 break
-            self.client.place_market_order(
+            # Check return value: Binance may silently reject reduce-only on some paths,
+            # or return None on network errors. Silent failure → phantom opposite position.
+            order_resp = self.client.place_market_order(
                 close_side,
                 live_close_qty,
                 self.symbol,
                 reduce_only=True,
             )
+            if order_resp is None:
+                logger.warning(
+                    "[User %s] _close_all market %s qty=%.6f returned None — retry in loop",
+                    self.user_id, close_side, live_close_qty,
+                )
+                time.sleep(1.5)
+                continue  # retry in next loop iteration with fresh position query
             time.sleep(1.5)
 
         is_close_protect = bool(
@@ -5899,7 +5934,7 @@ class PositionSupervisor(
         elif had_position and not closed_successfully:
             residual_amt = 0.0
             try:
-                pos = self.position_manager.get_position(self.symbol)
+                pos = self.position_manager.get_position(self.symbol, force_refresh=True)
             except ExchangeTransientError as e:
                 self._handle_position_query_failure(e)
                 self._last_close_all_status = "QUERY_FAILED"

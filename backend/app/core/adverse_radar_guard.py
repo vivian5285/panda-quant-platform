@@ -987,7 +987,8 @@ class AdverseRadarMixin:
             if hasattr(self, "_get_active_position"):
                 pos = self._get_active_position()
             elif hasattr(self, "position_manager"):
-                pos = self.position_manager.get_position(self.symbol)
+                # force_refresh=True: radar exit must use live qty, not stale cache.
+                pos = self.position_manager.get_position(self.symbol, force_refresh=True)
             if isinstance(pos, dict):
                 exch_qty = abs(float(pos.get("size") or pos.get("positionAmt") or 0))
         except Exception as exc:
@@ -1733,8 +1734,13 @@ class AdverseRadarMixin:
         force_replace: bool = False,
         at_open: bool = False,
     ) -> dict[str, Any]:
-        """Route A · Binance/OKX/Gate：单 closePosition = max/min(tv_sl, 雷达)。"""
-        live_qty = self._resolve_adverse_live_qty(live_qty)
+        """Route A · Binance/OKX/Gate：单 closePosition = max/min(tv_sl, 雷达)。
+
+        Critical: force_refresh=True — hard SL qty must match live exchange position.
+        Stale qty → wrong stop size → reverse open on trigger.
+        """
+        # Critical: force_refresh=True to bypass stale cache (60s POS_TTL).
+        live_qty = self._resolve_adverse_live_qty(live_qty, force_refresh=True)
         if live_qty <= 0:
             return {"armed": False, "reason": "no_live_position", "live_qty": 0}
 
@@ -1940,16 +1946,26 @@ class AdverseRadarMixin:
             **audit,
         }
 
-    def _resolve_adverse_live_qty(self, fallback_qty: float) -> float:
+    def _resolve_adverse_live_qty(self, fallback_qty: float, *, force_refresh: bool = False) -> float:
         """Always anchor adverse slices to exchange live position, not stale watched_qty.
 
-        Under REST cool-down: never hit exchange — return watched_qty / fallback.
+        Args:
+            fallback_qty: safe fallback when no live position can be determined.
+            force_refresh: bypass REST cool-down and serve fresh exchange data.
+                Required for all critical paths: hard-SL placement, radar trail, close.
+                Defaults False (preserve REST budget) for non-critical periodic audits.
+
+        Under REST cool-down + force_refresh=False: return watched_qty / fallback.
+        Under REST cool-down + force_refresh=True: ALWAYS hit exchange (skip cool-down).
         """
         try:
             from app.core.rest_throttle_valve import rest_silent
 
             ex = getattr(self, "exchange_id", None) or "binance"
-            if rest_silent(exchange=ex, user_id=getattr(self, "user_id", None)):
+            # When force_refresh=True, we bypass REST cool-down and hit exchange directly.
+            # This is critical for hard-SL placement and radar qty decisions — stale data
+            # here causes wrong qty → reverse open → ghost opposite position.
+            if not force_refresh and rest_silent(exchange=ex, user_id=getattr(self, "user_id", None)):
                 wq = float(getattr(self, "watched_qty", 0) or 0)
                 return wq if wq > 0 else float(fallback_qty or 0)
         except Exception:
@@ -2241,7 +2257,7 @@ class AdverseRadarMixin:
         means qty resize at the same frozen price when book qty actually differs.
         Recover/pyramid must NOT cancel-replace hard for no reason.
         """
-        live_qty = self._resolve_adverse_live_qty(live_qty)
+        live_qty = self._resolve_adverse_live_qty(live_qty, force_refresh=True)
         hard = self._frozen_hard_px()
         if live_qty <= 0:
             return {"armed": False, "reason": "no_live_position", "live_qty": 0, "label": self._hard_stop_label()}
@@ -3398,7 +3414,7 @@ class AdverseRadarMixin:
                     )
             return True
 
-        live_qty = self._resolve_adverse_live_qty(live_qty)
+        live_qty = self._resolve_adverse_live_qty(live_qty, force_refresh=True)
         if live_qty <= 0 or float(getattr(self, "current_sl", 0) or 0) <= 0:
             return False
 
@@ -3949,7 +3965,7 @@ class AdverseRadarMixin:
         )
         if not eval_ready:
             return False
-        live_qty = self._resolve_adverse_live_qty(live_qty)
+        live_qty = self._resolve_adverse_live_qty(live_qty, force_refresh=True)
         entry = float(getattr(self, "watched_entry", 0) or 0)
         if hasattr(self, "_refresh_breathing_state_on_recover"):
             self._refresh_breathing_state_on_recover(curr_px, entry)
@@ -4545,7 +4561,7 @@ class AdverseRadarMixin:
 
     def _sync_adverse_shield_with_retry(self, live_qty: float) -> dict[str, Any]:
         """Exchange-first shield audit with settle retries (post place/cancel)."""
-        live_qty = self._resolve_adverse_live_qty(live_qty)
+        live_qty = self._resolve_adverse_live_qty(live_qty, force_refresh=True)
         plan = self._compute_adverse_stop_plan(live_qty)
         self._refresh_adverse_shield_audit(
             plan,
@@ -4615,7 +4631,7 @@ class AdverseRadarMixin:
                 }
         except Exception:
             pass
-        live_qty = self._resolve_adverse_live_qty(live_qty)
+        live_qty = self._resolve_adverse_live_qty(live_qty, force_refresh=True)
         plan = self._compute_adverse_stop_plan(live_qty)
         audit = self._audit_adverse_shield_live(plan)
         open_stops = self._collect_adverse_stop_orders()
@@ -4808,7 +4824,7 @@ class AdverseRadarMixin:
         4) place ONLY if missing (never cancel-all + blind re-arm)
         禁止 VPS 10%/宽止损兜底。
         """
-        live_qty = self._resolve_adverse_live_qty(live_qty)
+        live_qty = self._resolve_adverse_live_qty(live_qty, force_refresh=True)
         if live_qty <= 0:
             return {"armed": False, "reason": "no_live_position", "live_qty": 0}
 
@@ -4961,7 +4977,7 @@ class AdverseRadarMixin:
         if adverse_pct is None:
             adverse_pct = self._adverse_move_pct(curr_px)
 
-        live_qty = self._resolve_adverse_live_qty(live_qty)
+        live_qty = self._resolve_adverse_live_qty(live_qty, force_refresh=True)
         if live_qty <= 0:
             return False
 
@@ -5224,7 +5240,7 @@ class AdverseRadarMixin:
         if pause_until and time.time() < pause_until:
             return
 
-        live_qty = self._resolve_adverse_live_qty(live_qty)
+        live_qty = self._resolve_adverse_live_qty(live_qty, force_refresh=True)
         if hasattr(self, "_sync_consumed_tp_levels"):
             self._sync_consumed_tp_levels(live_qty, curr_px)
 

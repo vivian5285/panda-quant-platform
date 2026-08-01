@@ -421,7 +421,8 @@ def resolve_supervisor_live_side(supervisor) -> tuple[str | None, float]:
 
     pm = getattr(supervisor, "position_manager", None)
     if pm and symbol:
-        pos = pm.get_position(symbol)
+        # force_refresh=True: startup audit must read live position, not stale cache.
+        pos = pm.get_position(symbol, force_refresh=True)
         if pos and isinstance(pos, dict):
             amt = _safe_float(pos.get("positionAmt", 0))
             if amt != 0:
@@ -768,7 +769,8 @@ class StartupReconcileMixin:
         """实盘头寸 vs 挂单止盈合计 — 检测超挂/方向背离."""
         amt = position_amt
         if amt is None and hasattr(self, "position_manager"):
-            pos = self.position_manager.get_position(getattr(self, "symbol", ""))
+            # force_refresh=True: startup audit must use live position, not stale cache.
+            pos = self.position_manager.get_position(getattr(self, "symbol", ""), force_refresh=True)
             if pos:
                 amt = float(pos.get("positionAmt", 0) or 0)
         side = live_side or live_side_from_amt(amt or 0)
@@ -928,7 +930,8 @@ class StartupReconcileMixin:
         entry = float(getattr(self, "watched_entry", 0) or 0)
         pm = getattr(self, "position_manager", None)
         if pm and getattr(self, "symbol", None):
-            pos = pm.get_position(self.symbol)
+            # force_refresh=True: startup must read live entry price, not stale cache.
+            pos = pm.get_position(self.symbol, force_refresh=True)
             if pos:
                 entry = float(pos.get("entryPrice") or entry or 0)
                 self.watched_entry = entry
@@ -1063,7 +1066,8 @@ class StartupReconcileMixin:
             if hasattr(self.client, "_mop_up_leftover_orders"):
                 leftover_n = int(self.client._mop_up_leftover_orders(sym, rounds=mop_rounds))
             elif hasattr(self.client, "get_open_orders"):
-                leftover_n = len(self.client.get_open_orders(sym) or [])
+                # force_refresh=True: startup must detect real leftovers, not stale cache.
+                leftover_n = len(self.client.get_open_orders(sym, force_refresh=True) or [])
             # Extra cancel_all passes if still dirty
             for _extra in range(3):
                 if leftover_n == 0:
@@ -1079,7 +1083,8 @@ class StartupReconcileMixin:
                 if hasattr(self.client, "_mop_up_leftover_orders"):
                     leftover_n = int(self.client._mop_up_leftover_orders(sym, rounds=2))
                 elif hasattr(self.client, "get_open_orders"):
-                    leftover_n = len(self.client.get_open_orders(sym) or [])
+                    # force_refresh=True: startup must detect real leftovers, not stale cache.
+                    leftover_n = len(self.client.get_open_orders(sym, force_refresh=True) or [])
         except Exception as e:
             detail["leftover_verify_error"] = str(e)[:200]
             leftover_n = -1
@@ -1210,7 +1215,8 @@ class StartupReconcileMixin:
         if not sym or not hasattr(self.client, "get_open_orders"):
             return False
         try:
-            orders = self.client.get_open_orders(sym) or []
+            # force_refresh=True: idle scan must detect real orphans, not stale cache.
+            orders = self.client.get_open_orders(sym, force_refresh=True) or []
         except Exception as exc:
             logger.debug("[User %s] idle orphan order scan: %s", getattr(self, "user_id", "?"), exc)
             return False
