@@ -1318,7 +1318,9 @@ class BinanceSmartDefenseMixin:
                         close_side = self._tp_close_side_label()
                         if close_side:
                             from app.core.symbol_precision import round_quantity
-                            tp1_qty = round_quantity(live_qty * 0.10)
+                            # FIX: cap qty at live_qty to avoid Binance -4118 (reduceOnly > position)
+                            # ETH: live_qty=0.032, 10%=0.0032→1.0 → overflow; cap to live_qty
+                            tp1_qty = round_quantity(min(live_qty, live_qty * 0.10))
                             if tp1_qty < 1.0:
                                 tp1_qty = 1.0
                             result = self._place_limit_with_retry(
@@ -1342,68 +1344,71 @@ class BinanceSmartDefenseMixin:
                                     "[重启TP] force-patch TP1 failed: " + str(err)
                                 )
 
-                    # === TP2 强制补挂增强：与 TP1 相同的兜底逻辑 ===
-                    # 当 TV 头寸对账认为 TP2 应该挂在盘上但实际缺失时，强制补挂。
-                    # 场景：开仓时 TP2 因名义值不足被折叠，或重启后 consumed_tp_levels 未恢复。
-                    if (
-                        attempt == 0
-                        and live_qty > 0
-                    ):
-                        if len(tv_tps) > 1:
-                            _tp2 = float(tv_tps[1])
-                            tp2_price = _tp2 if _tp2 > 0 else 0.0
-                        else:
-                            tp2_price = 0.0
-                        initial_qty_val = float(getattr(self, "initial_qty", 0) or 0)
-                        # 判断 TP2 是否应该在盘上但实际不在
-                        # TP1 可能已成交(consumed包含1)，此时 TP2 应该是唯一的待挂档位
-                        tp2_should_be_on_book = (
-                            tp2_price > 0
-                            and 2 not in consumed
-                            and not self._tp_limit_exists_near(tp2_price)
-                        )
-                        # TV 对账认为 TP2 缺失
-                        tv_thinks_tp2_missing = 2 in tv_audit.get("missing_tp", [])
-                        tv_thinks_tp1_filled = 1 in tv_audit.get("consumed_inferred", [])
-                        # TV 对账认为 TP1 未成交但 TP2 应该挂（TP1被折叠到TP2的场景）
-                        tv_thinks_tp1_not_filled = 1 not in tv_audit.get("consumed_inferred", [])
-                        # TP1 已成交 → TP2 必须挂（雷达管理 70%）
-                        tp1_consumed = 1 in consumed
-                        if tp2_should_be_on_book or tv_thinks_tp2_missing:
-                            if tp1_consumed or tv_thinks_tp1_not_filled or tv_thinks_tp2_missing:
-                                self._def_log(
-                                    "[重启TP] force-patch TP2@" + str(tp2_price)
-                                    + " | TP1_consumed=" + str(tp1_consumed)
-                                    + " | tv_tp2_missing=" + str(tv_thinks_tp2_missing)
+                # === TP2 强制补挂增强：独立block，不依赖TP1结果 ===
+                # 当 TV 头寸对账认为 TP2 应该挂在盘上但实际缺失时，强制补挂。
+                # 场景：开仓时 TP2 因名义值不足被折叠，或重启后 consumed_tp_levels 未恢复。
+                # BUG FIX: 原逻辑嵌套在 TP1 if block 内 → TP1 失败时 TP2 永不执行；
+                #          改为独立 block，保证 TP2 即使 TP1 失败也能触发。
+                if (
+                    attempt == 0
+                    and live_qty > 0
+                ):
+                    if len(tv_tps) > 1:
+                        _tp2 = float(tv_tps[1])
+                        tp2_price = _tp2 if _tp2 > 0 else 0.0
+                    else:
+                        tp2_price = 0.0
+                    initial_qty_val = float(getattr(self, "initial_qty", 0) or 0)
+                    # 判断 TP2 是否应该在盘上但实际不在
+                    # TP1 可能已成交(consumed包含1)，此时 TP2 应该是唯一的待挂档位
+                    tp2_should_be_on_book = (
+                        tp2_price > 0
+                        and 2 not in consumed
+                        and not self._tp_limit_exists_near(tp2_price)
+                    )
+                    # TV 对账认为 TP2 缺失
+                    tv_thinks_tp2_missing = 2 in tv_audit.get("missing_tp", [])
+                    tv_thinks_tp1_filled = 1 in tv_audit.get("consumed_inferred", [])
+                    # TV 对账认为 TP1 未成交但 TP2 应该挂（TP1被折叠到TP2的场景）
+                    tv_thinks_tp1_not_filled = 1 not in tv_audit.get("consumed_inferred", [])
+                    # TP1 已成交 → TP2 必须挂（雷达管理 70%）
+                    tp1_consumed = 1 in consumed
+                    if tp2_should_be_on_book or tv_thinks_tp2_missing:
+                        if tp1_consumed or tv_thinks_tp1_not_filled or tv_thinks_tp2_missing:
+                            self._def_log(
+                                "[重启TP] force-patch TP2@" + str(tp2_price)
+                                + " | TP1_consumed=" + str(tp1_consumed)
+                                + " | tv_tp2_missing=" + str(tv_thinks_tp2_missing)
+                            )
+                            close_side = self._tp_close_side_label()
+                            if close_side:
+                                from app.core.symbol_precision import round_quantity
+                                # FIX: cap qty at live_qty to avoid Binance -4118
+                                # ETH: live_qty=0.032, 20%=0.0064→1.0 → overflow; cap to live_qty
+                                tp2_qty = round_quantity(min(live_qty, live_qty * 0.20))
+                                if tp2_qty < 1.0:
+                                    tp2_qty = 1.0
+                                result = self._place_limit_with_retry(
+                                    close_side,
+                                    float(tp2_qty),
+                                    float(tp2_price),
+                                    "TP2",
                                 )
-                                close_side = self._tp_close_side_label()
-                                if close_side:
-                                    from app.core.symbol_precision import round_quantity
-                                    # TP2 qty = 20% of initial, min 1.0
-                                    tp2_qty = round_quantity(live_qty * 0.20)
-                                    if tp2_qty < 1.0:
-                                        tp2_qty = 1.0
-                                    result = self._place_limit_with_retry(
-                                        close_side,
-                                        float(tp2_qty),
-                                        float(tp2_price),
-                                        "TP2",
+                                record_tp_rehang_attempt(self, success=result.get("ok", False))
+                                if result.get("ok"):
+                                    self._def_log(
+                                        "[重启TP] force-patch TP2@" + str(tp2_price)
+                                        + " placed OK qty=" + str(tp2_qty)
                                     )
-                                    record_tp_rehang_attempt(self, success=result.get("ok", False))
-                                    if result.get("ok"):
-                                        self._def_log(
-                                            "[重启TP] force-patch TP2@" + str(tp2_price)
-                                            + " placed OK qty=" + str(tp2_qty)
-                                        )
-                                        time.sleep(0.5)
-                                        audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
-                                    else:
-                                        err = result.get("error", "unknown")
-                                        self._def_log(
-                                            "[重启TP] force-patch TP2 failed: " + str(err)
-                                        )
+                                    time.sleep(0.5)
+                                    audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
+                                else:
+                                    err = result.get("error", "unknown")
+                                    self._def_log(
+                                        "[重启TP] force-patch TP2 failed: " + str(err)
+                                    )
 
-            if self._defenses_fully_ok(
+                if self._defenses_fully_ok(
                 live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
             ):
                 self._def_log(
