@@ -4,6 +4,7 @@
 用法:
   docker compose exec backend python scripts/check_system.py
   docker compose exec backend python scripts/check_system.py --strict   # 有问题则 exit 1
+  docker compose exec backend python scripts/check_system.py --strict --network   # 含网络连通性检查
 """
 from __future__ import annotations
 
@@ -12,10 +13,12 @@ import importlib
 import json
 import os
 import socket
+import ssl
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime
-from urllib.error import URLError
-from urllib.request import urlopen
+from typing import Optional
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -27,6 +30,8 @@ WARN = "[WARN]"
 
 failures: list[str] = []
 warnings: list[str] = []
+
+TV_WEBHOOK_URL = "https://twinstar.pro/gemini/webhook"
 
 
 def ok(msg: str) -> None:
@@ -57,10 +62,114 @@ def check_port(host: str, port: int, name: str) -> None:
 
 def fetch_json(url: str) -> dict | None:
     try:
-        with urlopen(url, timeout=5) as resp:
+        with urllib.request.urlopen(url, timeout=5) as resp:
             return json.loads(resp.read().decode())
-    except URLError:
+    except urllib.error.URLError:
         return None
+
+
+def _check_tcp_port(host: str, port: int, timeout: float = 3.0) -> bool:
+    """Check if a TCP port is reachable."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        result = sock.connect_ex((host, port))
+        return result == 0
+    except socket.error:
+        return False
+    finally:
+        sock.close()
+
+
+def _https_get(url: str, timeout: float = 10.0) -> tuple[int, float]:
+    """Perform HTTPS GET, return (http_code, elapsed_seconds)."""
+    try:
+        start = datetime.now()
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            elapsed = (datetime.now() - start).total_seconds()
+            return resp.getcode(), elapsed
+    except urllib.error.HTTPError as e:
+        return e.code, -1.0
+    except (urllib.error.URLError, socket.error, ssl.SSLError):
+        return 0, -1.0
+
+
+def check_tv_webhook_connectivity() -> None:
+    """Section 0: TV Webhook 外部连通性（生产关键）。"""
+    print("\n[0] TV Webhook 外部连通性")
+    print(f"    目标: {TV_WEBHOOK_URL}")
+
+    host = "twinstar.pro"
+    port = 443
+
+    # DNS 解析
+    try:
+        info = socket.getaddrinfo(host, port)
+        resolved_ip = info[0][4][0] if info else ""
+        ok(f"DNS 解析 OK ({resolved_ip})")
+    except socket.gaierror as e:
+        fail(f"DNS 解析失败: {e}")
+
+    # TCP :443 握手
+    if _check_tcp_port(host, port):
+        ok(":443 端口开放")
+    else:
+        fail(":443 端口无法连接（防火墙/路由问题）")
+
+    # HTTPS GET /health
+    health_url = TV_WEBHOOK_URL.rstrip("/") + "/health"
+    code, elapsed = _https_get(health_url)
+    if code == 200:
+        latency_ms = int(elapsed * 1000)
+        ok(f"GET /health HTTP {code} ({elapsed:.3f}s · {latency_ms}ms)")
+    elif code == 0:
+        fail("无法连接 twinstar.pro（VPS 外网/防火墙问题）")
+    else:
+        warn(f"GET /health HTTP {code}")
+
+    # POST 无 secret 应拒绝
+    req = urllib.request.Request(
+        TV_WEBHOOK_URL,
+        data=b'{"action":"LONG"}',
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req, timeout=8)
+        fail("POST 无 secret 未被拒绝（安全风险！）")
+    except urllib.error.HTTPError as e:
+        if e.code in (403, 400):
+            ok(f"POST 无 secret 被正确拒绝 (HTTP {e.code})")
+        else:
+            warn(f"POST 返回 HTTP {e.code}")
+    except urllib.error.URLError as e:
+        warn(f"POST 请求失败: {e.reason}")
+
+
+def check_network_connectivity() -> None:
+    """Section N: 内网/外网可达性（交易所 + GitHub + NTP）。"""
+    print("\n[N] 内网/外网可达性")
+
+    targets = [
+        ("api.binance.com",        443, "Binance API"),
+        ("api.okx.com",            443, "OKX"),
+        ("api.gateio.ws",          443, "Gate.io"),
+        ("api.github.com",         443, "GitHub"),
+        ("ntp.aliyun.com",         123, "阿里云 NTP"),
+        ("114.114.114.114",        53,  "国内 DNS"),
+        ("8.8.8.8",               53,  "Google DNS"),
+    ]
+
+    all_ok = True
+    for host, port, label in targets:
+        if _check_tcp_port(host, port):
+            ok(f"{label} ({host})")
+        else:
+            fail(f"{label} ({host})")
+            all_ok = False
+
+    if all_ok:
+        ok("所有目标网络可达")
 
 
 def check_imports() -> None:
@@ -104,7 +213,7 @@ def check_ports() -> None:
 
 
 def check_http() -> None:
-    print("\n[3] HTTP 健康检查")
+    print("\n[3] HTTP 健康检查 + 本地 TV webhook")
     api_port = int(os.getenv("API_PORT", "8000"))
     webhook_port = int(os.getenv("WEBHOOK_PORT", "6010"))
 
@@ -122,6 +231,24 @@ def check_http() -> None:
         ok("/webhook /health 正常")
     else:
         fail("Webhook /health 不可达")
+
+    # 本地 Webhook 安全检查
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{webhook_port}/webhook",
+        data=b'{"action":"LONG"}',
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req, timeout=5)
+        fail("本地 Webhook 无 secret 未被拒绝")
+    except urllib.error.HTTPError as e:
+        if e.code in (403, 400):
+            ok(f"本地 Webhook 无 secret 被拒绝 (HTTP {e.code})")
+        else:
+            warn(f"本地 Webhook 返回 HTTP {e.code}")
+    except urllib.error.URLError:
+        warn("本地 Webhook 不可达（跳过安全检查）")
 
 
 def check_security() -> None:
@@ -397,6 +524,8 @@ def check_throttle_settings() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="双子星AI量化 · GEMINI AI 生产级全域自检")
     parser.add_argument("--strict", action="store_true", help="存在 FAIL 或 WARN 时 exit 1")
+    parser.add_argument("--network", action="store_true",
+                        help="包含 TV webhook 外部连通性 + 网络可达性检查")
     args = parser.parse_args()
 
     print("=" * 64)
@@ -405,9 +534,17 @@ def main() -> int:
     print(f"工作目录: {ROOT}")
     print("=" * 64)
 
+    # 0: TV Webhook 外部连通性（生产最关键，放第一位）
+    if args.network:
+        check_tv_webhook_connectivity()
+
     check_imports()
     check_ports()
     check_http()
+
+    if args.network:
+        check_network_connectivity()
+
     check_security()
     check_execution()
     check_persistence()

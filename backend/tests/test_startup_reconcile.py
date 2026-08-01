@@ -10,6 +10,12 @@ from app.core.startup_reconcile import (
     StartupReconcileMixin,
     classify_startup_pnl_track,
     format_startup_defense_summary,
+    compute_expected_tp_consumed_by_qty,
+    reconcile_tp_by_position_audit,
+    check_rehang_cooldown,
+    record_tp_rehang_attempt,
+    TP_REHANG_COOLDOWN_SEC,
+    TP_REHANG_MAX_ATTEMPTS,
 )
 
 
@@ -161,3 +167,161 @@ def test_unified_startup_profit_track_coexist_shield():
         result = probe._unified_startup_defense_reconcile(0.6, 2000.0, 2050.0)
     assert result["pnl_track"] == "profit_radar"
     assert merged.called
+
+
+# ============================================================================
+# TV头寸对账增强测试
+# ============================================================================
+
+def test_compute_tp_consumed_by_qty_tp1_filled():
+    """TP1成交：live ≈ init × 90%"""
+    consumed, reason = compute_expected_tp_consumed_by_qty(0.90, 1.0)
+    assert 1 in consumed
+    assert 2 not in consumed
+    assert "TP1" in reason
+
+
+def test_compute_tp_consumed_by_qty_tp12_filled():
+    """TP1+TP2成交：live ≈ init × 70%"""
+    consumed, reason = compute_expected_tp_consumed_by_qty(0.70, 1.0)
+    assert 1 in consumed
+    assert 2 in consumed
+    assert "TP1+TP2" in reason
+
+
+def test_compute_tp_consumed_by_qty_no_fill():
+    """无成交：live ≈ init"""
+    consumed, reason = compute_expected_tp_consumed_by_qty(0.99, 1.0)
+    assert len(consumed) == 0
+    assert "未明显减少" in reason
+
+
+def test_compute_tp_consumed_by_qty_zero_initial():
+    """初始头寸为0时无法推断"""
+    consumed, reason = compute_expected_tp_consumed_by_qty(0.5, 0.0)
+    assert len(consumed) == 0
+    assert "无法推断" in reason
+
+
+def test_reconcile_tp_position_audit_no_position():
+    """空仓时无需对账"""
+    audit = reconcile_tp_by_position_audit(
+        live_qty=0.0,
+        initial_qty=1.0,
+        tv_tps=[100.0, 105.0, 110.0],
+        tv_tp_count=3,
+        current_px=100.0,
+        side="LONG",
+        consumed_levels=[],
+    )
+    assert audit["action_needed"] == "none"
+    assert "空仓" in audit["alert_msg"]
+
+
+def test_reconcile_tp_position_audit_missing_tp1():
+    """头寸减少约10%，TP1应该缺失"""
+    audit = reconcile_tp_by_position_audit(
+        live_qty=0.90,
+        initial_qty=1.0,
+        tv_tps=[1050.0, 1100.0, 1150.0],
+        tv_tp_count=3,
+        current_px=1040.0,  # 价格未越TP1
+        side="LONG",
+        consumed_levels=[],  # consumed_tp_levels为空
+    )
+    assert 1 in audit["missing_tp"]
+    assert audit["action_needed"] == "patch"
+
+
+def test_reconcile_tp_position_audit_tp1_price_past():
+    """价格已越TP1且不在consumed中，应补挂"""
+    audit = reconcile_tp_by_position_audit(
+        live_qty=0.90,
+        initial_qty=1.0,
+        tv_tps=[1050.0, 1100.0, 1150.0],
+        tv_tp_count=3,
+        current_px=1060.0,  # 价格已越TP1
+        side="LONG",
+        consumed_levels=[],
+    )
+    # 价格越过后应该被加入consumed，但根据推断TP1应该被成交
+    # 关键：当前价格1060 > TP1=1050，说明TP1已被成交
+    assert audit["action_needed"] == "patch" or audit["action_needed"] == "none"
+
+
+def test_reconcile_tp_position_audit_all_consumed():
+    """TP1+TP2成交，剩余雷达管理"""
+    audit = reconcile_tp_by_position_audit(
+        live_qty=0.70,
+        initial_qty=1.0,
+        tv_tps=[1050.0, 1100.0, 1150.0],
+        tv_tp_count=3,
+        current_px=1080.0,
+        side="LONG",
+        consumed_levels=[1, 2],
+    )
+    assert len(audit["missing_tp"]) == 0
+    assert audit["action_needed"] in ("none", "verify")
+
+
+def test_check_rehang_cooldown_no_record():
+    """无记录时允许补挂"""
+    mock_supervisor = MagicMock()
+    mock_supervisor._tp_rehang_attempts = 0
+    mock_supervisor._last_tp_rehang_ts = 0.0
+
+    can, remaining = check_rehang_cooldown(mock_supervisor)
+    assert can is True
+    assert remaining == 0.0
+
+
+def test_check_rehang_cooldown_in_cooldown():
+    """冷却中不允许补挂"""
+    import time
+    mock_supervisor = MagicMock()
+    mock_supervisor._tp_rehang_attempts = 0
+    mock_supervisor._last_tp_rehang_ts = time.time() - 10.0  # 10秒前
+
+    can, remaining = check_rehang_cooldown(mock_supervisor)
+    assert can is False
+    assert remaining > 0
+    assert remaining <= TP_REHANG_COOLDOWN_SEC
+
+
+def test_check_rehang_cooldown_max_attempts():
+    """达到最大尝试次数不允许补挂"""
+    mock_supervisor = MagicMock()
+    mock_supervisor._tp_rehang_attempts = TP_REHANG_MAX_ATTEMPTS
+    mock_supervisor._last_tp_rehang_ts = 0.0
+
+    can, remaining = check_rehang_cooldown(mock_supervisor)
+    assert can is False
+    assert remaining == 0.0
+
+
+def test_record_tp_rehang_attempt_success():
+    """成功补挂后重置计数"""
+    mock_supervisor = MagicMock()
+    mock_supervisor._tp_rehang_attempts = 2
+    mock_supervisor._last_tp_rehang_ts = 100.0
+    mock_supervisor._save_state = MagicMock()
+
+    record_tp_rehang_attempt(mock_supervisor, success=True)
+    assert mock_supervisor._tp_rehang_attempts == 0
+    assert mock_supervisor._last_tp_rehang_ts == 0.0
+
+
+def test_record_tp_rehang_attempt_failure():
+    """失败补挂后增加计数"""
+    import time
+    mock_supervisor = MagicMock()
+    mock_supervisor._tp_rehang_attempts = 1
+    mock_supervisor._last_tp_rehang_ts = 0.0
+    mock_supervisor._save_state = MagicMock()
+
+    before = time.time()
+    record_tp_rehang_attempt(mock_supervisor, success=False)
+    after = time.time()
+
+    assert mock_supervisor._tp_rehang_attempts == 2
+    assert before <= mock_supervisor._last_tp_rehang_ts <= after

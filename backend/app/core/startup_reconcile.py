@@ -1715,3 +1715,362 @@ class StartupReconcileMixin:
         if hasattr(self, "_save_state"):
             self._save_state()
         return result
+
+
+# ============================================================================
+# 增强的TP对账：TV头寸对账 + 防重机制
+# ============================================================================
+
+TP_REHANG_COOLDOWN_SEC = 30.0  # 补挂冷却时间（秒），防止重复补挂循环
+TP_REHANG_MAX_ATTEMPTS = 3      # 最大补挂尝试次数
+
+
+def _get_tp_ratios() -> tuple[float, float]:
+    """返回TP1/TP2的固定比例（妈妈版单仓）。"""
+    return 0.10, 0.20  # TP1=10%, TP2=20%, TP3=70%（雷达管理）
+
+
+def compute_expected_tp_consumed_by_qty(
+    live_qty: float,
+    initial_qty: float,
+    regime: int = 3,
+) -> tuple[set[int], str]:
+    """
+    根据头寸减少比例推断哪些TP被成交。
+
+    Args:
+        live_qty: 当前实盘头寸
+        initial_qty: 初始开仓头寸
+        regime: 当前行情轨道（影响TP比例）
+
+    Returns:
+        (推断被成交的TP档位集合, 推断依据字符串)
+    """
+    tp1_ratio, tp2_ratio = _get_tp_ratios()
+    consumed: set[int] = set()
+
+    if initial_qty <= 0 or live_qty <= 0:
+        return consumed, "无法推断（初始/当前头寸为0）"
+
+    # 计算已平仓比例
+    reduced_ratio = (initial_qty - live_qty) / initial_qty
+
+    # 容忍度：考虑到最小下单量和精度问题
+    tolerance = 0.08  # 8%容忍度
+
+    # TP1成交：live ≈ initial × (1 - TP1_ratio)
+    # 即 reduced ≈ TP1_ratio ± tolerance
+    if abs(reduced_ratio - tp1_ratio) <= tolerance:
+        consumed.add(1)
+        reason = f"头寸减少{reduced_ratio:.1%}≈TP1{tp1_ratio:.0%}"
+    # TP1+TP2成交：live ≈ initial × (1 - TP1_ratio - TP2_ratio)
+    elif abs(reduced_ratio - (tp1_ratio + tp2_ratio)) <= tolerance:
+        consumed.add(1)
+        consumed.add(2)
+        reason = f"头寸减少{reduced_ratio:.1%}≈TP1+TP2{tp1_ratio+tp2_ratio:.0%}"
+    # 部分成交但无法精确匹配
+    elif reduced_ratio > 0.02:  # >2%减少
+        reason = f"头寸减少{reduced_ratio:.1%}，无法精确匹配TP档位"
+    else:
+        reason = "头寸未明显减少（<2%）"
+
+    return consumed, reason
+
+
+def reconcile_tp_by_position_audit(
+    live_qty: float,
+    initial_qty: float,
+    tv_tps: list[float],
+    tv_tp_count: int,
+    current_px: float,
+    side: str,
+    consumed_levels: list[int],
+) -> dict[str, Any]:
+    """
+    TV头寸对账：综合分析实盘头寸、TV TP档位、当前价格，推断TP成交情况。
+
+    对账逻辑：
+    1. TV记录了期望的TP1/2/3价格
+    2. 实盘头寸 vs 初始头寸 → 推断哪些TP被成交
+    3. 当前价格是否已越过某些TP价格 → 验证推断
+    4. 最终确定应该挂哪些TP
+
+    Returns:
+        包含推断结果和建议的字典
+    """
+    result: dict[str, Any] = {
+        "live_qty": live_qty,
+        "initial_qty": initial_qty,
+        "tv_tps": list(tv_tps),
+        "tv_tp_count": tv_tp_count,
+        "current_px": current_px,
+        "side": side,
+        "consumed_known": list(consumed_levels),
+        "consumed_inferred": [],
+        "inference_reason": "",
+        "price_past_tps": [],
+        "expected_tp_on_book": [],  # 应该挂在盘上的TP档位
+        "missing_tp": [],           # 缺失的TP档位
+        "action_needed": None,      # "patch" | "verify" | "none"
+        "alert_level": "info",      # "info" | "warning" | "critical"
+        "alert_msg": "",
+    }
+
+    if live_qty <= 0:
+        result["action_needed"] = "none"
+        result["alert_level"] = "info"
+        result["alert_msg"] = "空仓，无需TP对账"
+        return result
+
+    if initial_qty <= 0:
+        initial_qty = live_qty
+        result["initial_qty"] = initial_qty
+
+    # Step 1: 根据头寸减少推断TP成交
+    inferred_consumed, inference_reason = compute_expected_tp_consumed_by_qty(
+        live_qty, initial_qty
+    )
+    result["consumed_inferred"] = sorted(inferred_consumed)
+    result["inference_reason"] = inference_reason
+
+    # Step 2: 检查当前价格是否越过TP价格
+    price_past: list[int] = []
+    for i, tp_price in enumerate(tv_tps[:3]):
+        if tp_price <= 0:
+            continue
+        if side == "LONG" and current_px >= tp_price:
+            price_past.append(i + 1)
+        elif side == "SHORT" and current_px <= tp_price:
+            price_past.append(i + 1)
+
+    result["price_past_tps"] = price_past
+
+    # Step 3: 综合判断应该挂在盘上的TP档位
+    # 已知被成交的 + 推断被成交的
+    all_consumed = set(consumed_levels) | inferred_consumed
+    # 但价格已越过的档位必须被成交
+    for lvl in price_past:
+        all_consumed.add(lvl)
+
+    # 应该挂在盘上的档位：TV有记录但未被成交的
+    expected_on_book: list[int] = []
+    for i, tp_price in enumerate(tv_tps[:3]):
+        lvl = i + 1
+        if tp_price > 0 and lvl not in all_consumed:
+            expected_on_book.append(lvl)
+
+    result["expected_tp_on_book"] = expected_on_book
+
+    # Step 4: 识别缺失的TP档位
+    # 如果TV记录了TP1但价格已越过且不在consumed中，需要补挂
+    missing: list[int] = []
+    for lvl in expected_on_book:
+        # TP1和TP2应该以限价挂在盘上
+        if lvl in (1, 2) and lvl not in consumed_levels:
+            missing.append(lvl)
+
+    result["missing_tp"] = missing
+
+    # Step 5: 确定需要的操作
+    if missing:
+        result["action_needed"] = "patch"
+        if len(missing) >= 2:
+            result["alert_level"] = "warning"
+            result["alert_msg"] = (
+                f"TV头寸对账缺失TP{''.join(str(x) for x in missing)}，"
+                f"需补挂 | {inference_reason} | 价格已越TP{price_past or '无'}"
+            )
+        else:
+            result["alert_level"] = "info"
+            result["alert_msg"] = (
+                f"TV头寸对账缺失TP{missing[0]}，建议补挂 | {inference_reason}"
+            )
+    elif all_consumed and not expected_on_book:
+        result["action_needed"] = "verify"
+        result["alert_level"] = "info"
+        result["alert_msg"] = f"TV头寸对账：所有TP已成交或价格已越，雷达管理 | {inference_reason}"
+    else:
+        result["action_needed"] = "none"
+        result["alert_level"] = "info"
+        result["alert_msg"] = f"TV头寸对账一致 | {inference_reason}"
+
+    return result
+
+
+def check_rehang_cooldown(supervisor) -> tuple[bool, float]:
+    """
+    检查是否可以进行补挂（冷却时间防重）。
+
+    Returns:
+        (是否可以补挂, 剩余冷却秒数)
+    """
+    now = time.time()
+    last_rehang = float(getattr(supervisor, "_last_tp_rehang_ts", 0) or 0)
+    rehang_attempts = int(getattr(supervisor, "_tp_rehang_attempts", 0) or 0)
+
+    # 如果尝试次数已达上限，不再补挂
+    if rehang_attempts >= TP_REHANG_MAX_ATTEMPTS:
+        return False, 0.0
+
+    # 如果在冷却时间内
+    elapsed = now - last_rehang
+    if last_rehang > 0 and elapsed < TP_REHANG_COOLDOWN_SEC:
+        return False, TP_REHANG_COOLDOWN_SEC - elapsed
+
+    return True, 0.0
+
+
+def record_tp_rehang_attempt(supervisor, success: bool = False) -> None:
+    """记录TP补挂尝试，用于防重控制。"""
+    now = time.time()
+    attempts = int(getattr(supervisor, "_tp_rehang_attempts", 0) or 0)
+
+    if success:
+        # 成功后重置计数
+        supervisor._tp_rehang_attempts = 0
+        supervisor._last_tp_rehang_ts = 0.0
+    else:
+        # 失败后增加计数并更新时间戳
+        supervisor._tp_rehang_attempts = attempts + 1
+        supervisor._last_tp_rehang_ts = now
+
+    # 保存状态
+    if hasattr(supervisor, "_save_state"):
+        try:
+            supervisor._save_state()
+        except Exception:
+            pass
+
+
+def audit_and_patch_missing_tps(
+    supervisor,
+    live_qty: float,
+    entry: float,
+    curr_px: float,
+    audit_result: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    基于TV头寸对账结果，智能补挂缺失的TP。
+
+    防重机制：
+    1. 检查冷却时间
+    2. 检查尝试次数
+    3. 验证盘口后再决定是否补挂
+
+    Returns:
+        补挂结果
+    """
+    result: dict[str, Any] = {
+        "audit_result": audit_result,
+        "can_rehang": False,
+        "cooldown_remaining": 0.0,
+        "attempts": int(getattr(supervisor, "_tp_rehang_attempts", 0) or 0),
+        "max_attempts": TP_REHANG_MAX_ATTEMPTS,
+        "patched_levels": [],
+        "failed_levels": [],
+        "error": None,
+    }
+
+    # Step 1: 检查冷却时间
+    can_rehang, cooldown_remaining = check_rehang_cooldown(supervisor)
+    result["can_rehang"] = can_rehang
+    result["cooldown_remaining"] = cooldown_remaining
+
+    if not can_rehang and cooldown_remaining > 0:
+        result["error"] = f"补挂冷却中，剩余{cooldown_remaining:.1f}秒"
+        return result
+
+    if not can_rehang:
+        result["error"] = f"补挂次数已达上限({TP_REHANG_MAX_ATTEMPTS})，请人工核查"
+        return result
+
+    # Step 2: 获取缺失的TP档位
+    missing = audit_result.get("missing_tp", [])
+    if not missing:
+        result["can_rehang"] = False
+        result["error"] = "无需补挂"
+        return result
+
+    # Step 3: 记录尝试
+    record_tp_rehang_attempt(supervisor, success=False)
+
+    # Step 4: 执行补挂
+    tv_tps = audit_result.get("tv_tps", [])
+    side = audit_result.get("side", "")
+    close_side = "SELL" if side == "LONG" else "BUY"
+
+    patched: list[int] = []
+    failed: list[int] = []
+
+    from app.core.symbol_precision import round_quantity
+
+    for lvl in missing:
+        if lvl <= 0 or lvl > len(tv_tps):
+            continue
+
+        tp_price = tv_tps[lvl - 1]
+        if tp_price <= 0:
+            continue
+
+        # 计算补挂数量：基于初始头寸的比例
+        if lvl == 1:
+            ratio = 0.10  # TP1 = 10%
+        elif lvl == 2:
+            ratio = 0.20  # TP2 = 20%
+        else:
+            ratio = 0.10  # 默认
+
+        tp_qty = round_quantity(live_qty * ratio)
+        if tp_qty < 1.0:
+            tp_qty = 1.0
+
+        # 调用实际的挂单函数
+        place_fn = getattr(supervisor, "_place_limit_with_retry", None)
+        if place_fn:
+            try:
+                res = place_fn(close_side, float(tp_qty), float(tp_price), f"TP{lvl}")
+                if res.get("ok"):
+                    patched.append(lvl)
+                    logger.info(
+                        f"[User {getattr(supervisor, 'user_id', '?')}] "
+                        f"TV对账补挂TP{lvl}@{tp_price} qty={tp_qty} 成功"
+                    )
+                else:
+                    failed.append(lvl)
+                    logger.warning(
+                        f"[User {getattr(supervisor, 'user_id', '?')}] "
+                        f"TV对账补挂TP{lvl}@{tp_price} 失败: {res.get('error', 'unknown')}"
+                    )
+            except Exception as exc:
+                failed.append(lvl)
+                logger.error(
+                    f"[User {getattr(supervisor, 'user_id', '?')}] "
+                    f"TV对账补挂TP{lvl}异常: {exc}"
+                )
+        else:
+            failed.append(lvl)
+            logger.warning(
+                f"[User {getattr(supervisor, 'user_id', '?')}] "
+                f"无法补挂TP{lvl}，缺少_place_limit_with_retry方法"
+            )
+
+    # Step 5: 记录结果
+    result["patched_levels"] = patched
+    result["failed_levels"] = failed
+
+    if patched:
+        # 如果有成功补挂，重置尝试计数
+        record_tp_rehang_attempt(supervisor, success=True)
+        supervisor._log(
+            "DEFENSE_HEAL",
+            f"TV头寸对账补挂完成: TP{''.join(str(x) for x in patched)}",
+            {
+                "live_qty": live_qty,
+                "curr_px": curr_px,
+                "inference": audit_result.get("inference_reason", ""),
+                "patched": patched,
+                "failed": failed,
+            },
+        )
+
+    return result

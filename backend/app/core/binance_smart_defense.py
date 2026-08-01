@@ -1173,10 +1173,74 @@ class BinanceSmartDefenseMixin:
     def _reconcile_tp_defenses_on_startup(
         self, live_qty: float, entry: float, dynamic_sl=None
     ) -> dict:
-        """VPS reboot: trust exchange book — retry fetch, dedupe, patch gaps only."""
+        """VPS reboot: trust exchange book — retry fetch, dedupe, patch gaps only.
+
+        增强版：集成TV头寸对账，通过实盘qty vs 初始qty推断TP成交情况，
+        结合当前价格判断哪些TP需要补挂，防止因价格回调导致的漏挂。
+        """
         self._def_log("🔄 重启接管：交易所优先对账止盈（不盲目清场）")
         live_qty = self._resolve_live_qty(live_qty)
         curr_px = self._current_tp_price()
+
+        # === TV头寸对账增强 ===
+        # 在同步consumed之前，先用TV头寸对账来辅助判断
+        from app.core.startup_reconcile import (
+            reconcile_tp_by_position_audit,
+            check_rehang_cooldown,
+            record_tp_rehang_attempt,
+        )
+
+        tv_tps = list(getattr(self, "tv_tps", []) or [])
+        tv_tp_count = sum(1 for t in tv_tps if t > 0)
+        initial_qty = float(getattr(self, "initial_qty", 0) or 0)
+        consumed_known = list(getattr(self, "consumed_tp_levels", []) or [])
+        side = getattr(self, "current_side", "")
+
+        # 执行TV头寸对账
+        tv_audit = reconcile_tp_by_position_audit(
+            live_qty=live_qty,
+            initial_qty=initial_qty,
+            tv_tps=tv_tps,
+            tv_tp_count=tv_tp_count,
+            current_px=curr_px,
+            side=side,
+            consumed_levels=consumed_known,
+        )
+
+        self._def_log(
+            f"[TV头寸对账] live={live_qty:.4f} init={initial_qty:.4f} "
+            f"consumed_known={consumed_known} consumed_inferred={tv_audit.get('consumed_inferred', [])} "
+            f"missing={tv_audit.get('missing_tp', [])} | {tv_audit.get('inference_reason', '')}"
+        )
+
+        # 记录TV对账结果用于后续分析
+        tv_audit["timestamp"] = time.time()
+
+        # === 检查补挂冷却时间 ===
+        can_rehang, cooldown_remaining = check_rehang_cooldown(self)
+        if not can_rehang and cooldown_remaining > 0:
+            self._def_log(
+                f"⚠️ [TV对账] 补挂冷却中({cooldown_remaining:.1f}s)，跳过主动补挂 | "
+                f"缺失TP={tv_audit.get('missing_tp', [])}"
+            )
+
+        # TV对账缺失TP处理：如果TV认为需要补挂但处于冷却中，发出告警
+        if tv_audit.get("missing_tp") and not can_rehang:
+            attempts = int(getattr(self, "_tp_rehang_attempts", 0) or 0)
+            if hasattr(self, "_alert"):
+                self._alert(
+                    "warning",
+                    "TV_POSITION_AUDIT",
+                    "TV头寸对账·补挂受限",
+                    tv_audit.get("alert_msg", "") + f" | 尝试{attempts}次",
+                    {
+                        **tv_audit,
+                        "cooldown_remaining": cooldown_remaining,
+                        "attempts": attempts,
+                    },
+                )
+
+        # === 同步consumed levels ===
         if hasattr(self, "_sync_consumed_tp_levels"):
             self._sync_consumed_tp_levels(live_qty, curr_px)
         self._cancel_tp_orders_for_consumed_levels()
@@ -1185,7 +1249,6 @@ class BinanceSmartDefenseMixin:
         # Diagnostic: log state before audit
         uid = getattr(self, "user_id", "?")
         sym = getattr(self, "symbol", "?")
-        tv_tps = list(getattr(self, "tv_tps", []) or [])
         consumed = list(getattr(self, "consumed_tp_levels", []) or [])
         self._def_log(
             f"[重启TP对账] {uid}@{sym} | live_qty={live_qty:.4f} curr_px={curr_px:.2f} "
@@ -1216,6 +1279,7 @@ class BinanceSmartDefenseMixin:
                 # (mark past TP1), force-patch TP1 back. The price-past skip is a false positive
                 # when there is no evidence of actual TP1 fill.
                 # Condition: live_qty very close to anchor AND TP1 excluded from expected.
+                # === 增强：结合TV头寸对账结果 ===
                 if (
                     attempt == 0
                     and live_qty > 0
@@ -1237,10 +1301,15 @@ class BinanceSmartDefenseMixin:
                         and tp1_price > 0
                         and not self._tp_limit_exists_near(tp1_price)
                     )
-                    if no_fill_evidence and tp1_excluded:
+                    # === TV头寸对账增强：TV认为TP1应该被成交 ===
+                    tv_thinks_tp1_missing = 1 in tv_audit.get("missing_tp", [])
+                    tv_thinks_no_tp1_fill = 1 not in tv_audit.get("consumed_inferred", [])
+
+                    # 综合判断：原有条件 OR TV头寸对账认为缺失
+                    if no_fill_evidence and (tp1_excluded or tv_thinks_tp1_missing) and tv_thinks_no_tp1_fill:
                         self._def_log(
                             "[重启TP] live_qty=" + str(round(live_qty, 4)) + " ≈ anchor=" + str(round(anchor, 4))
-                            + " (no fill) + TP1 excluded by price → force-patch TP1@" + str(tp1_price)
+                            + " (no fill) + TP1 excluded/explained by TV audit → force-patch TP1@" + str(tp1_price)
                         )
                         close_side = self._tp_close_side_label()
                         if close_side:
@@ -1254,6 +1323,8 @@ class BinanceSmartDefenseMixin:
                                 float(tp1_price),
                                 "TP1",
                             )
+                            # 记录补挂尝试
+                            record_tp_rehang_attempt(self, success=result.get("ok", False))
                             if result.get("ok"):
                                 self._def_log(
                                     "[重启TP] force-patch TP1@" + str(tp1_price)
@@ -1273,7 +1344,9 @@ class BinanceSmartDefenseMixin:
                 self._def_log(
                     f"✅ 重启对账：盘口已齐，跳过补挂 | {self._format_audit_summary(audit)}"
                 )
-                return self._defense_result_from_audit(audit, skipped=True)
+                result = self._defense_result_from_audit(audit, skipped=True)
+                result["tv_position_audit"] = tv_audit  # 附加TV对账结果
+                return result
 
             # Diagnostic: why _defenses_fully_ok failed
             if attempt == 0:
@@ -1326,6 +1399,9 @@ class BinanceSmartDefenseMixin:
         self._def_log(f"[重启TP] {uid}@{sym} | 补挂完成 placed={placed} rebuilt={rebuilt}")
         if placed:
             rebuilt = True
+            record_tp_rehang_attempt(self, success=True)
+        else:
+            record_tp_rehang_attempt(self, success=False)
         time.sleep(0.6)
 
         audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
@@ -1335,15 +1411,19 @@ class BinanceSmartDefenseMixin:
             self._def_log(
                 f"✅ 重启增量纠偏完成 | {self._format_audit_summary(audit)}"
             )
-            return self._defense_result_from_audit(audit, skipped=not rebuilt, rebuilt=rebuilt)
+            result = self._defense_result_from_audit(audit, skipped=not rebuilt, rebuilt=rebuilt)
+            result["tv_position_audit"] = tv_audit
+            return result
 
         self._def_log(
             f"⚠️ 重启对账后仍不齐，升级智能对齐 | {self._format_audit_summary(audit)}",
             logging.WARNING,
         )
-        return self._smart_realign_defenses(
+        result = self._smart_realign_defenses(
             live_qty, entry, dynamic_sl=None, reason="重启纠偏升级",
         )
+        result["tv_position_audit"] = tv_audit
+        return result
 
     def _cancel_all_tp_limit_orders(self, *, flat_purge: bool = False) -> int:
         """Cancel TP LIMITs only. Unreadable book → -1 and NEVER cancel_all (protect STOP)."""

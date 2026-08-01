@@ -6,7 +6,7 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-07-28 · 马拉松雷达保本起步 · 生产流水线账本 pipeline-ledger-v1 · 管理员可按用户调保证金占比/杠杆）**  
+> **文档同步（2026-08-01 · TV webhook 自检增强 · 内网/外网连通性检查 · 推送到 GitHub 前本地检查）**  
 > 凡与本文冲突的旧描述（「TP3 挂限价并与雷达互斥」「VPS 独立拉 1h ATR / 场景切换」「雷达扫出=失败离场」「查不到单就盲补」「硬止损=TV原价」「硬=ATR地板+滑点垫」「日亏熔断默认开」「杠杆/仓位永远硬编码不可改」「激活→entry±0.5ATR」「ADX 85/80/70 写反」「ADX 70%~90% 连续插值」）**一律作废**。  
 > 权威：`docs/VPS_SYSTEM_SPEC_GEMINI_MULTIUSER.md`（与桌面《VPS完整系统规格_Gemini多用户版》同步）· `docs/SMART_REENTRY_CLOSED_LOOP.md` · 部署：`docs/VPS_DEPLOY.md`  
 > **事故对照（优先）**：`docs/SYSTEM_ISSUE_FIX_LOG.md` — 现象→根因→修复→复查点；含 **v16.4.2-incident-harden** + **pipeline-ledger-v1**（TradeLedger 状态机 / 岗位交接 / 督察官 / REST 阀门）+ **marathon-radar-fee-be**。
@@ -17,6 +17,31 @@
 开仓链路按 **流水线岗位** 交接：信号官 → 准入官 → 仓位稽查 → 执行官（TP 自检≈30%）→ 督察官（VERIFIED）→ 通讯官（钉钉）；账本 `data/supervisor/ledgers/`。暂停/冷却时哨兵**禁止 REST**，优先读账本/缓存。  
 **两次 TV 只有三条路**：①TP1/TP2 止盈（+雷达兑现剩余）②雷达 BE/微赚扫出→更优价再入（≤1 次）③硬止损认输不重入。  
 验收必须以：交易所空仓零挂单 + 本地/GitHub/VPS **三方 commit 同数字** + 日志/订单 JSON / 钉钉为准。
+
+### 开发推送与 VPS 部署工作流
+
+```
+本地修改代码
+    ↓
+bash _push_github.sh          ← 本地自检 (模块语法 + TV webhook 连通性)
+    ↓ (自动推送到 GitHub main)
+VPS: ssh 后执行:
+    ↓
+cd ~/panda-quant-platform
+bash deploy.sh                 ← 拉取 + 构建 + 启动 + 全域自检
+```
+
+**TV Webhook 生产地址：** `https://twinstar.pro/gemini/webhook`
+
+**自检三件套：**
+
+| 脚本 | 用途 | 运行位置 |
+|------|------|---------|
+| `_push_github.sh` | 本地推送前自检：模块语法 + TV webhook 连通性 | 本地开发机 |
+| `production_check.sh` | VPS 部署后全域检查：端口/容器/HTTP/TV webhook/账户接管 | VPS |
+| `scripts/selfcheck.sh` | VPS 快速巡检：TV webhook + 内网/外网连通性 | VPS |
+
+
 
 ### 多交易所实盘对齐（2026-07-27 · 可候命真实 TV）
 
@@ -478,8 +503,16 @@ panda-quant-platform/
 ├── docs/TP_MULTI_EXCHANGE_AUDIT.md
 ├── docs/DEEPCOIN_BINANCE_PARITY.md
 ├── docs/KNOWN_ISSUES.md
-├── frontend/  deploy/  docker-compose.yml  deploy.sh
-└── production_check.sh
+├── _push_github.sh                           # ★ 本地推送前自检（含 TV webhook 连通性）
+├── deploy.sh                                # ★ VPS 一键部署
+├── production_check.sh                       # ★ VPS 部署后全域自检
+├── scripts/
+│   ├── deploy_lib.sh                        # 部署公共函数
+│   ├── selfcheck.sh                         # ★ VPS 快速巡检（TV webhook + 网络连通性）
+│   ├── deploy_local.sh                      # ★ VPS 本地快速部署（git pull + 重启）
+│   └── check_system.py                      # 后端 Python 全域自检
+├── frontend/  deploy/  docker-compose.yml
+└── backend/
 ```
 
 > 遗留文件 `radar_trail.py` / `vps_radar_stages.py` 仍在仓库中，**live 止损路径已切到 `breathing_stop`**，勿再按旧雷达文档改参数。详见清除清单。
@@ -929,13 +962,21 @@ py -3 -m pytest tests/test_breathing_stop.py tests/test_tv_v6985_sizing.py \
 ### VPS 部署
 
 ```bash
+# 推送后 VPS ssh 进入，执行以下两行：
 cd /home/panda/panda-quant-platform
+
+# 方式一：完整部署（含代码拉取 + 构建 + 自检，推荐）
+bash scripts/deploy_local.sh
+
+# 方式二：快速拉取 + 重启（仅代码已对齐时）
 git pull origin main
-docker compose up -d --build backend frontend
+docker compose build backend && docker compose up -d backend
+
+# 部署后快速巡检
+bash scripts/selfcheck.sh
+
+# 完整自检
 bash production_check.sh
-curl -sS http://127.0.0.1:6010/health
-# 核对：docker compose exec -T backend python -c \
-#   "from app.core.tv_entry_sizing import FIXED_LEVERAGE; print(FIXED_LEVERAGE)"
 ```
 
 HTTPS：`sudo CERTBOT_EMAIL=admin@twinstar.pro bash deploy/setup-https-twinstar.sh`  
@@ -948,7 +989,22 @@ Nginx：`/gemini/webhook` → `127.0.0.1:6010`；`/` → `6080`。仅开放 80/4
 ## 运维自检与故障排查
 
 ```bash
-curl -s http://127.0.0.1:6010/health
+# 快速巡检（推荐，每次部署后执行）
+bash scripts/selfcheck.sh
+
+# 完整全域自检
+bash production_check.sh
+
+# TV Webhook 端到端检查（生产最关键）
+curl -sf https://twinstar.pro/gemini/webhook/health
+curl -s -o /dev/null -w "%{http_code}" \
+  -X POST https://twinstar.pro/gemini/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"action":"LONG"}'
+
+# VPS 本地快速部署（推送后执行）
+bash scripts/deploy_local.sh
+
 docker compose logs -f backend | grep -E \
   "先平后开|BREATH|FORCE_ALIGN|CAP_ALIGN|Webhook|initial_stop|未登记|EXCHANGE_QUERY|-1003|核武"
 ```

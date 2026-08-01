@@ -50,9 +50,9 @@ else
   fail "backend 未通过 Docker healthcheck"
 fi
 
-# --- B. 宿主机端口 ---
+# --- B1. 宿主机端口 ---
 echo ""
-echo ">>> [B] 宿主机端口监听"
+echo ">>> [B1] 宿主机端口监听"
 check_host_port() {
   local port=$1 name=$2
   if curl -sf --max-time 3 "http://127.0.0.1:${port}/" >/dev/null 2>&1 || \
@@ -68,14 +68,89 @@ check_host_port "$API_PORT" "REST API"
 check_host_port "$WEBHOOK_PORT" "Webhook"
 check_host_port "$FRONT_PORT" "前端"
 
+# --- B2. TV Webhook 连通性 + 内网/外网可达性 ---
+echo ""
+echo ">>> [B2] TV Webhook 外网连通性"
+
+TV_WEBHOOK_URL="https://twinstar.pro/gemini/webhook"
+TV_WEBHOOK_HOST="twinstar.pro"
+
+# DNS 解析
+echo -n "    DNS 解析 $TV_WEBHOOK_HOST ... "
+DNS_RESULT=$(getent hosts "$TV_WEBHOOK_HOST" 2>/dev/null | awk '{print $1" "$2}' | head -1)
+if [ -n "$DNS_RESULT" ]; then
+  ok "DNS OK (${DNS_RESULT})"
+else
+  fail "DNS 解析失败"
+fi
+
+# TCP :443 握手
+echo -n "    TCP :443 握手 ... "
+if timeout 8 bash -c "echo > /dev/tcp/${TV_WEBHOOK_HOST}/443" 2>/dev/null; then
+  ok ":443 端口开放"
+else
+  fail ":443 端口无法连接"
+fi
+
+# HTTPS /health HTTP 响应
+echo -n "    HTTPS GET /health ... "
+TV_HEALTH_CODE=$(curl -sf --max-time 10 \
+  -o /dev/null -w "%{http_code}" \
+  "${TV_WEBHOOK_URL/health}" 2>/dev/null || echo "000")
+TV_HEALTH_TIME=$(curl -sf --max-time 10 \
+  -o /dev/null -w "%{time_total}" \
+  "${TV_WEBHOOK_URL/health}" 2>/dev/null || echo "-1")
+if [ "$TV_HEALTH_CODE" = "200" ]; then
+  ok "TV Webhook HTTP $TV_HEALTH_CODE (${TV_HEALTH_TIME}s)"
+elif [ "$TV_HEALTH_CODE" = "000" ]; then
+  fail "TV Webhook 无法连接（网络/DNS/防火墙）"
+else
+  warn "TV Webhook HTTP $TV_HEALTH_CODE"
+fi
+
+# POST 无 secret 安全检查
+echo -n "    POST 无 secret 安全检查 ... "
+TV_WH_CODE=$(curl -sf --max-time 10 \
+  -o /dev/null -w "%{http_code}" \
+  -X POST "${TV_WEBHOOK_URL}" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"LONG"}' 2>/dev/null || echo "000")
+if [ "$TV_WH_CODE" = "403" ] || [ "$TV_WH_CODE" = "400" ]; then
+  ok "TV Webhook 无 secret 被拒绝 (HTTP $TV_WH_CODE)"
+else
+  fail "TV Webhook 安全检查失败 (HTTP $TV_WH_CODE)"
+fi
+
+# --- B3. 内网/外网可达性 ---
+echo ""
+echo ">>> [B3] 内网/外网可达性"
+
+check_connectivity() {
+  local host=$1 port=$2 label=$3
+  echo -n "    $label ($host) ... "
+  if timeout 5 bash -c "echo > /dev/tcp/${host}/${port}" 2>/dev/null; then
+    ok "可达"
+  else
+    fail "不可达"
+  fi
+}
+
+check_connectivity "api.binance.com"   443 "Binance API"
+check_connectivity "www.okx.com"       443 "OKX"
+check_connectivity "api.gateio.ws"     443 "Gate.io"
+check_connectivity "api.github.com"    443 "GitHub"
+check_connectivity "ntp.aliyun.com"    123 "阿里云 NTP"
+check_connectivity "8.8.8.8"           53  "Google DNS（外网测试）"
+check_connectivity "114.114.114.114"   53  "国内 DNS"
+
 # --- C. 后端 Python 全域自检 ---
 echo ""
 if [ "$PRODUCTION_STRICT" = "1" ]; then
-  echo ">>> [C] 后端模块自检 (check_system.py --strict)"
-  CHECK_ARGS="--strict"
+  echo ">>> [C] 后端模块自检 (check_system.py --strict --network)"
+  CHECK_ARGS="--strict --network"
 else
-  echo ">>> [C] 后端模块自检 (check_system.py，WARN 不阻断)"
-  CHECK_ARGS=""
+  echo ">>> [C] 后端模块自检 (check_system.py，WARN 不阻断；--network 查 TV webhook)"
+  CHECK_ARGS="--network"
 fi
 if docker compose ps backend 2>/dev/null | grep -qE 'Up|\(healthy\)'; then
   if docker compose exec -T backend python scripts/check_system.py $CHECK_ARGS; then
@@ -203,6 +278,70 @@ else
   warn "官网首页内容未检测到 GEMINI/双子星 标识"
 fi
 
+# --- G. TV Webhook 端到端连通性（生产关键）---
+echo ""
+echo ">>> [G] TV Webhook 端到端连通性"
+echo "    生产地址: https://twinstar.pro/gemini/webhook"
+
+# DNS 解析
+echo -n "    DNS 解析 twinstar.pro ... "
+DNS_RESULT=$(getent hosts "twinstar.pro" 2>/dev/null | awk '{print $1" "$2}' | head -1)
+if [ -n "$DNS_RESULT" ]; then
+  ok "DNS OK (${DNS_RESULT})"
+else
+  fail "DNS 解析失败"
+fi
+
+# TCP :443 握手
+echo -n "    TCP :443 握手 ... "
+if timeout 8 bash -c "echo > /dev/tcp/twinstar.pro/443" 2>/dev/null; then
+  ok ":443 开放"
+else
+  fail ":443 无法连接（检查防火墙/路由）"
+fi
+
+# HTTPS GET /health
+echo -n "    HTTPS GET /health ... "
+TV_CODE=$(curl -sf --max-time 10 \
+  -o /dev/null -w "%{http_code}" \
+  "https://twinstar.pro/gemini/webhook/health" 2>/dev/null || echo "000")
+TV_TIME=$(curl -sf --max-time 10 \
+  -o /dev/null -w "%{time_total}" \
+  "https://twinstar.pro/gemini/webhook/health" 2>/dev/null || echo "-1")
+if [ "$TV_CODE" = "200" ]; then
+  ok "HTTP $TV_CODE (${TV_TIME}s)"
+elif [ "$TV_CODE" = "000" ]; then
+  fail "无法连接 twinstar.pro（VPS 外网/防火墙问题）"
+else
+  warn "HTTP $TV_CODE"
+fi
+
+# POST 无 secret 应拒绝
+echo -n "    POST 无 secret 安全检查 ... "
+TV_WH_CODE=$(curl -sf --max-time 10 \
+  -o /dev/null -w "%{http_code}" \
+  -X POST "https://twinstar.pro/gemini/webhook" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"LONG"}' 2>/dev/null || echo "000")
+if [ "$TV_WH_CODE" = "403" ] || [ "$TV_WH_CODE" = "400" ]; then
+  ok "安全检查通过 (HTTP $TV_WH_CODE)"
+else
+  fail "安全检查失败 (HTTP $TV_WH_CODE)"
+fi
+
+# 交易所连通性
+echo ""
+echo ">>> [H] 交易所网络连通性"
+for host in "api.binance.com:443:Binance" "www.okx.com:443:OKX" "api.gateio.ws:443:Gate.io"; do
+  IFS=':' read -r h p label <<< "$host"
+  echo -n "    $label ($h) ... "
+  if timeout 5 bash -c "echo > /dev/tcp/${h}/${p}" 2>/dev/null; then
+    ok "可达"
+  else
+    fail "不可达"
+  fi
+done
+
 # --- 汇总 ---
 echo ""
 echo "========================================"
@@ -216,11 +355,13 @@ fi
 
 PUBLIC_IP="$(curl -sf --max-time 5 ifconfig.me 2>/dev/null || echo 'YOUR_VPS_IP')"
 echo "  自检全部通过 (strict=${PRODUCTION_STRICT})"
-echo "  网页:    http://${PUBLIC_IP}:${FRONT_PORT}"
-echo "  Webhook: http://${PUBLIC_IP}:${WEBHOOK_PORT}/webhook"
-echo "  健康:    http://${PUBLIC_IP}:${API_PORT}/api/health"
+echo "  TV Webhook:  https://twinstar.pro/gemini/webhook"
+echo "  网页:        http://${PUBLIC_IP}:${FRONT_PORT}"
+echo "  Webhook:     http://${PUBLIC_IP}:${WEBHOOK_PORT}/webhook"
+echo "  健康:        http://${PUBLIC_IP}:${API_PORT}/api/health"
 if [ "$PRODUCTION_STRICT" != "1" ]; then
   echo "  提示: 正式上线前执行 PRODUCTION_STRICT=1 bash production_check.sh"
 fi
+echo "  快速巡检:   bash scripts/selfcheck.sh"
 echo "========================================"
 exit 0

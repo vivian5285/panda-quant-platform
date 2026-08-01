@@ -109,6 +109,8 @@ ALERT_TYPE_TAGS = {
     "POSITION_SIDE_FLIP": "异常告警",
     "TP_OVER_COMMIT": "异常告警",
     "IDLE_WATCH": "空仓巡检",
+    "TV_POSITION_AUDIT": "TV头寸对账",
+    "TV_POSITION_AUDIT_SKIP": "TV头寸对账",
     "MANUAL_FLAT_TP_PURGE": "异常告警",
     "TP_ORPHAN_PURGE": "异常告警",
     "TP_RETRY_FAIL": "异常告警",
@@ -171,6 +173,7 @@ DINGTALK_CRITICAL_TYPES = frozenset({
     "TRADING_PAUSED",
     "POSITION_SIDE_FLIP",
     "TP_OVER_COMMIT",
+    "TV_POSITION_AUDIT",
     "MANUAL_FLAT_TP_PURGE",
     "TP_ORPHAN_PURGE",
     "ADJUST",
@@ -601,6 +604,62 @@ def format_adverse_sl_detail_cn(detail: dict, exchange: str | None = None) -> st
     return f"呼吸止损挂载 @{float(stop):.2f}"
 
 
+def format_tv_position_audit_cn(detail: dict, exchange: str | None = None) -> str:
+    """格式化TV头寸对账告警详情（中文）。"""
+    lines = []
+    theme = resolve_exchange_theme(exchange, detail.get("symbol") or detail.get("canonical_symbol"))
+
+    # 基本信息
+    live_qty = detail.get("live_qty", 0)
+    initial_qty = detail.get("initial_qty", 0)
+    side = detail.get("side", "")
+    side_txt = {"LONG": "做多", "SHORT": "做空"}.get(str(side or "").upper(), side or "—")
+
+    lines.append(_line("交易所", theme["label"]))
+    lines.append(_line("合约", theme["symbol"]))
+    lines.append(_line("方向", side_txt))
+    if live_qty:
+        lines.append(_line("实盘数量", f"{float(live_qty):.4f} {theme['qty_unit']}"))
+    if initial_qty:
+        lines.append(_line("初始数量", f"{float(initial_qty):.4f} {theme['qty_unit']}"))
+
+    # TV TP信息
+    tv_tps = detail.get("tv_tps", [])
+    if tv_tps:
+        tp_str = ", ".join([f"TP{i+1}@{float(t):.2f}" for i, t in enumerate(tv_tps[:3]) if float(t or 0) > 0])
+        if tp_str:
+            lines.append(_line("TV止盈", tp_str))
+
+    # 对账结果
+    consumed_known = detail.get("consumed_known", [])
+    consumed_inferred = detail.get("consumed_inferred", [])
+    missing = detail.get("missing_tp", [])
+    price_past = detail.get("price_past_tps", [])
+
+    if consumed_known:
+        lines.append(_line("已知已成交", f"TP{''.join(str(x) for x in consumed_known)}"))
+    if consumed_inferred:
+        lines.append(_line("推断已成交", f"TP{''.join(str(x) for x in consumed_inferred)}"))
+    if missing:
+        lines.append(_line("缺失TP", f"TP{''.join(str(x) for x in missing)} ⚠️"))
+    if price_past:
+        lines.append(_line("价格已越", f"TP{''.join(str(x) for x in price_past)}"))
+
+    # 推断依据
+    inference = detail.get("inference_reason", "")
+    if inference:
+        lines.append(_line("推断依据", inference))
+
+    # 补挂状态
+    if detail.get("attempts") is not None:
+        max_attempts = detail.get("max_attempts", 3)
+        lines.append(_line("补挂尝试", f"{detail['attempts']}/{max_attempts}"))
+    if detail.get("cooldown_remaining"):
+        lines.append(_line("冷却剩余", f"{float(detail['cooldown_remaining']):.1f}秒"))
+
+    return "\n".join(lines)
+
+
 def format_admin_detail_lines(
     alert_type: str,
     detail: dict | None,
@@ -626,6 +685,8 @@ def format_admin_detail_lines(
         return format_force_align_detail_cn(detail, ex)
     if alert_type == "IDLE_WATCH":
         return format_startup_detail_cn(detail, ex)
+    if alert_type in ("TV_POSITION_AUDIT", "TV_POSITION_AUDIT_SKIP"):
+        return format_tv_position_audit_cn(detail, ex)
     if alert_type in ("OPEN", "NOTIONAL_CAP") or detail.get("sizing_mode") in (
         "vps_open", "equity20_lev5_notional", "risk20_cap5x_tv_qty_cap",
     ):

@@ -443,12 +443,20 @@ def radar_arm_trigger_price(
     is_reentry: bool | None = None,
     attempt: int | None = None,
 ) -> float:
-    """LIVE arm: fill ± (1.35×ATR × ADX_ratio 70/80/90). Independent of TP1 fill.
+    """Spec §6.1 radar arm trigger: absolute price anchor when TP1/TP2 known.
 
-    ``arm_pct`` optional test override; otherwise ADX drives the ratio.
-    ``tp1``/``tp2``/``is_reentry`` retained for call-site compat (ignored for trigger).
+    Initial open: (TP1 + TP2) / 2
+    Reentry open: TP2
+    Falls back to legacy ADX ratio only when TP1/TP2 are unavailable.
     """
-    _ = (tp1, tp2, tv_entry, is_reentry, attempt)
+    t1 = float(tp1 or 0)
+    t2 = float(tp2 or 0)
+    if t1 > 0 and t2 > 0:
+        reentry = bool(is_reentry) or (int(attempt or 0) >= 1)
+        return radar_arm_absolute_trigger(t1, t2, is_reentry=reentry)
+
+    # Legacy ADX fallback for callers without TP1/TP2
+    _ = (tv_entry,)
     side_u = str(side or "").upper()
     fill = float(fill_entry if fill_entry is not None else (entry or 0))
     if fill <= 0 or side_u not in ("LONG", "SHORT"):
@@ -464,7 +472,6 @@ def radar_arm_trigger_price(
     else:
         pct = radar_arm_ratio_by_adx(adx)
 
-    # Prefer ATR×1.35 (final spec). Optional explicit tp1_dist only if ATR missing.
     dist = tp1_atr_distance(atr, symbol)
     if dist <= 0:
         dist = float(tp1_dist or 0)

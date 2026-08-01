@@ -416,6 +416,9 @@ class PositionSupervisor(
                     "current_trade_id": getattr(self, "current_trade_id", None),
                     "trade_opened_at": float(getattr(self, "trade_opened_at", 0) or 0) or None,
                     "canonical_symbol": getattr(self, "canonical_symbol", None),
+                    # TV头寸对账：补挂防重控制
+                    "tp_rehang_attempts": int(getattr(self, "_tp_rehang_attempts", 0) or 0),
+                    "last_tp_rehang_ts": float(getattr(self, "_last_tp_rehang_ts", 0) or 0),
                     **(self._smart_reentry_state_dict() if hasattr(self, "_smart_reentry_state_dict") else {}),
                 }, f)
         except Exception as e:
@@ -571,6 +574,9 @@ class PositionSupervisor(
                     except (TypeError, ValueError):
                         toa = 0.0
                     self.trade_opened_at = toa if toa > 0 else None
+                    # TV头寸对账：补挂防重控制
+                    self._tp_rehang_attempts = max(int(s.get("tp_rehang_attempts", 0) or 0), 0)
+                    self._last_tp_rehang_ts = float(s.get("last_tp_rehang_ts", 0) or 0)
                     self._infer_radar_latched_from_state()
                     if hasattr(self, "_load_smart_reentry_state"):
                         self._load_smart_reentry_state(s)

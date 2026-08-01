@@ -3507,31 +3507,19 @@ class AdverseRadarMixin:
             (event == "radar_activate" or meta.get("just_activated"))
             and not bool(getattr(self, "_radar_arm_dingtalk_sent", False))
         ):
-            arm_pct = float(
-                meta.get("radar_arm_ratio")
-                or meta.get("arm_tp1_pct")
-                or 0.0
-            )
             attempt = int(getattr(self, "reentry_attempt", 0) or 0)
             arm_kind = "reentry" if attempt >= 1 else "first"
             arm_kind_cn = "重入开仓" if arm_kind == "reentry" else "首次开仓"
-            tier_lbl = ""
-            try:
-                from app.core.trend_tier_params import params_for_tier, clamp_tier
-
-                t = int(getattr(self, "active_radar_tier", None) or getattr(self, "trend_tier", 1) or 1)
-                tier_lbl = params_for_tier(clamp_tier(t), sym).tier_label
-            except Exception:
-                tier_lbl = ""
+            arm_trigger_px = float(meta.get("radar_arm_trigger") or 0)
+            anchor_desc = "(TP1+TP2)/2" if arm_kind == "first" else "TP2"
             adx_meta = meta.get("adx")
             detail_arm = {
                 "event": "radar_activate",
                 "arm_kind": arm_kind,
                 "arm_kind_cn": arm_kind_cn,
-                "arm_tp1_pct": arm_pct,
                 "radar_arm_mode": meta.get("radar_arm_mode"),
                 "adx": adx_meta,
-                "radar_arm_trigger": meta.get("radar_arm_trigger"),
+                "radar_arm_trigger": arm_trigger_px,
                 "radar_arm_dist": meta.get("radar_arm_dist"),
                 "current_sl": sl_px,
                 "hang_sl": hang_px,
@@ -3539,18 +3527,16 @@ class AdverseRadarMixin:
                 "entry": entry,
                 "curr_px": px,
                 "side": side,
-                "tier_label": tier_lbl,
                 "trend_tier": getattr(self, "trend_tier", None),
                 "reentry_attempt": attempt,
                 "meta": meta,
             }
-            title = f"雷达激活·保本起步·ADX{arm_pct:.0%}"
+            title = "雷达激活·保本起步·绝对锚定"
             msg = (
-                f"{arm_kind_cn} | 保本起步(fee+tick) | ADX启动={arm_pct:.2f}"
+                f"{arm_kind_cn} | 保本起步(fee+tick) | 雷达激活锚定={anchor_desc}"
                 + (f"(adx={float(adx_meta):.1f})" if adx_meta else "")
-                + f" | 触发@{float(meta.get('radar_arm_trigger') or px):.2f} | "
+                + f" | 触发@{arm_trigger_px:.2f} | "
                 f"止损上移@{sl_px:.2f}"
-                + (f" | {tier_lbl}" if tier_lbl else "")
             )
             if hasattr(self, "_log"):
                 self._log("RADAR_ACTIVATE", f"{title} @{sl_px:.2f}", detail_arm)
