@@ -8,8 +8,11 @@ coef from continuous interpolation of atr_1h / initial_atr.
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from app.core.breathing_profile import (
     ETH_PROFILE,
@@ -431,7 +434,7 @@ def init_breathing_state(
     coef = resolve_coef(breathing_coefficient, p) if breathing_coefficient is not None else cold_start_multiplier(p)
     entry_v = float(entry or 0)
     stop = compute_initial_stop(entry_v, side, atr_v, symbol=symbol)
-    return {
+    state = {
         "entry_price": entry_v,
         "initial_atr": atr_v,
         "initial_stop": stop,
@@ -445,6 +448,11 @@ def init_breathing_state(
         "symbol_tag": p.symbol_tag,
         "current_adx": float(_legacy.get("adx") or DEFAULT_ADX) if _legacy.get("adx") else DEFAULT_ADX,
     }
+    logger.info(
+        "[BreathingState] init symbol=%s side=%s entry=%.4f atr=%.4f stop=%.4f coef=%.4f",
+        p.symbol_tag, side, entry_v, atr_v, stop, coef,
+    )
+    return state
 
 
 def _tier_overrides(legacy: dict[str, Any], profile) -> dict[str, float | None]:
@@ -942,7 +950,7 @@ def apply_breathing_tick(
     else:
         improved = (old <= 0 and new_stop > 0) or (old > 0 and new_stop < old - 1e-12)
 
-    return {
+    result = {
         "current_sl": float(new_stop),
         "best_price": float(peak),
         "breakeven_phase": bool(phase),
@@ -957,6 +965,17 @@ def apply_breathing_tick(
         "symbol_tag": meta.get("symbol_tag"),
         "radar_armed": bool(meta.get("radar_armed")),
     }
+
+    ev = result["event"]
+    if ev != "none" and ev != "waiting_radar_arm":
+        logger.info(
+            "[Breathing] tick symbol=%s side=%s event=%s old_sl=%.4f new_sl=%.4f "
+            "improved=%s price=%.4f phase=%s radar_armed=%s coef=%.4f",
+            meta.get("symbol_tag", ""), side_u, ev, old, new_stop,
+            improved, price, result["breakeven_phase"],
+            result["radar_armed"], coef,
+        )
+    return result
 
 
 def stop_hit(side: str | None, price: float, current_stop: float) -> bool:
@@ -979,8 +998,7 @@ def format_breathing_legend(symbol: str | None = None) -> str:
     mid = params_for_tier(1, symbol)
     return (
         f"[{p.symbol_tag}] 硬止损呼吸垫固定1.15"
-        f" · 雷达启动=ADX70%/80%/90%×(1.35×ATR) (<20→70%早 20–30→80% >30→90%晚)"
-        f" · 档位弱/中/强调雷达步长"
+        f" · 雷达启动=绝对价格锚定：首次(TP1+TP2)/2，重入TP2"
         f" · 激活→手续费保本(fee+tick)"
         f" · 步进{mid.step_trigger_atr}/{mid.step_advance_atr}×ATR(中档)"
         f" · 追踪{mid.trail_coef_min}~{mid.trail_coef_max}×ATR"

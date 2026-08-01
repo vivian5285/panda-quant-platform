@@ -898,13 +898,13 @@ class PositionSupervisor(
             if hasattr(self, "_purge_defense_orders_on_flat"):
                 try:
                     self._purge_defense_orders_on_flat(f"reconcile_{action}")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[User %s] reconcile purge defense orders failed: %s", self.user_id, exc)
             if hasattr(self, "_clear_position_local_state"):
                 try:
                     self._clear_position_local_state()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[User %s] reconcile clear local state failed: %s", self.user_id, exc)
             detail["flat_confirmed"] = True
             detail["local_state_cleared"] = True
         self._log(action, f"TV对账 {action} leg={leg or '-'} live={live_qty}", detail)
@@ -1309,22 +1309,33 @@ class PositionSupervisor(
                 user_id=getattr(self, "user_id", None),
             ):
                 return -1
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "[User %s] _count_open_book_orders throttle check failed: %s",
+                getattr(self, "user_id", "?"), exc,
+            )
         n = 0
         try:
             if hasattr(self, "_collect_tp_limit_orders"):
                 n += len(self._collect_tp_limit_orders(force_refresh=force_refresh) or [])
             elif hasattr(self.client, "get_open_orders"):
                 n += len(self.client.get_open_orders(self.symbol, force_refresh=force_refresh) or [])
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "[User %s] _count_open_book_orders TP/order fetch failed: %s",
+                getattr(self, "user_id", "?"), exc,
+            )
             return -1
         try:
             if hasattr(self, "_collect_adverse_stop_orders"):
                 n += len(self._collect_adverse_stop_orders() or [])
             elif hasattr(self, "_collect_stop_orders"):
                 n += len(self._collect_stop_orders() or [])
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "[User %s] _count_open_book_orders stop-order fetch failed: %s",
+                getattr(self, "user_id", "?"), exc,
+            )
             return -1
         return int(n)
 
@@ -1354,8 +1365,11 @@ class PositionSupervisor(
             )
             if cool > 0:
                 return -1
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "[User %s] _count_raw_exchange_orders cooldown check failed: %s",
+                getattr(self, "user_id", "?"), exc,
+            )
         rows: list = []
         try:
             if force_refresh and hasattr(client, "_invalidate_book_cache"):
@@ -1635,8 +1649,8 @@ class PositionSupervisor(
         if hasattr(self, "reset_reentry_state"):
             try:
                 self.reset_reentry_state(reason="new_tv_clear")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[User %s] reset_reentry_state failed: %s", self.user_id, exc)
 
         def _restore_pending_open_refs() -> None:
             if pending_tv_sl > 0:
@@ -2160,8 +2174,8 @@ class PositionSupervisor(
             if not PositionAuditor.needs_exchange_verify(self):
                 PositionAuditor.mark_cleared(self, reason="ledger_flat")
             ExecutionOfficer.mark_entry_submitted(self)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("[User %s] entry submit audit mark failed: %s", self.user_id, exc)
 
         # 市价单成交后REST可能滞后，重试查询持仓直到确认
         # 关键修复: IP限流时stale cache导致误判空仓，必须force_refresh绕过

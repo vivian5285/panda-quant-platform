@@ -1,5 +1,8 @@
 import logging
 import threading
+import os
+from pathlib import Path
+from logging.handlers import RotatingFileHandler
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,9 +17,61 @@ from app.utils.auth import hash_password, verify_password, generate_referral_cod
 from app.i18n.middleware import LocaleMiddleware
 from app.i18n import translate_detail, get_locale
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+def _setup_logging() -> None:
+    """Configure structured file + console logging with rotation."""
+    log_dir = Path(getattr(settings, "LOG_DIR", "logs"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    log_format = "%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
+    file_format = "%(asctime)s [%(levelname)s] [%(name)s] [%(filename)s:%(lineno)d] %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S"
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    if root_logger.handlers:
+        root_logger.handlers.clear()
+
+    # File handler — rotating 10 MB × 5 files
+    try:
+        fh = RotatingFileHandler(
+            log_dir / "app.log",
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter(file_format, datefmt=date_format))
+        root_logger.addHandler(fh)
+
+        # Separate error log
+        eh = RotatingFileHandler(
+            log_dir / "error.log",
+            maxBytes=10 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        eh.setLevel(logging.ERROR)
+        eh.setFormatter(logging.Formatter(file_format, datefmt=date_format))
+        root_logger.addHandler(eh)
+    except Exception as exc:
+        pass  # Fall back to console only if file write fails
+
+    # Console handler
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(logging.Formatter(log_format, datefmt=date_format))
+    root_logger.addHandler(ch)
+
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.error").setLevel(logging.INFO)
+
+
+_setup_logging()
+logger = logging.getLogger(__name__)
 
 
 def _cors_origins() -> list[str]:

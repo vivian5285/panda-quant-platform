@@ -99,6 +99,7 @@ def notify_system(
 ) -> None:
     """平台重启与全局异常：入库 admin_alerts 并推送管理员钉钉。"""
     from app.models import AdminAlert
+    import platform, os, socket
 
     db: Session = SessionLocal()
     try:
@@ -118,8 +119,9 @@ def notify_system(
             logger.warning(log_line)
         else:
             logger.info(log_line)
+        if detail:
+            logger.debug("[SystemAlert][%s] detail=%s", alert_type, detail)
 
-        # System alerts: always TG; DingTalk only for allow-listed / critical
         try:
             from app.services.telegram_notify import send_telegram
 
@@ -129,9 +131,29 @@ def notify_system(
                 brand = str(getattr(get_settings(), "NOTIFY_BRAND", "") or brand)
             except Exception:
                 pass
+
+            severity_emoji = {"critical": "🔴", "warning": "🟡", "info": "🔵"}.get(severity, "⚪")
+            hostname = socket.gethostname()
+            pid = os.getpid()
+
+            detail_lines = []
+            if detail:
+                for k, v in list(detail.items())[:8]:
+                    detail_lines.append(f"  • {k}: {v!r}")
+
+            msg_parts = [
+                f"**类型**: {alert_type}",
+                f"**说明**: {message}",
+                f"**主机**: {hostname} (pid={pid})",
+                f"**时间**: {alert.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')}Z",
+            ]
+            if detail_lines:
+                msg_parts.append("**详情**:")
+                msg_parts.extend(detail_lines)
+
             send_telegram(
-                f"**类型**: {alert_type}\n**说明**: {message}",
-                title=f"【{brand}】系统 · {title}",
+                "\n".join(msg_parts),
+                title=f"【{brand}】{severity_emoji} {title}",
             )
         except Exception as te:
             logger.warning("System Telegram push skipped: %s", te)

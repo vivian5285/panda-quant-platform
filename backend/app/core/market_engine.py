@@ -182,8 +182,17 @@ def refresh_indicators(
         if prev.get("atr_series"):
             snap["atr_series"] = list(prev.get("atr_series") or [])
         snap["stale"] = True
+        logger.warning(
+            "[MarketEngine] stale ATR for %s (%s): prev=%.4f, using stale value",
+            key, source, snap["atr"],
+        )
     else:
         snap["stale"] = False
+        if snap["atr"] > 0:
+            logger.debug(
+                "[MarketEngine] refreshed %s: atr=%.4f adx=%.2f source=%s",
+                key, snap["atr"], snap["adx"], source,
+            )
 
     with _lock:
         _cache[key] = snap
