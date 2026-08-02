@@ -4083,21 +4083,21 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         self.adopted_manual = False
         protect = self._protect_and_monitor(real_qty, entry_price or pos.get("entry_price") or 0)
         if isinstance(protect, dict) and protect.get("aborted"):
-                logger.error("开仓后硬止损失败已撤仓·跳过OPEN钉钉")
-                return {"status": "error", "reason": "hard_sl_fail_abort", "detail": protect}
-            if getattr(self, "_atr_fallback_pending_pause", False):
-                self._atr_fallback_pending_pause = False
-                if hasattr(self, "_pause_trading"):
-                    self._pause_trading(
-                        "ATR应急降级后暂停·待人工确认VPS ATR恢复",
-                        {
-                            "atr_source": sizing_meta.get("atr_source"),
-                            "atr_fallback_detail": sizing_meta.get("atr_fallback_detail"),
-                            "trade_id": self.current_trade_id,
-                            "tag": "atr_emergency_fallback",
-                        },
-                    )
-            return {"status": "ok", "action": action, "trade_id": self.current_trade_id}
+            logger.error("开仓后硬止损失败已撤仓·跳过OPEN钉钉")
+            return {"status": "error", "reason": "hard_sl_fail_abort", "detail": protect}
+        if getattr(self, "_atr_fallback_pending_pause", False):
+            self._atr_fallback_pending_pause = False
+            if hasattr(self, "_pause_trading"):
+                self._pause_trading(
+                    "ATR应急降级后暂停·待人工确认VPS ATR恢复",
+                    {
+                        "atr_source": sizing_meta.get("atr_source"),
+                        "atr_fallback_detail": sizing_meta.get("atr_fallback_detail"),
+                        "trade_id": self.current_trade_id,
+                        "tag": "atr_emergency_fallback",
+                    },
+                )
+        return {"status": "ok", "action": action, "trade_id": self.current_trade_id}
 
     def _protect_and_monitor(self, qty, entry_price):
         """
