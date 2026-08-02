@@ -1934,6 +1934,15 @@ class BinanceSmartDefenseMixin:
         open_init = bool(getattr(self, "_defense_open_init_logs", False))
         tag = "开仓初始化补挂" if open_init else "核武级止盈清场重挂"
         mark = "📋" if open_init else "☢️"
+        # §21修复：核武重挂前强制清零 consumed，防止上一次 _sync_consumed_tp_levels
+        # 的 past_early 污染（TP2 被标记为 consumed 后，should_skip_rehang 又跳过补挂）。
+        if hasattr(self, "consumed_tp_levels"):
+            self.consumed_tp_levels = []
+            if hasattr(self, "_save_state"):
+                try:
+                    self._save_state()
+                except Exception:
+                    pass
         # Soft same-price dedupe BEFORE any cancel-all-tp / rebuild
         soft = self._soft_dedupe_tp_same_price(live_qty)
         if soft < 0:

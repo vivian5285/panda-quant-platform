@@ -2515,6 +2515,14 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
     def _nuclear_realign_tp(self, live_qty, entry, dynamic_sl=None, rounds=3):
         """核武重挂：只撤 TP 限价，绝不 cancel_all（避免误撤呼吸止损条件槽）。"""
+        # §21修复：核武重挂前强制清零 consumed，防止 _sync_consumed_tp_levels 的 past_early 污染
+        if hasattr(self, "consumed_tp_levels"):
+            self.consumed_tp_levels = []
+            if hasattr(self, "_save_state"):
+                try:
+                    self._save_state()
+                except Exception:
+                    pass
         curr_px = self._current_tp_price()
         last_audit = self._audit_tp_levels(live_qty, curr_px=curr_px)
         for r in range(rounds):
