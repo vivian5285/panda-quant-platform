@@ -4082,49 +4082,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         )
         self.adopted_manual = False
         protect = self._protect_and_monitor(real_qty, entry_price or pos.get("entry_price") or 0)
-            self.current_side = action
-            real_qty = self._safe_qty(pos['size'])
-            entry_price = float(pos.get('entry_price', 0) or 0)
-            # 开仓宽限：禁止立刻 CAP 市价减仓
-            self.trade_opened_at = time.time()
-            try:
-                from app.services.webhook_symbol_coalesce import get_coalesce
-
-                get_coalesce().note_entry_filled(
-                    getattr(self, "canonical_symbol", None) or self.symbol
-                )
-            except Exception:
-                pass
-            if hasattr(self, "_save_state"):
-                try:
-                    self._save_state()
-                except Exception:
-                    pass
-            self.base_qty = real_qty
-            if hasattr(self, "_set_open_qty_baseline"):
-                self._set_open_qty_baseline(real_qty, reason="tv_open")
-            else:
-                self.initial_qty = real_qty
-            try:
-                from app.core.pipeline_officers import ExecutionOfficer, PositionAuditor
-
-                PositionAuditor.mark_cleared(self, reason="entry_fill")
-                ExecutionOfficer.mark_entry_confirmed(
-                    self, qty=real_qty, entry=entry_price, side=action,
-                )
-            except Exception:
-                pass
-            self.add_count = 0
-            self.consumed_tp_levels = []
-            self._tp_fill_dingtalk_levels = set()
-            self.current_trade_id = self.on_trade_open(
-                self.user_id, action, real_qty, entry_price or float(pos.get("entry_price", 0) or 0),
-                self.regime, self.tv_tps,
-                symbol=self.canonical_symbol,
-            )
-            self.adopted_manual = False
-            protect = self._protect_and_monitor(real_qty, entry_price or pos['entry_price'])
-            if isinstance(protect, dict) and protect.get("aborted"):
+        if isinstance(protect, dict) and protect.get("aborted"):
                 logger.error("开仓后硬止损失败已撤仓·跳过OPEN钉钉")
                 return {"status": "error", "reason": "hard_sl_fail_abort", "detail": protect}
             if getattr(self, "_atr_fallback_pending_pause", False):
