@@ -3071,7 +3071,7 @@ class PositionSupervisor(
                     prices.append(round_price(px))
         return prices
 
-    def _sync_consumed_tp_levels(self, live_qty: float, curr_px: float) -> list[int]:
+    def _sync_consumed_tp_levels(self, live_qty: float, curr_px: float, *, skip_past_early: bool = False) -> list[int]:
         """Exchange-first: qty+book+price evidence merge (never mark TP1 on full open).
 
         Also mark contiguous placeable tiers past by mark/peak so restart never
@@ -3079,6 +3079,13 @@ class PositionSupervisor(
 
         Placeable-only past/consume: mark through TV tp3 must NOT invent
         consumed=[…,3] / false TP3 drift (币安单系 v16.4.2 · TP1+TP2≈30% 对账).
+
+        Args:
+            skip_past_early: If True, skip the past_early logic. Used during fresh
+                open initialization to prevent the new position's entry price from
+                incorrectly marking TP1 as "past" (e.g. curr_px=entry=4070 > TP1=4074
+                would wrongfully mark TP1 as consumed and cause _cancel_tp_orders to
+                remove the just-placed TP1 before nuclear can confirm placement).
         """
         from app.core.tp_slice_guard import compute_tp_slices, levels_past_by_mark
         from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
@@ -3097,16 +3104,20 @@ class PositionSupervisor(
         )
         reduced = abs(anchor - live)
         tp1_slice = float(slices[0][1]) if slices else 0.0
-        past_early = {
-            int(x)
-            for x in levels_past_by_mark(
-                float(curr_px or 0),
-                self.current_side,
-                list(self.tv_tps or []),
-                peak_px=float(getattr(self, "best_price", 0) or 0),
-            )
-            if int(x) in PLACEABLE_TP_LEVELS
-        }
+        past_early: set[int] = set()
+        if not skip_past_early:
+            # 仅常规路径用 past_early 推断过价档位；开仓初始化跳过以防 entry≈curr_px≈TP1
+            # 导致误判（XAU 4070.59 entry > TP1=4074.03 → consumed 误判 → TP1 被撤单）。
+            past_early = {
+                int(x)
+                for x in levels_past_by_mark(
+                    float(curr_px or 0),
+                    self.current_side,
+                    list(self.tv_tps or []),
+                    peak_px=float(getattr(self, "best_price", 0) or 0),
+                )
+                if int(x) in PLACEABLE_TP_LEVELS
+            }
         # 仅「真·误记账」才清 consumed：仓位仍满仓 + 现价未过 TP + 盘口上该档限价仍在。
         # 禁止在「TP 5min 超时撤单后 live==anchor」时清空 — 那会立刻触发核武重挂，
         # 与「超时移交·禁止重挂」铁律冲突，并在撤单滞后时叠出重复 TP。

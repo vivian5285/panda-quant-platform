@@ -1492,7 +1492,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             pass
         return out
 
-    def _sync_consumed_tp_levels(self, live_qty, curr_px):
+    def _sync_consumed_tp_levels(self, live_qty, curr_px, *, skip_past_early: bool = False):
         from app.core.tp_slice_guard import compute_tp_slices, levels_past_by_mark
         from app.core.tp_regime_targets import PLACEABLE_TP_LEVELS
 
@@ -1508,16 +1508,19 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             exclude_levels={3} - set(PLACEABLE_TP_LEVELS),
         )
         tp1_slice = float(slices[0][1]) if slices else 0.0
-        past_early = {
-            int(x)
-            for x in levels_past_by_mark(
-                float(curr_px or 0),
-                self.current_side,
-                list(self.tv_tps or []),
-                peak_px=float(getattr(self, "best_price", 0) or 0),
-            )
-            if int(x) in PLACEABLE_TP_LEVELS
-        }
+        # §21修复：开仓初始化 skip_past_early，防止 entry≈curr_px≈TP1 误判 consumed
+        past_early: set = set()
+        if not skip_past_early:
+            past_early = {
+                int(x)
+                for x in levels_past_by_mark(
+                    float(curr_px or 0),
+                    self.current_side,
+                    list(self.tv_tps or []),
+                    peak_px=float(getattr(self, "best_price", 0) or 0),
+                )
+                if int(x) in PLACEABLE_TP_LEVELS
+            }
         # 手数噪声带（1 张）；仅当盘口仍挂着对应 TP 限价时才清误记账。
         # 超时撤单后 live==anchor 且盘口已空 → 必须保留 consumed，禁止核武重挂循环。
         restore_tol = 1.0
@@ -2624,8 +2627,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         if reason:
             logger.info(f"🧠 智能防线对齐: {reason}")
         curr_px = self._current_tp_price()
-        self._sync_consumed_tp_levels(live_qty, curr_px)
-        self._cancel_tp_orders_for_consumed_levels()
+        # §21修复：开仓初始化时 skip_past_early=True，防止 entry≈curr_px≈TP1 误判 consumed
+        open_init = "开仓" in str(reason or "")
+        self._sync_consumed_tp_levels(live_qty, curr_px, skip_past_early=open_init)
+        if not open_init:
+            self._cancel_tp_orders_for_consumed_levels()
         initial = self._audit_tp_levels(live_qty, curr_px=curr_px)
         if self._defenses_fully_ok(
             live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,

@@ -2277,9 +2277,15 @@ class BinanceSmartDefenseMixin:
         if reason:
             self._def_log(f"🧠 智能防线对齐: {reason}")
         curr_px = self._current_tp_price()
+        # §21修复：开仓初始化时 skip_past_early=True，防止 entry≈curr_px≈TP1 导致 TP1 被误判
+        # 为 consumed 并被 _cancel_tp_orders_for_consumed_levels 撤掉（XAU 4070.59>TP1=4074.03）。
+        open_init = "开仓" in str(reason or "")
         if hasattr(self, "_sync_consumed_tp_levels"):
-            self._sync_consumed_tp_levels(live_qty, curr_px)
-        self._cancel_tp_orders_for_consumed_levels()
+            self._sync_consumed_tp_levels(live_qty, curr_px, skip_past_early=open_init)
+        # 开仓初始化：consumed_tp_levels 已被开仓路径清零，且 skip_past_early 防止误判，
+        # 此时无需执行 _cancel_tp_orders_for_consumed_levels（无 consumed 要撤）。
+        if not open_init:
+            self._cancel_tp_orders_for_consumed_levels()
         initial = self._audit_tp_levels(live_qty, curr_px=curr_px)
         if initial.get("book_unknown"):
             self._def_log("⚠️ 盘口簿记未知，跳过防线对齐（拒乐观补挂）", logging.WARNING)
