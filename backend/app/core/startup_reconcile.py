@@ -1993,37 +1993,34 @@ def audit_and_patch_missing_tps(
     patched: list[int] = []
     failed: list[int] = []
 
-        from app.core.symbol_precision import round_quantity, min_qty_for
+    from app.core.symbol_precision import round_quantity, min_qty_for
 
-        # Resolve symbol for per-exchange min_qty
-        sym = (
-            getattr(supervisor, "canonical_symbol", None)
-            or getattr(supervisor, "symbol", None)
-            or ""
-        )
-        sym_min_qty = min_qty_for(sym) if sym else 0.0
+    sym = (
+        getattr(supervisor, "canonical_symbol", None)
+        or getattr(supervisor, "symbol", None)
+        or ""
+    )
+    sym_min_qty = min_qty_for(sym) if sym else 0.0
 
-        for lvl in missing:
-            if lvl <= 0 or lvl > len(tv_tps):
-                continue
+    for lvl in missing:
+        if lvl <= 0 or lvl > len(tv_tps):
+            continue
 
-            tp_price = tv_tps[lvl - 1]
-            if tp_price <= 0:
-                continue
+        tp_price = tv_tps[lvl - 1]
+        if tp_price <= 0:
+            continue
 
-            # 计算补挂数量：基于初始头寸的比例
-            if lvl == 1:
-                ratio = 0.10  # TP1 = 10%
-            elif lvl == 2:
-                ratio = 0.20  # TP2 = 20%
-            else:
-                ratio = 0.10  # 默认
+        if lvl == 1:
+            ratio = 0.10  # TP1 = 10%
+        elif lvl == 2:
+            ratio = 0.20  # TP2 = 20%
+        else:
+            ratio = 0.10  # 默认
 
-            tp_qty = round_quantity(live_qty * ratio, symbol=sym)
-            if sym_min_qty > 0 and tp_qty < sym_min_qty:
-                tp_qty = sym_min_qty
+        tp_qty = round_quantity(live_qty * ratio, symbol=sym)
+        if sym_min_qty > 0 and tp_qty < sym_min_qty:
+            tp_qty = sym_min_qty
 
-        # 调用实际的挂单函数
         place_fn = getattr(supervisor, "_place_limit_with_retry", None)
         if place_fn:
             try:
