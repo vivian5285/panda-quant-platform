@@ -68,8 +68,24 @@ def check_combined_notional_cap(
     When replace_own=True, current symbol's existing notional is excluded (re-open replaces it).
     """
     eq = max(float(equity or 0), 0.0)
+    if eq <= 0:
+        logger.warning(
+            "Combined notional BLOCKED (zero equity) user=%s symbol=%s new_notional=%.2f",
+            user_id, canonical, float(new_notional or 0),
+        )
+        return False, {
+            "combined_notional_check": True,
+            "equity": 0.0,
+            "max_mult": mult,
+            "notional_cap": 0.0,
+            "peer_notional": round(float(peers or 0), 2),
+            "new_notional": round(float(new_notional or 0), 2),
+            "proposed_notional": round(float(new_notional or 0), 2),
+            "allowed": False,
+            "error": "zero_equity_blocked",
+        }
     mult = float(getattr(settings, "MAX_COMBINED_NOTIONAL_MULT", 13.0) or 13.0)
-    cap = eq * mult if eq > 0 else 0.0
+    cap = eq * mult
     peers = peer_notional_excluding(user_id, canonical)
     proposed = peers + max(float(new_notional or 0), 0.0)
     ok = cap <= 0 or proposed <= cap + 1e-6
