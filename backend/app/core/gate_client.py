@@ -100,7 +100,7 @@ class GateClient:
                 )
                 try:
                     from app.core.exchange_errors import is_rate_limit_error
-                    from app.core.ip_rest_cooldown import note_rate_limit
+                    from app.core.rest_throttle_valve import note_rate_limit
 
                     if resp.status_code == 429 or is_rate_limit_error(resp.text):
                         note_rate_limit(exchange="gate", user_id=self.user_id)

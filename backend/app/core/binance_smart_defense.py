@@ -297,7 +297,7 @@ class BinanceSmartDefenseMixin:
         if not force_refresh:
             return False
         try:
-            from app.core.ip_rest_cooldown import remaining_sec
+            from app.core.rest_throttle_valve import remaining_sec
 
             cool = remaining_sec(
                 exchange=getattr(self, "exchange_id", "binance"),

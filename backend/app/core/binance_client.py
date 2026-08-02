@@ -844,8 +844,7 @@ class BinanceClient:
         """
         symbol = self._sym(symbol)
         try:
-            from app.core.ip_rest_cooldown import remaining_sec
-            from app.core.rest_throttle_valve import require_rest_or_transient
+            from app.core.rest_throttle_valve import remaining_sec, require_rest_or_transient
 
             if float(remaining_sec(exchange="binance", user_id=self.user_id) or 0) > 0:
                 logger.warning(

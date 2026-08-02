@@ -94,7 +94,7 @@ def raise_exchange_transient(
     # Rate-limit / IP cool: shared cool-down across symbols for this exchange+user.
     if is_rate_limit_error(exc, code=code) or code in (-1003, "-1003", 1003, "1003"):
         try:
-            from app.core.ip_rest_cooldown import note_rate_limit
+            from app.core.rest_throttle_valve import note_rate_limit
 
             until = note_rate_limit(
                 exchange=exchange,

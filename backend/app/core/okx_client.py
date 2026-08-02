@@ -111,7 +111,7 @@ class OkxClient:
                 )
                 try:
                     from app.core.exchange_errors import is_rate_limit_error, parse_binance_error
-                    from app.core.ip_rest_cooldown import note_rate_limit
+                    from app.core.rest_throttle_valve import note_rate_limit
 
                     code = data.get("code")
                     msg = data.get("msg") or ""

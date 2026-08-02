@@ -1605,7 +1605,7 @@ class AdverseRadarMixin:
         # Under IP cool-down: serve cache only; skip per-id algo probes
         cooling = False
         try:
-            from app.core.ip_rest_cooldown import remaining_sec
+            from app.core.rest_throttle_valve import remaining_sec
 
             cooling = float(
                 remaining_sec(
@@ -3442,7 +3442,7 @@ class AdverseRadarMixin:
         if live_stop_n < 0:
             # Book unknown — do not place; attempt cancel-only sync refuse path
             try:
-                from app.core.ip_rest_cooldown import remaining_sec
+                from app.core.rest_throttle_valve import remaining_sec
 
                 cooling = float(
                     remaining_sec(

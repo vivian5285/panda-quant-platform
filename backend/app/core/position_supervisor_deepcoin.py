@@ -837,7 +837,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             except (TypeError, ValueError):
                 left = 0.0
         try:
-            from app.core.ip_rest_cooldown import remaining_sec
+            from app.core.rest_throttle_valve import remaining_sec
 
             shared = remaining_sec(
                 exchange=getattr(self, "exchange_id", None) or "deepcoin",
@@ -860,7 +860,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self._position_query_ban_until_ms = int(ban_ms)
         elif isinstance(err, ExchangeTransientError) and getattr(err, "is_ip_ban", False):
             try:
-                from app.core.ip_rest_cooldown import note_rate_limit
+                from app.core.rest_throttle_valve import note_rate_limit
 
                 until = note_rate_limit(
                     exchange=getattr(self, "exchange_id", None) or "deepcoin",

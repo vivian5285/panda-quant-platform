@@ -5,7 +5,7 @@ import os
 from flask import request
 
 from app.config import get_settings
-from app.utils.rate_limit import rate_limiter
+from app.utils.redis_rate_limit import redis_rate_limiter as rate_limiter
 
 logger = logging.getLogger(__name__)
 settings = get_settings()

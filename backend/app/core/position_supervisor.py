@@ -1362,7 +1362,7 @@ class PositionSupervisor(
         if not symbol or not client:
             return -1
         try:
-            from app.core.ip_rest_cooldown import remaining_sec
+            from app.core.rest_throttle_valve import remaining_sec
 
             cool = float(
                 remaining_sec(
@@ -4578,7 +4578,7 @@ class PositionSupervisor(
             except (TypeError, ValueError):
                 left = 0.0
         try:
-            from app.core.ip_rest_cooldown import remaining_sec
+            from app.core.rest_throttle_valve import remaining_sec
 
             shared = remaining_sec(
                 exchange=getattr(self, "exchange_id", None) or "binance",
@@ -4603,7 +4603,7 @@ class PositionSupervisor(
         elif isinstance(err, ExchangeTransientError) and getattr(err, "is_ip_ban", False):
             # -1003 without stamp: shared 90s cool-down
             try:
-                from app.core.ip_rest_cooldown import note_rate_limit
+                from app.core.rest_throttle_valve import note_rate_limit
 
                 until = note_rate_limit(
                     exchange=getattr(self, "exchange_id", None) or "binance",

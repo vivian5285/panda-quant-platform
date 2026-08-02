@@ -5,6 +5,9 @@ Keyed by exchange account (exchange + user), with _GLOBAL fuse for shared IP.
 
 Production stance (multi-user × ETH+XAU): prefer ledger/WS; REST is scarce.
 Budget is intentionally tight so we cool BEFORE exchange bans us.
+
+Redis-backed for distributed deployments (docker-compose scale).
+Falls back to in-memory if Redis unavailable.
 """
 
 from __future__ import annotations
@@ -16,45 +19,39 @@ from typing import Any
 
 from app.core.ip_rest_cooldown import (
     DEFAULT_COOL_SEC,
-    note_rate_limit,
-    remaining_sec,
-    raise_if_cooling,
+    note_rate_limit as _mem_note,
+    remaining_sec as _mem_remaining,
+    raise_if_cooling as _mem_raise,
 )
-
-# Re-export for callers / tests
-__all__ = [
-    "DEFAULT_BUDGET_PER_MIN",
-    "EMERGENCY_BUDGET_PER_MIN",
-    "ThrottleDenied",
-    "acquire_rest_permit",
-    "require_rest_or_transient",
-    "rest_silent",
-    "sentinel_may_rest",
-    "note_rate_limit",
-    "remaining_sec",
-    "record_rest_call",
-    "calls_last_min",
-    "emergency_calls_last_min",
-    "reset_for_tests",
-]
 
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
-# key -> list of call timestamps (last 60s) — NORMAL calls only (consume budget)
 _calls: dict[str, list[float]] = {}
-# Emergency/force_refresh calls tracked separately (don't consume budget but still limited)
 _emergency_calls: dict[str, list[float]] = {}
+
+# Try Redis-backed implementation
+_use_redis = False
+_redis_note = None
+_redis_remaining = None
+
+try:
+    from app.core.redis_rest_throttle import (
+        note_rate_limit as _redis_note,
+        remaining_sec as _redis_remaining,
+        DEFAULT_BUDGET_PER_MIN as _REDIS_BUDGET,
+        EMERGENCY_BUDGET_PER_MIN as _REDIS_EMG_BUDGET,
+    )
+    _use_redis = True
+    logger.info("Using Redis-backed REST throttle (distributed mode)")
+except ImportError:
+    logger.warning("Redis not available, using in-memory REST throttle")
 
 # Soft budget before we refuse — multi-user shared IP; stay well under exchange caps.
 # Binance ~2400 weight/min; openOrders~40 weight.
-# TARGET: stay under ~15 calls/min (≈600 weight/min) so even dual supervisors are safe.
-# Combined with WS for ticks and rest_book_cache TTL, this is safe.
-DEFAULT_BUDGET_PER_MIN = 15   # was 60 — 大幅降低，每次REST都很珍贵 (was 45→60)
-# Emergency/force_refresh calls have a separate hard cap to prevent abuse.
-# With 90s sentinel poll + cache TTL, this should be very rarely hit.
-EMERGENCY_BUDGET_PER_MIN = 30
-# When budget trips, cool for the full shared window (not a short 60s blip).
+# Redis mode: reduced to 10/min for safety in multi-container environment.
+DEFAULT_BUDGET_PER_MIN = (_REDIS_BUDGET if _use_redis else 15)
+EMERGENCY_BUDGET_PER_MIN = (_REDIS_EMG_BUDGET if _use_redis else 30)
 BUDGET_COOL_SEC = float(DEFAULT_COOL_SEC)
 
 
@@ -63,6 +60,9 @@ def _acct_key(exchange: str | None, user_id: int | str | None) -> str:
 
 
 def record_rest_call(*, exchange: str | None, user_id: int | str | None = None, _emergency: bool = False) -> None:
+    if _use_redis:
+        from app.core.redis_rest_throttle import record_rest_call as _r_record
+        return _r_record(exchange=exchange, user_id=user_id, _emergency=_emergency)
     k = _acct_key(exchange, user_id)
     now = time.time()
     if _emergency:
@@ -78,6 +78,9 @@ def record_rest_call(*, exchange: str | None, user_id: int | str | None = None, 
 
 
 def calls_last_min(*, exchange: str | None, user_id: int | str | None = None) -> int:
+    if _use_redis:
+        from app.core.redis_rest_throttle import calls_last_min as _r_calls
+        return _r_calls(exchange=exchange, user_id=user_id)
     k = _acct_key(exchange, user_id)
     now = time.time()
     with _lock:
@@ -85,7 +88,9 @@ def calls_last_min(*, exchange: str | None, user_id: int | str | None = None) ->
 
 
 def emergency_calls_last_min(*, exchange: str | None, user_id: int | str | None = None) -> int:
-    """Count force_refresh/emergency calls in last minute (they don't consume normal budget)."""
+    if _use_redis:
+        from app.core.redis_rest_throttle import emergency_calls_last_min as _r_emg
+        return _r_emg(exchange=exchange, user_id=user_id)
     k = _acct_key(exchange, user_id)
     now = time.time()
     with _lock:
@@ -93,9 +98,24 @@ def emergency_calls_last_min(*, exchange: str | None, user_id: int | str | None 
 
 
 def reset_for_tests() -> None:
+    if _use_redis:
+        from app.core.redis_rest_throttle import reset_for_tests as _r_reset
+        return _r_reset()
     with _lock:
         _calls.clear()
         _emergency_calls.clear()
+
+
+def remaining_sec(*, exchange: str | None = None, user_id: int | str | None = None) -> float:
+    if _use_redis and _redis_remaining:
+        return _redis_remaining(exchange=exchange, user_id=user_id)
+    return _mem_remaining(exchange=exchange, user_id=user_id)
+
+
+def note_rate_limit(**kwargs) -> float:
+    if _use_redis and _redis_note:
+        return _redis_note(**kwargs)
+    return _mem_note(**kwargs)
 
 
 class ThrottleDenied(RuntimeError):
@@ -113,46 +133,33 @@ def acquire_rest_permit(
     ledger: Any = None,
     priority: str = "normal",
 ) -> None:
-    """Raise ThrottleDenied if REST must not proceed.
-
-    ``priority`` controls whether the call bypasses the budget cap:
-    - "emergency": bypasses per-minute budget entirely — for HARD_SL_FAIL_ABORT,
-      close_protect, and other fund-safety-critical operations.
-      Still subject to IP-level cooling (rate-limit cooldown from exchange).
-    - "normal": normal budget gate (DEFAULT_BUDGET_PER_MIN per minute).
-    """
-    left = remaining_sec(exchange=exchange, user_id=user_id)
+    """Raise ThrottleDenied if REST must not proceed."""
+    if _use_redis:
+        from app.core.redis_rest_throttle import acquire_rest_permit as _r_acquire
+        return _r_acquire(
+            exchange=exchange, user_id=user_id, op=op,
+            budget_per_min=budget_per_min, priority=priority
+        )
+    left = _mem_remaining(exchange=exchange, user_id=user_id)
     if left > 0:
         raise ThrottleDenied(f"{exchange} cool-down {left:.0f}s ({op})", remaining=left)
-    # Emergency / fund-safety calls bypass budget but must still obey IP cool-down
     if priority != "emergency":
         n = calls_last_min(exchange=exchange, user_id=user_id)
         if n >= int(budget_per_min):
-            note_rate_limit(
-                exchange=exchange,
-                user_id=user_id,
-                cool_sec=BUDGET_COOL_SEC,
-            )
+            _mem_note(exchange=exchange, user_id=user_id, cool_sec=BUDGET_COOL_SEC)
             raise ThrottleDenied(
                 f"{exchange} REST budget exceeded {n}/{budget_per_min} ({op})",
                 remaining=BUDGET_COOL_SEC,
             )
-    raise_if_cooling(exchange=exchange, user_id=user_id, op=op)
-    # Emergency calls bypass the budget check above but still record the call
-    # so audit trail is complete. Normal calls record.
+    _mem_raise(exchange=exchange, user_id=user_id, op=op)
     if priority != "emergency":
         record_rest_call(exchange=exchange, user_id=user_id)
     else:
-        # Record emergency call in separate bucket; enforce separate hard cap.
         emergency_n = emergency_calls_last_min(exchange=exchange, user_id=user_id)
         if emergency_n >= EMERGENCY_BUDGET_PER_MIN:
-            note_rate_limit(
-                exchange=exchange,
-                user_id=user_id,
-                cool_sec=BUDGET_COOL_SEC,
-            )
+            _mem_note(exchange=exchange, user_id=user_id, cool_sec=BUDGET_COOL_SEC)
             raise ThrottleDenied(
-                f"{exchange} emergency budget exceeded {emergency_n}/{EMERGENCY_BUDGET_PER_MIN} ({op})",
+                f"{exchange} emergency budget exceeded {emergency_n}/{EMERGENCY_BUDGET_PER_MIN}",
                 remaining=BUDGET_COOL_SEC,
             )
         record_rest_call(exchange=exchange, user_id=user_id, _emergency=True)
@@ -171,11 +178,13 @@ def require_rest_or_transient(
     priority: str = "normal",
 ) -> None:
     """Client entry: deny → ExchangeTransientError so callers fail-closed / use stale."""
+    if _use_redis:
+        from app.core.redis_rest_throttle import require_rest_or_transient as _r_require
+        return _r_require(exchange=exchange, user_id=user_id, op=op, priority=priority)
     try:
         acquire_rest_permit(exchange=exchange, user_id=user_id, op=op, priority=priority)
     except ThrottleDenied as e:
         from app.core.exchange_errors import ExchangeTransientError
-
         ban_ms = int((time.time() + float(getattr(e, "remaining", 0) or 0)) * 1000)
         raise ExchangeTransientError(
             str(e),
@@ -187,19 +196,20 @@ def require_rest_or_transient(
 
 def rest_silent(*, exchange: str | None, user_id: int | str | None = None) -> bool:
     """True when REST must not be initiated (cool)."""
-    return float(remaining_sec(exchange=exchange, user_id=user_id) or 0) > 0
+    if _use_redis:
+        from app.core.redis_rest_throttle import rest_silent as _r_silent
+        return _r_silent(exchange=exchange, user_id=user_id)
+    return float(_mem_remaining(exchange=exchange, user_id=user_id) or 0) > 0
 
 
 def sentinel_may_rest(*, exchange: str | None, user_id: int | str | None, trading_paused: bool, priority: str = "normal") -> tuple[bool, str]:
-    """巡检/哨兵：暂停、冷却或预算耗尽时禁止 REST；只读账本。
-
-    ``priority="emergency"`` bypasses budget check so fund-safety operations
-    (HARD_SL_FAIL_ABORT, close_protect) are never blocked by routine traffic.
-    IP-level cool-down is always enforced regardless of priority.
-    """
+    """巡检/哨兵：暂停、冷却或预算耗尽时禁止 REST；只读账本."""
+    if _use_redis:
+        from app.core.redis_rest_throttle import sentinel_may_rest as _r_sentinel
+        return _r_sentinel(exchange=exchange, user_id=user_id, trading_paused=trading_paused, priority=priority)
     if trading_paused:
         return False, "trading_paused"
-    left = remaining_sec(exchange=exchange, user_id=user_id)
+    left = _mem_remaining(exchange=exchange, user_id=user_id)
     if left > 0:
         return False, f"cool:{left:.0f}s"
     if priority == "emergency":
@@ -208,3 +218,21 @@ def sentinel_may_rest(*, exchange: str | None, user_id: int | str | None, tradin
     if n >= DEFAULT_BUDGET_PER_MIN:
         return False, f"budget:{n}/{DEFAULT_BUDGET_PER_MIN}"
     return True, "ok"
+
+
+# Re-export for callers / tests
+__all__ = [
+    "DEFAULT_BUDGET_PER_MIN",
+    "EMERGENCY_BUDGET_PER_MIN",
+    "ThrottleDenied",
+    "acquire_rest_permit",
+    "require_rest_or_transient",
+    "rest_silent",
+    "sentinel_may_rest",
+    "note_rate_limit",
+    "remaining_sec",
+    "record_rest_call",
+    "calls_last_min",
+    "emergency_calls_last_min",
+    "reset_for_tests",
+]

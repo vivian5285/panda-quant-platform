@@ -118,7 +118,7 @@ class DeepcoinClient:
                 logger.error(f"Deepcoin API 错误 {method} {request_path} | code={data.get('code')} msg={msg}")
                 try:
                     from app.core.exchange_errors import is_rate_limit_error, parse_binance_error
-                    from app.core.ip_rest_cooldown import note_rate_limit
+                    from app.core.rest_throttle_valve import note_rate_limit
 
                     code = data.get("code")
                     if is_rate_limit_error(msg, code=code):
