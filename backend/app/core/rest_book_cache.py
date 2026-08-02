@@ -22,14 +22,14 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-# REST budget is now very conservative (15/min). Cache TTLs are increased to match:
-# - Sentinel poll at 90s → POS_TTL at least 60s
-# - Order audit at 120s → ORDER_TTL at least 90s
-# - Dual ETH+XAU supervisors share one IP budget
+# REST budget is now very conservative (8-10/min). Cache TTLs are increased to match:
+# - Sentinel poll at 120s → POS_TTL at least 80s
+# - Order audit at 120s → ORDER_TTL at least 100s
+# - Algo orders at 120s → ALGO_TTL at least 100s
 # Longer TTLs drastically reduce REST hits while WS handles fills in real-time.
-POS_TTL_SEC = 60.0    # was 15.0 — position snapshot stays valid 60s
-ORDER_TTL_SEC = 90.0  # was 25.0 — open orders snapshot stays valid 90s
-ALGO_TTL_SEC = 90.0   # was 25.0 — algo orders snapshot stays valid 90s
+POS_TTL_SEC = 80.0    # was 60.0 — position snapshot stays valid 80s
+ORDER_TTL_SEC = 100.0  # was 90.0 — open orders snapshot stays valid 100s
+ALGO_TTL_SEC = 100.0   # was 90.0 — algo orders snapshot stays valid 100s
 
 _lock = threading.RLock()
 # key = f"{exchange}:{user_id}"

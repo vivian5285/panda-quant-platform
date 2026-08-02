@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 _redis_client: Optional[redis.Redis] = None
 
 BUDGET_COOL_SEC = float(DEFAULT_COOL_SEC)
-# Budget reduced further to protect shared IP
-DEFAULT_BUDGET_PER_MIN = 10  # was 15, now 10 for safety
-EMERGENCY_BUDGET_PER_MIN = 20
+# Budget reduced further to protect shared IP — stay well under Binance 2400 weight/min
+DEFAULT_BUDGET_PER_MIN = 8   # was 10, now 8 for safety (ETH+XAU+BNB = 3 supervisors)
+EMERGENCY_BUDGET_PER_MIN = 16  # was 20
 
 
 def _get_redis() -> redis.Redis:

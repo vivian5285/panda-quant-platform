@@ -82,18 +82,18 @@ SIGNAL_QUEUE_TTL = 120.0
 SIGNAL_LOCK_SLICE = 5.0
 # Sentinel REST cadence: conservative to minimize exchange API calls.
 # WS user-data channel handles fills/positions in real-time — REST is only for
-# periodic health-check and recovery scenarios. Staying well under Binance's
-# 2400 weight/min limit even with dual supervisors.
-SENTINEL_POLL_NORMAL = 90.0   # 正常持仓: 每90秒一次REST (was 60s)
+# Stay well under Binance's 2400 weight/min limit even with ETH+XAU+BNB supervisors.
+# Increasing all intervals to reduce REST calls and prevent IP rate limiting.
+SENTINEL_POLL_NORMAL = 120.0  # 正常持仓: 每120秒一次REST (was 90s)
 # Near TP1 / radar: WS owns trailing; REST is backup only
-SENTINEL_POLL_ARMING = 60.0   # 临战状态 (was 35s)
-SENTINEL_POLL_RADAR = 60.0    # 雷达激活状态 (was 35s)
+SENTINEL_POLL_ARMING = 90.0  # 临战状态 (was 60s)
+SENTINEL_POLL_RADAR = 90.0   # 雷达激活状态 (was 60s)
 # Order-book / TP audit REST cadence (heavier operation — runs less often)
-SENTINEL_ORDER_AUDIT_SEC = 120.0  # 订单簿审计: 每120秒 (was 45s)
+SENTINEL_ORDER_AUDIT_SEC = 180.0  # 订单簿审计: 每180秒 (was 120s)
 # WS tick → radar evaluate (NO REST on this path)
 RADAR_WS_TICK_MIN_SEC = 2.0
 # Jitter: spread sentinel polls so they don't cluster at round intervals
-SENTINEL_POLL_JITTER_SEC = 3.0  # was 1.0 — spread REST over ±3s to prevent bursts
+SENTINEL_POLL_JITTER_SEC = 5.0  # was 3.0 — spread REST over ±5s to prevent bursts
 DUST_QTY_ETH = 0.004
 TP_COMPLETE_RESIDUAL_RATIO = 0.12
 RADAR_SL_MIN_MOVE = 1.0
@@ -3685,8 +3685,23 @@ class PositionSupervisor(
         """Cancel all open orders; verify empty; fallback to per-order cancel.
 
         Fetch failure → ok=False (FAIL CLOSED — never claim empty on unknown book).
+
+        Fix (2026-08-02): check position before canceling — if already flat, skip
+        all cancel operations to avoid the 12× redundant cancel loop that BNB hit.
         """
         cancelled_ids: list[int] = []
+        # Fix (2026-08-02): skip cancel if position already flat
+        try:
+            pos = self.position_manager.get_position(self.symbol, force_refresh=True)
+            if not pos or float(pos.get("positionAmt", 0) or 0) == 0:
+                self._log(
+                    "CANCEL_SKIP",
+                    "平仓跳过·无持仓（防12×冗余撤单循环）",
+                    {"watched_qty": getattr(self, "watched_qty", 0), "symbol": self.symbol},
+                )
+                return {"ok": True, "rounds": 0, "cancelled_ids": [], "skipped_flat": True}
+        except Exception as pos_err:
+            logger.debug("[User %s] cancel pre-check position query: %s", self.user_id, pos_err)
         try:
             for round_i in range(CANCEL_VERIFY_ROUNDS):
                 # Critical: force_refresh=True — stale order cache causes us to miss
@@ -5884,6 +5899,17 @@ class PositionSupervisor(
                 }
             if not pos or float(pos.get("positionAmt", 0)) == 0:
                 closed_successfully = True
+                # Fix (2026-08-02): immediately invalidate position cache so any
+                # concurrent reader (sentinel loop, other supervisor, UI panel) sees
+                # flat immediately instead of stale cached positionAmt (80s TTL).
+                try:
+                    if hasattr(self.client, "_invalidate_book_cache"):
+                        self.client._invalidate_book_cache("close_success")
+                    elif hasattr(self, "exchange_id"):
+                        from app.core.rest_book_cache import invalidate
+                        invalidate(self.exchange_id, self.user_id, reason="close_success")
+                except Exception:
+                    pass
                 break
             close_side = "SELL" if float(pos["positionAmt"]) > 0 else "BUY"
             live_close_qty = abs(float(pos["positionAmt"]))
@@ -5906,6 +5932,17 @@ class PositionSupervisor(
                 )
                 time.sleep(1.5)
                 continue  # retry in next loop iteration with fresh position query
+            # Fix (2026-08-02): immediately invalidate position cache after successful
+            # market order — prevents stale cached positionAmt from causing "强平第2轮"
+            # to use the same qty after close already happened.
+            try:
+                if hasattr(self.client, "_invalidate_book_cache"):
+                    self.client._invalidate_book_cache("close_market_filled")
+                elif hasattr(self, "exchange_id"):
+                    from app.core.rest_book_cache import invalidate
+                    invalidate(self.exchange_id, self.user_id, reason="close_market_filled")
+            except Exception:
+                pass
             time.sleep(1.5)
 
         is_close_protect = bool(

@@ -49,9 +49,9 @@ except ImportError:
 
 # Soft budget before we refuse — multi-user shared IP; stay well under exchange caps.
 # Binance ~2400 weight/min; openOrders~40 weight.
-# Redis mode: reduced to 10/min for safety in multi-container environment.
-DEFAULT_BUDGET_PER_MIN = (_REDIS_BUDGET if _use_redis else 15)
-EMERGENCY_BUDGET_PER_MIN = (_REDIS_EMG_BUDGET if _use_redis else 30)
+# Redis mode: reduced to 8/min for safety in multi-container environment.
+DEFAULT_BUDGET_PER_MIN = 8 if _use_redis else 12
+EMERGENCY_BUDGET_PER_MIN = 16 if _use_redis else 24
 BUDGET_COOL_SEC = float(DEFAULT_COOL_SEC)
 
 

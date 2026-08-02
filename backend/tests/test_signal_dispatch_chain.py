@@ -78,6 +78,7 @@ def test_dispatch_allows_close_when_user_paused(mock_session_local, _notify):
 
     supervisor = MagicMock()
     supervisor.user_id = 6
+    supervisor.canonical_symbol = "ETHUSDT"
     supervisor.handle_signal.return_value = {"status": "ok", "action": "CLOSE"}
 
     pool = MagicMock()
@@ -93,7 +94,8 @@ def test_dispatch_allows_close_when_user_paused(mock_session_local, _notify):
     mock_session_local.return_value = db
     db.query.return_value.filter.return_value.first.return_value = user
 
-    payload = {"action": "CLOSE", "reason": "test"}
+    # Fix (2026-08-02): payload must include symbol so extract_payload_symbol succeeds
+    payload = {"action": "CLOSE", "symbol": "ETHUSDT", "reason": "test"}
 
     with patch("app.services.trading_control.is_globally_paused", return_value=False), \
          patch("app.services.dispatcher.is_exchange_enabled", return_value=True), \
@@ -116,9 +118,12 @@ def test_dispatch_blocks_entry_when_user_paused(mock_session_local, _notify):
 
     supervisor = MagicMock()
     supervisor.user_id = 6
+    supervisor.canonical_symbol = "ETHUSDT"
 
     pool = MagicMock()
     pool.get_all.return_value = [supervisor]
+    # Fix (2026-08-02): must mock recovering=False so non-CLOSE signals are not blocked
+    pool.recovering = False
 
     user = MagicMock()
     user.id = 6
@@ -130,7 +135,8 @@ def test_dispatch_blocks_entry_when_user_paused(mock_session_local, _notify):
     mock_session_local.return_value = db
     db.query.return_value.filter.return_value.first.return_value = user
 
-    payload = {"action": "LONG", "regime": 1, "atr": 10, "price": 3000,
+    # Fix (2026-08-02): payload must include symbol so extract_payload_symbol succeeds
+    payload = {"action": "LONG", "symbol": "ETHUSDT", "regime": 1, "atr": 10, "price": 3000,
                "tv_tp1": 3100, "tv_tp2": 3200, "tv_tp3": 3300}
 
     with patch("app.services.trading_control.is_globally_paused", return_value=False), \

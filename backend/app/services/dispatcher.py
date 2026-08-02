@@ -355,6 +355,26 @@ class SignalDispatcher:
             s for s in self.pool.get_all()
             if (getattr(s, "canonical_symbol", None) or DEFAULT_CANONICAL) == signal_symbol
         ]
+
+        # Fix (2026-08-02): when no supervisor exists for this symbol (e.g. BNB was never
+        # loaded), still attempt to close positions via ANY compatible supervisor on this IP.
+        # BNB TV CLOSE arrived but BNB supervisor hadn't started → DISPATCH_EMPTY → BNB flat.
+        # Now: if CLOSE + no exact match, try all supervisors (they all share one Binance IP
+        # and can reach any BNB position). Log a warning; only use for CLOSE signals.
+        if not supervisors and is_close:
+            supervisors = list(self.pool.get_all())
+            if supervisors:
+                logger.warning(
+                    "[DISPATCH_FALLBACK] No supervisor for %s, routing CLOSE via %d generic supervisors",
+                    signal_symbol, len(supervisors),
+                )
+                notify_system(
+                    "warning", "DISPATCH_FALLBACK",
+                    "品种无专属Supervisor · CLOSE降级路由",
+                    f"BNB等品种首次信号时Supervisor未就绪，将通过通用Supervisor执行平仓（{len(supervisors)}个）",
+                    {"symbol": signal_symbol, "fallback_count": len(supervisors)},
+                )
+
         if not supervisors:
             logger.warning("No active supervisors for symbol %s", signal_symbol)
             available = sorted({
@@ -588,6 +608,47 @@ class SignalDispatcher:
         if not isinstance(outcome, dict):
             outcome = {"status": "ok"}
         outcome["latency_ms"] = max(1, int((time.time() - t0) * 1000))
+
+        # Fix (2026-08-02): for CLOSE signals on ETH/XAU/BNB, verify position actually flat.
+        # If supervisor reports ok but position still has qty → force close + alert.
+        # This catches the DISPATCH_EMPTY → fallback → generic supervisor case above.
+        is_close = bool(
+            str(payload.get("action", "")).upper() in ("CLOSE", "CLOSE_ALL", "CLOSE_POSITION", "CLOSE_PROTECT")
+            or (payload.get("action") or "").upper().startswith("CLOSE")
+        )
+        if is_close and outcome.get("status") in ("ok", "queued"):
+            try:
+                symbol = getattr(supervisor, "canonical_symbol", None) or payload.get("symbol")
+                exchange = getattr(supervisor, "exchange_id", "binance") or "binance"
+                pos = supervisor.position_manager.get_position(symbol, force_refresh=True)
+                if pos and float(pos.get("positionAmt", 0) or 0) != 0:
+                    still_open_qty = abs(float(pos["positionAmt"]))
+                    logger.warning(
+                        "[CLOSE_VERIFY] Supervisor %s %s CLOSE returned ok but positionAmt=%.6f — forcing close",
+                        supervisor.user_id, symbol, still_open_qty,
+                    )
+                    # Force close
+                    force_result = supervisor._close_all(
+                        reason="CLOSE_VERIFY_FORCE: position still open after CLOSE signal",
+                        close_trigger="close_verify_force",
+                    )
+                    outcome["close_verify_forced"] = True
+                    outcome["close_verify_qty"] = still_open_qty
+                    outcome["close_verify_result"] = force_result.get("status") if isinstance(force_result, dict) else "unknown"
+                    notify_admin(
+                        supervisor.user_id, "critical", "CLOSE_VERIFY_FORCE",
+                        "CLOSE信号后仓位仍存在·已强制平仓",
+                        f"品种 {symbol} · 剩余数量 {still_open_qty} · 强制平仓结果: {outcome['close_verify_result']}",
+                        {
+                            "user_id": supervisor.user_id,
+                            "symbol": symbol,
+                            "remaining_qty": still_open_qty,
+                            "force_result": outcome["close_verify_result"],
+                        },
+                    )
+            except Exception as verify_err:
+                logger.warning("[CLOSE_VERIFY] verify check failed: %s", verify_err)
+
         return outcome
 
 
