@@ -951,14 +951,23 @@ class BinanceSmartDefenseMixin:
             level = int(lv.get("level") or 0)
             if q <= 0 or px <= 0:
                 continue
+            # Bug §22 Fix: Re-query live position before each TP place to prevent
+            # ReduceOnly Order rejected (reduceOnly qty > remaining position).
+            current_live = self._resolve_live_qty(live_qty)
+            if current_live <= 0:
+                self._def_log(f"  ⛔ TP{level} @ {px:.2f} 实盘已平，跳过")
+                continue
+            safe_q = min(float(q), float(current_live))
+            if abs(safe_q - q) > 0.0001:
+                self._def_log(f"  📐 TP{level} qty校正: {q} → {safe_q} (剩余持仓 {current_live})")
             skip, skip_reason = should_skip_rehang_tp_level(
                 level or 0,
                 px,
                 side=self.current_side,
                 curr_px=px_now,
                 consumed=consumed,
-                live_qty=live_qty,
-                initial_qty=float(getattr(self, "initial_qty", 0) or live_qty),
+                live_qty=current_live,
+                initial_qty=float(getattr(self, "initial_qty", 0) or current_live),
                 regime=int(getattr(self, "regime", 3) or 3),
                 tv_tps=list(getattr(self, "tv_tps", []) or []),
                 regime_settings=getattr(self, "regime_settings", {}) or {},
@@ -1090,9 +1099,9 @@ class BinanceSmartDefenseMixin:
                 continue
             if self._refuse_tp_place_if_saturated(expected=len(levels)):
                 break
-            self._def_log(f"  + 补挂 TP @ {px:.2f} qty={q} ETH")
+            self._def_log(f"  + 补挂 TP @ {px:.2f} qty={safe_q} ETH")
             res = self.client.place_limit_order(
-                close_side, q, px, symbol=self.symbol, reduce_only=True
+                close_side, safe_q, px, symbol=self.symbol, reduce_only=True
             )
             if res:
                 placed += 1
@@ -1844,14 +1853,25 @@ class BinanceSmartDefenseMixin:
             level = int(lv.get("level") or 0)
             if q <= 0 or px <= 0:
                 continue
+            # Bug §22 Fix: Re-query live position before each TP place to prevent
+            # ReduceOnly Order rejected (reduceOnly qty > remaining position).
+            # Scenario: TP1 partially filled → remaining position smaller than
+            # initial live_qty → TP2 qty (10% × old_live) > remaining → reject.
+            current_live = self._resolve_live_qty(qty)
+            if current_live <= 0:
+                self._def_log(f"  ⛔ TP{level} @ {px:.2f} 实盘已平，跳过")
+                continue
+            safe_q = min(float(q), float(current_live))
+            if abs(safe_q - q) > 0.0001:
+                self._def_log(f"  📐 TP{level} qty校正: {q} → {safe_q} (剩余持仓 {current_live})")
             skip, skip_reason = should_skip_rehang_tp_level(
                 level,
                 px,
                 side=self.current_side,
                 curr_px=curr_px,
                 consumed=consumed,
-                live_qty=live_qty,
-                initial_qty=float(getattr(self, "initial_qty", 0) or live_qty),
+                live_qty=current_live,
+                initial_qty=float(getattr(self, "initial_qty", 0) or current_live),
                 regime=int(getattr(self, "regime", 3) or 3),
                 tv_tps=list(getattr(self, "tv_tps", []) or []),
                 regime_settings=getattr(self, "regime_settings", {}) or {},
@@ -1908,9 +1928,9 @@ class BinanceSmartDefenseMixin:
                 continue
             if self._refuse_tp_place_if_saturated(expected=len(levels)):
                 break
-            self._def_log(f"  + 重建挂 TP{level} @ {px:.2f} qty={q}")
+            self._def_log(f"  + 重建挂 TP{level} @ {px:.2f} qty={safe_q}")
             res = self.client.place_limit_order(
-                close_side, q, px, symbol=self.symbol, reduce_only=True
+                close_side, safe_q, px, symbol=self.symbol, reduce_only=True
             )
             if res:
                 placed += 1

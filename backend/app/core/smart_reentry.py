@@ -50,6 +50,7 @@ class RadarTier:
     radar_tier: int
     step_trigger_atr: float
     step_advance_atr: float
+    early_breakeven_atr: float
     coef_min: float
     coef_max: float
     breath_tp1_tp2_atr: float
@@ -119,6 +120,7 @@ def _params_to_radar_tier(p: TrendTierParams, *, attempt: int, adx_tier: int) ->
         radar_tier=int(p.tier),
         step_trigger_atr=float(p.step_trigger_atr),
         step_advance_atr=float(p.step_advance_atr),
+        early_breakeven_atr=float(p.early_breakeven_atr),
         coef_min=float(p.trail_coef_min),
         coef_max=float(p.trail_coef_max),
         breath_tp1_tp2_atr=float(p.breath_tp1_tp2_atr),

@@ -2042,14 +2042,23 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             level = int(lv.get("level") or 0)
             if q <= 0 or px <= 0:
                 continue
+            # Bug §22 Fix: Re-query live position before each TP place to prevent
+            # ReduceOnly Order rejected (reduceOnly qty > remaining position).
+            current_live = self._resolve_live_qty(live_qty)
+            if current_live <= 0:
+                logger.warning(f"  ⛔ TP{level} @ {px:.2f} 实盘已平，跳过")
+                continue
+            safe_q = min(int(q), int(current_live))
+            if safe_q != q:
+                logger.info(f"  📐 TP{level} qty校正: {q} → {safe_q} (剩余持仓 {current_live})")
             skip, skip_reason = should_skip_rehang_tp_level(
                 level,
                 px,
                 side=self.current_side,
                 curr_px=px_now,
                 consumed=consumed,
-                live_qty=live_qty,
-                initial_qty=float(self.initial_qty or live_qty),
+                live_qty=current_live,
+                initial_qty=float(self.initial_qty or current_live),
                 regime=int(self.regime or 3),
                 tv_tps=list(self.tv_tps or []),
                 regime_settings=self.regime_settings,
@@ -2128,9 +2137,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 if o.get("orderId"):
                     self.client.cancel_order(self.symbol, ord_id=o["orderId"])
                     time.sleep(0.25)
-            logger.info(f"  + 补挂 TP{lv['level']} @ {px:.2f} qty={q}张")
+            logger.info(f"  + 补挂 TP{lv['level']} @ {px:.2f} qty={safe_q}张")
             placed_res = self._place_limit_with_retry(
-                close_side, pos_side, q, px, label=f"TP{lv['level']}"
+                close_side, pos_side, safe_q, px, label=f"TP{lv['level']}"
             )
             if placed_res.get("ok"):
                 placed += 1
@@ -4896,6 +4905,15 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             level = int(lv.get("level") or 0)
             if q <= 0 or px <= 0:
                 continue
+            # Bug §22 Fix: Re-query live position before each TP place to prevent
+            # ReduceOnly Order rejected (reduceOnly qty > remaining position).
+            current_live = self._resolve_live_qty(live_qty)
+            if current_live <= 0:
+                logger.warning(f"  ⛔ TP{level} @ {px:.2f} 实盘已平，跳过")
+                continue
+            safe_q = min(int(q), int(current_live))
+            if safe_q != q:
+                logger.info(f"  📐 TP{level} qty校正: {q} → {safe_q} (剩余持仓 {current_live})")
             from app.core.tp_slice_guard import should_skip_rehang_tp_level, tp_would_instant_fill
             open_prices = [float(o.get("price", 0) or 0) for o in self._collect_tp_limit_orders()]
             consumed_now = self._consumed_tp_level_set()
@@ -4943,7 +4961,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.client.cancel_order(self.symbol, ord_id=o["orderId"])
                     time.sleep(0.25)
             placed_res = self._place_limit_with_retry(
-                close_side, pos_side, q, px, label=f"TP{level}"
+                close_side, pos_side, safe_q, px, label=f"TP{level}"
             )
             if placed_res.get("ok"):
                 placed += 1

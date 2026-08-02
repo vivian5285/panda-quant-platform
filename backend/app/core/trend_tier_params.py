@@ -30,6 +30,7 @@ class TrendTierParams:
     hard_buffer: float  # always HARD_STOP_BUFFER_FIXED
     step_trigger_atr: float
     step_advance_atr: float
+    early_breakeven_atr: float
     breath_tp1_tp2_atr: float
     breath_tp2_tp3_atr: float
     trail_coef_min: float
@@ -58,6 +59,7 @@ def _tier_row(
     tier: int,
     step_trigger_atr: float,
     step_advance_atr: float,
+    early_breakeven_atr: float,
     breath_tp1_tp2_atr: float,
     breath_tp2_tp3_atr: float,
     trail_coef_min: float,
@@ -71,6 +73,7 @@ def _tier_row(
         hard_buffer=HARD_STOP_BUFFER_FIXED,
         step_trigger_atr=step_trigger_atr,
         step_advance_atr=step_advance_atr,
+        early_breakeven_atr=early_breakeven_atr,
         breath_tp1_tp2_atr=breath_tp1_tp2_atr,
         breath_tp2_tp3_atr=breath_tp2_tp3_atr,
         trail_coef_min=trail_coef_min,
@@ -85,18 +88,21 @@ def _tier_row(
 _ETH: tuple[TrendTierParams, ...] = (
     _tier_row(
         tier=0, step_trigger_atr=0.40, step_advance_atr=0.25,
+        early_breakeven_atr=0.0,
         breath_tp1_tp2_atr=0.80, breath_tp2_tp3_atr=1.00,
         trail_coef_min=1.2, trail_coef_max=1.5,
         reentry_bars=2, reentry_zone_atr=0.5, chart_tf_min=90.0,
     ),
     _tier_row(
         tier=1, step_trigger_atr=0.50, step_advance_atr=0.35,
+        early_breakeven_atr=0.5,
         breath_tp1_tp2_atr=1.20, breath_tp2_tp3_atr=1.60,
         trail_coef_min=2.0, trail_coef_max=2.5,
         reentry_bars=2, reentry_zone_atr=0.5, chart_tf_min=90.0,
     ),
     _tier_row(
         tier=2, step_trigger_atr=0.60, step_advance_atr=0.40,
+        early_breakeven_atr=0.5,
         breath_tp1_tp2_atr=1.50, breath_tp2_tp3_atr=2.00,
         trail_coef_min=2.5, trail_coef_max=3.5,
         reentry_bars=2, reentry_zone_atr=0.5, chart_tf_min=90.0,
@@ -107,18 +113,21 @@ _ETH: tuple[TrendTierParams, ...] = (
 _XAU: tuple[TrendTierParams, ...] = (
     _tier_row(
         tier=0, step_trigger_atr=0.35, step_advance_atr=0.20,
+        early_breakeven_atr=0.0,
         breath_tp1_tp2_atr=0.70, breath_tp2_tp3_atr=0.90,
         trail_coef_min=1.0, trail_coef_max=1.3,
         reentry_bars=3, reentry_zone_atr=0.3, chart_tf_min=45.0,
     ),
     _tier_row(
         tier=1, step_trigger_atr=0.40, step_advance_atr=0.30,
+        early_breakeven_atr=0.5,
         breath_tp1_tp2_atr=1.00, breath_tp2_tp3_atr=1.40,
         trail_coef_min=1.5, trail_coef_max=2.0,
         reentry_bars=3, reentry_zone_atr=0.3, chart_tf_min=45.0,
     ),
     _tier_row(
         tier=2, step_trigger_atr=0.50, step_advance_atr=0.35,
+        early_breakeven_atr=0.5,
         breath_tp1_tp2_atr=1.30, breath_tp2_tp3_atr=1.80,
         trail_coef_min=2.0, trail_coef_max=2.8,
         reentry_bars=3, reentry_zone_atr=0.3, chart_tf_min=45.0,
@@ -129,18 +138,21 @@ _XAU: tuple[TrendTierParams, ...] = (
 _BNB: tuple[TrendTierParams, ...] = (
     _tier_row(
         tier=0, step_trigger_atr=0.38, step_advance_atr=0.22,
+        early_breakeven_atr=0.0,
         breath_tp1_tp2_atr=0.75, breath_tp2_tp3_atr=0.95,
         trail_coef_min=1.1, trail_coef_max=1.5,
         reentry_bars=2, reentry_zone_atr=0.4, chart_tf_min=60.0,
     ),
     _tier_row(
         tier=1, step_trigger_atr=0.45, step_advance_atr=0.32,
+        early_breakeven_atr=0.5,
         breath_tp1_tp2_atr=1.10, breath_tp2_tp3_atr=1.50,
         trail_coef_min=1.8, trail_coef_max=2.3,
         reentry_bars=2, reentry_zone_atr=0.4, chart_tf_min=60.0,
     ),
     _tier_row(
         tier=2, step_trigger_atr=0.55, step_advance_atr=0.38,
+        early_breakeven_atr=0.5,
         breath_tp1_tp2_atr=1.40, breath_tp2_tp3_atr=1.90,
         trail_coef_min=2.3, trail_coef_max=3.2,
         reentry_bars=2, reentry_zone_atr=0.4, chart_tf_min=60.0,

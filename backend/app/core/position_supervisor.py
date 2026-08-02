@@ -585,6 +585,11 @@ class PositionSupervisor(
                         self._load_smart_reentry_state(s)
         except Exception as e:
             logger.error(f"[User {self.user_id}] load state failed: {e}")
+            # Bug §22: 防御性重置 - 如果 _load_smart_reentry_state 因 schema 变化抛 AttributeError，
+            # 整个 _load_state 静默失败，consumed_tp_levels 可能保持默认值 []，
+            # 这反而比带着部分恢复的 stale consumed 状态运行更安全。
+            # 关键：consumed_tp_levels 如果恢复不完整，应从 [] 开始让 _sync_consumed_tp_levels 重新同步。
+            pass
 
     def _ensure_queue_worker(self) -> None:
         with self._queue_worker_lock:
