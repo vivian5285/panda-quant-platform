@@ -80,7 +80,6 @@ class SmartReentryMixin:
     def _smart_reentry_state_dict(self) -> dict[str, Any]:
         return {
             "reentry_attempt": int(getattr(self, "reentry_attempt", 0) or 0),
-            "reentry_arm_tp1_pct": float(getattr(self, "reentry_arm_tp1_pct", 0.85) or 0.85),
             "reentry_pending": bool(getattr(self, "reentry_pending", False)),
             "reentry_limit_oid": getattr(self, "reentry_limit_oid", None),
             "reentry_limit_deadline": float(getattr(self, "reentry_limit_deadline", 0) or 0),
@@ -116,7 +115,6 @@ class SmartReentryMixin:
 
         sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", None)
         self.reentry_attempt = int(s.get("reentry_attempt", 0) or 0)
-        self.reentry_arm_tp1_pct = float(s.get("reentry_arm_tp1_pct", 0.85) or 0.85)
         self.reentry_pending = bool(s.get("reentry_pending", False))
         self.reentry_limit_oid = s.get("reentry_limit_oid")
         self.reentry_limit_deadline = float(s.get("reentry_limit_deadline", 0) or 0)
@@ -155,10 +153,7 @@ class SmartReentryMixin:
         )
         self.active_hard_buffer = float(s.get("active_hard_buffer") or tier.hard_buffer)
         self.reentry_tier_label = s.get("reentry_tier_label") or tier.tier_label
-        # Re-sync arm ratio from attempt (v3: 0.85 vs 1.00)
-        self.reentry_arm_tp1_pct = float(
-            s.get("reentry_arm_tp1_pct") or tier.arm_tp1_pct
-        )
+
     def _apply_radar_tier(self, attempt: int) -> None:
         from app.core.smart_reentry import apply_tier_to_state
 
@@ -224,7 +219,7 @@ class SmartReentryMixin:
         except (TypeError, ValueError):
             adx = 0.0
         kw: dict[str, Any] = {
-            # Layer-1 arm is ADX-driven — do not pin arm_tp1_pct (would freeze ratio).
+            # Spec §6.1: arm is absolute price anchor (TP1+TP2)/2 or TP2 reentry)
             "adx": adx if adx > 0 else None,
             "step_trigger_atr": st if st > 0 else None,
             "early_breakeven_atr": eb if eb > 0 else None,
@@ -478,7 +473,6 @@ class SmartReentryMixin:
             "flat_ts": flat_ts,
             "trend_tier": trend_tier,
             "meta": meta,
-            "prev_arm_tp1_pct": float(getattr(self, "reentry_arm_tp1_pct", 0.85) or 0.85),
         }
         self._reentry_deferred_plan = plan
         return plan
@@ -522,7 +516,6 @@ class SmartReentryMixin:
                         **(plan.get("meta") or {}),
                         "attempt": next_attempt,
                         "tier_label": self.reentry_tier_label,
-                        "arm_tp1_pct": self.reentry_arm_tp1_pct,
                         "qty": qty,
                         "tv_px": self.reentry_tv_px,
                         "tv_sl": self.reentry_tv_sl_ref,
@@ -555,7 +548,6 @@ class SmartReentryMixin:
                     {
                         "attempt": next_attempt,
                         "close_px": plan.get("close_px"),
-                        "arm_tp1_pct": self.reentry_arm_tp1_pct,
                         "arm_kind": "reentry",
                         **meta,
                     },

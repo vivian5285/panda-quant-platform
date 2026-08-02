@@ -351,7 +351,6 @@ class PositionSupervisor(
                     "atr_1h": float(getattr(self, "atr_1h", 0) or 0),
                     "breath_smooth_ratio": float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
                     "atr_scenario": str(getattr(self, "atr_scenario", "") or ""),
-                    "tp3_limit_active": bool(getattr(self, "tp3_limit_active", False)),
                     "exit_ownership": str(
                         getattr(self, "exit_ownership", "NONE") or "NONE"
                     ),
@@ -450,10 +449,7 @@ class PositionSupervisor(
                     self.atr_1h = float(s.get("atr_1h", 0) or 0)
                     self.breath_smooth_ratio = float(s.get("breath_smooth_ratio", 1.0) or 1.0)
                     self.atr_scenario = str(s.get("atr_scenario") or "pending")
-                    # Spec §7: never place TP3 limits (ignore legacy True in state)
-                    self.tp3_limit_active = False
                     own = str(s.get("exit_ownership") or "NONE").upper()
-                    self.exit_ownership = own if own in ("NONE", "TP3_LIMIT", "RADAR_STOP") else "NONE"
                     self.ownership_locked_at = float(s.get("ownership_locked_at", 0) or 0)
                     self._tv_atr_ref = float(s.get("tv_atr_ref", 0) or 0)
                     self.current_adx = float(s.get("current_adx", 25) or 25)
@@ -2956,87 +2952,9 @@ class PositionSupervisor(
                 f"@{float(detail['current_sl'] or 0):.2f}"
             )
         elif lvl == 3:
-            title = "TP3限价止盈"
-            msg = (
-                f"TP3限价止盈成交 {self.current_side} {old_qty}→{new_qty} @ {curr_px or '—'} "
-                f"| 互斥撤销雷达止损"
-            )
-            detail["close_source"] = "TP3_LIMIT"
-            lock = (
-                self._set_exit_ownership("TP3_LIMIT")
-                if hasattr(self, "_set_exit_ownership")
-                else {"ok": True, "race": False}
-            )
-            if lock.get("race"):
-                if hasattr(self, "_alert"):
-                    try:
-                        self._alert(
-                            "critical",
-                            "TP3_RADAR_RACE",
-                            "双腿几乎同时触发·强制核对持仓",
-                            f"TP3成交时所有权已是 {lock.get('prev')}",
-                            {**detail, **lock},
-                        )
-                    except Exception:
-                        pass
-                if hasattr(self, "_purge_defense_orders_on_flat"):
-                    try:
-                        self._purge_defense_orders_on_flat("tp3_radar_race", notify=False)
-                    except Exception:
-                        pass
-            radar_cancel_ok = True
-            if hasattr(self, "_cancel_radar_stop_orders"):
-                try:
-                    self._cancel_radar_stop_orders()
-                except Exception:
-                    radar_cancel_ok = False
-            flat_now = float(new_qty or 0) <= float(getattr(self, "min_order_qty", 0) or 0) + 1e-12
-            if flat_now:
-                if hasattr(self, "_purge_defense_orders_on_flat"):
-                    try:
-                        self._purge_defense_orders_on_flat("tp3_filled", notify=False)
-                    except Exception:
-                        pass
-                if hasattr(self, "_reset_adverse_radar"):
-                    try:
-                        self._reset_adverse_radar(keep_tv_sl=False)
-                    except Exception:
-                        pass
-                self.monitoring = False
-            if not radar_cancel_ok:
-                if hasattr(self, "_alert"):
-                    try:
-                        self._alert(
-                            "critical",
-                            "TP3_RADAR_RACE",
-                            "双腿几乎同时触发·强制核对持仓",
-                            f"TP3先成交但撤销雷达失败 | {self.current_side} {old_qty}→{new_qty}",
-                            {**detail, "radar_cancel_ok": False},
-                        )
-                    except Exception:
-                        pass
-                if hasattr(self, "_purge_defense_orders_on_flat"):
-                    try:
-                        self._purge_defense_orders_on_flat("tp3_radar_race", notify=False)
-                    except Exception:
-                        pass
-            elif hasattr(self, "_alert") and not lock.get("race"):
-                try:
-                    self._alert(
-                        "info",
-                        "TP3_RADAR_MUTEX",
-                        "TP3先成交·已撤雷达",
-                        msg,
-                        detail,
-                    )
-                except Exception:
-                    pass
-            if hasattr(self, "_clear_defense_order_ids"):
-                try:
-                    self._clear_defense_order_ids("3")
-                except Exception:
-                    pass
-            self.tp3_limit_active = False
+            # Spec §7: TP3 never hung as limit — this branch is dead code.
+            # TP3 70% residual is handled by radar when live qty shrinks.
+            pass
         else:
             title = f"止盈TP{level}成交（VPS监控）{note}"
             msg = f"{self.current_side} {old_qty}→{new_qty} @ {curr_px or '—'} | 已成交档 {detail['consumed_tp_levels']}"
@@ -4197,7 +4115,6 @@ class PositionSupervisor(
             self.tv_sl = pending_pine_sl
         if pending_tv_price > 0:
             self.tv_price = pending_tv_price
-        self.tp3_limit_active = False
         self.atr_scenario = "pending"
         self.best_price = entry_price
         self.watched_qty = qty
@@ -4321,13 +4238,12 @@ class PositionSupervisor(
                     f"仅 {result.get('matched')}/{result.get('expected')} 档 | {summary}",
                     result,
                 )
-            # Purge any leftover TP3 limits from older code paths
+            # Spec §7: TP3 never hung — cleanup legacy leftovers
             if hasattr(self, "_cancel_tp_orders_at_levels"):
                 try:
                     self._cancel_tp_orders_at_levels([3])
                 except Exception:
                     pass
-            self.tp3_limit_active = False
 
             try:
                 scenario_detail = self._resolve_and_apply_open_atr_scenario(
@@ -4464,7 +4380,6 @@ class PositionSupervisor(
             "radar_standby": False,
             "breathing_active": True,
             "atr_scenario": str(getattr(self, "atr_scenario", "") or ""),
-            "tp3_limit_active": bool(getattr(self, "tp3_limit_active", False)),
             "frozen_hard": float(getattr(self, "_frozen_hard_stop_px", 0) or 0),
         }
         self._last_protect_result = out
@@ -5000,19 +4915,8 @@ class PositionSupervisor(
                 led.persist()
         except Exception:
             pass
-        # If TP3 still tracked, treat flat as possible radar-first and mutex-cancel TP3
-        if (
-            not skip_eager_purge
-            and bool(getattr(self, "tp3_limit_active", False))
-            and hasattr(self, "_mutex_cancel_tp3_on_radar_exit")
-        ):
-            try:
-                self._mutex_cancel_tp3_on_radar_exit(
-                    close_source="EXCHANGE_FLAT",
-                    fill_px=float(getattr(self, "last_close_px", 0) or 0),
-                )
-            except Exception:
-                pass
+        # Spec §7: TP3 never hung as limit — no mutex to call here
+        # (the _mutex_cancel_tp3_on_radar_exit method is deleted)
         if not skip_eager_purge:
             self._purge_defense_orders_on_flat(trigger, notify=False)
 

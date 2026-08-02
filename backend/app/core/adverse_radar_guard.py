@@ -60,7 +60,6 @@ ADVERSE_SHIELD_SYNC_MIN_SEC = 30.0
 # Checklist hard fuse: TOTAL open orders (limits+stops) on one symbol
 OPEN_ORDERS_HARD_CAP = 5
 EXIT_OWNERSHIP_NONE = "NONE"
-EXIT_OWNERSHIP_TP3 = "TP3_LIMIT"
 EXIT_OWNERSHIP_RADAR = "RADAR_STOP"
 ADVERSE_MAX_STOP_ORDERS = 2  # hard + radar coexistence (whitepaper)
 ADVERSE_VERIFY_RETRIES = 6
@@ -361,8 +360,6 @@ class AdverseRadarMixin:
             self._last_breath_trail_alert_sl = 0.0
         if not hasattr(self, "atr_scenario"):
             self.atr_scenario = ATR_SCENARIO_PENDING
-        if not hasattr(self, "tp3_limit_active"):
-            self.tp3_limit_active = False
         if not hasattr(self, "exit_ownership"):
             self.exit_ownership = EXIT_OWNERSHIP_NONE
         if not hasattr(self, "ownership_locked_at"):
@@ -532,58 +529,10 @@ class AdverseRadarMixin:
         tv_stop: float | None,
         vps_atr: float,
     ) -> None:
-        """Debug-only: compare TV stop_loss-implied ATR vs VPS ATR. Never affects stops.
-
-        TV ``stop_loss`` is typically ``entry ± TV_STOP_ATR_MULT×ATR`` (≈1.0), NOT the
-        VPS hang price ``entry ± 1.5×ATR``. Using INITIAL_SL_ATR=1.5 here falsely yields
-        ~33% mismatch whenever the two ATRs actually agree.
+        """Deprecated: VPS-vs-TV ATR comparison removed per Spec §14.12.
+        ATR source is always TV webhook. No-op.
         """
-        from app.config import get_settings
-
-        settings = get_settings()
-        tv_mult = float(getattr(settings, "TV_STOP_ATR_MULT", 1.0) or 1.0)
-        implied = implied_atr_from_tv_stop(
-            float(entry or 0), float(tv_stop or 0), initial_sl_atr=tv_mult,
-        )
-        vps = float(vps_atr or 0)
-        if implied <= 0 or vps <= 0:
-            return
-        ratio = atr_mismatch_ratio(vps, implied)
-        warn_pct = float(getattr(settings, "ATR_COMPARE_WARN_PCT", 0.20) or 0.20)
-        if ratio < warn_pct:
-            logger.info(
-                "[User %s] ATR核对 OK: vps=%.4f tv_implied=%.4f (÷%.2f) ratio=%.1f%%",
-                getattr(self, "user_id", "?"),
-                vps, implied, tv_mult, ratio * 100,
-            )
-            return
-        detail = {
-            "vps_atr": vps,
-            "tv_implied_atr": implied,
-            "tv_stop_atr_mult": tv_mult,
-            "tv_stop_loss": float(tv_stop or 0),
-            "entry": float(entry or 0),
-            "mismatch_pct": round(ratio * 100, 2),
-            "warn_pct": warn_pct * 100,
-            "note": "仅告警·不参与止损决策；TV隐含=|price−stop|/TV_STOP_ATR_MULT",
-        }
-        logger.warning(
-            "[User %s] ATR核对偏差过大: vps=%.4f tv_implied=%.4f (÷%.2f) Δ=%.1f%%",
-            getattr(self, "user_id", "?"),
-            vps, implied, tv_mult, ratio * 100,
-        )
-        if hasattr(self, "_alert"):
-            try:
-                self._alert(
-                    "warning",
-                    "ATR_MISMATCH",
-                    "ATR双边核对偏差",
-                    f"VPS ATR={vps:.4f} vs TV隐含={implied:.4f} "
-                    f"(stop÷{tv_mult:g}·Δ{ratio*100:.0f}%) · 请核对原生1h ATR（非90m合成）",
-                    detail,
-                )
-            except Exception:
-                pass
+        pass
 
     def _set_open_qty_baseline(self, qty: float, *, reason: str = "") -> float:
         """Open-entry baseline: while monitoring, initial_qty only rises (never compress).
@@ -809,7 +758,7 @@ class AdverseRadarMixin:
         """Lock residual exit path. Returns {ok, race, prev, owner}."""
         self._init_adverse_radar_fields()
         want = str(owner or EXIT_OWNERSHIP_NONE).upper()
-        if want not in (EXIT_OWNERSHIP_NONE, EXIT_OWNERSHIP_TP3, EXIT_OWNERSHIP_RADAR):
+        if want not in (EXIT_OWNERSHIP_NONE, EXIT_OWNERSHIP_RADAR):
             want = EXIT_OWNERSHIP_NONE
         prev = str(getattr(self, "exit_ownership", EXIT_OWNERSHIP_NONE) or EXIT_OWNERSHIP_NONE)
         if prev not in (EXIT_OWNERSHIP_NONE, "", "NONE") and prev != want:
@@ -822,15 +771,17 @@ class AdverseRadarMixin:
         return {"ok": True, "race": False, "prev": prev, "owner": want}
 
     def _exit_leg_blocked(self, leg: str) -> bool:
-        """True if placing/amending this leg is forbidden by ownership lock."""
+        """True if placing/amending this leg is forbidden by ownership lock.
+
+        TP3 leg is never placed (Spec §7: TP3 never hung as limit), so TP3 blocking is dead.
+        """
         self._init_adverse_radar_fields()
         own = str(getattr(self, "exit_ownership", EXIT_OWNERSHIP_NONE) or EXIT_OWNERSHIP_NONE)
         if own in (EXIT_OWNERSHIP_NONE, "", "NONE"):
             return False
+        # Only RADAR leg is blocked when radar owns exit
         leg_u = str(leg or "").upper()
-        if leg_u in ("TP3", "3", EXIT_OWNERSHIP_TP3) and own == EXIT_OWNERSHIP_RADAR:
-            return True
-        if leg_u in ("RADAR", "STOP", EXIT_OWNERSHIP_RADAR) and own == EXIT_OWNERSHIP_TP3:
+        if leg_u in ("RADAR", "STOP", EXIT_OWNERSHIP_RADAR):
             return True
         return False
 
@@ -901,156 +852,6 @@ class AdverseRadarMixin:
                 pass
         return True
 
-    def _mutex_cancel_tp3_on_radar_exit(
-        self,
-        *,
-        close_source: str = "RADAR_STOP",
-        fill_px: float = 0.0,
-    ) -> dict:
-        """Radar/breath exit first → cancel TP3; race → critical alert + reconcile."""
-        self._init_adverse_radar_fields()
-        lock = self._set_exit_ownership(EXIT_OWNERSHIP_RADAR)
-        detail: dict[str, Any] = {
-            "close_source": str(close_source or "RADAR_STOP"),
-            "fill_px": float(fill_px or 0),
-            "tp3_oid": self._defense_order_id("3"),
-            "radar_oid": self._defense_order_id("radar"),
-            "exit_ownership": getattr(self, "exit_ownership", EXIT_OWNERSHIP_NONE),
-            "ownership_locked_at": float(getattr(self, "ownership_locked_at", 0) or 0),
-            "cancelled": 0,
-            "cancel_ok": True,
-            "race": bool(lock.get("race")),
-            "exch_qty": None,
-        }
-        if lock.get("race"):
-            detail["race_reason"] = "exit_ownership_already_tp3"
-            if hasattr(self, "_alert"):
-                try:
-                    self._alert(
-                        "critical",
-                        "TP3_RADAR_RACE",
-                        "双腿几乎同时触发·强制核对持仓",
-                        f"雷达退出时所有权已是 {lock.get('prev')}",
-                        detail,
-                    )
-                except Exception:
-                    pass
-            if hasattr(self, "_purge_defense_orders_on_flat"):
-                try:
-                    self._purge_defense_orders_on_flat("tp3_radar_race", notify=False)
-                except Exception:
-                    pass
-            return detail
-        # Always attempt cancel of leftover TP3 limits (legacy cleanup); never place new ones.
-        had_tp3_on_book = False
-        try:
-            tps = list(getattr(self, "tv_tps", None) or [])
-            if hasattr(self, "_collect_tp_limit_orders") and len(tps) >= 3:
-                from app.core.tp_slice_guard import tp_price_matches
-
-                tp3_px = float(tps[2] or 0)
-                if tp3_px > 0:
-                    for o in self._collect_tp_limit_orders() or []:
-                        if tp_price_matches(float(o.get("price") or 0), tp3_px):
-                            had_tp3_on_book = True
-                            break
-        except Exception:
-            had_tp3_on_book = True
-
-        cancelled = 0
-        if hasattr(self, "_cancel_tp_orders_at_levels"):
-            try:
-                cancelled = int(self._cancel_tp_orders_at_levels([3]) or 0)
-            except Exception as exc:
-                detail["cancel_error"] = str(exc)[:200]
-                detail["cancel_ok"] = False
-        detail["cancelled"] = cancelled
-
-        still_on_book = False
-        try:
-            tps = list(getattr(self, "tv_tps", None) or [])
-            if hasattr(self, "_collect_tp_limit_orders") and len(tps) >= 3:
-                from app.core.tp_slice_guard import tp_price_matches
-
-                tp3_px = float(tps[2] or 0)
-                if tp3_px > 0:
-                    for o in self._collect_tp_limit_orders() or []:
-                        if tp_price_matches(float(o.get("price") or 0), tp3_px):
-                            still_on_book = True
-                            break
-        except Exception:
-            still_on_book = False
-
-        exch_qty = None
-        try:
-            pos = None
-            if hasattr(self, "_get_active_position"):
-                pos = self._get_active_position()
-            elif hasattr(self, "position_manager"):
-                # force_refresh=True: radar exit must use live qty, not stale cache.
-                pos = self.position_manager.get_position(self.symbol, force_refresh=True)
-            if isinstance(pos, dict):
-                exch_qty = abs(float(pos.get("size") or pos.get("positionAmt") or 0))
-        except Exception as exc:
-            detail["pos_query_error"] = str(exc)[:200]
-        detail["exch_qty"] = exch_qty
-
-        race = False
-        if still_on_book:
-            race = True
-            detail["race_reason"] = "tp3_still_on_book_after_radar_exit"
-        elif had_tp3_on_book and cancelled <= 0 and exch_qty is not None and exch_qty > 1e-12:
-            race = True
-            detail["race_reason"] = "tp3_cancel_missed_with_residual_qty"
-        detail["race"] = race
-
-        self.tp3_limit_active = False
-        try:
-            self._clear_defense_order_ids("3")
-        except Exception:
-            pass
-
-        if hasattr(self, "_log"):
-            try:
-                self._log(
-                    "TP3_RADAR_MUTEX",
-                    f"雷达先成交·撤TP3 cancelled={cancelled} race={race}",
-                    detail,
-                )
-            except Exception:
-                pass
-        if hasattr(self, "_alert"):
-            try:
-                sym = getattr(self, "canonical_symbol", None) or getattr(self, "symbol", "?")
-                if race:
-                    self._alert(
-                        "critical",
-                        "TP3_RADAR_RACE",
-                        "双腿几乎同时触发·强制核对持仓",
-                        f"{sym} 雷达退出后 TP3 互斥异常 | exch_qty={exch_qty} | {detail.get('race_reason')}",
-                        detail,
-                    )
-                    if hasattr(self, "_confirm_exchange_flat"):
-                        try:
-                            self._confirm_exchange_flat()
-                        except Exception:
-                            pass
-                    if hasattr(self, "_purge_defense_orders_on_flat"):
-                        try:
-                            self._purge_defense_orders_on_flat("tp3_radar_race", notify=False)
-                        except Exception:
-                            pass
-                else:
-                    self._alert(
-                        "info",
-                        "TP3_RADAR_MUTEX",
-                        "雷达先成交·已撤TP3",
-                        f"平仓来源=雷达止损 @ {float(fill_px or 0):.2f} | 已撤销 TP3 限价 cancelled={cancelled}",
-                        detail,
-                    )
-            except Exception:
-                pass
-        return detail
 
     def _apply_radar_eval_state(self, radar: dict) -> None:
         """Compat shim: mark breathing engaged; no legacy RADAR_ARM DingTalk."""
@@ -1100,7 +901,6 @@ class AdverseRadarMixin:
         self.atr_1h = 0.0
         self.breath_smooth_ratio = 1.0
         self.atr_scenario = ATR_SCENARIO_PENDING
-        self.tp3_limit_active = False
         self.exit_ownership = EXIT_OWNERSHIP_NONE
         self.ownership_locked_at = 0.0
         self._temp_tv_stop_active = False
@@ -1154,8 +954,8 @@ class AdverseRadarMixin:
         self.atr_1h = 0.0
         self.breath_smooth_ratio = 1.0
         self.atr_scenario = ATR_SCENARIO_PENDING
-        self.tp3_limit_active = False
         self._temp_tv_stop_active = False
+        self.exit_ownership = EXIT_OWNERSHIP_NONE
         self._tv_atr_ref = 0.0
         self.tv_sl = 0.0
         self._tv_hard_sl_price = 0.0
@@ -1357,11 +1157,10 @@ class AdverseRadarMixin:
             "breathing_coefficient": resolve_breathing_coef(
                 getattr(self, "breathing_coefficient", None), sym
             ),
-            "initial_sl_atr": 1.5,
+            "initial_sl_atr": profile_for_symbol(sym).initial_sl_atr,
             "symbol": sym,
             "market_source": atr_source,
             "frozen_hard": float(self._frozen_hard_px() or 0),
-            "dual_track": dual,
         }
         if stop > 0:
             # Radar track only in dual mode; legacy single-track still mirrors hard field.
@@ -2886,8 +2685,6 @@ class AdverseRadarMixin:
             self.tv_sl = pine
         self._temp_tv_stop_active = True
         self.atr_scenario = ATR_SCENARIO_PENDING
-        # Spec §7: TP3 never hung as limit — radar manages residual 70%
-        self.tp3_limit_active = False
         self._stamp_radar_open_clock()
         self._vps_hard_sl_meta = {
             "source": source,
@@ -3150,13 +2947,11 @@ class AdverseRadarMixin:
             self._tv_hard_sl_price = frozen
         widen = self._widen_frozen_hard_with_atr(float(entry or 0), atr_v)
         self.atr_scenario = scenario
-        self.tp3_limit_active = False
         self._temp_tv_stop_active = False
         atr_src = "fallback" if atr_fallback else "tv_webhook"
         meta = dict(getattr(self, "_vps_hard_sl_meta", None) or {})
         meta["atr_source"] = atr_src
         meta["atr_scenario"] = scenario
-        meta["tp3_limit_active"] = False
         meta["frozen_hard"] = float(self._frozen_hard_px() or 0)
         meta["hard_widen"] = widen
         meta["atr_fallback"] = atr_fallback
@@ -3171,7 +2966,6 @@ class AdverseRadarMixin:
             "frozen_hard": float(self._frozen_hard_px() or 0),
             "atr_1h": 0.0,
             "tv_atr": tv_atr,
-            "tp3_limit_active": False,
             "atr_source": atr_src,
             "atr_fallback": atr_fallback,
             "hard_widen": widen,
@@ -3388,18 +3182,7 @@ class AdverseRadarMixin:
                 phase_label = "保本止损平仓（TP后）"
             else:
                 phase_label = "保本止损平仓（提前检查点）"
-            # Mutex: radar/breath first → cancel TP3 before market flatten
-            if hasattr(self, "_mutex_cancel_tp3_on_radar_exit"):
-                try:
-                    self._mutex_cancel_tp3_on_radar_exit(
-                        close_source="RADAR_STOP", fill_px=float(px or 0),
-                    )
-                except Exception as mx_exc:
-                    logger.warning(
-                        "[User %s] tp3 mutex on radar exit: %s",
-                        getattr(self, "user_id", "?"),
-                        mx_exc,
-                    )
+            # Spec §7: TP3 never hung as limit — no TP3 mutex needed
             if hasattr(self, "_close_all"):
                 try:
                     self._close_all(
@@ -3589,7 +3372,6 @@ class AdverseRadarMixin:
                 "atr_1h": float(getattr(self, "atr_1h", 0) or 0),
                 "smooth_ratio": float(getattr(self, "breath_smooth_ratio", 0) or 0),
                 "atr_scenario": str(getattr(self, "atr_scenario", "") or ""),
-                "tp3_limit_active": bool(getattr(self, "tp3_limit_active", False)),
                 "breakeven_phase": new_phase,
                 "best_price": new_best,
                 "curr_px": px,

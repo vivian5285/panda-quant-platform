@@ -1,11 +1,9 @@
 {
-  "version": "2026-07-25-v3",
+  "version": "2026-08-02-final",
   "whitepaper": "radar_reentry_v3",
-  "radar_arm_tp1_pct": 0.85,
-  "radar_arm_tp1_pct_reentry": 1.00,
+  "note": "radar_arm uses absolute_price_anchor only (Spec §6.1): first=(TP1+TP2)/2, reentry=TP2",
   "hard_stop_buffer_fixed": 1.15,
   "max_reentry": 1,
-  "adx_bounds": { "weak": 20, "strong": 30 },
   "reentry_zone_atr": { "ETHUSDT": 0.5, "XAUUSDT": 0.3 },
   "tiers": {
     "ETHUSDT": [
@@ -43,14 +41,14 @@
         "tier": 1, "label": "中趋势", "hard_buffer": 1.15,
         "step_trigger": 0.40, "step_advance": 0.30,
         "breath_tp1_tp2": 1.00, "breath_tp2_tp3": 1.40,
-        "coef_min": 1.8, "coef_max": 2.2,
+        "coef_min": 1.5, "coef_max": 2.0,
         "reentry_bars": 3, "chart_tf_min": 45
       },
       {
         "tier": 2, "label": "强趋势", "hard_buffer": 1.15,
         "step_trigger": 0.50, "step_advance": 0.35,
         "breath_tp1_tp2": 1.30, "breath_tp2_tp3": 1.80,
-        "coef_min": 2.2, "coef_max": 3.0,
+        "coef_min": 2.0, "coef_max": 2.8,
         "reentry_bars": 3, "chart_tf_min": 45
       }
     ]

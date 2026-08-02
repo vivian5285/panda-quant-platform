@@ -1,9 +1,10 @@
-"""Dual-symbol smart re-entry — whitepaper v3 + Gemini ADX arm (2026-07-27).
+"""Dual-symbol smart re-entry — whitepaper v3 final.
 
-Max 1 reentry after radar BE/micro-profit flat; ADX tier params;
-dual-insurance limit price; hard-stop / loss closes never re-enter.
-Radar arm Layer-1: ADX≤17→70% … ≥35→90% × (1.35×ATR); trail loosens +1 tier on reentry.
-Layer-2 trailDistanceMultiplier (ATR-ratio) unchanged.
+Max 1 reentry after radar flat; ATR tier params; hard-stop / loss closes never re-enter.
+Radar arm: absolute price anchor only (Spec §6.1):
+  First open: (TP1 + TP2) / 2
+  Reentry: TP2
+No ADX percentage arm distances.
 """
 
 from __future__ import annotations
@@ -11,48 +12,44 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from app.core.symbol_registry import CANONICAL_BNB, CANONICAL_ETH, CANONICAL_XAU, normalize_canonical_symbol
+from app.core.symbol_registry import (
+    CANONICAL_BNB,
+    CANONICAL_ETH,
+    CANONICAL_XAU,
+    normalize_canonical_symbol,
+)
 from app.core.trend_tier_params import (
     MAX_REENTRY,
-    RADAR_ACTIVATE_BE_ATR,
-    RADAR_ARM_RATIO_STRONG,
-    RADAR_ARM_TP1_PCT,
-    RADAR_ARM_TP1_PCT_REENTRY,
     TrendTierParams,
     adx_to_tier,
-    arm_ratio_for_attempt,
     clamp_tier,
     effective_radar_tier,
     params_for_tier,
-    reentry_window_sec,
     reentry_zone_atr as _zone_atr,
+    reentry_window_sec,
 )
 
-# Compat aliases — LIVE arm uses radar_arm_ratio_by_adx; these are mid/strong defaults
-ARM_TP1_PCTS: tuple[float, ...] = (RADAR_ARM_TP1_PCT, RADAR_ARM_TP1_PCT_REENTRY)
 LIMIT_IMPROVE_PCT = 0.003
-MAX_TIER_INDEX = 2  # ADX tiers 0..2
+MAX_TIER_INDEX = 2
 LIMIT_TTL_SEC = 300
 MAX_UNFILLED_CYCLES = 5
 MAX_DEV_FROM_TV_PCT = 0.01
 REENTRY_ZONE_ATR = {
     CANONICAL_ETH: 0.5,
     CANONICAL_XAU: 0.3,
-    CANONICAL_BNB: 0.4,   # between ETH (0.5) and XAU (0.3)
+    CANONICAL_BNB: 0.4,
 }
 
 
 @dataclass(frozen=True)
 class RadarTier:
-    """Active radar coefficients for current ADX tier (+ optional reentry boost)."""
+    """Active radar coefficients for current tier (+ optional reentry boost)."""
 
-    attempt: int  # 0 = first open, 1 = after one reentry
+    attempt: int
     adx_tier: int
     radar_tier: int
-    early_breakeven_atr: float  # LEGACY field; LIVE activate = fee+tick BE
     step_trigger_atr: float
     step_advance_atr: float
-    arm_tp1_pct: float
     coef_min: float
     coef_max: float
     breath_tp1_tp2_atr: float
@@ -80,20 +77,11 @@ def smart_reentry_enabled_for(symbol: str | None) -> bool:
             return bool(getattr(s, "SMART_REENTRY_XAU_ENABLED", True))
         if can == CANONICAL_BNB:
             return bool(getattr(s, "SMART_REENTRY_BNB_ENABLED", True))
-        return bool(getattr(s, "SMART_REENTRY_ETH_ENABLED", True))
+        # return path for ETH and fallback
+        result = bool(getattr(s, "SMART_REENTRY_ETH_ENABLED", True))
+        return result
     except Exception:
         return True
-
-
-def arm_tp1_pct_for_attempt(attempt: int = 0) -> float:
-    """Compat hint only — LIVE Layer-1 arm uses ``radar_arm_ratio_by_adx``."""
-    return float(arm_ratio_for_attempt(attempt))
-
-
-def next_attempt_arm_pct(_prev_pct: float = 0.0) -> float:
-    """Compat: reentry hint defaults to strong-bound 70% (LIVE still uses ADX)."""
-    _ = _prev_pct
-    return float(RADAR_ARM_RATIO_STRONG)
 
 
 def tier_for_attempt(
@@ -106,7 +94,6 @@ def tier_for_attempt(
 
     attempt 0: radar_tier = adx_tier
     attempt ≥1: radar_tier = min(adx_tier+1, 2)
-    arm_tp1_pct field is a compat hint only (LIVE arm is ADX-driven).
     """
     base = clamp_tier(adx_tier if adx_tier is not None else 1)
     att = max(0, int(attempt))
@@ -130,10 +117,8 @@ def _params_to_radar_tier(p: TrendTierParams, *, attempt: int, adx_tier: int) ->
         attempt=int(attempt),
         adx_tier=int(adx_tier),
         radar_tier=int(p.tier),
-        early_breakeven_atr=float(RADAR_ACTIVATE_BE_ATR),
         step_trigger_atr=float(p.step_trigger_atr),
         step_advance_atr=float(p.step_advance_atr),
-        arm_tp1_pct=float(arm_ratio_for_attempt(attempt)),
         coef_min=float(p.trail_coef_min),
         coef_max=float(p.trail_coef_max),
         breath_tp1_tp2_atr=float(p.breath_tp1_tp2_atr),
@@ -152,26 +137,17 @@ def reentry_zone_atr(symbol: str | None = None) -> float:
 
 def arm_distance(
     atr: float,
-    attempt: int = 0,
     symbol: str | None = None,
     *,
-    arm_tp1_pct: float | None = None,
-    step_trigger_atr: float | None = None,
-    tp1: float | None = None,
-    tp2: float | None = None,
-    entry: float | None = None,
-    tv_entry: float | None = None,
-    tp1_dist: float | None = None,
-    adx_tier: int | None = None,
-    adx: float | None = None,
+    tp1: float = 0.0,
+    tp2: float = 0.0,
+    entry: float = 0.0,
     is_reentry: bool = False,
 ) -> float:
-    """Spec §6.1: 绝对价格锚定雷达激活距离.
+    """Spec §6.1: radar arm distance from absolute price anchor.
 
-    首次开仓: 激活点 = (TP1 + TP2) / 2，距离 = |激活点 - entry|
-    重入开仓: 激活点 = TP2，距离 = |TP2 - entry|
-
-    注意: 重入时直接使用 TP2 绝对价格，不再使用 ADX 百分比路径。
+    First open: distance to (TP1 + TP2) / 2
+    Reentry: distance to TP2
     """
     from app.core.trend_tier_params import radar_arm_absolute_trigger
 
@@ -179,43 +155,11 @@ def arm_distance(
     t1 = float(tp1 or 0)
     t2 = float(tp2 or 0)
 
-    # 优先使用绝对价格锚定
     if t1 > 0 and t2 > 0:
         trig = radar_arm_absolute_trigger(t1, t2, is_reentry=is_reentry)
         if trig > 0 and fill > 0:
             return abs(trig - fill)
-
-    # 回退: 使用 ADX 百分比路径 (向后兼容)
-    from app.core.breathing_profile import profile_for_symbol
-    from app.core.trend_tier_params import radar_arm_ratio_by_adx
-
-    a = float(atr or 0)
-    if arm_tp1_pct is not None:
-        pct = float(arm_tp1_pct)
-    elif adx is not None:
-        pct = float(radar_arm_ratio_by_adx(adx))
-    else:
-        pct = float(arm_ratio_for_attempt(attempt))
-
-    if fill > 0 and (t1 > 0 or float(tp1_dist or 0) > 0 or a > 0 or float(tv_entry or 0) > 0):
-        from app.core.trend_tier_params import radar_arm_trigger_price
-        trig = radar_arm_trigger_price(
-            side="LONG",
-            fill_entry=fill,
-            tp1=t1,
-            tv_entry=tv_entry,
-            tp1_dist=tp1_dist,
-            atr=a,
-            symbol=symbol,
-            arm_pct=pct,
-            adx=adx,
-        )
-        return abs(trig - fill) if trig > 0 else float(profile_for_symbol(symbol).tp1_atr) * a * pct
-    p = profile_for_symbol(symbol)
-    if a <= 0:
-        return 0.0
-    _ = (step_trigger_atr, adx_tier)
-    return float(p.tp1_atr) * a * pct
+    return 0.0
 
 
 def limit_reentry_price(side: str, tv_px: float) -> float:
@@ -242,14 +186,9 @@ def _price_tick(symbol: str | None) -> float:
 
 
 def _kline_high_low(rows: list | None) -> tuple[float, float]:
-    """High/low of the most recently *closed* candle.
-
-    Exchange kline APIs typically append the still-forming bar as ``rows[-1]``.
-    Spec §9.3: use the latest fully closed bar → prefer ``rows[-2]`` when present.
-    """
+    """High/low of the most recently *closed* candle."""
     if not rows:
         return 0.0, 0.0
-    # Prefer closed bar; fall back to last row only if a single bar is available
     candidates = []
     if len(rows) >= 2:
         candidates.append(rows[-2])
@@ -279,7 +218,6 @@ def reentry_price_better_than_tv(side: str, limit_px: float, tv_px: float) -> bo
 
 
 def reentry_price_better_than_entry(side: str, limit_px: float, entry: float) -> bool:
-    """Whitepaper §5.3: reentry must beat last fill price."""
     lim = float(limit_px or 0)
     e = float(entry or 0)
     if lim <= 0 or e <= 0:
@@ -448,7 +386,7 @@ def close_allows_reentry(
         meta["reason"] = "not_radar_close"
         return False, meta
 
-    # Spec §9.1.5: TP1 already filled → never reenter (trend confirmed then reversed)
+    # Spec §9.1.5: TP1 already filled → never reenter
     if bool(tp1_filled):
         meta["reason"] = "tp1_already_filled_no_reentry"
         return False, meta
@@ -552,7 +490,6 @@ def default_reentry_state() -> dict[str, Any]:
     t0 = tier_for_attempt(0, CANONICAL_ETH, adx_tier=1)
     return {
         "reentry_attempt": 0,
-        "reentry_arm_tp1_pct": float(RADAR_ARM_TP1_PCT),
         "reentry_pending": False,
         "reentry_limit_oid": None,
         "reentry_limit_deadline": 0.0,
@@ -563,7 +500,6 @@ def default_reentry_state() -> dict[str, Any]:
         "radar_flat_ts": 0.0,
         "trend_tier": 1,
         "radar_tier_boost": 0,
-        "active_early_be_atr": float(t0.early_breakeven_atr),
         "active_step_trigger_atr": float(t0.step_trigger_atr),
         "active_step_advance_atr": float(t0.step_advance_atr),
         "active_coef_min": float(t0.coef_min),
@@ -589,10 +525,8 @@ def apply_tier_to_state(
     tier = tier_for_attempt(attempt, symbol, adx_tier=base_tier)
     out = dict(state or {})
     out["reentry_attempt"] = int(tier.attempt)
-    out["reentry_arm_tp1_pct"] = float(tier.arm_tp1_pct)
     out["trend_tier"] = int(base_tier)
     out["radar_tier_boost"] = 1 if int(attempt) >= 1 else 0
-    out["active_early_be_atr"] = float(tier.early_breakeven_atr)
     out["active_step_trigger_atr"] = float(tier.step_trigger_atr)
     out["active_step_advance_atr"] = float(tier.step_advance_atr)
     out["active_coef_min"] = float(tier.coef_min)
@@ -604,6 +538,10 @@ def apply_tier_to_state(
     return out
 
 
-def reset_reentry_state(symbol: str | None = None, *, adx_tier: int | None = None) -> dict[str, Any]:
+def reset_reentry_state(
+    symbol: str | None = None,
+    *,
+    adx_tier: int | None = None,
+) -> dict[str, Any]:
     base = default_reentry_state()
     return apply_tier_to_state(base, 0, symbol, adx_tier=adx_tier)

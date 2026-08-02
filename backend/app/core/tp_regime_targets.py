@@ -12,9 +12,8 @@ from app.core.radar_trail import merge_regime_radar
 
 # Defaults; overridden by Settings TP1_QTY_PCT / TP2_QTY_PCT when available
 FIXED_TP_QTY_PERCENT: tuple[int, int, int] = (10, 20, 70)
-# Spec §7 / §14.4: TP3 never placed as limit (reverse of mid-whitepaper mistake).
+# Spec §7: TP3 never placed as limit
 PLACEABLE_TP_LEVELS: frozenset[int] = frozenset({1, 2})
-PLACEABLE_TP_LEVELS_WITH_TP3: frozenset[int] = frozenset({1, 2})  # legacy alias = no TP3
 
 PINE_TP_QTY_PERCENT: dict[int, tuple[int, int, int]] = {
     1: FIXED_TP_QTY_PERCENT,
@@ -41,9 +40,8 @@ def _ratios_from_settings() -> tuple[int, int, int]:
         return FIXED_TP_QTY_PERCENT
 
 
-def placeable_tp_levels(*, tp3_limit_active: bool = False) -> frozenset[int]:
-    """TP1+TP2 only. ``tp3_limit_active`` ignored (compat); TP3 never hung."""
-    _ = tp3_limit_active
+def placeable_tp_levels() -> frozenset[int]:
+    """TP1+TP2 only. TP3 never hung as limit (Spec §7)."""
     return PLACEABLE_TP_LEVELS
 
 
@@ -85,16 +83,13 @@ def enrich_tp_alert_detail(
     detail: dict | None,
     *,
     regime: int = 3,
-    tp3_limit_placed: bool | None = None,
 ) -> dict:
     out = dict(detail or {})
     out["regime"] = clamp_regime(regime)
     out["tp_ratios_pct"] = format_tp_ratio_pct()
     out["tp_ratios"] = pine_tp_ratios_frac()
-    # Spec: TP3 never placed — force False even if caller passes True
-    out["tp3_limit_placed"] = False
+    out["tp3_limit_placed"] = False  # Spec §7: TP3 never hung
     out["tp_placeable_levels"] = sorted(PLACEABLE_TP_LEVELS)
-    _ = tp3_limit_placed
     return out
 
 

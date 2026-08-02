@@ -1,15 +1,10 @@
-"""ADX trend-tier + radar-arm parameters — Marathon radar (fix版 2026-07-28).
+"""Trend-tier parameters for radar trail / reentry — absolute price anchor only.
 
-Trail tiers (separate from arm):
-  Tier 0 weak (ADX < 20), tier 1 mid (20–30), tier 2 strong (ADX > 30).
-
-Radar arm — Layer 1 (ADX discrete start ratio × TP1 distance):
-  ADX < 20 → 70% (早激活·保护微利); ADX 20–30 → 80%; ADX > 30 → 90% (晚激活·留呼吸).
-  弱早强晚：弱趋势毛刺少但回撤也小，早点保本；强趋势回踩深，晚点介入。
-  Arm distance = (1.35 × initial_atr) × start_ratio; trigger = fill ± distance.
-  Independent of TP1 fill. Activate lift = fee+tick BE (not entry±0.5ATR).
-
-Hard-stop buffer FIXED 1.15; reentry still loosens trail params +1 ADX tier.
+Hard-stop buffer: FIXED 1.15 (unified, not tiered).
+Radar arm: Spec §6.1 — absolute price anchor only:
+  First open: (TP1 + TP2) / 2
+  Reentry: TP2
+No ADX bands, no percentage-based arm distances.
 """
 
 from __future__ import annotations
@@ -19,40 +14,20 @@ from typing import Any
 
 from app.core.symbol_registry import CANONICAL_BNB, CANONICAL_ETH, CANONICAL_XAU, normalize_canonical_symbol
 
-ADX_WEAK = 20.0
-ADX_STRONG = 30.0
 DEFAULT_TREND_TIER = 1  # mid when ADX missing
-
-# Layer-1 radar arm — marathon discrete bands (弱早强晚; aligned ADX_WEAK/STRONG).
-# Ranges in doc: weak 65–70% → 70%; mid 75–80% → 80%; strong 85–90% → 90%.
-RADAR_ARM_ADX_WEAK = ADX_WEAK  # <20 → weak ratio
-RADAR_ARM_ADX_STRONG = ADX_STRONG  # >30 → strong ratio
-RADAR_ARM_RATIO_WEAK = 0.70  # early arm — protect micro-profit
-RADAR_ARM_RATIO_MID = 0.80
-RADAR_ARM_RATIO_STRONG = 0.90  # late arm — room for deep pullbacks
-RADAR_ARM_TP1_ATR = 1.35  # TP1 distance = 1.35 × initial_atr
-DEFAULT_ARM_ADX = 25.0  # mid band → 80%
-
-# Compat aliases — LIVE mid default
-RADAR_ARM_TP1_PCT = RADAR_ARM_RATIO_MID
-RADAR_ARM_TP1_PCT_REENTRY = RADAR_ARM_RATIO_MID  # LIVE ignores attempt; same ADX formula
-# LEGACY: activate used entry±0.5ATR — marathon uses fee+tick BE (see fee_cover_breakeven_stop).
-RADAR_ACTIVATE_BE_ATR = 0.0
 MAX_REENTRY = 1
 HARD_STOP_BUFFER_FIXED = 1.15  # v3: unified, not tiered
-RADAR_ARM_MODE_ADX = "adx_70_80_90"
 RADAR_ARM_MODE_ABSOLUTE = "absolute_price_anchor"  # Spec §6.1
-# Deprecated mode tags kept for log parsers / old tests imports
-RADAR_ARM_MODE_FIRST = RADAR_ARM_MODE_ADX
-RADAR_ARM_MODE_REENTRY = RADAR_ARM_MODE_ADX
+# Kept for compat imports only — arm uses absolute_price_anchor
+RADAR_ARM_MODE_ADX = "adx_70_80_90"
 
 
 @dataclass(frozen=True)
 class TrendTierParams:
-    """Per-symbol × ADX-tier radar trail / reentry knobs (hard buffer is global)."""
+    """Per-symbol × tier radar trail / reentry knobs (hard buffer is global 1.15)."""
 
     tier: int
-    hard_buffer: float  # always HARD_STOP_BUFFER_FIXED (kept for compat dumps)
+    hard_buffer: float  # always HARD_STOP_BUFFER_FIXED
     step_trigger_atr: float
     step_advance_atr: float
     breath_tp1_tp2_atr: float
@@ -62,8 +37,6 @@ class TrendTierParams:
     reentry_bars: int
     reentry_zone_atr: float
     chart_tf_min: float
-    radar_arm_tp1_pct: float = RADAR_ARM_TP1_PCT
-    activate_be_atr: float = RADAR_ACTIVATE_BE_ATR
 
     @property
     def tier_label(self) -> str:
@@ -108,7 +81,7 @@ def _tier_row(
     )
 
 
-# ETHUSDT.P — whitepaper §2.2 (trail knobs only; hard buffer unified)
+# ETHUSDT.P — whitepaper trail table (hard buffer is global 1.15)
 _ETH: tuple[TrendTierParams, ...] = (
     _tier_row(
         tier=0, step_trigger_atr=0.40, step_advance_atr=0.25,
@@ -130,7 +103,7 @@ _ETH: tuple[TrendTierParams, ...] = (
     ),
 )
 
-# XAUUSDT.P — marathon 修复版跟踪表（步长/跟进/TP3后追踪距离）
+# XAUUSDT.P — trail table
 _XAU: tuple[TrendTierParams, ...] = (
     _tier_row(
         tier=0, step_trigger_atr=0.35, step_advance_atr=0.20,
@@ -152,9 +125,7 @@ _XAU: tuple[TrendTierParams, ...] = (
     ),
 )
 
-# BNBUSDT — volatility between ETH and XAU; trail/breath midway between both.
-# BNB moves faster than ETH: tighter initial steps, wider breath than XAU.
-# chart_tf_min=60 between ETH (90) and XAU (45).
+# BNBUSDT — between ETH and XAU volatility
 _BNB: tuple[TrendTierParams, ...] = (
     _tier_row(
         tier=0, step_trigger_atr=0.38, step_advance_atr=0.22,
@@ -187,11 +158,11 @@ def adx_to_tier(adx: float | None) -> int:
         a = float(adx) if adx is not None else float("nan")
     except (TypeError, ValueError):
         return DEFAULT_TREND_TIER
-    if a != a or a <= 0:  # NaN / non-positive
+    if a != a or a <= 0:
         return DEFAULT_TREND_TIER
-    if a < ADX_WEAK:
+    if a < 20.0:
         return 0
-    if a <= ADX_STRONG:
+    if a <= 30.0:
         return 1
     return 2
 
@@ -226,7 +197,6 @@ def resolve_tier_from_payload(
                 adx = None
     if adx is not None:
         return adx_to_tier(adx)
-    # Transition heuristic (§3.5): distance / ATR
     try:
         dist = float(tv_stop_distance or 0)
         a = float(atr or 0)
@@ -243,7 +213,7 @@ def resolve_tier_from_payload(
 
 
 def effective_radar_tier(adx_tier: int, boost: int = 0) -> int:
-    """Reentry success loosens trail params by +1 tier (cap 2); TP prices unchanged."""
+    """Reentry loosens trail params by +1 tier (cap 2); TP prices unchanged."""
     return clamp_tier(clamp_tier(adx_tier) + max(0, int(boost or 0)))
 
 
@@ -268,77 +238,8 @@ def hard_buffer_for_tier(_tier: int | None = None, symbol: str | None = None) ->
     return float(HARD_STOP_BUFFER_FIXED)
 
 
-def arm_ratio_for_attempt(attempt: int = 0) -> float:
-    """Deprecated attempt-based hint — LIVE arm uses ``radar_arm_ratio_by_adx``."""
-    _ = attempt
-    return float(RADAR_ARM_TP1_PCT)
-
-
-def radar_arm_ratio_by_adx(adx: float | None) -> float:
-    """Layer-1 start ratio: ADX<20→70%, 20–30→80%, >30→90% (弱早强晚)."""
-    try:
-        a = float(adx) if adx is not None else float(DEFAULT_ARM_ADX)
-    except (TypeError, ValueError):
-        a = float(DEFAULT_ARM_ADX)
-    if a != a:  # NaN
-        a = float(DEFAULT_ARM_ADX)
-    if a < float(RADAR_ARM_ADX_WEAK):
-        return float(RADAR_ARM_RATIO_WEAK)
-    if a > float(RADAR_ARM_ADX_STRONG):
-        return float(RADAR_ARM_RATIO_STRONG)
-    return float(RADAR_ARM_RATIO_MID)
-
-
-def tp1_atr_distance(initial_atr: float, symbol: str | None = None) -> float:
-    """TP1 distance = 1.35 × initial_atr (profile.tp1_atr when available)."""
-    a = float(initial_atr or 0)
-    if a <= 0:
-        return 0.0
-    try:
-        from app.core.breathing_profile import profile_for_symbol
-
-        mult = float(profile_for_symbol(symbol).tp1_atr or RADAR_ARM_TP1_ATR)
-    except Exception:
-        mult = float(RADAR_ARM_TP1_ATR)
-    if mult <= 0:
-        mult = float(RADAR_ARM_TP1_ATR)
-    return mult * a
-
-
-def is_reentry_attempt(attempt: int = 0, *, is_reentry: bool | None = None) -> bool:
-    if is_reentry is not None:
-        return bool(is_reentry)
-    return int(attempt or 0) >= 1
-
-
-def radar_arm_absolute_trigger(tp1: float, tp2: float, *, is_reentry: bool) -> float:
-    """Spec §6.1 绝对价格锚定雷达激活价格.
-
-    首次开仓: (TP1 + TP2) / 2 (所有用户共用同一份TV信号)
-    重入开仓: TP2 (必须价格真正到达TP2)
-
-    Args:
-        tp1: TV信号的TP1绝对价格
-        tp2: TV信号的TP2绝对价格
-        is_reentry: True表示重入开仓
-
-    Returns:
-        雷达激活触发价格（绝对价格）
-    """
-    t1 = float(tp1 or 0)
-    t2 = float(tp2 or 0)
-    if t1 <= 0 or t2 <= 0:
-        return 0.0
-    if is_reentry:
-        # 重入：必须等价格真正到达TP2
-        return t2
-    else:
-        # 首次开仓：TP1-TP2区间中点
-        return (t1 + t2) / 2.0
-
-
-# Spec §6.0 提前保本检查点参数
-EARLY_BREAKEVEN_TP1_RATIO = 0.5  # TP1距离的50%处触发保本移动
+# Spec §6.0: early breakeven checkpoint parameters
+EARLY_BREAKEVEN_TP1_RATIO = 0.5  # TP1 distance 50% → breakeven move
 
 
 def early_breakeven_trigger_price(
@@ -346,30 +247,17 @@ def early_breakeven_trigger_price(
     tp1: float,
     side: str,
 ) -> float:
-    """Spec §6.0 提前保本检查点触发价格.
+    """Spec §6.0: trigger price for early breakeven checkpoint.
 
-    计算公式：
-      tp1_distance = |tp1 - entry|
-      多单：保本检查点 = entry + tp1_distance × 0.5
-      空单：保本检查点 = entry - tp1_distance × 0.5
-
-    触发后只移动止损到保本位，不启动雷达跟踪状态。
-
-    Args:
-        entry: 用户实际成交价
-        tp1: TV信号的TP1绝对价格
-        side: LONG 或 SHORT
-
-    Returns:
-        提前保本检查点触发价格
+    tp1_distance = |tp1 - entry|
+    Long: entry + tp1_distance × 0.5
+    Short: entry - tp1_distance × 0.5
     """
     e = float(entry or 0)
     t1 = float(tp1 or 0)
     side_u = str(side or "").upper()
-
     if e <= 0 or t1 <= 0 or side_u not in ("LONG", "SHORT"):
         return 0.0
-
     tp1_dist = abs(t1 - e)
     if side_u == "LONG":
         return e + tp1_dist * EARLY_BREAKEVEN_TP1_RATIO
@@ -383,17 +271,7 @@ def early_breakeven_reached(
     tp1: float,
     side: str,
 ) -> bool:
-    """检查是否达到提前保本检查点.
-
-    Args:
-        curr_px: 当前价格
-        entry: 用户实际成交价
-        tp1: TV信号的TP1绝对价格
-        side: LONG 或 SHORT
-
-    Returns:
-        True表示已达到提前保本检查点
-    """
+    """Check if early breakeven checkpoint is reached."""
     trig = early_breakeven_trigger_price(entry, tp1, side)
     if trig <= 0:
         return False
@@ -405,6 +283,23 @@ def early_breakeven_reached(
         return px <= trig
 
 
+# Spec §6.1: absolute price anchor radar arm
+def radar_arm_absolute_trigger(tp1: float, tp2: float, *, is_reentry: bool) -> float:
+    """Spec §6.1: radar arm trigger — absolute price anchor.
+
+    First open: (TP1 + TP2) / 2
+    Reentry: TP2
+    """
+    t1 = float(tp1 or 0)
+    t2 = float(tp2 or 0)
+    if t1 <= 0 or t2 <= 0:
+        return 0.0
+    if is_reentry:
+        return t2
+    else:
+        return (t1 + t2) / 2.0
+
+
 def radar_armed_by_absolute_price(
     *,
     side: str,
@@ -413,30 +308,16 @@ def radar_armed_by_absolute_price(
     tp2: float,
     is_reentry: bool = False,
 ) -> bool:
-    """Spec §6.1 检查价格是否达到绝对价格锚定的雷达激活点.
-
-    首次开仓: 价格 >= (TP1 + TP2) / 2 (多单) 或 <= (多单)
-    重入开仓: 价格 >= TP2 (多单) 或 <= (空单)
-
-    Args:
-        side: LONG 或 SHORT
-        price: 当前价格
-        tp1: TV信号的TP1绝对价格
-        tp2: TV信号的TP2绝对价格
-        is_reentry: True表示重入开仓
-
-    Returns:
-        True表示已达到雷达激活价格
-    """
+    """Spec §6.1: check if price has reached absolute price anchor arm point."""
     trig = radar_arm_absolute_trigger(tp1, tp2, is_reentry=is_reentry)
     if trig <= 0:
         return False
     px = float(price or 0)
     side_u = str(side or "").upper()
     if side_u == "LONG":
-        return px >= trig
+        return px + 1e-12 >= trig
     else:
-        return px <= trig
+        return px - 1e-12 <= trig
 
 
 def reentry_zone_atr(symbol: str | None = None) -> float:
@@ -448,12 +329,18 @@ def reentry_window_sec(symbol: str | None = None, tier: int | None = None) -> fl
 
 
 def tp1_distance(tv_entry: float, tp1: float) -> float:
-    """|webhook.tp1 − webhook.price| — distance, never absolute TP1×ratio."""
+    """|webhook.tp1 − webhook.price| — absolute distance."""
     e = float(tv_entry or 0)
     t1 = float(tp1 or 0)
     if e <= 0 or t1 <= 0:
         return 0.0
     return abs(t1 - e)
+
+
+def is_reentry_attempt(attempt: int = 0, *, is_reentry: bool | None = None) -> bool:
+    if is_reentry is not None:
+        return bool(is_reentry)
+    return int(attempt or 0) >= 1
 
 
 def radar_arm_trigger_price(
@@ -472,44 +359,17 @@ def radar_arm_trigger_price(
     is_reentry: bool | None = None,
     attempt: int | None = None,
 ) -> float:
-    """Spec §6.1 radar arm trigger: absolute price anchor when TP1/TP2 known.
+    """Spec §6.1: arm trigger price — absolute anchor when TP1/TP2 available.
 
-    Initial open: (TP1 + TP2) / 2
-    Reentry open: TP2
-    Falls back to legacy ADX ratio only when TP1/TP2 are unavailable.
+    Falls back to no-arm (return 0) if TP1/TP2 unavailable.
     """
     t1 = float(tp1 or 0)
     t2 = float(tp2 or 0)
     if t1 > 0 and t2 > 0:
         reentry = bool(is_reentry) or (int(attempt or 0) >= 1)
         return radar_arm_absolute_trigger(t1, t2, is_reentry=reentry)
-
-    # Legacy ADX fallback for callers without TP1/TP2
-    _ = (tv_entry,)
-    side_u = str(side or "").upper()
-    fill = float(fill_entry if fill_entry is not None else (entry or 0))
-    if fill <= 0 or side_u not in ("LONG", "SHORT"):
-        return 0.0
-
-    if arm_pct is not None:
-        try:
-            pct = float(arm_pct)
-        except (TypeError, ValueError):
-            pct = 0.0
-        if pct <= 0:
-            pct = radar_arm_ratio_by_adx(adx)
-    else:
-        pct = radar_arm_ratio_by_adx(adx)
-
-    dist = tp1_atr_distance(atr, symbol)
-    if dist <= 0:
-        dist = float(tp1_dist or 0)
-    if dist <= 0:
-        return 0.0
-
-    if side_u == "LONG":
-        return fill + dist * pct
-    return fill - dist * pct
+    # No TP1/TP2 available → no arm
+    return 0.0
 
 
 def radar_armed_by_price(

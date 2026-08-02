@@ -2,10 +2,10 @@
 
 ETH/XAU/BNB share ratioFloor/ratioCeiling; only minMult/maxMult differ.
 BNB is mid-tier volatility (between ETH and XAU).
-XAU tightness is entirely in min/max — no extra trail_tighten layer.
+XAU min/max were retuned after production backtest.
 
-XAU min/max were retuned after production backtest (continuous 0.8~1.8
-underperformed old discrete×0.8); see backend/data/_xau_min_max_sensitivity.json.
+TP1 + TP2 always hung as limit orders. TP3 NEVER.
+TP3 residual 70% is radar-only (no TP3 limit order ever).
 """
 
 from __future__ import annotations
@@ -29,28 +29,20 @@ COLD_START_RATIO = 1.0
 
 @dataclass(frozen=True)
 class BreathingProfile:
-    symbol_tag: str  # ETH | XAU
+    symbol_tag: str  # ETH | XAU | BNB
     initial_sl_atr: float = 1.5
     stop_order_buffer: float = 0.3
-    early_breakeven_atr: float = 0.0  # LEGACY unused — activate = fee+tick BE
-    # Deprecated display field — LIVE arm: fill±(1.35×ATR)×ADX_ratio(70/80/90 弱早强晚).
-    # Kept only so historical backtest scripts can rebuild the old 0.75 gate.
-    step_trigger_atr: float = 0.75
-    step_advance_atr: float = 0.4
-    phase2_trigger_atr: float = 3.0
-    tp1_atr: float = 1.35
-    tp1_floor_atr: float = 0.0  # LEGACY purged — no TP1 forced ATR floor
-    tp2_atr: float = 2.5
-    tp2_floor_atr: float = 1.5
-    tp3_atr: float = 4.0
+    # Radar arm: absolute price anchor (Spec §6.1)
+    # step_* fields: used for Phase-1 step tracking only (before arm)
+    step_trigger_atr: float = 0.50
+    step_advance_atr: float = 0.35
+    tp1_atr: float = 1.35  # TP1 distance = 1.35 × initial_atr (profile reference only)
     # Continuous trailDistanceMultiplier range (= breathing_coefficient)
-    coef_min: float = 1.2  # minMult
-    coef_max: float = 2.5  # maxMult
+    coef_min: float = 1.2
+    coef_max: float = 2.5
     ratio_floor: float = RATIO_FLOOR
     ratio_ceiling: float = RATIO_CEILING
-    # TV chart period (minutes) — signal rhythm for this symbol
     chart_tf_min: float = 90.0
-    # Stagnant-radar review window (minutes); ETH=chart, XAU=45×~1.33≈60
     stagnant_window_min: float = 90.0
 
 
@@ -58,10 +50,9 @@ ETH_PROFILE = BreathingProfile(
     symbol_tag="ETH",
     initial_sl_atr=1.5,
     stop_order_buffer=0.3,
-    early_breakeven_atr=0.0,  # marathon: fee+tick BE
-    step_trigger_atr=0.50,  # mid-tier whitepaper default
+    step_trigger_atr=0.50,
     step_advance_atr=0.35,
-    phase2_trigger_atr=3.0,
+    tp1_atr=1.35,
     coef_min=2.0,
     coef_max=2.5,
     chart_tf_min=90.0,
@@ -72,31 +63,27 @@ XAU_PROFILE = BreathingProfile(
     symbol_tag="XAU",
     initial_sl_atr=1.5,
     stop_order_buffer=0.5,
-    early_breakeven_atr=0.0,
     step_trigger_atr=0.40,
     step_advance_atr=0.30,
-    phase2_trigger_atr=3.0,
+    tp1_atr=1.35,
     coef_min=1.5,
     coef_max=2.0,
-    chart_tf_min=45.0,  # actual TV chart
-    stagnant_window_min=60.0,  # 45×~1.33 buffer ≈ one bar + slack
+    chart_tf_min=45.0,
+    stagnant_window_min=60.0,
 )
 
-# BNBUSDT — volatility between ETH and XAU (BNB is mid-cap, ~2-3× ETH amplitude).
-# BNB moves faster than ETH: tighter initial SL (1.3×) and higher breath (midway ETH/XAU).
-# stop_order_buffer=0.3 same as ETH (both on Binance USDT-M).
+# BNBUSDT — volatility between ETH and XAU
 BNB_PROFILE = BreathingProfile(
     symbol_tag="BNB",
-    initial_sl_atr=1.3,       # tighter than ETH (1.5) — BNB spikes fast
-    stop_order_buffer=0.3,     # Binance USDT-M buffer (same as ETH)
-    early_breakeven_atr=0.0,
+    initial_sl_atr=1.5,  # unified: spec requires 1.5 for all symbols
+    stop_order_buffer=0.3,
     step_trigger_atr=0.45,
     step_advance_atr=0.30,
-    phase2_trigger_atr=3.0,
-    coef_min=1.6,              # between ETH (2.0) and XAU (1.5)
-    coef_max=2.2,              # between ETH (2.5) and XAU (2.0)
-    chart_tf_min=60.0,         # BNB often traded on lower TF than ETH
-    stagnant_window_min=60.0,  # between ETH (90m) and XAU (45m)
+    tp1_atr=1.35,
+    coef_min=1.6,
+    coef_max=2.2,
+    chart_tf_min=60.0,
+    stagnant_window_min=60.0,
 )
 
 _PROFILES: dict[str, BreathingProfile] = {
@@ -147,72 +134,6 @@ def trail_distance_multiplier(
     return mn + (mx - mn) * (r - lo) / span
 
 
-# Layer-1 arm bounds (ADX discrete marathon bands 弱早强晚).
-RADAR_ARM_RATIO_MIN = 0.70
-RADAR_ARM_RATIO_MAX = 0.90
-
-
-def radar_start_ratio(smooth_ratio: float, profile: BreathingProfile | None = None, *, adx: float | None = None) -> float:
-    """Layer-1 ADX start ratio 70%/80%/90%（弱早强晚）。``smooth_ratio`` ignored (trail layer 2 only)."""
-    del smooth_ratio, profile
-    from app.core.trend_tier_params import radar_arm_ratio_by_adx
-
-    return float(radar_arm_ratio_by_adx(adx))
-
-
-def radar_arm_distance(initial_atr: float, smooth_ratio: float, profile: BreathingProfile | None = None, *, adx: float | None = None) -> float:
-    """Arm distance = 1.35×ATR × ADX_ratio (compat helper)."""
-    p = profile or ETH_PROFILE
-    atr = float(initial_atr or 0)
-    if atr <= 0:
-        return 0.0
-    del smooth_ratio
-    return float(p.tp1_atr) * atr * radar_start_ratio(1.0, p, adx=adx)
-
-
-def effective_radar_arm_distance(
-    initial_atr: float,
-    smooth_ratio: float,
-    profile: BreathingProfile | None = None,
-    *,
-    arm_tp1_pct: float | None = None,
-    step_trigger_atr: float | None = None,
-    adx: float | None = None,
-) -> float:
-    """Arm distance for ADX ratio (or explicit pct override)."""
-    from app.core.trend_tier_params import radar_arm_ratio_by_adx
-
-    p = profile or ETH_PROFILE
-    atr = float(initial_atr or 0)
-    if atr <= 0:
-        return 0.0
-    if arm_tp1_pct is not None:
-        try:
-            pct = float(arm_tp1_pct)
-        except (TypeError, ValueError):
-            pct = radar_arm_ratio_by_adx(adx)
-        if pct <= 0:
-            pct = radar_arm_ratio_by_adx(adx)
-    else:
-        pct = radar_arm_ratio_by_adx(adx)
-        del smooth_ratio
-    trig = float(
-        step_trigger_atr
-        if step_trigger_atr is not None
-        else p.step_trigger_atr
-    )
-    return max(float(p.tp1_atr) * atr * pct, trig * atr)
-
-
-def stagnant_breath_samples(profile: BreathingProfile | None = None) -> int:
-    """5-min breath samples needed for stagnant-radar review (ETH≈18 / XAU≈12)."""
-    p = profile or ETH_PROFILE
-    window = float(p.stagnant_window_min or 0)
-    if window <= 0:
-        return 1
-    return max(1, int(round(window / 5.0)))
-
-
 def cold_start_multiplier(profile: BreathingProfile | None = None) -> float:
     """0 samples → ratio=1.0 into the continuous formula."""
     return trail_distance_multiplier(COLD_START_RATIO, profile)
@@ -230,7 +151,6 @@ def get_breathing_coefficient_for_profile(
         r = float(smooth_ratio)
     except (TypeError, ValueError):
         return cold_start_multiplier(p)
-    # Non-positive / missing treated as cold-start (conservative mid)
     if r <= 0:
         return cold_start_multiplier(p)
     return trail_distance_multiplier(r, p)
@@ -243,6 +163,7 @@ def resolve_coef(
     coef_min: float | None = None,
     coef_max: float | None = None,
 ) -> float:
+    """Resolve breathing coefficient with bounds clamping."""
     p = profile or ETH_PROFILE
     mn = float(coef_min if coef_min is not None else p.coef_min)
     mx = float(coef_max if coef_max is not None else p.coef_max)
@@ -262,15 +183,22 @@ def resolve_coef(
     return max(mn, min(mx, c))
 
 
+def stagnant_breath_samples(profile: BreathingProfile | None = None) -> int:
+    """5-min breath samples needed for stagnant-radar review (ETH≈18 / XAU≈12)."""
+    p = profile or ETH_PROFILE
+    window = float(p.stagnant_window_min or 0)
+    if window <= 0:
+        return 1
+    return max(1, int(round(window / 5.0)))
+
+
 def profile_as_dict(profile: BreathingProfile) -> dict[str, Any]:
     return {
         "symbol_tag": profile.symbol_tag,
         "initial_sl_atr": profile.initial_sl_atr,
         "stop_order_buffer": profile.stop_order_buffer,
-        "early_breakeven_atr": profile.early_breakeven_atr,
         "step_trigger_atr": profile.step_trigger_atr,
         "step_advance_atr": profile.step_advance_atr,
-        "phase2_trigger_atr": profile.phase2_trigger_atr,
         "tp1_atr": profile.tp1_atr,
         "coef_min": profile.coef_min,
         "coef_max": profile.coef_max,
@@ -279,7 +207,7 @@ def profile_as_dict(profile: BreathingProfile) -> dict[str, Any]:
         "chart_tf_min": profile.chart_tf_min,
         "stagnant_window_min": profile.stagnant_window_min,
         "stagnant_breath_samples": stagnant_breath_samples(profile),
-        "radar_arm": "fill±(1.35×ATR)×ADX(70%/80%/90%)（ADX<20→70%早 20–30→80% >30→90%晚）",
-        "activate_be": "fee+tick breakeven (marathon; not entry±0.5ATR)",
-        "trail_tighten": 1.0,  # removed — always 1.0 (tightness in min/max)
+        "radar_arm": "absolute_price_anchor (Spec §6.1): (TP1+TP2)/2 first, TP2 reentry",
+        "activate_be": "fee+tick breakeven",
+        "tp3": "never hung as limit — radar-only residual",
     }

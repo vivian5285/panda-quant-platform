@@ -36,7 +36,6 @@ def resolve_open_atr(
         "initial_atr": tv,
         "atr_1h": 0.0,
         "tv_atr": tv,
-        "tp3_limit_active": False,
         "atr_source": "tv_webhook",
     }
 
@@ -61,4 +60,4 @@ def maybe_retry_vps_atr_on_tick(supervisor: Any, live_qty: float = 0.0) -> dict[
 def supervisor_placeable_levels(supervisor: Any = None) -> frozenset[int]:
     """TP1+TP2 only (TP3 radar-managed)."""
     _ = supervisor
-    return placeable_tp_levels(tp3_limit_active=False)
+    return placeable_tp_levels()

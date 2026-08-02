@@ -757,7 +757,6 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     "atr_1h": float(getattr(self, "atr_1h", 0) or 0),
                     "breath_smooth_ratio": float(getattr(self, "breath_smooth_ratio", 1.0) or 1.0),
                     "atr_scenario": str(getattr(self, "atr_scenario", "") or ""),
-                    "tp3_limit_active": bool(getattr(self, "tp3_limit_active", False)),
                     "exit_ownership": str(getattr(self, "exit_ownership", "NONE") or "NONE"),
                     "ownership_locked_at": float(getattr(self, "ownership_locked_at", 0) or 0),
                     "tp3_order_id": (getattr(self, "_defense_order_ids", None) or {}).get("3"),
@@ -3978,7 +3977,6 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             self.tv_sl = pending_pine_sl
         if pending_tv_price > 0:
             self.tv_price = pending_tv_price
-        self.tp3_limit_active = False
         self.atr_scenario = "pending"
         tp_pxs = self.tv_tps
         self.best_price = entry_price
@@ -4078,7 +4076,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self._cancel_tp_orders_at_levels([3])
                 except Exception:
                     pass
-            self.tp3_limit_active = False
+            # Spec §7: TP3 never hung — cleanup legacy leftovers
+            if hasattr(self, "_cancel_tp_orders_at_levels"):
+                try:
+                    self._cancel_tp_orders_at_levels([3])
+                except Exception:
+                    pass
 
             # ③ TV atr 武装雷达（无 VPS ATR / 场景切换）
             try:
@@ -4215,13 +4218,7 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 },
                 leverage=int(getattr(self, "leverage", 0) or 0),
                 atr_scenario=str(getattr(self, "atr_scenario", "") or ""),
-                tp3_limit_active=bool(getattr(self, "tp3_limit_active", False)),
-                **(getattr(self, "_last_open_sizing_meta", None) or {}),
-                **enrich_tp_alert_detail(
-                    {},
-                    regime=self.regime,
-                    tp3_limit_placed=bool(getattr(self, "tp3_limit_active", False)),
-                ),
+                **enrich_tp_alert_detail({}, regime=self.regime),
             )
         else:
             logger.warning("开仓钉钉跳过：实盘持仓核查未通过")
@@ -4247,7 +4244,6 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             "radar_standby": False,
             "breathing_active": True,
             "atr_scenario": str(getattr(self, "atr_scenario", "") or ""),
-            "tp3_limit_active": bool(getattr(self, "tp3_limit_active", False)),
         }
         self._last_protect_result = out
         return out
@@ -4884,9 +4880,8 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                     self.atr_1h = float(s.get("atr_1h", 0) or 0)
                     self.breath_smooth_ratio = float(s.get("breath_smooth_ratio", 1.0) or 1.0)
                     self.atr_scenario = str(s.get("atr_scenario") or "pending")
-                    self.tp3_limit_active = False  # Spec §7: never place TP3 limits
                     own = str(s.get("exit_ownership") or "NONE").upper()
-                    self.exit_ownership = own if own in ("NONE", "TP3_LIMIT", "RADAR_STOP") else "NONE"
+                    self.exit_ownership = own if own in ("NONE", "RADAR_STOP") else "NONE"
                     self.ownership_locked_at = float(s.get("ownership_locked_at", 0) or 0)
                     self._tv_atr_ref = float(s.get("tv_atr_ref", 0) or 0)
                     self.current_adx = float(s.get("current_adx", 25) or 25)

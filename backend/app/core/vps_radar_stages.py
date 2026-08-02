@@ -1,8 +1,7 @@
-"""Radar stage labels + helpers — LIVE SL is breathing_stop (whitepaper v3).
+"""Radar stage labels + helpers — LIVE SL is breathing_stop (final spec).
 
-§14 purge: old continuous-ladder SL math (0.5/0.3 step, TP2 floor 1.5ATR,
-TP3 trail 2.0ATR) is gone. Calling purged SL calculators raises RuntimeError
-so they cannot fight breathing_stop for stop authority.
+Old continuous-ladder SL math is purged. Calling purged calculators raises RuntimeError.
+Radar arm: absolute price anchor only (Spec §6.1).
 """
 
 from __future__ import annotations
@@ -10,17 +9,17 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.radar_trail import (
-    RADAR_ARM_PROGRESS,
     apply_radar_sl_direction,
-    radar_arm_reached,
     tp1_consumed,
 )
-from app.core.trend_tier_params import RADAR_ARM_TP1_PCT
+from app.core.trend_tier_params import (
+    radar_armed_by_absolute_price,
+)
 
 RADAR_STAGE_LABELS: dict[int, str] = {
     0: "硬止损防守·雷达候命",
-    1: "ADX启动·保本",
-    2: "档位跟踪跟进",
+    1: "绝对价格锚定·保本",
+    2: "雷达激活·步进跟踪",
     3: "TP1区间",
     4: "TP2区间",
     5: "TP3动态追踪",
@@ -31,16 +30,19 @@ ATR_REFRESH_SEC = 300.0
 TP_LIMIT_TIMEOUT_SEC = 300.0
 
 _LEGACY_PURGE_MSG = (
-    "LEGACY_PURGED: continuous-ladder SL (0.5/0.3 ATR / 1.5ATR floor) removed. "
+    "LEGACY_PURGED: old radar SL math removed. "
     "LIVE path = breathing_stop.apply_breathing_tick "
-    "(arm=ADX 70%~90% × 1.35×ATR)."
+    "(arm=absolute_price_anchor Spec §6.1)."
 )
 
 
 def tp1_filled_from_consumed(consumed_tp_levels: list | None) -> bool:
-    if tp1_consumed(consumed_tp_levels):
-        return True
-    return any(int(x) in (2, 3) for x in (consumed_tp_levels or []))
+    """Spec §6.1: full TP1 fill required for forced radar activation on recovery.
+
+    TP1 partial fill does NOT trigger forced activation.
+    TP2-only fill does NOT trigger forced activation.
+    """
+    return tp1_consumed(consumed_tp_levels)
 
 
 def _reached_level(curr_px: float, level: float, side: str | None) -> bool:
@@ -91,12 +93,16 @@ def detect_radar_stage(
     move_step: float | None = None,
     armed: bool = False,
     step_count: int = 0,
+    is_reentry: bool = False,
 ) -> int:
-    """Alert/metadata stage only — never drives stop placement."""
+    """Alert/metadata stage only — never drives stop placement.
+
+    Spec §6.1: radar arms on absolute price anchor.
+    """
     del regime, move_step  # unused; kept for call-site compat
-    if not armed and not tp1_filled:
-        return 0
     px = float(curr_px or 0)
+
+    # TP-zone reach (informational only)
     if _reached_level(px, tp3, side) or (
         peak_px and _reached_level(float(peak_px), tp3, side)
     ):
@@ -109,8 +115,15 @@ def detect_radar_stage(
         peak_px and _reached_level(float(peak_px), tp1, side)
     ):
         return 3
-    # Path-progress arm label (entry→TP1 × 0.85) for alerts only
-    if armed or radar_arm_reached(px, entry, tp1, side, progress=RADAR_ARM_TP1_PCT):
+
+    # Absolute price anchor arm check (Spec §6.1)
+    if armed or radar_armed_by_absolute_price(
+        side=str(side or ""),
+        price=px,
+        tp1=float(tp1 or 0),
+        tp2=float(tp2 or 0),
+        is_reentry=is_reentry,
+    ):
         return 2 if int(step_count or 0) >= 1 else 1
     return 0
 
@@ -131,16 +144,14 @@ def _purge_ladder(*_a: Any, **_k: Any) -> Any:
     raise RuntimeError(_LEGACY_PURGE_MSG)
 
 
-# Physical purge of §14 items 1/2/6 — old ladder SL authority
+# Physical purge of §14 items — old ladder SL authority
 compute_stage_radar_sl = _purge_ladder
 compute_ladder_radar_sl = _purge_ladder
 compute_vps_radar_sl = _purge_ladder
 
-# Compat re-export (direction clamp still used by tests / heal helpers)
 __all__ = [
     "ATR_REFRESH_SEC",
     "BREAKEVEN_BUFFER_PCT",
-    "RADAR_ARM_PROGRESS",
     "RADAR_STAGE_LABELS",
     "TP_LIMIT_TIMEOUT_SEC",
     "apply_radar_sl_direction",
