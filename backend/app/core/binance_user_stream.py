@@ -116,6 +116,23 @@ def _loop(user_id: int) -> None:
             et = str(data.get("e") or data.get("eventType") or "")
             if et in ("ORDER_TRADE_UPDATE", "ACCOUNT_UPDATE", "listenKeyExpired", "CONDITIONAL_ORDER_TRIGGER"):
                 invalidate("binance", user_id, reason=et or "user_stream")
+            # Cache marginBalance from ACCOUNT_UPDATE so get_contract_equity can use it
+            # even when REST equity reads are blocked by IP cool-down.
+            if et == "ACCOUNT_UPDATE":
+                try:
+                    assets = data.get("a", {}).get("assets", [])
+                    for a in assets:
+                        if str(a.get("asset", "")) == "USDT":
+                            margin = float(a.get("m", 0) or 0)
+                            if margin <= 0:
+                                margin = float(a.get("marginBalance", 0) or 0)
+                            if margin > 0:
+                                c = st.get("client")
+                                if c is not None:
+                                    c._ws_margin_balance = margin
+                                break
+                except Exception:
+                    pass
             if et == "listenKeyExpired":
                 try:
                     _ws.close()

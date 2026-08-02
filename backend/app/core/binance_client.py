@@ -58,6 +58,8 @@ class BinanceClient:
         self._pub_ws_symbol: str | None = None
         self._rest_price_min_interval = 30.0
         self._last_rest_price_fetch = 0.0
+        # WebSocket-cached margin balance — survives IP cool-down on REST equity reads
+        self._ws_margin_balance: float = 0.0
         logger.info(
             f"[User {user_id}] Binance Client {CLIENT_VERSION} loaded ({self.trading_symbol})"
         )
@@ -295,6 +297,33 @@ class BinanceClient:
         except Exception as e:
             logger.error(f"[User {self.user_id}] get balance failed: {e}")
             return 0.0
+
+    def get_contract_equity(self) -> float:
+        """Return total U-margined futures equity (marginBalance).
+
+        Primary: REST futures_account() via get_futures_account_summary().
+        Fallback: cached WebSocket margin balance (survives IP cool-down).
+        Returns 0.0 only when ALL sources fail (safety floor).
+        """
+        # Primary: REST (may raise or return 0 under IP cool-down)
+        try:
+            summary = self.get_futures_account_summary()
+            total_margin = float(summary.get("total_margin_balance") or 0)
+            if total_margin > 0:
+                return total_margin
+        except Exception:
+            pass
+
+        # Fallback: cached WebSocket margin balance (live-updated by WS fills)
+        ws_margin = float(getattr(self, "_ws_margin_balance", 0) or 0)
+        if ws_margin > 0:
+            logger.debug(
+                "[User %s] get_contract_equity REST failed — using WS cached margin=%.2f",
+                self.user_id, ws_margin,
+            )
+            return ws_margin
+
+        return 0.0
 
     def get_futures_account_summary(self) -> dict:
         """U 本位合约账户概览（用于绑定校验与初始本金）。"""

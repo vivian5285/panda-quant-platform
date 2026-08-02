@@ -2570,10 +2570,28 @@ class PositionSupervisor(
                 self.trade_opened_at = time.time()
                 self.base_qty = real_qty
                 self.initial_qty = real_qty
+                self.consumed_tp_levels = []
+                self._tp_fill_dingtalk_levels = set()
+                self._stop_qty_resized_levels = set()
                 self.current_trade_id = self.on_trade_open(
                     self.user_id, action, real_qty, entry_price, self.regime, self.tv_tps,
                     symbol=self.canonical_symbol,
                 )
+                self.adopted_manual = False
+                slip = (entry_price - self.tv_price) if action == "LONG" else (self.tv_price - entry_price)
+                try:
+                    from app.core.pipeline_officers import ExecutionOfficer, PositionAuditor
+                    PositionAuditor.mark_cleared(self, reason="entry_fill")
+                    ExecutionOfficer.mark_entry_confirmed(
+                        self, qty=real_qty, entry=entry_price, side=action,
+                    )
+                except Exception:
+                    pass
+                if hasattr(self, "_seed_tier0_on_open"):
+                    try:
+                        self._seed_tier0_on_open(action, float(getattr(self, "tv_price", 0) or entry_price))
+                    except Exception:
+                        pass
                 self._log(
                     "OPEN",
                     f"🔶 重试开仓成功 #{retry_idx}: {action} {real_qty} {unit} @ {entry_price}",
@@ -2587,7 +2605,33 @@ class PositionSupervisor(
                 )
                 sizing_meta["retry_idx"] = retry_idx
                 sizing_meta["retry_delay"] = retry_delay
-                break
+                self._protect_and_monitor(real_qty, entry_price)
+                protect = getattr(self, "_last_protect_result", None) or {}
+                if protect.get("aborted"):
+                    self._log(
+                        "ERROR",
+                        "重试开仓后硬止损失败已撤仓·跳过OPEN钉钉",
+                        protect,
+                    )
+                    return {
+                        "status": "error",
+                        "reason": "hard_sl_fail_abort",
+                        "message": "硬止损挂单失败·已撤仓禁止裸奔",
+                        "detail": protect,
+                    }
+                self._reconcile_live_vs_book(
+                    expect_side=action,
+                    expect_qty=real_qty,
+                    context="open_retry",
+                    notify_ok=True,
+                )
+                return {
+                    "status": "ok",
+                    "action": action,
+                    "slippage": round(slip, 4),
+                    "trade_id": self.current_trade_id,
+                    "detail": sizing_meta,
+                }
             else:
                 self._log("WARN", f"重试 #{retry_idx} 仍未持仓，继续下一轮")
                 sizing_meta["retry_failed_idx"] = retry_idx
