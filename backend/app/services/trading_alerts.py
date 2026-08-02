@@ -471,6 +471,18 @@ def format_radar_arm_detail_cn(detail: dict, exchange: str | None = None) -> str
             f"追踪距离={float(trail or 0):.2f}×initial_atr",
             detail,
         )
+
+    if event == "early_breakeven":
+        trigger = detail.get("early_breakeven_trigger") or detail.get("trigger_px") or 0
+        entry_px = detail.get("entry") or 0
+        curr_px = detail.get("curr_px") or detail.get("price") or 0
+        return _with_tier(
+            f"提前保本检查点触发：@{float(trigger):.2f}，"
+            f"止损移动到保本位 @{float(new_sl):.2f}（仅保本，雷达尚未激活）"
+            f" | 开仓{float(entry_px):.2f} → 现价{float(curr_px):.2f}",
+            detail,
+        )
+
     profit_txt = f"{float(profit):+.2f}" if profit is not None else "—"
     return _with_tier(
         f"止损{move}至 {float(new_sl):.2f}，当前最高/最低价 {float(extreme):.2f}，"
@@ -677,7 +689,7 @@ def format_admin_detail_lines(
         return format_adverse_sl_detail_cn(detail, ex)
     if alert_type in ("CLOSE", "CLOSE_TP3", "CLOSE_PROTECT", "CLOSE_STOPLOSS", "CLOSE_ATTRIBUTION", "CLOSE_BREATH_STOP", "CLOSE_QUICK_EXIT", "CLOSE_RSI_EXIT"):
         return format_close_detail_cn(detail, ex)
-    if alert_type in ("RADAR_ARM", "RADAR_ACTIVATE", "RADAR_REVOKE", "TRAIL", "BREATH_STEP", "BREATH_FLOOR", "BREATH_PHASE2", "BREATH_TRAIL"):
+    if alert_type in ("RADAR_ARM", "RADAR_ACTIVATE", "RADAR_REVOKE", "TRAIL", "BREATH_STEP", "BREATH_FLOOR", "BREATH_PHASE2", "BREATH_ENTER", "BREATH_TRAIL"):
         return format_radar_arm_detail_cn(detail, ex)
     if alert_type == "STARTUP":
         return format_startup_detail_cn(detail, ex)

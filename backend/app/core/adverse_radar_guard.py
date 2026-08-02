@@ -3566,14 +3566,17 @@ class AdverseRadarMixin:
             "step": ("BREATH_STEP", "呼吸止损·步进上移"),
             "floor_tp1": ("BREATH_FLOOR", "呼吸止损·TP1底限"),
             "floor_tp2": ("BREATH_FLOOR", "呼吸止损·TP2底限"),
-            "breath_enter": ("BREATH_ENTER", "保本检查点触发"),
+            "early_breakeven": ("BREATH_ENTER", "提前保本检查点触发"),
             "phase2_enter": ("BREATH_ENTER", "雷达激活"),
             "trail": ("BREATH_TRAIL", "呼吸止损·自适应追踪"),
         }
         should_alert = event in alert_map and (
             event != "trail" or (improved and abs(sl_px - float(getattr(self, "_last_breath_trail_alert_sl", 0) or 0)) > 1e-9)
+            or event == "early_breakeven"
         )
-        if should_alert and (improved or placed or event == "phase2_enter"):
+        if should_alert and (
+            improved or placed or event == "phase2_enter" or event == "early_breakeven"
+        ):
             atype, title = alert_map[event]
             detail = {
                 "event": event,
@@ -3609,6 +3612,13 @@ class AdverseRadarMixin:
                         f"切换价{px:.2f} | 呼吸系数={coef:.2f} | "
                         f"追踪距离={float(detail.get('trail_distance') or 0):.2f} "
                         f"| SL@{sl_px:.2f} (挂{hang_px:.2f})"
+                    )
+                elif event == "early_breakeven":
+                    trigger_px = float(meta.get("early_breakeven_trigger") or 0)
+                    msg = (
+                        f"提前保本检查点触发 @{trigger_px:.2f} | "
+                        f"止损移动到保本位 SL@{sl_px:.2f}（仅保本，雷达尚未激活）| "
+                        f"开仓价{entry:.2f} → 现价{px:.2f}"
                     )
                 else:
                     msg = (
