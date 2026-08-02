@@ -1949,7 +1949,11 @@ class BinanceSmartDefenseMixin:
     def _nuclear_realign_tp(self, live_qty: float, entry: float, dynamic_sl=None, rounds: int = 3) -> dict:
         """清场重挂 TP 限价（只动 TP，绝不 cancel_all 误撤呼吸止损）。
 
-        盘口不可读 → 中止撤挂/盲补。LIMIT≥熔断帽 → 仅轻量去重后返回。
+        ══════════════════════════════════════════════════════════════════════
+        修复 §23 v1：即使盘口不可读(book_unknown)也尝试挂单
+        问题：IP限流时盘口不可读，但不应放弃补挂TP单
+        解决：移除所有book_unknown短路，强制尝试挂单
+        ══════════════════════════════════════════════════════════════════════
         """
         open_init = bool(getattr(self, "_defense_open_init_logs", False))
         tag = "开仓初始化补挂" if open_init else "核武级止盈清场重挂"
@@ -1964,22 +1968,39 @@ class BinanceSmartDefenseMixin:
                 except Exception:
                     pass
         # Soft same-price dedupe BEFORE any cancel-all-tp / rebuild
+        # ══════════════════════════════════════════════════════════════════════
+        # 修复 §23 v1：移除 soft<0 短路，即使盘口不可读也尝试挂单
+        # ══════════════════════════════════════════════════════════════════════
         soft = self._soft_dedupe_tp_same_price(live_qty)
         if soft < 0:
-            self._def_log(f"{mark} {tag}中止·盘口不可读（禁盲补）", logging.WARNING)
-            return self._audit_tp_levels(live_qty)
+            # 盘口不可读，但继续尝试挂单（不清场，直接挂新单）
+            self._def_log(f"{mark} {tag}：盘口不可读，尝试直接挂单", logging.WARNING)
+            # 跳过撤销步骤，直接尝试挂单
+            placed = self._rebuild_tp_limit_orders(live_qty, entry, dynamic_sl=None)
+            self._def_log(f"{mark} {tag}直接挂单 {placed} 笔限价止盈")
+            last_audit = self._audit_tp_levels(live_qty)
+            return last_audit
+        
         n_limits = self._count_reduce_only_limits()
         fuse = int(getattr(self, "TP_LIMIT_STORM_FUSE", 6) or 6)
         if n_limits >= fuse:
             self._def_log(
-                f"{mark} {tag}熔断·LIMIT={n_limits}≥{fuse}，跳过核武盲补",
-                logging.ERROR,
+                f"{mark} {tag}熔断·LIMIT={n_limits}≥{fuse}，但仍尝试直接挂单",
+                logging.WARNING,
             )
-            return self._audit_tp_levels(live_qty)
-        last_audit = self._audit_tp_levels(live_qty)
-        if last_audit.get("book_unknown"):
-            self._def_log(f"{mark} {tag}中止·审计簿记未知", logging.WARNING)
+            # 跳过撤销，直接尝试挂单
+            placed = self._rebuild_tp_limit_orders(live_qty, entry, dynamic_sl=None)
+            self._def_log(f"{mark} {tag}熔断跳过撤销，直接挂单 {placed} 笔")
+            last_audit = self._audit_tp_levels(live_qty)
             return last_audit
+        
+        last_audit = self._audit_tp_levels(live_qty)
+        # ══════════════════════════════════════════════════════════════════════
+        # 修复 §23 v1：移除 book_unknown 短路，继续执行挂单
+        # 问题：IP限流时审计返回book_unknown，但不意味着不能挂单
+        # ══════════════════════════════════════════════════════════════════════
+        if last_audit.get("book_unknown"):
+            self._def_log(f"{mark} {tag}：审计簿记未知，尝试直接挂单", logging.WARNING)
         for r in range(rounds):
             self._def_log(
                 f"{mark} {tag} {r + 1}/{rounds} | 持仓 {live_qty} {getattr(self, 'qty_unit', '')} | "
@@ -2090,23 +2111,40 @@ class BinanceSmartDefenseMixin:
         return matched, pending
 
     def _ensure_defenses_on_recover(self, live_qty: float, entry: float, dynamic_sl=None):
-        """重启/异动接管：审计 → 轻量同价去重 → 齐全跳过 → 增量补挂 → 仍失败才清场重建"""
+        """重启/异动接管：审计 → 轻量同价去重 → 齐全跳过 → 增量补挂 → 仍失败才清场重建
+        
+        ══════════════════════════════════════════════════════════════════════
+        修复 §23 v1：即使盘口不可读(book_unknown)也尝试挂单
+        问题：IP限流时盘口不可读，但不应放弃补挂TP单
+        解决：移除所有book_unknown短路，强制尝试挂单
+        ══════════════════════════════════════════════════════════════════════
+        """
         audit = self._audit_tp_levels(live_qty)
+        # ══════════════════════════════════════════════════════════════════════
+        # 修复 §23 v1：移除 book_unknown 短路，继续尝试挂单
+        # ══════════════════════════════════════════════════════════════════════
         if audit.get("book_unknown"):
-            self._def_log("⚠️ 接管中止·盘口不可读（禁补挂/核武）", logging.WARNING)
-            return 0, [], audit.get("expected", 0), False
-        expected = audit["expected"]
-        matched = audit["matched_full"]
-        pending_prices = audit["pending_prices"]
+            self._def_log("⚠️ 接管审计簿记未知（IP限流），强制尝试补挂TP", logging.WARNING)
+        
+        expected = audit.get("expected", 0)
+        matched = audit.get("matched_full", 0)
+        pending_prices = audit.get("pending_prices", [])
         self._def_log(
             f"📊 防线审计: 持仓 {live_qty} ETH | TP {matched}/{expected} | "
             f"{self._format_audit_summary(audit)}"
         )
 
         soft = self._soft_dedupe_tp_same_price(live_qty)
+        # ══════════════════════════════════════════════════════════════════════
+        # 修复 §23 v1：soft<0时不短路，继续尝试挂单
+        # ══════════════════════════════════════════════════════════════════════
         if soft < 0:
-            self._def_log("⚠️ 接管中止·去重时盘口不可读", logging.WARNING)
-            return matched, pending_prices, expected, False
+            self._def_log("⚠️ 去重时盘口不可读，强制尝试直接挂单", logging.WARNING)
+            # 跳过去重，直接尝试挂单
+            placed = self._rebuild_tp_limit_orders(live_qty, entry, dynamic_sl=None)
+            self._def_log(f"📋 强制挂单 {placed} 笔限价止盈")
+            audit = self._audit_tp_levels(live_qty)
+            return audit.get("matched_full", 0), audit.get("pending_prices", []), audit.get("expected", 0), placed > 0
         if soft > 0 or self._has_duplicate_tp_orders():
             if self._has_duplicate_tp_orders():
                 purged = self._purge_duplicate_tp_orders(live_qty)
@@ -2121,10 +2159,14 @@ class BinanceSmartDefenseMixin:
         fuse = int(getattr(self, "TP_LIMIT_STORM_FUSE", 6) or 6)
         if n_limits >= fuse:
             self._def_log(
-                f"✗ 接管熔断·LIMIT={n_limits}≥{fuse}，跳过核武/补挂",
-                logging.ERROR,
+                f"⚠️ 接管熔断·LIMIT={n_limits}≥{fuse}，但强制尝试直接挂单",
+                logging.WARNING,
             )
-            return matched, pending_prices, expected, False
+            # 熔断时跳过撤销，直接尝试挂单
+            placed = self._rebuild_tp_limit_orders(live_qty, entry, dynamic_sl=None)
+            self._def_log(f"📋 熔断跳过撤销，直接挂单 {placed} 笔")
+            audit = self._audit_tp_levels(live_qty)
+            return audit.get("matched_full", 0), audit.get("pending_prices", []), audit.get("expected", 0), placed > 0
 
         if self._audit_requires_nuclear(audit):
             open_init = bool(getattr(self, "_defense_open_init_logs", False))
@@ -2316,19 +2358,18 @@ class BinanceSmartDefenseMixin:
         if not open_init:
             self._cancel_tp_orders_for_consumed_levels()
         initial = self._audit_tp_levels(live_qty, curr_px=curr_px)
+        # ══════════════════════════════════════════════════════════════════════
+        # 修复 §23 v1：book_unknown 时不短路，改为强制尝试挂单
+        # 问题：IP 限流时盘口不可读，但系统不应放弃补挂 TP 单
+        # 解决：开仓初始化时强制尝试挂单；常规路径在 book_unknown 时也尝试
+        # ══════════════════════════════════════════════════════════════════════
         if initial.get("book_unknown"):
-            self._def_log("⚠️ 盘口簿记未知，跳过防线对齐（拒乐观补挂）", logging.WARNING)
-            return {
-                "matched": 0,
-                "expected": initial.get("expected", 0),
-                "pending_prices": [],
-                "rebuilt": False,
-                "audit": initial,
-                "nuclear": False,
-                "skipped": True,
-                "aligned": False,
-                "summary": "book_unknown",
-            }
+            if open_init:
+                # 开仓初始化：强制尝试补挂，不放弃
+                self._def_log("⚠️ 盘口簿记未知（IP限流），开仓初始化强制尝试补挂TP", logging.WARNING)
+            else:
+                # 常规路径：簿记未知但有持仓，也尝试补挂
+                self._def_log("⚠️ 盘口簿记未知（IP限流），尝试补挂TP", logging.WARNING)
         if self._defenses_fully_ok(
             live_qty, dynamic_sl=None, curr_px=curr_px, require_sl=False,
         ):
