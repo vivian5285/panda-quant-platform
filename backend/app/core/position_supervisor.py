@@ -1995,19 +1995,130 @@ class PositionSupervisor(
             },
         }
 
-    def _place_tv_entry_order(self, action: str, qty: float, limit_px: float) -> dict:
-        """Checklist §2A: 市价开仓（数量已由 VPS 算仓确定）."""
-        meta: dict = {
+    def _place_tv_entry_order(self, action: str, qty: float, limit_px: float, *, place_limit_fallback: bool = True) -> dict:
+        """Checklist §2A: 市价开仓，失败时回退限价单（TV 指导价）。
+        
+        place_limit_fallback=True  时：市价下单失败 → 立即用 TV 指导价挂限价单(GTC) 等待成交。
+        市价单成交 → 直接返回 ok。
+        限价单挂出后轮询最多 OPEN_LIMIT_RETRY 次(5s/10s/15s)，确认持仓归零则撤单改市价。
+        place_limit_fallback=False 时：只发市价单，不回退。
+        """
+        open_side = "BUY" if action == "LONG" else "SELL"
+        market_meta: dict = {
             "entry_order_style": "market",
             "limit_price": float(limit_px or 0),
             "qty": float(qty),
         }
-        self.client.place_market_order(action, qty, self.symbol)
-        return meta
+        market_err: str | None = None
+        try:
+            self.client.place_market_order(action, qty, self.symbol)
+        except Exception as exc:
+            market_err = str(exc)
+            self._log("WARN", f"市价开仓抛出异常: {market_err}，准备回退限价单")
+            market_meta["market_error"] = market_err
+
+        # 立即查仓：市价是否已成交
+        pos = None
+        for _delay in (0.3, 0.6):
+            time.sleep(_delay)
+            try:
+                pos = self.position_manager.get_position(self.symbol, force_refresh=True)
+                if pos and float(pos.get("positionAmt", 0)) != 0:
+                    return {**market_meta, "status": "ok", "filled": True}
+            except Exception:
+                pass
+
+        # 市价未成交，检查是否需要回退限价单
+        if not place_limit_fallback:
+            market_meta["status"] = "pending"
+            return market_meta
+
+        if not market_err and pos and float(pos.get("positionAmt", 0)) == 0:
+            self._log("WARN", "市价单未成交且无持仓 → 回退 TV 指导价限价单")
+        elif market_err:
+            self._log("WARN", f"市价单异常: {market_err} → 回退限价单")
+        else:
+            self._log("WARN", "市价单挂出但未确认成交 → 回退限价单")
+
+        # 等 IP 冷却后挂限价单
+        try:
+            from app.core.rest_throttle_valve import remaining_sec, require_rest_or_transient
+            cool = float(remaining_sec(exchange=self.exchange_id, user_id=self.user_id) or 0)
+            if cool > 0:
+                self._log("WARN", f"开仓限价单等待 IP 冷却 {cool:.0f}s")
+                time.sleep(min(cool, 30.0))
+                require_rest_or_transient(
+                    exchange=self.exchange_id, user_id=self.user_id,
+                    op="open_limit_fallback", priority="emergency",
+                )
+        except Exception:
+            pass
+
+        limit_meta: dict = {
+            "entry_order_style": "limit_fallback",
+            "limit_price": float(limit_px or 0),
+            "qty": float(qty),
+            "market_error": market_err,
+        }
+        try:
+            self.client.place_limit_order(
+                open_side, float(qty), float(limit_px or 0),
+                self.symbol, reduce_only=False, time_in_force="GTC",
+            )
+            limit_meta["order_placed"] = True
+            self._log("SIGNAL", f"📋 开仓回退限价单已挂: {open_side} {qty} @{limit_px:.4f}")
+        except Exception as exc:
+            limit_meta["order_placed"] = False
+            limit_meta["limit_error"] = str(exc)
+            self._log("ERROR", f"限价回退下单也失败: {exc}")
+            return {**market_meta, **limit_meta, "status": "limit_failed"}
+
+        # 轮询限价单成交情况
+        OPEN_LIMIT_POLL = (5.0, 10.0, 15.0, 20.0)
+        for i, delay in enumerate(OPEN_LIMIT_POLL, 1):
+            time.sleep(delay)
+            try:
+                pos = self.position_manager.get_position(self.symbol, force_refresh=True)
+                if pos and float(pos.get("positionAmt", 0)) != 0:
+                    self._log("SIGNAL", f"限价回退开仓成交 @ {limit_px:.4f} (轮询 #{i})")
+                    return {
+                        **market_meta, **limit_meta,
+                        "status": "ok", "filled": True,
+                        "fill_style": "limit_fallback",
+                    }
+            except Exception:
+                pass
+            # 撤掉未成交的限价单
+            try:
+                self.client.cancel_all_open_orders(self.symbol)
+                self._log("WARN", f"限价单 #{i} 未成交已撤，准备改市价")
+            except Exception:
+                pass
+            time.sleep(0.5)
+            # 撤单后再用市价尝试一次
+            if i < len(OPEN_LIMIT_POLL):
+                try:
+                    self.client.place_market_order(action, qty, self.symbol)
+                    time.sleep(2.0)
+                    pos = self.position_manager.get_position(self.symbol, force_refresh=True)
+                    if pos and float(pos.get("positionAmt", 0)) != 0:
+                        self._log("SIGNAL", f"市价补单成交 (轮询 #{i})")
+                        return {
+                            **market_meta, **limit_meta,
+                            "status": "ok", "filled": True,
+                            "fill_style": "market_after_limit",
+                        }
+                except Exception:
+                    pass
+
+        # 所有尝试均失败
+        limit_meta["status"] = "all_retry_exhausted"
+        return {**market_meta, **limit_meta}
 
     def _open_position(self, action: str, curr_px: float) -> dict:
         if hasattr(self, "_clear_trading_pause"):
             self._clear_trading_pause("new_open")
+
         self._pending_open_side = str(action or "").upper()
         # Per-symbol daily loss circuit (−5.5% equity UTC day)
         try:
@@ -2395,6 +2506,17 @@ class PositionSupervisor(
                 context="open",
                 notify_ok=True,
             )
+            return {
+                "status": "ok",
+                "action": action,
+                "slippage": round(slip, 4),
+                "trade_id": self.current_trade_id,
+                "detail": detail,
+            }
+        # 开仓失败重试循环：等 IP 冷却后用 TV 指导价重试，确保最终持有仓位
+        OPEN_RETRY_DELAYS = (5.0, 10.0, 20.0, 30.0)  # 4 轮重试，最多 65s
+        for retry_idx, retry_delay in enumerate(OPEN_RETRY_DELAYS, 1):
+            # ATR 降级时暂停：避免带着坏 ATR 连续重试
             if getattr(self, "_atr_fallback_pending_pause", False):
                 self._atr_fallback_pending_pause = False
                 if hasattr(self, "_pause_trading"):
@@ -2403,62 +2525,100 @@ class PositionSupervisor(
                         {
                             "atr_source": sizing_meta.get("atr_source"),
                             "atr_fallback_detail": sizing_meta.get("atr_fallback_detail"),
-                            "trade_id": self.current_trade_id,
                             "tag": "atr_emergency_fallback",
                         },
                     )
-            return {
-                "status": "ok",
-                "action": action,
-                "slippage": round(slip, 4),
-                "trade_id": self.current_trade_id,
-                "detail": detail,
-            }
-        if getattr(self, "_atr_fallback_pending_pause", False):
-            # 降级已触发但开仓未成交：仍暂停，避免带着坏 ATR 连打
-            self._atr_fallback_pending_pause = False
-            if hasattr(self, "_pause_trading"):
-                self._pause_trading(
-                    "ATR应急降级后开仓未成交·已暂停待人工确认",
-                    {"atr_fallback_detail": sizing_meta.get("atr_fallback_detail")},
+                return {
+                    "status": "error",
+                    "reason": "atr_fallback_paused",
+                    "message": "ATR应急降级后暂停",
+                    "atr_fallback_detail": sizing_meta.get("atr_fallback_detail"),
+                }
+
+            self._log("WARN", f"开仓失败，准备第 {retry_idx} 次重试，等待 {retry_delay:.0f}s (IP 冷却)")
+            time.sleep(retry_delay)
+
+            # 等冷却后再尝试开仓
+            try:
+                from app.core.rest_throttle_valve import require_rest_or_transient
+                require_rest_or_transient(
+                    exchange=self.exchange_id, user_id=self.user_id,
+                    op=f"open_retry_{retry_idx}", priority="emergency",
                 )
-        last_err = ""
-        if hasattr(self, "client"):
-            last_err = str(getattr(self.client, "_last_market_order_error", "") or "")
-        msg = "下单后未检测到持仓"
-        if last_err:
-            msg = f"市价开仓失败: {last_err}"
-        elif float(qty or 0) > 0:
-            msg = f"下单后未检测到持仓（已请求 qty={qty}）"
-        self._log("ERROR", msg, {"order_qty": qty, "sizing": sizing_meta, "exchange_error": last_err})
-        self._alert(
-            "warning",
-            "OPEN_FAILED",
-            "开仓失败",
-            msg,
-            {
+            except Exception:
+                pass
+
+            self._log("SIGNAL", f"🚀 重试开仓 #{retry_idx}: {action} {qty} {unit}")
+            retry_entry = self._place_tv_entry_order(action, qty, limit_px)
+            sizing_meta["entry_order"] = retry_entry
+
+            # 轮询持仓确认
+            pos = None
+            for poll_delay in (0.5, 1.0, 2.0, 3.0):
+                time.sleep(poll_delay)
+                try:
+                    pos = self.position_manager.get_position(self.symbol, force_refresh=True)
+                    if pos and float(pos.get("positionAmt", 0)) != 0:
+                        break
+                except Exception:
+                    pass
+
+            if pos and float(pos.get("positionAmt", 0)) != 0:
+                real_qty = abs(float(pos["positionAmt"]))
+                entry_price = float(pos["entryPrice"])
+                self.current_side = action
+                self.trade_opened_at = time.time()
+                self.base_qty = real_qty
+                self.initial_qty = real_qty
+                self.current_trade_id = self.on_trade_open(
+                    self.user_id, action, real_qty, entry_price, self.regime, self.tv_tps,
+                    symbol=self.canonical_symbol,
+                )
+                self._log(
+                    "OPEN",
+                    f"🔶 重试开仓成功 #{retry_idx}: {action} {real_qty} {unit} @ {entry_price}",
+                    {"retry_idx": retry_idx, "qty": real_qty, "entry": entry_price},
+                )
+                self._alert(
+                    "info", "OPEN_RETRY_SUCCESS",
+                    f"开仓重试成功 #{retry_idx}",
+                    f"{self.canonical_symbol} {action} {real_qty} {unit} @ {entry_price}",
+                    {"retry_idx": retry_idx, "retry_delay": retry_delay, "qty": real_qty, "entry": entry_price},
+                )
+                sizing_meta["retry_idx"] = retry_idx
+                sizing_meta["retry_delay"] = retry_delay
+                break
+            else:
+                self._log("WARN", f"重试 #{retry_idx} 仍未持仓，继续下一轮")
+                sizing_meta["retry_failed_idx"] = retry_idx
+
+        # 重试后仍然没有持仓 → 最终失败上报
+        if not pos or float(pos.get("positionAmt", 0)) == 0:
+            last_err = ""
+            if hasattr(self, "client"):
+                last_err = str(getattr(self.client, "_last_market_order_error", "") or "")
+            msg = f"重试 {len(OPEN_RETRY_DELAYS)} 轮后仍未持仓（已平仓成功，需下一笔 TV 信号）"
+            self._log("ERROR", msg, {"order_qty": qty, "sizing": sizing_meta, "exchange_error": last_err})
+            self._alert(
+                "critical",
+                "OPEN_RETRY_EXHAUSTED",
+                "开仓重试耗尽",
+                msg,
+                {
+                    "order_qty": float(qty or 0),
+                    "sizing": sizing_meta,
+                    "exchange_error": last_err or None,
+                    "retries": len(OPEN_RETRY_DELAYS),
+                },
+            )
+            return {
+                "status": "error",
+                "reason": "open_retry_exhausted",
+                "message": msg,
                 "order_qty": float(qty or 0),
-                "binding": sizing_meta.get("binding"),
-                "final_qty": sizing_meta.get("final_qty"),
-                "tv_qty_ignored_absurd": sizing_meta.get("tv_qty_ignored_absurd"),
+                "sizing": sizing_meta,
                 "exchange_error": last_err or None,
-                "params": getattr(self.client, "_last_market_order_params", None)
-                if hasattr(self, "client")
-                else None,
-            },
-        )
-        return {
-            "status": "error",
-            "reason": "open_failed",
-            "message": msg,
-            "order_qty": float(qty or 0),
-            "sizing": {
-                "binding": sizing_meta.get("binding"),
-                "final_qty": sizing_meta.get("final_qty"),
-                "tv_qty_ignored_absurd": sizing_meta.get("tv_qty_ignored_absurd"),
-            },
-            "exchange_error": last_err or None,
-        }
+            }
 
     def _close_order_side(self) -> str:
         """Binance order side to flatten current position."""

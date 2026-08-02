@@ -16,6 +16,7 @@
 **硬止损是底线，雷达是骑士。** TP1/TP2 限价兑现 10%/20%；**TP3（70%）永不挂限价**，全程雷达管理、无价格天花板。ATR **一律用 webhook `atr`（TV）**，VPS 不再独立拉取交易所 ATR。雷达启动=ADX **离散 70%/80%/90%**×(1.35×ATR)（&lt;20→70%早 · 20–30→80% · &gt;30→90%晚；**弱早强晚**）；**激活=手续费保本（fee+tick）**，非 entry±0.5ATR；TP 后只缩止损数量、不改价。重入最多一次。本地挂单标签 + 挂单硬帽≤5 + ETH/XAU 隔离。  
 开仓链路按 **流水线岗位** 交接：信号官 → 准入官 → 仓位稽查 → 执行官（TP 自检≈30%）→ 督察官（VERIFIED）→ 通讯官（**TG**）；账本 `data/supervisor/ledgers/`。暂停/冷却时哨兵**禁止 REST**，优先读账本/缓存。  
 **两次 TV 只有三条路**：①TP1/TP2 止盈（+雷达兑现剩余）②雷达 BE/微赚扫出→更优价再入（≤1 次）③硬止损认输不重入。  
+**开仓失败→自动重试**：市价下单未成交/抛异常 → 等 IP 冷却 → TV 指导价挂限价单(GTC) → 轮询成交；若仍未持仓 → 等 IP 冷却 → 再次市价重试（最多 4 轮，间隔 5/10/20/30s）。**确保先平仓后必有持仓**；4 轮均失败 → `OPEN_RETRY_EXHAUSTED` 钉钉 critical，需人工介入。  
 验收必须以：交易所空仓零挂单 + 本地/GitHub/VPS **三方 commit 同数字** + 日志/订单 JSON / **TG** 为准。
 
 ### 开发推送与 VPS 部署工作流
@@ -29,7 +30,11 @@ VPS: ssh 后执行:
     ↓
 cd ~/panda-quant-platform
 bash deploy.sh                 ← 拉取 + 构建 + 启动 + 全域自检
+    ↓
+VPS 重启后 → 雷达哨兵守护现有持仓 → 等待真实 TV 信号触发新开仓
 ```
+
+> **重启后行为**：VPS 启动时自动执行账户接管审计（VPS STARTUP）；若有现有持仓，雷达自动接管守护（按 `current_stop` 重挂止损），**无需等待 TV**；空仓时雷达哨兵就绪，等待真实 TV 开仓。
 
 **TV Webhook 生产地址：** `https://twinstar.pro/gemini/webhook`
 
@@ -204,7 +209,22 @@ TV 入队 → 解析 → ATR=webhook.atr → RISK20×5 算仓 → 市价开
   → 雷达武装(TV atr；arm=ADX 70/80/90%×1.35×ATR)
 ```
 
+**开仓失败→自动重试兜底：**
+```
+市价下单 → 未成交/抛异常
+  → 等 IP 冷却 → TV 指导价挂限价单 (GTC) → 轮询成交
+  → 仍未持仓 → 等 IP 冷却 → 再次市价重试
+  → 最多 4 轮（5s/10s/20s/30s）→ 确认有持仓后走完整流程
+  → 4 轮均失败 → OPEN_RETRY_EXHAUSTED (critical) + 已平仓，等下一笔 TV
+```
+
 不可读盘口时：**禁止再挂 TP/Stop、禁止 cancel_all、禁止把未知当已保护**。
+
+> **开仓链路新增兜底重试（2026-08-02）：**
+> - 市价开仓失败/未成交 → 等 IP 冷却 → TV 指导价挂限价单(GTC) → 轮询成交
+> - 仍未持仓 → 等 IP 冷却 → 再次市价重试（最多 4 轮，间隔 5/10/20/30s）
+> - ATR 降级时暂停重试（避免带坏 ATR 连续重试）
+> - 4 轮均失败 → `OPEN_RETRY_EXHAUSTED` 钉钉 critical，已平仓，等下一笔 TV 信号
 
 **自查口令（独立于文字汇报）**  
 1. GitHub / 本地 / VPS `git rev-parse --short HEAD` 三数字一致。  
@@ -295,6 +315,7 @@ rules:
   - pipeline_stall: PHASE_STALL_SEC → critical PIPELINE_STALL; mid-trade ChiefAuditor.recheck_live on TP fill
   - flat_auto_unpause: chief_auditor_fail / open_orders_gt_5 / open_book_dirty / ATR应急 / 方向 / 先平后开失败
   - REST valve: rest_throttle_valve; sentinel_may_rest blocks pause/cool/**budget**; book cache prefers stale
+  - open_retry: market fail → limit at TV price → retry 4× (5/10/20/30s); IP cool-down respected; ATR fallback pauses retry; OPEN_RETRY_SUCCESS / OPEN_RETRY_EXHAUSTED TG events
   - E2E_FORCE_NOTIONAL_USD=0 in production; wait real TV
   - three-way commit: local = GitHub = VPS
 
@@ -314,7 +335,7 @@ modules:
   rest_pace: backend/app/core/rest_symbol_pace.py
   daily_loss: backend/app/core/daily_loss_circuit.py
   coalesce: backend/app/services/webhook_symbol_coalesce.py
-  supervisor: backend/app/core/position_supervisor.py
+  supervisor: backend/app/core/position_supervisor.py          # incl. open retry + limit fallback
 ```
 
 ### 交易所 API 限流（Binance −1003 · 白皮书 §8）
