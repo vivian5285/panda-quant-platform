@@ -4270,6 +4270,12 @@ class PositionSupervisor(
                 dynamic_sl=None,
                 reason="开仓后智能防线对齐·TP1/TP2",
             )
+            # Persist state NOW so initial_qty + tv_tps survive VPS restart.
+            # Without this, a restart between open and sentinel would lose TP info
+            # (initial_qty=0 + tv_tps=[0,0,0]) and force-patch would compute
+            # TP qty=0 → position unguarded with no TP limits.
+            if hasattr(self, "_save_state"):
+                self._save_state()
             if (
                 result.get("expected", 0) > 0
                 and result.get("matched", 0) < result.get("expected", 0)
@@ -6347,21 +6353,9 @@ class PositionSupervisor(
             })
             self._save_state()
 
-            self._log(
-                "STARTUP",
-                f"雷达接管 {self.current_side} {self.watched_qty} @ {self.watched_entry} | "
-                f"TV={self.last_tv_side} TP={self.tv_tps}",
-                audit,
-            )
-            summary = audit.get("startup_summary") or format_startup_defense_summary(audit)
-            self._alert(
-                "info", "STARTUP",
-                "VPS 雷达智能接管完成",
-                f"{self.current_side} {self.watched_qty} @ {self.watched_entry} | {summary}",
-                audit,
-            )
-            # Advance ledger pipeline so the sentinel's check_phase_stall()
-            # does not falsely report PIPELINE_STALL on a successful recovery.
+            # Advance ledger pipeline BEFORE _alert() so check_phase_stall() sees
+            # REPORTED (not ENTRY_CONFIRMED) and does not fire PIPELINE_STALL.
+            # Also save state now so initial_qty/tv_tps are persisted for restart.
             try:
                 from app.core.pipeline_officers import (
                     ExecutionOfficer,
@@ -6378,6 +6372,20 @@ class PositionSupervisor(
                 CommunicationsOfficer.mark_reported(self)
             except Exception as e:
                 logger.warning("[User %s] startup ledger advance: %s", self.user_id, e)
+            self._save_state()
+            self._log(
+                "STARTUP",
+                f"雷达接管 {self.current_side} {self.watched_qty} @ {self.watched_entry} | "
+                f"TV={self.last_tv_side} TP={self.tv_tps}",
+                audit,
+            )
+            summary = audit.get("startup_summary") or format_startup_defense_summary(audit)
+            self._alert(
+                "info", "STARTUP",
+                "VPS 雷达智能接管完成",
+                f"{self.current_side} {self.watched_qty} @ {self.watched_entry} | {summary}",
+                audit,
+            )
             threading.Thread(target=self._sentinel_loop, daemon=True).start()
         except Exception as e:
             logger.error(f"[User {self.user_id}] recover failed: {e}")

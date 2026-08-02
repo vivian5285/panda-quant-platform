@@ -4036,6 +4036,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 dynamic_sl=None,
                 reason="开仓后智能防线对齐·TP1/TP2",
             )
+            # Persist state NOW so initial_qty + tv_tps survive VPS restart.
+            # Without this, a restart between open and sentinel would lose TP info
+            # (initial_qty=0 + tv_tps=[0,0,0]) and force-patch would compute
+            # TP qty=0 → position unguarded with no TP limits.
+            if hasattr(self, "_save_state"):
+                self._save_state()
             if (
                 result.get("expected", 0) > 0
                 and result.get("matched", 0) < result.get("expected", 0)
@@ -5250,8 +5256,9 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         last_tv_signal=self.last_tv_signal,
                         radar_sl_ok=sl_ok,
                     )
-                    # Advance ledger pipeline so the sentinel's check_phase_stall()
-                    # does not falsely report PIPELINE_STALL on a successful recovery.
+                    # Advance ledger pipeline BEFORE _alert() so check_phase_stall() sees
+                    # REPORTED (not ENTRY_CONFIRMED) and does not fire PIPELINE_STALL.
+                    # Also save state now so initial_qty/tv_tps are persisted for restart.
                     try:
                         from app.core.pipeline_officers import (
                             ExecutionOfficer,
