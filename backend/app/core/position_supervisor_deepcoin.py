@@ -4031,6 +4031,11 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 return out
 
             # ② TP1/TP2
+            # CRITICAL: reset consumed_tp_levels on every open to prevent stale state from
+            # previous FLIP (e.g. old SHORT TP consumed flags leaking into new LONG open).
+            # Without this, _sync_consumed_tp_levels would incorrectly mark TP1 as "consumed"
+            # based on the new LONG TP price, causing TP placement to be skipped.
+            self.consumed_tp_levels = []
             result = self._smart_realign_defenses(
                 live_qty, entry,
                 dynamic_sl=None,
