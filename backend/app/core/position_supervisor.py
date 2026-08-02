@@ -6360,6 +6360,24 @@ class PositionSupervisor(
                 f"{self.current_side} {self.watched_qty} @ {self.watched_entry} | {summary}",
                 audit,
             )
+            # Advance ledger pipeline so the sentinel's check_phase_stall()
+            # does not falsely report PIPELINE_STALL on a successful recovery.
+            try:
+                from app.core.pipeline_officers import (
+                    ExecutionOfficer,
+                    CommunicationsOfficer,
+                )
+                from app.core.trade_ledger import ledger_for, TradePhase
+                led = ledger_for(self)
+                led.snap.qty = self.watched_qty
+                if float(led.snap.initial_qty or 0) <= 0:
+                    led.snap.initial_qty = self.watched_qty
+                led.snap.side = str(self.current_side or "").upper()
+                led.snap.entry_price = float(self.watched_entry or 0)
+                led.advance(TradePhase.ORDERS_PLACED, reason="startup_recover", force=True)
+                CommunicationsOfficer.mark_reported(self)
+            except Exception as e:
+                logger.warning("[User %s] startup ledger advance: %s", self.user_id, e)
             threading.Thread(target=self._sentinel_loop, daemon=True).start()
         except Exception as e:
             logger.error(f"[User {self.user_id}] recover failed: {e}")

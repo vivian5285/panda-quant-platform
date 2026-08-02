@@ -5250,6 +5250,24 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         last_tv_signal=self.last_tv_signal,
                         radar_sl_ok=sl_ok,
                     )
+                    # Advance ledger pipeline so the sentinel's check_phase_stall()
+                    # does not falsely report PIPELINE_STALL on a successful recovery.
+                    try:
+                        from app.core.pipeline_officers import (
+                            ExecutionOfficer,
+                            CommunicationsOfficer,
+                        )
+                        from app.core.trade_ledger import ledger_for, TradePhase
+                        led = ledger_for(self)
+                        led.snap.qty = real_amt
+                        if float(led.snap.initial_qty or 0) <= 0:
+                            led.snap.initial_qty = real_amt
+                        led.snap.side = str(self.current_side or "").upper()
+                        led.snap.entry_price = float(verified.get('entry_price') or 0)
+                        led.advance(TradePhase.ORDERS_PLACED, reason="startup_recover", force=True)
+                        CommunicationsOfficer.mark_reported(self)
+                    except Exception as e:
+                        logger.warning("[User %s] startup ledger advance: %s", self.user_id, e)
                     if qty_change:
                         old_q, new_q, action_msg = qty_change
                         self._dt.report_manual_position_change(
