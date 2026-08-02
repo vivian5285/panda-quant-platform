@@ -13,6 +13,7 @@
 | 2026-07-28 | `marathon-radar-fee-be` | 雷达激活=fee+tick保本；ADX **70/80/90 弱早强晚**；取消 0.5ATR/TP1底线；TP只缩量 | 已修 · §17 |
 | 2026-07-28 | `stage0-hard-only` | Stage0 仅硬止损上簿；禁开仓挂休眠雷达；呼吸 tick 一键清休眠 STOP | 已修 · §18 |
 | 2026-08-02 | `retry-exhausted-20260802` | 市价开仓未成交→限价兜底→重试 4 轮仍无持仓→`OPEN_RETRY_EXHAUSTED` | 已修 · §19 |
+| 2026-08-02 | `manual-flat-not-stop-retry` | 手动平仓后自动重试仍持续补挂开仓单→叠加超仓（严重） | **紧急修复中** · §20 |
 | 2026-07-27 | `deepcoin-equity-cashbal-zero` | 深币 cashBal/eq=0 但 avail+frozen有钱 → 算仓0；顺手封 MAX_ADD_TIMES_BY_REGIME | 已修 · §16 |
 | 2026-07-27 | `tv-open-no-skip-no-instant-flat` | TV有信号却跳过/开仓秒平：先平后开失败卡暂停、ATR武装失败误撤仓 | 已修 · §15 |
 | 2026-07-27 | `deepcoin-hedge-sterile-bind` | 深币强制 APP 开平仓双向；绑定探测拒单向；开仓再闸；不自动切模式 | 已修 · §14 |
@@ -643,6 +644,62 @@ DeepCoin 账户可能是**开平仓模式（双向）**或**买卖模式（单�
 - [ ] `entry_fill_confirmed` 字段在 `_save_state` / `_load_state` 中正确序列化/反序列化。
 - [ ] `_force_flat_before_open` 能检测到超额持仓并 abort。
 - [ ] `pytest backend/tests/` 中相关单测（重试逻辑 / margin check / state persistence）全绿。
+
+---
+
+## §20 · 2026-08-02 · 手动平仓后自动重试仍持续补挂（超仓叠加）
+
+### 现象
+
+- VPS 实盘：BNB 多单触发开仓重试逻辑。
+- 用户**第一次发现系统下单量超标后手动全部平仓**，并告知 AI 检查修复。
+- AI 修复期间（代码未生效），系统**再次自动补挂 BNB 开多单**。
+- 用户**再次手动平仓**，但系统继续重复补挂，导致 BNB 多单严重叠加（直至手动连续平仓才止住）。
+
+### 根因分析
+
+**重试循环完全不检查「持仓是否已消失」**：
+
+1. `for retry_idx, retry_delay in enumerate(OPEN_RETRY_DELAYS, 1)` — 循环只按固定次数/间隔重试，不管持仓状态。
+2. 重试路径中，`_place_tv_entry_order` → 轮询 `get_position` → 若查到持仓即 break。但若**持仓已被手动平仓**，`get_position` 返回 0 → 继续下一轮 → **再次挂限价开仓**。
+3. 每次重试都用**原始 qty**（不是已减少的持仓），且每次都通过 `require_rest_or_transient` 拿到 REST 预算。
+4. 没有 `entry_fill_confirmed` 标志位持久化 → 重启后仍可继续重试。
+
+### 修复
+
+| 项 | 位置 | 行为 |
+|----|------|------|
+| 持仓消失检测 | `_open_position` 重试循环 | 每次重试下单前，先 `get_position(force_refresh=True)`；若发现 `positionAmt=0` 且**之前已有持仓历史**（`initial_qty > 0` 或 `entry_fill_confirmed=True`），则判定为**手动平仓**，立即 abort 重试循环 |
+| `MANUAL_CLOSE_ABORT` | 同上 | 发送钉钉 `critical` 事件，说明「检测到手动平仓，停止重试」 |
+| 原始 qty 记忆 | `_place_tv_entry_order` | 第一次挂单后记录 `first_attempt_qty`；重试时若持仓为 0 且无历史 → 仍允许（可能是纯网络丢单） |
+| 重试前持仓快照 | 重试循环入口 | 在 `time.sleep(retry_delay)` 后、下单前，强制 `get_position(force_refresh=True)` 确认仍有持仓 |
+| 状态持久化 | `_save_state` / `_load_state` | `entry_fill_confirmed` 写入/读取；若为 True，则触发重试时认为「已有持仓历史」 |
+
+### 复查点
+
+- [ ] 手动平仓后，重试循环在下一轮检测到 `positionAmt=0` → **不再挂新单**。
+- [ ] 钉钉发送 `MANUAL_CLOSE_ABORT`（critical），含手动平仓时间和品种。
+- [ ] 网络丢单（从未持仓）：重试正常进行。
+- [ ] VPS 重启后：`entry_fill_confirmed=False`（重启归零），不误判手动平仓。
+- [ ] `pytest backend/tests/test_open_retry.py` 中 `test_manual_close_aborts_retry` 全绿。
+
+### 临时急救（已上 VPS 后）
+
+若此次事故已产生残留状态，立即执行：
+```bash
+# SSH 到 VPS
+docker compose exec backend python -c "
+from app.core.position_supervisor import PositionSupervisor
+sup = PositionSupervisor(...)
+sup.initial_qty = 0
+sup.base_qty = 0
+sup.entry_fill_confirmed = False
+sup.consumed_tp_levels = []
+sup._entry_fills_sent = False
+sup._save_state()
+print('状态已清零')
+"
+```
 
 ---
 

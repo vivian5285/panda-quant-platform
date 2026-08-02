@@ -3997,7 +3997,34 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         has_pos = pos and pos.get("size", 0) > 0
 
         for retry_idx, retry_delay in enumerate(OPEN_RETRY_DELAYS, 1):
-            if has_pos:
+            # ── 关键修复 §20：每次重试下单前重新检查持仓，防止手动平仓后继续补挂 ──
+            try:
+                pos_check = self._get_active_position(force_refresh=True)
+                pos_size = float(pos_check.get("size", 0)) if pos_check else 0.0
+            except Exception:
+                pos_size = 0.0
+            had_confirmed_fill = getattr(self, "initial_qty", 0) > 0 and getattr(self, "trade_opened_at", 0) > 0
+            if pos_size == 0 and had_confirmed_fill:
+                # 之前已有持仓，现已消失 → 手动平仓，立即停止
+                logger.error(
+                    "DeepCoin 检测到持仓已消失（疑似手动平仓），停止重试循环防止叠加超仓 "
+                    "(retry_idx=%d, qty=%s)",
+                    retry_idx, qty,
+                )
+                self._dt.report_system_alert(
+                    "手动平仓·停止重试",
+                    f"{self.canonical_symbol} {action} {qty}张 "
+                    f"检测到持仓已消失（疑似手动平仓），停止重试防止叠加超仓",
+                    severity="critical",
+                )
+                return {
+                    "status": "error",
+                    "reason": "manual_close_abort",
+                    "message": "手动平仓，停止重试防止叠加超仓",
+                    "retry_idx": retry_idx,
+                }
+            if pos_size > 0:
+                logger.info("DeepCoin 重试前发现已有持仓 %.4f，复用已有持仓", pos_size)
                 break
 
             # ATR 降级时暂停

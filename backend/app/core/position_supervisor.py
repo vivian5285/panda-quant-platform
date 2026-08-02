@@ -2386,6 +2386,23 @@ class PositionSupervisor(
             or curr_px
             or 0
         )
+
+        # ── 关键修复 §20：开仓前检查是否已有持仓（防止重复/叠加开仓）─────
+        try:
+            pre_pos = self.position_manager.get_position(self.symbol, force_refresh=True)
+            pre_amt = float(pre_pos.get("positionAmt", 0)) if pre_pos else 0.0
+            if pre_amt != 0:
+                self._log("WARN",
+                    f"开仓前发现已有持仓 {abs(pre_amt)}，先平后开已处理但仍检测到仓，不重复开仓",
+                    {"pre_amt": pre_amt})
+                return {
+                    "status": "already_positioned",
+                    "message": "已有持仓，不重复开仓",
+                    "position_amt": pre_amt,
+                }
+        except Exception as exc:
+            self._log("WARN", f"开仓前检查持仓失败（继续尝试）: {exc}")
+
         self._log(
             "SIGNAL",
             f"🚀 [VPS开仓] {open_side} {qty} {unit} | {getattr(self, 'canonical_symbol', '')} "
@@ -2733,6 +2750,46 @@ class PositionSupervisor(
                 )
             except Exception:
                 pass
+
+            # ── 关键修复 §20：下单前检查持仓是否存在，防止手动平仓后继续重试补挂 ──
+            try:
+                pos_check = self.position_manager.get_position(self.symbol, force_refresh=True)
+            except Exception:
+                pos_check = None
+            pos_amt = float(pos_check.get("positionAmt", 0)) if pos_check else 0.0
+            had_confirmed_fill = getattr(self, "entry_fill_confirmed", False) or \
+                (getattr(self, "initial_qty", 0) > 0 and getattr(self, "trade_opened_at", 0) > 0)
+            if pos_amt == 0 and had_confirmed_fill:
+                # 之前已有持仓（confirmed fill），现在持仓消失 → 手动平仓，立即停止重试
+                self._entry_fills_sent = False
+                self._log("ERROR",
+                    f"⚠️ 检测到持仓已消失（疑似手动平仓），停止重试循环防止叠加超仓",
+                    {"retry_idx": retry_idx, "action": action, "qty": qty})
+                self._alert(
+                    "critical",
+                    "MANUAL_CLOSE_ABORT",
+                    "手动平仓·停止重试",
+                    f"{getattr(self, 'canonical_symbol', self.symbol)} {action} {qty} {unit} "
+                    f"检测到持仓已消失（疑似手动平仓），停止重试以防止叠加超仓",
+                    {
+                        "retry_idx": retry_idx,
+                        "qty": qty,
+                        "action": action,
+                        "symbol": getattr(self, "canonical_symbol", self.symbol),
+                        "tag": "manual_close_abort",
+                    },
+                )
+                return {
+                    "status": "error",
+                    "reason": "manual_close_abort",
+                    "message": "手动平仓，停止重试防止叠加超仓",
+                    "retry_idx": retry_idx,
+                    "sizing": sizing_meta,
+                }
+            if pos_amt != 0:
+                # 持仓已在（之前某轮已成交），复用已有持仓
+                self._log("SIGNAL", f"重试 #{retry_idx} 前发现已有持仓 {abs(pos_amt)}，停止重试复用")
+                break
 
             self._log("SIGNAL", f"🚀 重试开仓 #{retry_idx}: {action} {qty} {unit}")
             retry_entry = self._place_tv_entry_order(action, qty, limit_px)
