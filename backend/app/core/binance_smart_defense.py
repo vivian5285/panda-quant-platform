@@ -1318,11 +1318,9 @@ class BinanceSmartDefenseMixin:
                         close_side = self._tp_close_side_label()
                         if close_side:
                             from app.core.symbol_precision import round_quantity
-                            # FIX: cap qty at live_qty to avoid Binance -4118 (reduceOnly > position)
-                            # ETH: live_qty=0.032, 10%=0.0032→round→0.003→if<1.0→1.0>pos→fail
-                            # Correct: apply min AFTER round so small qty stays small (Binance allows it)
-                            pct_qty = round_quantity(live_qty * 0.10)
-                            tp1_qty = min(pct_qty, live_qty)
+                            # DOC §4.5: TP1数量 = 开仓时总仓位 × 10%，不是当前缩水持仓 × 10%
+                            # anchor (= initial_qty) is already computed above
+                            tp1_qty = min(round_quantity(anchor * 0.10), live_qty)
                             result = self._place_limit_with_retry(
                                 close_side,
                                 float(tp1_qty),
@@ -1383,10 +1381,9 @@ class BinanceSmartDefenseMixin:
                             close_side = self._tp_close_side_label()
                             if close_side:
                                 from app.core.symbol_precision import round_quantity
-                                # FIX: apply min AFTER round so small qty stays small (Binance allows it)
-                                # min(pct_qty, live_qty) guarantees qty <= position → no Binance -4118
-                                pct_qty = round_quantity(live_qty * 0.20)
-                                tp2_qty = min(pct_qty, live_qty)
+                                # DOC §4.5: TP2数量 = 开仓时总仓位 × 20%，不是当前缩水持仓 × 20%
+                                # initial_qty_val is already computed above as the opening position
+                                tp2_qty = min(round_quantity(initial_qty_val * 0.20), live_qty)
                                 result = self._place_limit_with_retry(
                                     close_side,
                                     float(tp2_qty),
