@@ -882,10 +882,9 @@ class PositionSupervisor(
         price = float(payload.get("price") or 0)
         pos = self._get_position() if hasattr(self, "_get_position") else None
         live_qty = float((pos or {}).get("size") or (pos or {}).get("qty") or 0)
-        # Prefer live exchange qty via position_manager when available
+        # IP 限流时 force_refresh=True 返回 stale 缓存，改用普通刷新。
         try:
-            # force_refresh=True: stale cache would cause wrong qty in reconciliation log.
-            live_pos = self.position_manager.get_position(self.symbol, force_refresh=True)
+            live_pos = self.position_manager.get_position(self.symbol, force_refresh=False)
             if live_pos is not None:
                 live_qty = abs(float(live_pos.get("positionAmt") or live_pos.get("size") or 0))
         except Exception:
@@ -1879,8 +1878,10 @@ class PositionSupervisor(
         held_regime = held_regime if held_regime is not None else self.regime
         held_atr = float(held_atr if held_atr is not None else self.current_atr)
 
-        # force_refresh=True: stale cache would cause wrong side detection → missed force-flat.
-        pos = self.position_manager.get_position(self.symbol, force_refresh=True)
+        # IP 限流时 force_refresh=True 仍返回 stale 缓存（被 IP cool-down 拦截）。
+        # 新方向：不在此处强制刷新。改为依赖 _force_flat_before_open 的退避重试逻辑
+        # 和 post-open 持仓确认验证。如果有持仓，_force_flat_before_open 会正确处理。
+        pos = self.position_manager.get_position(self.symbol, force_refresh=False)
         has_pos = bool(pos and float(pos.get("positionAmt", 0)) != 0)
         current_side = None
         entry_price = float(self.watched_entry or 0)
@@ -2392,21 +2393,12 @@ class PositionSupervisor(
             or 0
         )
 
-        # ── 关键修复 §20：开仓前检查是否已有持仓（防止重复/叠加开仓）─────
-        try:
-            pre_pos = self.position_manager.get_position(self.symbol, force_refresh=True)
-            pre_amt = float(pre_pos.get("positionAmt", 0)) if pre_pos else 0.0
-            if pre_amt != 0:
-                self._log("WARN",
-                    f"开仓前发现已有持仓 {abs(pre_amt)}，先平后开已处理但仍检测到仓，不重复开仓",
-                    {"pre_amt": pre_amt})
-                return {
-                    "status": "already_positioned",
-                    "message": "已有持仓，不重复开仓",
-                    "position_amt": pre_amt,
-                }
-        except Exception as exc:
-            self._log("WARN", f"开仓前检查持仓失败（继续尝试）: {exc}")
+        # ── 关键修复 §22 v2：移除开仓前 pre-check 持仓检查。
+        # 问题：IP 限流时 force_refresh=True 仍返回 stale 缓存，导致手动平仓后
+        # 系统误以为"已有持仓"而拒绝开新单。
+        # 解决：移除此 pre-check，改为依赖 post-open 持仓确认验证 + 市价单成交
+        # 后端重试轮询。如果 post-open 确认时仍有持仓（应为手动开仓），会正确处理。
+        # ────────────────────────────────────────────────────────────────
 
         self._log(
             "SIGNAL",
