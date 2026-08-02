@@ -1319,8 +1319,10 @@ class BinanceSmartDefenseMixin:
                         if close_side:
                             from app.core.symbol_precision import round_quantity
                             # DOC §4.5: TP1数量 = 开仓时总仓位 × 10%，不是当前缩水持仓 × 10%
-                            # anchor (= initial_qty) is already computed above
-                            tp1_qty = min(round_quantity(anchor * 0.10), live_qty)
+                            # anchor is computed above. When initial_qty is stale/0 (e.g. state file
+                            # from wrong symbol), fall back to live_qty so the qty math still works.
+                            anchor_for_qty = initial_qty_val if initial_qty_val > 0 else live_qty
+                            tp1_qty = min(round_quantity(anchor_for_qty * 0.10), live_qty)
                             result = self._place_limit_with_retry(
                                 close_side,
                                 float(tp1_qty),
@@ -1382,8 +1384,10 @@ class BinanceSmartDefenseMixin:
                             if close_side:
                                 from app.core.symbol_precision import round_quantity
                                 # DOC §4.5: TP2数量 = 开仓时总仓位 × 20%，不是当前缩水持仓 × 20%
-                                # initial_qty_val is already computed above as the opening position
-                                tp2_qty = min(round_quantity(initial_qty_val * 0.20), live_qty)
+                                # When initial_qty is stale/0 (e.g. state file from wrong symbol),
+                                # fall back to live_qty so the qty math still works.
+                                anchor_for_qty = initial_qty_val if initial_qty_val > 0 else live_qty
+                                tp2_qty = min(round_quantity(anchor_for_qty * 0.20), live_qty)
                                 result = self._place_limit_with_retry(
                                     close_side,
                                     float(tp2_qty),
