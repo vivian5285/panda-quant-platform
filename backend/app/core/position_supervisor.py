@@ -145,6 +145,8 @@ class PositionSupervisor(
         self.user_id = user_id
         self.client = client
         self.initial_principal = float(initial_principal or 0)
+        # Bug #MarginInsufficient20260802: 防止重启后重复开仓
+        self._entry_fills_sent: bool = False
         self.position_manager = PositionManager(client)
         self.on_log = on_log or (lambda *a, **k: None)
         self.on_trade_open = on_trade_open or (lambda *a, **k: None)
@@ -415,6 +417,8 @@ class PositionSupervisor(
                     "current_trade_id": getattr(self, "current_trade_id", None),
                     "trade_opened_at": float(getattr(self, "trade_opened_at", 0) or 0) or None,
                     "canonical_symbol": getattr(self, "canonical_symbol", None),
+                    # Bug #MarginInsufficient20260802: 重启后防止重复开仓
+                    "entry_fills_sent": bool(getattr(self, "_entry_fills_sent", False)),
                     # TV头寸对账：补挂防重控制
                     "tp_rehang_attempts": int(getattr(self, "_tp_rehang_attempts", 0) or 0),
                     "last_tp_rehang_ts": float(getattr(self, "_last_tp_rehang_ts", 0) or 0),
@@ -461,6 +465,9 @@ class PositionSupervisor(
                     )
                     self._state_schema_legacy = bool(has_old) or int(s.get("schema_version") or 0) < 2
                     self.monitoring = bool(s.get("monitoring", False))
+                    # Bug #MarginInsufficient20260802: 重启后恢复 fill-sent 状态
+                    # 若为 True，说明重启前有市价单已发出但未确认，应先查询实盘而非盲目重开
+                    self._entry_fills_sent = bool(s.get("entry_fills_sent", False))
                     self.initial_qty = float(s.get("initial_qty", 0) or 0)
                     self.base_qty = float(s.get("base_qty", 0) or s.get("initial_qty", 0) or 0)
                     self.add_count = 0
@@ -1997,12 +2004,20 @@ class PositionSupervisor(
 
     def _place_tv_entry_order(self, action: str, qty: float, limit_px: float, *, place_limit_fallback: bool = True) -> dict:
         """Checklist §2A: 市价开仓，失败时回退限价单（TV 指导价）。
-        
-        place_limit_fallback=True  时：市价下单失败 → 立即用 TV 指导价挂限价单(GTC) 等待成交。
-        市价单成交 → 直接返回 ok。
-        限价单挂出后轮询最多 OPEN_LIMIT_RETRY 次(5s/10s/15s)，确认持仓归零则撤单改市价。
-        place_limit_fallback=False 时：只发市价单，不回退。
+
+        修复记录（Bug #MarginInsufficient20260802）：
+        - 市价单返回 resp_id 即表示 Binance 接受订单，不代表成交。
+        - 因 IP cool-down 导致 position 查询返回 stale 时，错误认为"未成交"而回退限价单，
+          导致已在途的市价单成交后，限价单再次叠加开仓，多次叠加耗尽保证金。
+        - 修复策略：
+          1. 追踪 _entry_fills_sent 标志：发出市价单后置 True，收到 Binance 确认成交后置 False。
+          2. IP cool-down 导致 position 查询失败时，若 _entry_fills_sent=True 则等待而不回退。
+          3. "Margin is insufficient" 错误立即返回特定 code，不再重试（防止继续耗保证金）。
+          4. 市价单成功后立即 save_state 持久化，防止重启后重复开仓。
         """
+        # 恢复重启前的 fill-sent 状态（防止重启后重复开仓）
+        self._entry_fills_sent = bool(getattr(self, "_entry_fills_sent", False))
+
         open_side = "BUY" if action == "LONG" else "SELL"
         market_meta: dict = {
             "entry_order_style": "market",
@@ -2010,28 +2025,86 @@ class PositionSupervisor(
             "qty": float(qty),
         }
         market_err: str | None = None
+        market_resp: dict | None = None
         try:
-            self.client.place_market_order(action, qty, self.symbol)
+            market_resp = self.client.place_market_order(action, qty, self.symbol)
+            market_meta["order_id"] = (
+                market_resp.get("orderId") if isinstance(market_resp, dict) else str(market_resp)
+            )
+            market_meta["market_error"] = None
         except Exception as exc:
             market_err = str(exc)
-            self._log("WARN", f"市价开仓抛出异常: {market_err}，准备回退限价单")
             market_meta["market_error"] = market_err
+            self._log("WARN", f"市价开仓抛出异常: {market_err}，准备回退限价单")
+            market_meta["order_id"] = None
 
-        # 立即查仓：市价是否已成交
+        # ── 关键修复 1：Margin is insufficient 立即终止，不重试 ──────────────────
+        MARGIN_INSUFFICIENT_CODES = ("-2019", "Margin is insufficient", "margin is insufficient")
+        if market_err and any(c in market_err for c in MARGIN_INSUFFICIENT_CODES):
+            self._log(
+                "ERROR",
+                f"⚠️ 市价开仓余额不足（Margin is insufficient）— 禁止重试下单: {market_err}",
+                {"qty": qty, "symbol": self.symbol, "exchange_error": market_err},
+            )
+            self._entry_fills_sent = False
+            return {
+                **market_meta,
+                "status": "margin_insufficient",
+                "filled": False,
+                "limit_fallback": False,
+                "retryable": False,
+            }
+
+        # ── 关键修复 2：追踪 fill-sent 状态 ───────────────────────────────────
+        # Binance 返回 resp_id 表示订单已接受（未必成交），置标志
+        if market_resp is not None and not market_err:
+            self._entry_fills_sent = True
+            self._log(
+                "DEBUG",
+                f"市价单已发出 (order_id={market_meta.get('order_id')})，等待成交确认",
+            )
+            # 立即持久化：防止重启后重复开仓
+            if hasattr(self, "_save_state"):
+                try:
+                    self._save_state()
+                except Exception:
+                    pass
+
+        # ── 立即查仓：市价是否已成交 ─────────────────────────────────────────
         pos = None
+        pos_query_errors = 0
         for _delay in (0.3, 0.6):
             time.sleep(_delay)
             try:
                 pos = self.position_manager.get_position(self.symbol, force_refresh=True)
                 if pos and float(pos.get("positionAmt", 0)) != 0:
+                    self._entry_fills_sent = False  # 成交确认，清除标志
                     return {**market_meta, "status": "ok", "filled": True}
             except Exception:
-                pass
+                pos_query_errors += 1
 
-        # 市价未成交，检查是否需要回退限价单
+        # ── 关键修复 3：IP cool-down 导致 position 查询失败时的处理 ───────────
+        # 若市价单已发出（_entry_fills_sent=True）但 position 查不到，
+        # 绝不回退到限价单！市价单已在途，等待冷却后重新查询。
         if not place_limit_fallback:
             market_meta["status"] = "pending"
             return market_meta
+
+        if self._entry_fills_sent and pos_query_errors > 0:
+            # 市价单已发出但查询失败 = IP cool-down，不回退限价单
+            self._log(
+                "WARN",
+                f"市价单已发出但 position 查询失败(IP cool-down) — 等待冷却后确认，不回退限价单 "
+                f"(qty={qty} symbol={self.symbol} order_id={market_meta.get('order_id')})",
+                {"pos_query_errors": pos_query_errors},
+            )
+            return {
+                **market_meta,
+                "status": "awaiting_fill_confirmation",
+                "filled": False,
+                "limit_fallback": False,
+                "retryable": True,
+            }
 
         if not market_err and pos and float(pos.get("positionAmt", 0)) == 0:
             self._log("WARN", "市价单未成交且无持仓 → 回退 TV 指导价限价单")
@@ -2054,6 +2127,24 @@ class PositionSupervisor(
         except Exception:
             pass
 
+        # ── 关键修复 4：发出限价单前先确认无同名开仓挂单，防止叠加 ───────────
+        try:
+            existing_orders = self.client.get_open_orders(self.symbol)
+            same_side_orders = [
+                o for o in existing_orders
+                if (o.get("side") or "").upper() == open_side.upper()
+                and float(o.get("origQty", 0) or 0) > 0
+            ]
+            if same_side_orders:
+                self._log(
+                    "WARN",
+                    f"发现同方向开仓挂单 {len(same_side_orders)} 个，先撤单再挂: {same_side_orders}",
+                )
+                self.client.cancel_all_open_orders(self.symbol)
+                time.sleep(1.0)
+        except Exception as exc:
+            self._log("WARN", f"检查/撤同方向挂单失败: {exc}")
+
         limit_meta: dict = {
             "entry_order_style": "limit_fallback",
             "limit_price": float(limit_px or 0),
@@ -2071,6 +2162,7 @@ class PositionSupervisor(
             limit_meta["order_placed"] = False
             limit_meta["limit_error"] = str(exc)
             self._log("ERROR", f"限价回退下单也失败: {exc}")
+            self._entry_fills_sent = False
             return {**market_meta, **limit_meta, "status": "limit_failed"}
 
         # 轮询限价单成交情况
@@ -2080,6 +2172,7 @@ class PositionSupervisor(
             try:
                 pos = self.position_manager.get_position(self.symbol, force_refresh=True)
                 if pos and float(pos.get("positionAmt", 0)) != 0:
+                    self._entry_fills_sent = False
                     self._log("SIGNAL", f"限价回退开仓成交 @ {limit_px:.4f} (轮询 #{i})")
                     return {
                         **market_meta, **limit_meta,
@@ -2098,10 +2191,26 @@ class PositionSupervisor(
             # 撤单后再用市价尝试一次
             if i < len(OPEN_LIMIT_POLL):
                 try:
-                    self.client.place_market_order(action, qty, self.symbol)
+                    retry_resp = self.client.place_market_order(action, qty, self.symbol)
+                    # 检查余额不足
+                    if retry_resp is None and hasattr(self.client, "_last_market_order_error"):
+                        last_err = str(self.client._last_market_order_error or "")
+                        if any(c in last_err for c in MARGIN_INSUFFICIENT_CODES):
+                            self._entry_fills_sent = False
+                            self._log(
+                                "ERROR",
+                                f"补单市价余额不足（Margin is insufficient）— 终止: {last_err}",
+                            )
+                            return {
+                                **market_meta, **limit_meta,
+                                "status": "margin_insufficient",
+                                "filled": False,
+                                "exchange_error": last_err,
+                            }
                     time.sleep(2.0)
                     pos = self.position_manager.get_position(self.symbol, force_refresh=True)
                     if pos and float(pos.get("positionAmt", 0)) != 0:
+                        self._entry_fills_sent = False
                         self._log("SIGNAL", f"市价补单成交 (轮询 #{i})")
                         return {
                             **market_meta, **limit_meta,
@@ -2112,6 +2221,7 @@ class PositionSupervisor(
                     pass
 
         # 所有尝试均失败
+        self._entry_fills_sent = False
         limit_meta["status"] = "all_retry_exhausted"
         return {**market_meta, **limit_meta}
 
@@ -2513,10 +2623,86 @@ class PositionSupervisor(
                 "trade_id": self.current_trade_id,
                 "detail": detail,
             }
-        # 开仓失败重试循环：等 IP 冷却后用 TV 指导价重试，确保最终持有仓位
+        # ── 关键修复：处理 _place_tv_entry_order 的新返回状态 ───────────────────────
+        # status == "margin_insufficient": 余额不足，立即终止
+        # status == "awaiting_fill_confirmation": 市价单已发出但IP cool-down，待冷却后重查
+        # status == "ok": 开仓成功
+        # 其他: 按原逻辑重试
+
         OPEN_RETRY_DELAYS = (5.0, 10.0, 20.0, 30.0)  # 4 轮重试，最多 65s
+        retry_idx = 0
         for retry_idx, retry_delay in enumerate(OPEN_RETRY_DELAYS, 1):
-            # ATR 降级时暂停：避免带着坏 ATR 连续重试
+            entry_meta = sizing_meta.get("entry_order", {})
+            retryable = entry_meta.get("retryable", True)
+
+            # 余额不足：立即停止，不再重试
+            if entry_meta.get("status") == "margin_insufficient":
+                ex_err = entry_meta.get("market_error") or entry_meta.get("exchange_error") or ""
+                self._entry_fills_sent = False
+                self._log(
+                    "ERROR",
+                    f"⚠️ 开仓重试 #{retry_idx} 余额不足（Margin is insufficient）— 终止重试循环: {ex_err}",
+                    {"retry_idx": retry_idx, "exchange_error": ex_err},
+                )
+                self._alert(
+                    "critical",
+                    "MARGIN_INSUFFICIENT_STOPPED",
+                    "开仓余额不足·已终止",
+                    f"{getattr(self, 'canonical_symbol', '')} {action} {qty} {unit} "
+                    f"第 {retry_idx} 轮重试遭遇余额不足: {ex_err}，已停止重试以防止继续消耗保证金",
+                    {
+                        "retry_idx": retry_idx,
+                        "qty": qty,
+                        "exchange_error": ex_err,
+                        "symbol": getattr(self, "canonical_symbol", None),
+                    },
+                )
+                return {
+                    "status": "error",
+                    "reason": "margin_insufficient",
+                    "message": f"余额不足，第{retry_idx}轮终止: {ex_err}",
+                    "retry_idx": retry_idx,
+                    "exchange_error": ex_err,
+                    "sizing": sizing_meta,
+                }
+
+            # 市价单已发出但 IP cool-down：等待冷却后再查，不重复下单
+            if entry_meta.get("status") == "awaiting_fill_confirmation" and not retryable:
+                self._log(
+                    "WARN",
+                    f"市价单已发出但 position 查询失败(IP cool-down)，"
+                    f"等待 {retry_delay:.0f}s 后重新查询确认持仓",
+                )
+                time.sleep(retry_delay)
+                # 等冷却后再查持仓
+                pos = None
+                for poll_delay in (0.5, 1.0, 2.0, 3.0):
+                    time.sleep(poll_delay)
+                    try:
+                        pos = self.position_manager.get_position(
+                            self.symbol, force_refresh=True
+                        )
+                        if pos and float(pos.get("positionAmt", 0)) != 0:
+                            self._entry_fills_sent = False
+                            # 复用下面的持仓确认逻辑
+                            break
+                    except Exception:
+                        pass
+                if pos and float(pos.get("positionAmt", 0)) != 0:
+                    self._log(
+                        "SIGNAL",
+                        f"IP cool-down 后确认持仓（from awaiting_fill_confirmation）",
+                    )
+                    break
+                else:
+                    # 冷却后仍查不到持仓（可能是 WS 更新滞后），继续下一轮
+                    self._log(
+                        "WARN",
+                        f"IP cool-down 后仍查不到持仓，继续重试 #{retry_idx + 1}",
+                    )
+                    continue
+
+            # ATR 降级时暂停
             if getattr(self, "_atr_fallback_pending_pause", False):
                 self._atr_fallback_pending_pause = False
                 if hasattr(self, "_pause_trading"):
@@ -2528,6 +2714,7 @@ class PositionSupervisor(
                             "tag": "atr_emergency_fallback",
                         },
                     )
+                self._entry_fills_sent = False
                 return {
                     "status": "error",
                     "reason": "atr_fallback_paused",
@@ -2538,7 +2725,6 @@ class PositionSupervisor(
             self._log("WARN", f"开仓失败，准备第 {retry_idx} 次重试，等待 {retry_delay:.0f}s (IP 冷却)")
             time.sleep(retry_delay)
 
-            # 等冷却后再尝试开仓
             try:
                 from app.core.rest_throttle_valve import require_rest_or_transient
                 require_rest_or_transient(
@@ -2552,7 +2738,37 @@ class PositionSupervisor(
             retry_entry = self._place_tv_entry_order(action, qty, limit_px)
             sizing_meta["entry_order"] = retry_entry
 
-            # 轮询持仓确认
+            # 检查余额不足（重试中也可能再次遇到）
+            if retry_entry.get("status") == "margin_insufficient":
+                ex_err = retry_entry.get("market_error") or retry_entry.get("exchange_error") or ""
+                self._entry_fills_sent = False
+                self._log(
+                    "ERROR",
+                    f"⚠️ 重试 #{retry_idx} 余额不足（Margin is insufficient）— 终止: {ex_err}",
+                )
+                self._alert(
+                    "critical",
+                    "MARGIN_INSUFFICIENT_STOPPED",
+                    "开仓余额不足·已终止",
+                    f"{getattr(self, 'canonical_symbol', '')} {action} {qty} {unit} "
+                    f"重试 #{retry_idx} 遭遇余额不足: {ex_err}",
+                    {
+                        "retry_idx": retry_idx,
+                        "qty": qty,
+                        "exchange_error": ex_err,
+                        "symbol": getattr(self, "canonical_symbol", None),
+                    },
+                )
+                return {
+                    "status": "error",
+                    "reason": "margin_insufficient",
+                    "message": f"余额不足，重试{retry_idx}轮终止: {ex_err}",
+                    "retry_idx": retry_idx,
+                    "exchange_error": ex_err,
+                    "sizing": sizing_meta,
+                }
+
+            # 等待 IP 冷却后轮询持仓确认
             pos = None
             for poll_delay in (0.5, 1.0, 2.0, 3.0):
                 time.sleep(poll_delay)
@@ -2564,12 +2780,16 @@ class PositionSupervisor(
                     pass
 
             if pos and float(pos.get("positionAmt", 0)) != 0:
+                self._entry_fills_sent = False
                 real_qty = abs(float(pos["positionAmt"]))
                 entry_price = float(pos["entryPrice"])
                 self.current_side = action
                 self.trade_opened_at = time.time()
                 self.base_qty = real_qty
-                self.initial_qty = real_qty
+                if hasattr(self, "_set_open_qty_baseline"):
+                    self._set_open_qty_baseline(real_qty, reason="tv_open_retry")
+                else:
+                    self.initial_qty = real_qty
                 self.consumed_tp_levels = []
                 self._tp_fill_dingtalk_levels = set()
                 self._stop_qty_resized_levels = set()
@@ -2608,11 +2828,8 @@ class PositionSupervisor(
                 self._protect_and_monitor(real_qty, entry_price)
                 protect = getattr(self, "_last_protect_result", None) or {}
                 if protect.get("aborted"):
-                    self._log(
-                        "ERROR",
-                        "重试开仓后硬止损失败已撤仓·跳过OPEN钉钉",
-                        protect,
-                    )
+                    self._log("ERROR", "重试开仓后硬止损失败已撤仓·跳过OPEN钉钉", protect)
+                    self._entry_fills_sent = False
                     return {
                         "status": "error",
                         "reason": "hard_sl_fail_abort",

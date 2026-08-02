@@ -984,6 +984,8 @@ class AdverseRadarMixin:
         self.radar_latched = False
         self.radar_activated = False
         self.radar_step_count = 0
+        # Bug #MarginInsufficient20260802: 平仓确认后清除 fill-sent 标志
+        self._entry_fills_sent = False
 
     def _latch_radar(self) -> None:
         """Once radar arms, never revert to hard-only defense until flat."""
