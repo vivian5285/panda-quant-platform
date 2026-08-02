@@ -6369,7 +6369,8 @@ class PositionSupervisor(
                 led.snap.side = str(self.current_side or "").upper()
                 led.snap.entry_price = float(self.watched_entry or 0)
                 led.advance(TradePhase.ORDERS_PLACED, reason="startup_recover", force=True)
-                CommunicationsOfficer.mark_reported(self)
+                led.advance(TradePhase.REPORTED, reason="startup_recover_reported", force=True)
+                CommunicationsOfficer.flush_held(self)
             except Exception as e:
                 logger.warning("[User %s] startup ledger advance: %s", self.user_id, e)
             self._save_state()

@@ -5246,19 +5246,10 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         f"止盈 {matched}/{expected} 档 | "
                         f"{self._format_audit_summary(audit)}{startup_note}{skip_note}{tv_note}{reconcile_txt}"
                     )
-                    self._dt.report_recover_takeover(
-                        self.current_side, real_amt, verified['entry_price'],
-                        self.tv_tps, self.regime, radar_active, self.current_sl,
-                        verify_note=verify_note,
-                        tp_matched=matched,
-                        tp_expected=expected,
-                        tp_audit=audit,
-                        last_tv_signal=self.last_tv_signal,
-                        radar_sl_ok=sl_ok,
-                    )
-                    # Advance ledger pipeline BEFORE _alert() so check_phase_stall() sees
-                    # REPORTED (not ENTRY_CONFIRMED) and does not fire PIPELINE_STALL.
-                    # Also save state now so initial_qty/tv_tps are persisted for restart.
+                    # Advance ledger pipeline BEFORE _dt.report_recover_takeover() so the alert
+                    # it sends does not re-trigger check_phase_stall() creating a fresh ledger.
+                    # REPORTED has no stall threshold so it will never fire PIPELINE_STALL.
+                    # Also save state now so initial_qty + tv_tps are persisted for restart.
                     try:
                         from app.core.pipeline_officers import (
                             ExecutionOfficer,
@@ -5272,9 +5263,22 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                         led.snap.side = str(self.current_side or "").upper()
                         led.snap.entry_price = float(verified.get('entry_price') or 0)
                         led.advance(TradePhase.ORDERS_PLACED, reason="startup_recover", force=True)
-                        CommunicationsOfficer.mark_reported(self)
+                        led.advance(TradePhase.REPORTED, reason="startup_recover_reported", force=True)
+                        CommunicationsOfficer.flush_held(self)
                     except Exception as e:
                         logger.warning("[User %s] startup ledger advance: %s", self.user_id, e)
+                    if hasattr(self, "_save_state"):
+                        self._save_state()
+                    self._dt.report_recover_takeover(
+                        self.current_side, real_amt, verified['entry_price'],
+                        self.tv_tps, self.regime, radar_active, self.current_sl,
+                        verify_note=verify_note,
+                        tp_matched=matched,
+                        tp_expected=expected,
+                        tp_audit=audit,
+                        last_tv_signal=self.last_tv_signal,
+                        radar_sl_ok=sl_ok,
+                    )
                     if qty_change:
                         old_q, new_q, action_msg = qty_change
                         self._dt.report_manual_position_change(
