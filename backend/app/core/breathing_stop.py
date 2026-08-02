@@ -28,6 +28,7 @@ from app.core.breathing_profile import (
     COLD_START_RATIO,
 )
 from app.core.symbol_registry import symbol_meta
+from app.core.symbol_precision import round_price
 
 # Module-level defaults = ETH (back-compat for imports/tests)
 INITIAL_SL_ATR = ETH_PROFILE.initial_sl_atr
@@ -38,6 +39,9 @@ DEFAULT_BREATHING_COEF = cold_start_multiplier(ETH_PROFILE)
 STOP_ORDER_BUFFER_USDT = ETH_PROFILE.stop_order_buffer
 
 HARD_STOP_MIN_TICKS = 5
+
+# Early breakeven trigger: 50% of TP1 distance from entry (Spec §6.0)
+BREAKEVEN_TRIGGER_ATR = 0.5
 
 TEMP_TV_STOP_BUFFER = 1.15  # whitepaper v3 fixed breathing pad (not tiered)
 # Deprecated — retained for compat imports only
@@ -800,3 +804,86 @@ def format_breathing_legend(symbol: str | None = None) -> str:
         f" · 追踪{mid.trail_coef_min}~{mid.trail_coef_max}×ATR"
         f" · 重入仅强趋势·最多1次/{mid.reentry_bars}根K"
     )
+
+
+def compute_radar_stagnant_tighten_stop(
+    entry: float,
+    side: str,
+    tv_stop_loss: float,
+    *,
+    tv_entry: float | None = None,
+    initial_atr: float = 0.0,
+) -> float:
+    """Stagnant radar tighten: move to TV raw stop distance (no 1.15 buffer).
+
+    Spec v3: one-shot safety net when radar arm hasn't triggered after chart window.
+    Uses TV raw distance (|entry - tv_stop_loss|), NOT the buffered hard-stop distance.
+    """
+    e = float(entry or 0)
+    sl = float(tv_stop_loss or 0)
+    tve = float(tv_entry or 0) or e
+    if e <= 0 or sl <= 0:
+        return 0.0
+    side_u = str(side or "").upper()
+    raw_dist = abs(tve - sl)
+    if raw_dist <= 0:
+        return 0.0
+    if side_u == "LONG":
+        return round_price(e - raw_dist, entry)
+    if side_u == "SHORT":
+        return round_price(e + raw_dist, entry)
+    return 0.0
+
+
+def radar_arm_reached(
+    curr_px: float,
+    entry: float,
+    tp1: float,
+    side: str | None,
+    progress: float = 0.85,
+) -> bool:
+    """Legacy path-based arm check (DEPRECATED — kept for stagnant-tighten gate only).
+
+    Spec v3 live path uses trend_tier_params.radar_armed_by_absolute_price instead.
+    This function is only called from _maybe_stagnant_radar_tighten as a safety-net
+    gate before the one-shot tighten; it intentionally uses the OLD 0.85 path formula.
+    """
+    from app.core.symbol_registry import symbol_meta
+
+    entry = float(entry or 0)
+    tp1 = float(tp1 or 0)
+    curr_px = float(curr_px or 0)
+    p = max(0.0, min(1.0, float(progress if progress is not None else 0.85)))
+    if entry <= 0 or tp1 <= 0 or curr_px <= 0:
+        return False
+    if side not in ("LONG", "SHORT"):
+        return False
+    span = abs(tp1 - entry)
+    if span <= 0:
+        return False
+    if side == "LONG":
+        return curr_px + 1e-12 >= entry + p * span
+    else:  # SHORT
+        return curr_px - 1e-12 <= entry - p * span
+
+
+def resolve_adx(_dummy: Any = None) -> float:
+    """DEPRECATED: ADX resolved externally; this stub prevents import errors."""
+    return 0.0
+
+
+def init_breathing_state(
+    entry: float = 0.0, side: str = "LONG", *, atr: float = 0.0
+) -> dict[str, Any]:
+    """DEPRECATED: state initialized by AdverseRadarMixin._init_adverse_radar_fields."""
+    entry = float(entry or 0)
+    side = str(side or "LONG").upper()
+    atr = float(atr or 0)
+    return {
+        "initial_atr": atr,
+        "initial_stop": compute_initial_stop(entry, side, atr) if entry > 0 and atr > 0 else 0.0,
+        "current_sl": compute_initial_stop(entry, side, atr) if entry > 0 and atr > 0 else 0.0,
+        "breakeven_phase": False,
+        "breathing_coefficient": cold_start_multiplier(profile_for_symbol(None)),
+        "remaining_qty_pct": 1.0,
+    }

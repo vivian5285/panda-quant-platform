@@ -54,7 +54,7 @@ def test_xau_radar_waits_then_activates():
         step_trigger_atr=0.40, early_breakeven_atr=0.0, step_advance_atr=0.30,
         breath_tp1_tp2_atr=1.0,
     )
-    assert meta["event"] == "waiting_arm"
+    assert meta["event"] == "waiting_radar_arm"
     assert abs(stop - initial_stop) < 1e-9
     stop, high, phase, meta = calculate_stop_long(
         arm_px, entry, atr, initial_stop, initial_stop, entry, False, coef,

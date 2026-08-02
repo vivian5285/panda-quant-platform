@@ -298,8 +298,8 @@ class AdverseRadarMixin:
             self.adverse_consumed_tiers = []
         if not hasattr(self, "_adverse_last_repair_ts"):
             self._adverse_last_repair_ts = 0.0
-        if not hasattr(self, "adverse_arm_dingtalk_sent"):
-            self.adverse_arm_dingtalk_sent = False
+        if not hasattr(self, "adverse_arm_tg_sent"):
+            self.adverse_arm_tg_sent = False  # TG only (dingtalk purged)
         if not hasattr(self, "_pending_adverse_algo_ids"):
             self._pending_adverse_algo_ids = []
         if not hasattr(self, "radar_latched"):
@@ -318,8 +318,8 @@ class AdverseRadarMixin:
             # Checklist §四/§十一: TP1/TP2/SL tracked by order id (persisted)
             # keys: "1" | "2" | "sl" → exchange orderId/algoId
             self._defense_order_ids = {}
-        if not hasattr(self, "_radar_arm_dingtalk_sent"):
-            self._radar_arm_dingtalk_sent = False
+        if not hasattr(self, "_radar_arm_tg_sent"):
+            self._radar_arm_tg_sent = False  # TG only (dingtalk purged)
         if not hasattr(self, "trading_paused"):
             self.trading_paused = False
         if not hasattr(self, "trading_pause_reason"):
@@ -381,6 +381,22 @@ class AdverseRadarMixin:
             self._stop_qty_last_resized_to = 0.0
         if not hasattr(self, "_stop_qty_resized_levels"):
             self._stop_qty_resized_levels = set()
+        if not hasattr(self, "tp3_limit_active"):
+            self.tp3_limit_active = False  # Spec §7: TP3 never hung as limit
+        if not hasattr(self, "adverse_arm_tg_sent"):
+            self.adverse_arm_tg_sent = False  # TG only (dingtalk purged)
+        if not hasattr(self, "_radar_arm_tg_sent"):
+            self._radar_arm_tg_sent = False  # TG only (dingtalk purged)
+
+    def _mutex_cancel_tp3_on_radar_exit(
+        self, *, close_source: str = "RADAR_STOP", fill_px: float = 0.0
+    ) -> dict[str, Any]:
+        """LEGACY_PURGED: TP3 never hung as limit (Spec §7). Stub for compat."""
+        return {
+            "cancelled": 0,
+            "race": False,
+            "reason": "tp3_never_hung_as_limit",
+        }
 
     def _adverse_rest_silent(self) -> bool:
         """True while IP/REST cool-down forbids place/cancel/position REST."""
@@ -881,7 +897,7 @@ class AdverseRadarMixin:
         self.adverse_sl_prices = []
         self.adverse_consumed_tiers = []
         self._adverse_last_repair_ts = 0.0
-        self.adverse_arm_dingtalk_sent = False
+        self.adverse_arm_tg_sent = False
         self._pending_adverse_algo_ids = []
         self.radar_latched = False
         self.radar_activated = False
@@ -889,7 +905,7 @@ class AdverseRadarMixin:
         self._atr_refreshed_at = 0.0
         self._tp_placed_at = {}
         self._defense_order_ids = {}
-        self._radar_arm_dingtalk_sent = False
+        self._radar_arm_tg_sent = False
         self._radar_path_ok_streak = 0
         self._last_radar_arm_meta = {}
         self.breakeven_phase = False
@@ -961,8 +977,8 @@ class AdverseRadarMixin:
         self._tv_hard_sl_price = 0.0
         self._frozen_hard_stop_px = 0.0
         self.consumed_tp_levels = []
-        if hasattr(self, "_tp_fill_dingtalk_levels"):
-            self._tp_fill_dingtalk_levels = set()
+        if hasattr(self, "_tp_fill_tg_levels"):
+            self._tp_fill_tg_levels = set()
         self.current_trade_id = None
         self.trade_opened_at = None
         self.radar_latched = False
@@ -2806,12 +2822,8 @@ class AdverseRadarMixin:
         tps = list(getattr(self, "tv_tps", None) or [])
         tp1_px = float(tps[0] or 0) if tps else 0.0
         already_armed = bool(getattr(self, "radar_activated", False)) or radar_arm_reached(
-            side, entry, px, atr, symbol=sym,
-            arm_tp1_pct=arm_pct,
-            tp1_dist=tp1_d if tp1_d > 0 else None,
-            tv_entry=tv_e,
-            tp1=tp1_px if tp1_px > 0 else None,
-            adx=adx_live,
+            px, entry, tp1_px, side,
+            progress=float(arm_pct) if arm_pct else 0.85,
         )
         if already_armed:
             self._stagnant_tighten_done = True
@@ -3305,7 +3317,7 @@ class AdverseRadarMixin:
         # Layer-1 ADX arm activate alert (ratio 70–90%)
         if (
             (event == "radar_activate" or meta.get("just_activated"))
-            and not bool(getattr(self, "_radar_arm_dingtalk_sent", False))
+            and not bool(getattr(self, "_radar_arm_tg_sent", False))
         ):
             attempt = int(getattr(self, "reentry_attempt", 0) or 0)
             arm_kind = "reentry" if attempt >= 1 else "first"
@@ -3342,7 +3354,7 @@ class AdverseRadarMixin:
                 self._log("RADAR_ACTIVATE", f"{title} @{sl_px:.2f}", detail_arm)
             if hasattr(self, "_alert"):
                 self._alert("info", "RADAR_ACTIVATE", title, msg, detail_arm)
-            self._radar_arm_dingtalk_sent = True
+            self._radar_arm_tg_sent = True
             self._last_radar_arm_meta = detail_arm
 
         alert_map = {
@@ -4542,7 +4554,7 @@ class AdverseRadarMixin:
         audit["startup_purged"] = purged
         audit["adverse_pct"] = round(self._adverse_move_pct(curr_px) * 100, 2)
         if audit.get("aligned"):
-            self.adverse_arm_dingtalk_sent = True
+            self.adverse_arm_tg_sent = True
             logger.info(
                 "[User %s] adverse shield startup: live book aligned (%s/%s tiers), skip re-arm",
                 self.user_id, audit.get("price_present"), audit.get("expected"),
@@ -4598,7 +4610,7 @@ class AdverseRadarMixin:
         self.adverse_consumed_tiers = []
         self._pending_adverse_algo_ids = []
         self._adverse_last_repair_ts = time.time()
-        self.adverse_arm_dingtalk_sent = False
+        self.adverse_arm_tg_sent = False
 
         result = {"cancelled": n, "reason": reason, "had_open": len(open_before)}
         if n > 0:
@@ -4661,7 +4673,7 @@ class AdverseRadarMixin:
             return {"armed": False, "reason": "all_tiers_consumed", "consumed": list(self.adverse_consumed_tiers)}
 
         if audit["aligned"]:
-            self.adverse_arm_dingtalk_sent = True
+            self.adverse_arm_tg_sent = True
             if hasattr(self, "_save_state"):
                 self._save_state()
             return {
@@ -4763,7 +4775,7 @@ class AdverseRadarMixin:
                 "skipped": "no_placement_needed",
                 **detail,
             }
-        if not repair and placed > 0 and aligned and not self.adverse_arm_dingtalk_sent:
+        if not repair and placed > 0 and aligned and not self.adverse_arm_tg_sent:
             stop_px = detail["stop_price"]
             label = self._hard_stop_label()
             msg = (
@@ -4772,7 +4784,7 @@ class AdverseRadarMixin:
             )
             self._log("ADVERSE_SL", msg, detail)
             self._alert("warning", "ADVERSE_SL", label, msg, detail)
-            self.adverse_arm_dingtalk_sent = True
+            self.adverse_arm_tg_sent = True
         elif repair and placed > 0:
             label = self._hard_stop_label()
             msg = f"{label} 补挂 | @{detail['stop_price']:.2f} qty={detail['live_qty']}"
@@ -5036,7 +5048,7 @@ class AdverseRadarMixin:
             if level:
                 done.add(int(level))
             logger.info(
-                "[User %s] TP3限价成交·互斥撤雷达 | remaining=%.2f ownership=%s",
+                "[User %s] TP3雷达成交·互斥撤雷达 | remaining=%.2f ownership=%s",
                 getattr(self, "user_id", "?"),
                 float(self.remaining_qty_pct),
                 getattr(self, "exit_ownership", EXIT_OWNERSHIP_NONE),

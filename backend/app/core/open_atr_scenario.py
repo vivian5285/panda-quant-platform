@@ -37,6 +37,7 @@ def resolve_open_atr(
         "atr_1h": 0.0,
         "tv_atr": tv,
         "atr_source": "tv_webhook",
+        "tp3_limit_active": False,  # Spec §7: TP3 never hung as limit
     }
 
 

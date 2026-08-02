@@ -6,7 +6,7 @@
 
 多用户 **AI 量化决策引擎 SaaS** 平台。用户侧呈现为 AI 托管叙事；底层为 **TradingView 策略信号 → VPS 网关 → 多交易所 U 本位永续独立执行** 架构。
 
-> **文档同步（2026-08-01 · TV webhook 自检增强 · 内网/外网连通性检查 · 推送到 GitHub 前本地检查）**  
+> **文档同步（2026-08-02 · TP3雷达管理 · DingTalk已清除 · 雷达守卫启动）**  
 > 凡与本文冲突的旧描述（「TP3 挂限价并与雷达互斥」「VPS 独立拉 1h ATR / 场景切换」「雷达扫出=失败离场」「查不到单就盲补」「硬止损=TV原价」「硬=ATR地板+滑点垫」「日亏熔断默认开」「杠杆/仓位永远硬编码不可改」「激活→entry±0.5ATR」「ADX 85/80/70 写反」「ADX 70%~90% 连续插值」）**一律作废**。  
 > 权威：`docs/VPS_SYSTEM_SPEC_GEMINI_MULTIUSER.md`（与桌面《VPS完整系统规格_Gemini多用户版》同步）· `docs/SMART_REENTRY_CLOSED_LOOP.md` · 部署：`docs/VPS_DEPLOY.md`  
 > **事故对照（优先）**：`docs/SYSTEM_ISSUE_FIX_LOG.md` — 现象→根因→修复→复查点；含 **v16.4.2-incident-harden** + **pipeline-ledger-v1**（TradeLedger 状态机 / 岗位交接 / 督察官 / REST 阀门）+ **marathon-radar-fee-be**。
@@ -14,9 +14,9 @@
 ### 当前实盘一句话
 
 **硬止损是底线，雷达是骑士。** TP1/TP2 限价兑现 10%/20%；**TP3（70%）永不挂限价**，全程雷达管理、无价格天花板。ATR **一律用 webhook `atr`（TV）**，VPS 不再独立拉取交易所 ATR。雷达启动=ADX **离散 70%/80%/90%**×(1.35×ATR)（&lt;20→70%早 · 20–30→80% · &gt;30→90%晚；**弱早强晚**）；**激活=手续费保本（fee+tick）**，非 entry±0.5ATR；TP 后只缩止损数量、不改价。重入最多一次。本地挂单标签 + 挂单硬帽≤5 + ETH/XAU 隔离。  
-开仓链路按 **流水线岗位** 交接：信号官 → 准入官 → 仓位稽查 → 执行官（TP 自检≈30%）→ 督察官（VERIFIED）→ 通讯官（钉钉）；账本 `data/supervisor/ledgers/`。暂停/冷却时哨兵**禁止 REST**，优先读账本/缓存。  
+开仓链路按 **流水线岗位** 交接：信号官 → 准入官 → 仓位稽查 → 执行官（TP 自检≈30%）→ 督察官（VERIFIED）→ 通讯官（**TG**）；账本 `data/supervisor/ledgers/`。暂停/冷却时哨兵**禁止 REST**，优先读账本/缓存。  
 **两次 TV 只有三条路**：①TP1/TP2 止盈（+雷达兑现剩余）②雷达 BE/微赚扫出→更优价再入（≤1 次）③硬止损认输不重入。  
-验收必须以：交易所空仓零挂单 + 本地/GitHub/VPS **三方 commit 同数字** + 日志/订单 JSON / 钉钉为准。
+验收必须以：交易所空仓零挂单 + 本地/GitHub/VPS **三方 commit 同数字** + 日志/订单 JSON / **TG** 为准。
 
 ### 开发推送与 VPS 部署工作流
 
@@ -82,7 +82,7 @@ bash deploy.sh                 ← 拉取 + 构建 + 启动 + 全域自检
 | 限流后仍 REST | `sentinel_may_rest` + `acquire_rest_permit` + cool **180s** `_GLOBAL` | `rest_throttle_valve` / `ip_rest_cooldown` / book cache |
 | 空仓后仍暂停 | FLAT 自动清：`chief_auditor_fail` / `open_orders_gt_5` / `open_book_dirty` / ATR应急 / 方向 / 先平后开失败 | `should_auto_unpause_on_flat` |
 | 雷达余仓量不对 | 缩量优先 `watched_qty`/实盘，公式影子最后手段 | `_boost_radar_after_tp_fill` |
-| OPEN 抢跑钉钉 | 通讯官门禁；DeepCoin **先督察再 OPEN**；held 可 flush | `CommunicationsOfficer` |
+| OPEN 抢跑 TG | 通讯官门禁；DeepCoin **先督察再 OPEN**；held 可 flush | `CommunicationsOfficer` |
 
 #### B. 岗位交接（状态机）
 
@@ -107,7 +107,7 @@ SIGNAL_RECEIVED → PENDING_CLEAR → CLEARED → ENTRY_SUBMITTED
 1. `git rev-parse --short HEAD` 本地 = GitHub `main` = VPS **同数字**  
 2. `pytest backend/tests/test_pipeline_workflow.py` 全绿  
 3. 币安/OKX/Gate/DeepCoin：空仓 + 挂单 0；无 `trading_paused` 残留  
-4. 当面最小资金 LONG：硬1 + 雷达1 + TP 仅 1/2；账本相位到 `REPORTED`；钉钉 OPEN 在督察后  
+4. 当面最小资金 LONG：硬1 + 雷达1 + TP 仅 1/2；账本相位到 `REPORTED`；TG OPEN 在督察后  
 5. 人为 cool / pause：哨兵与空闲巡检 **无新 REST**  
 6. TP 自检故意算错：拒挂 + `CHIEF_AUDITOR_FAIL` 暂停  
 
@@ -138,11 +138,11 @@ SIGNAL_RECEIVED → PENDING_CLEAR → CLEARED → ENTRY_SUBMITTED
 
 | 步骤 | 规则 |
 |------|------|
-| ① 归零清场 | 仓位=0 后：撤销全部限价/条件单，确认盘口空、持仓零（最多 3 轮）。失败 → 钉钉 critical，**拒挂再入限价** |
+| ① 归零清场 | 仓位=0 后：撤销全部限价/条件单，确认盘口空、持仓零（最多 3 轮）。失败 → TG critical，**拒挂再入限价** |
 | ② 重入判断 | 仅雷达轨 + 平仓价在保本~微赚区（ETH 0.5×ATR / XAU 0.3×ATR）+ **窗口内**（ETH 2×90m / XAU 3×45m）+ 累计重入=0。硬止损/亏损 → 永不重入 |
 | ③ 双保险价 | 多 `min(5m低+tick, TV×0.997)`；空 `max(5m高−tick, TV×1.003)`；须优于 TV **且** 优于上次开仓价 → 否则终止 |
 | ④ 挂限价 | **先查本地标签**；标签占用 → 绝对拒挂。`newClientOrderId` 幂等。TTL 5min |
-| ⑤ 成交保护 | fill 为原点：硬止损=`fill±(|TV.e−TV.SL|×**1.15**)` + **仅 TP1/TP2** 限价(10/20) + 雷达（ATR=`TV.atr`；arm=ADX 70/80/90%×1.35ATR）。钉钉 `SMART_REENTRY_PROTECTED` |
+| ⑤ 成交保护 | fill 为原点：硬止损=`fill±(|TV.e−TV.SL|×**1.15**)` + **仅 TP1/TP2** 限价(10/20) + 雷达（ATR=`TV.atr`；arm=ADX 70/80/90%×1.35ATR）。TG `SMART_REENTRY_PROTECTED` |
 | ⑥ 档位 | ADX 弱/中/强（0/1/2，可选 webhook `tier`）；重入成功雷达 trail +1 档（封顶 2）、arm 改为 1.00；**最多重入 1 次** |
 | ⑦ 新 TV | 先清场归零，重置档位/标签/计数器，再开新方向 |
 
@@ -194,7 +194,7 @@ SIGNAL_RECEIVED → PENDING_CLEAR → CLEARED → ENTRY_SUBMITTED
 | 硬止损确认 | 挂单不可读且无盘口实证 → **不得谎称已有**（本地 oid 不算证明）；开仓链路 fail-closed 撤仓 |
 | 撤 TP | 查单失败 → **禁止 cancel_all**（防误撤 STOP、加剧 -1003）；只按可读清单逐笔撤 |
 | 核武/重建 | 盘口不可读 → **中止撤挂与盲补**；可读时先 **轻量同价去重** 再核武 |
-| 平仓净场 | mop≥5 轮 + 额外 cancel_all；leftover≠0 → 钉钉 critical + dirty 标记，开仓门禁拒绝脏盘 |
+| 平仓净场 | mop≥5 轮 + 额外 cancel_all；leftover≠0 → TG critical + dirty 标记，开仓门禁拒绝脏盘 |
 
 #### 开仓链路（ETH / XAU 同一套）
 
@@ -210,7 +210,7 @@ TV 入队 → 解析 → ATR=webhook.atr → RISK20×5 算仓 → 市价开
 1. GitHub / 本地 / VPS `git rev-parse --short HEAD` 三数字一致。  
 2. 币安：仓位(0) + 当前委托(0) + 条件委托(0)。  
 3. 代码原样：`PLACEABLE_TP_LEVELS={1,2}`；`resolve_open_atr` 恒用 TV atr；`MAX_REENTRY=1`；`HARD_STOP_BUFFER_FIXED=1.15`。  
-4. 当面最小资金 LONG：Stage0 应见 **硬止损1 + TP限价仅 TP1+TP2（无 TP3 限价、无休眠雷达）**；ADX arm 后才出现雷达 STOP；钉钉杠杆为该用户配置值（默认 **5×**）。
+4. 当面最小资金 LONG：Stage0 应见 **硬止损1 + TP限价仅 TP1+TP2（无 TP3 限价、无休眠雷达）**；ADX arm 后才出现雷达 STOP；TG杠杆为该用户配置值（默认 **5×**）。
 
 ### 三层防线永久共存（核心，不得误解）
 
@@ -329,7 +329,7 @@ modules:
 | 缓存 TTL | 持仓 **15s** / 挂单·algo **25s**；拒绝刷新时优先 stale |
 | 触发 | REST 返回 `-1003` / 限流文案 → `note_rate_limit`；哨兵/补挂读 `remaining_sec` 跳过，禁止硬撞 |
 | 盘口不可读 | **禁止** `cancel_all`、禁止盲补 TP/Stop（防误撤 STOP + 加剧限流） |
-| 钉钉 | 限流抖动去重，避免刷屏 |
+| TG | 限流抖动去重，避免刷屏 |
 | 烟雾注意 | 双品种连续开平会逼近权重；脚本内已插 sleep；限流中途失败 → 等冷却再净场，勿循环重试 |
 
 ### 日亏损熔断（生产关闭）
@@ -354,7 +354,7 @@ modules:
 7. [TradingView Webhook 对接手册](#tradingview-webhook-对接手册)
 8. [呼吸止损引擎详解](#呼吸止损引擎详解)
 9. [VPS 行情引擎](#vps-行情引擎)
-10. [钉钉 / Telegram 通知策略](#钉钉--telegram-通知策略)
+10. [TG 通知策略](#tg-通知策略)
 11. [未登记 / 外部仓位接管](#未登记--外部仓位接管)
 12. [重启恢复与兜底机制](#重启恢复与兜底机制)
 13. [实盘核实交易日志](#实盘核实交易日志)
@@ -426,7 +426,7 @@ SignalDispatcher → 每用户×每 symbol PositionSupervisor
         └─ 未登记实盘仓 → 市价 ATR 接管（不编造 TV 历史）
         │
         ▼
-trade_logs + 钉钉关键摘要（执行快照杠杆 5× · 按交易所主题）
+trade_logs + TG关键摘要（执行快照杠杆 5× · 按交易所主题）
 ```
 
 ### Docker 拓扑
@@ -598,7 +598,7 @@ initialStop = 开仓价 ± 1.5 × VPS_ATR         # 仅挂止损，不算仓
 1. 确认成交，更新 `remainingQtyPct`（TP1→**90%**，TP2→**70%**）  
 2. **通知**呼吸引擎：按剩余数量 + 当前 `currentStop` 重挂硬/雷达数量（价格不变）  
 3. **不**因 5 分钟超时误撤「现价未到」的健康 TP；rebuild 前检查盘口是否已有匹配单  
-4. 钉钉：成交价、剩余比例、当前止损  
+4. TG：成交价、剩余比例、当前止损  
 
 ### 六、已删除 / 禁止的行为
 
@@ -614,7 +614,7 @@ initialStop = 开仓价 ± 1.5 × VPS_ATR         # 仅挂止损，不算仓
 | 自主平仓 | `CAP_ALIGN` 市价减仓（detect-only） |
 | Webhook | `CLOSE_TP` / `CLOSE_TRAIL` / `CLOSE_SL_*` / `CLOSE_PROTECT` / `leg` |
 | 日亏熔断 | 生产默认开启（现强制关闭至记账审计完成） |
-| 钉钉杠杆 | 独立于执行层的第二配置源（曾显示 25×） |
+| TG杠杆 | 独立于执行层的第二配置源（曾显示 25×） |
 
 ---
 
@@ -762,7 +762,7 @@ currentStop = max/min(currentStop, extreme ∓ trail_dist)
 
 ### 触发与失败兜底
 
-- 价格触及 `currentStop` → 市价全平 → 统一状态清零 → 钉钉（标明阶段一/二 + `[ETH]`/`[XAU]`）  
+- 价格触及 `currentStop` → 市价全平 → 统一状态清零 → TG（标明阶段一/二 + `[ETH]`/`[XAU]`）  
 - TP1/TP2 成交 → 通知引擎按 90%/70% **重挂数量**（价格仍用当前 `currentStop`）  
 - 改单/下单失败 → **`HARD_SL_FAIL_ABORT`**
 - 平仓后：bulk cancel + leftover 逐笔清扫；残留则 `FLAT_ORDERS_LEFT` / 开仓门禁 `OPEN_BOOK_DIRTY`
@@ -783,15 +783,13 @@ currentStop = max/min(currentStop, extreme ∓ trail_dist)
 
 ---
 
-## 钉钉 / Telegram 通知策略
+## TG 通知策略（仅 Telegram · DingTalk 已清除）
 
-配置：管理后台钉钉 或 `.env` `DINGTALK_*`；TG 用 `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`。动作级去重 + 钉钉攒批，避免刷屏。
-
-**路由**：TG = 全部业务事件（排除过噪内部类型）；钉钉 = 重要/critical 白名单（缺保护、对账异常、启动恢复、ATR 拒开等）。开仓 / 雷达激活 / 止损移动 / TP 成交等日常进度默认走 **TG**，异常走 **钉钉+TG**。
+配置：`.env` `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`。动作级去重，避免刷屏。TG = 全部业务事件（排除过噪内部类型）；critical/异常走 TG 告警级别。
 
 ### ADX 趋势档位（TV 新增 · 文案必带）
 
-TV 入场时按 ADX 分三档（可选 webhook `tier`=0/1/2；缺省 VPS 用 ADX / 止损距反推），**钉钉与 TG 关键告警须带品种标签 + 当前档位**：
+TV 入场时按 ADX 分三档（可选 webhook `tier`=0/1/2；缺省 VPS 用 ADX / 止损距反推），**TG 关键告警须带品种标签 + 当前档位**：
 
 | 档位 | ADX | 含义 | 通知影响 |
 |------|-----|------|----------|
@@ -855,7 +853,7 @@ TV 入场时按 ADX 分三档（可选 webhook `tier`=0/1/2；缺省 VPS 用 ADX
 ## 重启恢复与兜底机制
 
 1. 查交易所持仓与挂单（**查询失败 ≠ 空仓**：抛 `ExchangeTransientError`，保留账本 + `EXCHANGE_QUERY_FAIL`）  
-2. 读持久化呼吸状态；**旧 schema**（`activated`/`stepCount` 且无 `initialAtr`）→ 钉钉告警 + **暂停**该 symbol  
+2. 读持久化呼吸状态；**旧 schema**（`activated`/`stepCount` 且无 `initialAtr`）→ TG告警 + **暂停**该 symbol  
 3. 无 `trade_id` → [未登记接管](#未登记--外部仓位接管)  
 4. **FORCE_ALIGN**：持仓方向与记录不一致 → 市价全平 + 撤单 + 重置 + 告警  
 5. 按 `currentStop` 重挂止损；恢复未成交且仍有利的 TP1/TP2  
@@ -1034,7 +1032,7 @@ docker compose logs -f backend | grep -E \
 
 - [x] Webhook Secret 与 TV JSON 一致；四 action 行为正确  
 - [x] 开仓 → TP1/TP2 → 呼吸跟踪 → 反转/止损平仓路径（E2E webhook 实锤）  
-- [x] 钉钉杠杆恒为 **5×**；未登记仓位文案诚实  
+- [x] TG杠杆恒为 **5×**；未登记仓位文案诚实  
 - [x] `docs/VPS_LIVE_CHECKLIST.md` / `LEGACY_PURGE_LIST` / 最终状态清单一致  
 - [x] B1 观察无 TP 重复抖动；B3 全平清零；B2 qty 收缩代码模拟  
 - [x] 连续插值 Test1~4：双币持仓观察 ≥5 采样、回测对比、双币/多用户隔离  

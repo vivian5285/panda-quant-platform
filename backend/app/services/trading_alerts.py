@@ -577,7 +577,7 @@ def format_tp_fill_detail_cn(detail: dict, alert_type: str = "") -> str:
         return _with_tier(f"TP2 止盈成交，剩余仓位 70%，当前止损 {stop:.2f}", detail)
     if lvl == 3:
         pnl_txt = f"{float(pnl):+.2f}" if pnl is not None else "—"
-        return _with_tier(f"TP3限价止盈成交，全部平仓，盈亏 {pnl_txt}%", detail)
+        return _with_tier(f"TP3雷达止盈成交，全部平仓，盈亏 {pnl_txt}%", detail)
     rem = detail.get("remaining_qty_pct")
     if rem is not None:
         return _with_tier(

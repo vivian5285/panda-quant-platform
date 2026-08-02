@@ -14,6 +14,8 @@ from app.core.radar_trail import merge_regime_radar
 FIXED_TP_QTY_PERCENT: tuple[int, int, int] = (10, 20, 70)
 # Spec §7: TP3 never placed as limit
 PLACEABLE_TP_LEVELS: frozenset[int] = frozenset({1, 2})
+# Spec §7: TP3 never hung — same as PLACEABLE_TP_LEVELS (kept for compat imports)
+PLACEABLE_TP_LEVELS_WITH_TP3: frozenset[int] = PLACEABLE_TP_LEVELS
 
 PINE_TP_QTY_PERCENT: dict[int, tuple[int, int, int]] = {
     1: FIXED_TP_QTY_PERCENT,
@@ -40,7 +42,7 @@ def _ratios_from_settings() -> tuple[int, int, int]:
         return FIXED_TP_QTY_PERCENT
 
 
-def placeable_tp_levels() -> frozenset[int]:
+def placeable_tp_levels(tp3_limit_active: bool | None = None) -> frozenset[int]:
     """TP1+TP2 only. TP3 never hung as limit (Spec §7)."""
     return PLACEABLE_TP_LEVELS
 
@@ -83,6 +85,7 @@ def enrich_tp_alert_detail(
     detail: dict | None,
     *,
     regime: int = 3,
+    tp3_limit_placed: bool | None = None,
 ) -> dict:
     out = dict(detail or {})
     out["regime"] = clamp_regime(regime)

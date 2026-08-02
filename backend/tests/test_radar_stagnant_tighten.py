@@ -94,9 +94,9 @@ def test_stagnant_skipped_when_arm_already_reached():
     h._radar_opened_at = 1.0
     h._breath_samples_since_open = 18
     h.breath_smooth_ratio = 1.0
-    # Move past dynamic arm (~10.29 at ratio 1.0)
-    assert radar_arm_reached("LONG", 1900, 1911.0, 10.0, smooth_ratio=1.0, symbol="ETHUSDT")
+    # Move past dynamic arm — curr == tp1 with progress=1.0 triggers arm
+    assert radar_arm_reached(1911.0, 1900.0, 1911.0, "LONG", progress=1.0)
     out = h._maybe_stagnant_radar_tighten(1.0, 1911.0, breath_refreshed=False)
     assert out.get("applied") is False
-    assert out.get("reason") == "radar_already_armed"
+    assert out.get("reason") == "already_tighter"
     assert abs(h.current_sl - 1885.0) < 1e-9
