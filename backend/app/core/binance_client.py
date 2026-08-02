@@ -818,11 +818,21 @@ class BinanceClient:
         self._invalidate_book_cache("cancel_all")
 
         # Verify + individual mop-up (handles partial bulk failure / book lag)
+        # Note: leftover=-1 means IP cool-down / book fetch failed (not truly dirty).
+        # Only alert when actual orders remain (leftover > 0).
         leftover = self._mop_up_leftover_orders(symbol, rounds=3)
-        if leftover != 0:
+        if leftover > 0:
             logger.error(
                 "[User %s] %s still has leftover=%s open orders after cancel_all (errors=%s)",
                 self.user_id, symbol, leftover, errors,
+            )
+        elif leftover < 0:
+            # -1 = IP cool-down or fetch failed. This is expected during high-frequency
+            # trading. Log at info level to avoid alerting on benign限速 protection.
+            logger.info(
+                "[User %s] %s cancel_all mop-up skipped (IP cool-down / fetch failed). "
+                "Will retry on next action.",
+                self.user_id, symbol,
             )
         return {"symbol": symbol, "leftover": leftover, "errors": errors}
 

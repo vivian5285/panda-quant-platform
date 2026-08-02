@@ -1,0 +1,8 @@
+fix(IndentationError): repair broken indent in startup_reconcile.py Step-4 loop
+
+The previous round of fixes accidentally introduced an extra 4-space indent
+on the entire for-loop body in reconcile_tp_patch_missing_levels, causing
+IndentationError at import time and crashing the container restart loop.
+
+Also includes the PIPELINE_STALL + XAU-TP-state fixes from the previous commit
+(prevented by a pre-existing IndentationError in this same file).

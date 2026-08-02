@@ -1,0 +1,8 @@
+fix(pipeline-stall): advance ledger on restart recovery; use per-symbol min_qty for rehang
+
+1. Pipeline: after successful restart takeover (both Binance & DeepCoin supervisors),
+   advance the TradeLedger from ENTRY_CONFIRMED -> ORDERS_PLACED -> REPORTED so that
+   check_phase_stall() no longer falsely fires PIPELINE_STALL warnings for hours.
+
+2. startup_reconcile: replace hardcoded qty floor of 1.0 with per-symbol
+   min_qty_for(symbol) -- critical for BNB/XAU where exchange min is 0.001.

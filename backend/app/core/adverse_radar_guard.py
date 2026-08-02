@@ -1862,8 +1862,8 @@ class AdverseRadarMixin:
         time.sleep(0.3)
         leftover = self._count_live_stop_orders()
         if leftover < 0:
-            logger.error(
-                "[User %s] %s refuse place: stop book fetch failed after cancel",
+            logger.warning(
+                "[User %s] %s refuse place: stop book fetch failed after cancel (IP cool-down?)",
                 getattr(self, "user_id", "?"),
                 getattr(self, "canonical_symbol", getattr(self, "symbol", "?")),
             )
@@ -1881,7 +1881,8 @@ class AdverseRadarMixin:
             cancelled += self._cancel_binance_all_close_stops()
             time.sleep(0.35)
             leftover = self._count_live_stop_orders()
-        if leftover < 0 or leftover > 0:
+        if leftover > 0:
+            # Actual orders remain after retry — this is the real problem requiring human attention.
             logger.error(
                 "[User %s] %s refuse place: %s stop(s) still live after cancel",
                 getattr(self, "user_id", "?"),
@@ -4109,8 +4110,8 @@ class AdverseRadarMixin:
         except Exception:
             live_n = -1
         if live_n < 0:
-            logger.error(
-                "[User %s] %s refuse place stop @%.2f — stop book fetch failed (fail-closed)",
+            logger.warning(
+                "[User %s] %s refuse place stop @%.2f — stop book fetch failed (IP cool-down / fail-closed)",
                 getattr(self, "user_id", "?"),
                 getattr(self, "canonical_symbol", symbol),
                 float(stop_price or 0),

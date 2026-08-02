@@ -1,0 +1,14 @@
+fix(triple-symbol): add BNB-specific trading params across all engine modules
+
+- Add BNB_PROFILE (initial_sl=1.3×ATR, breath 1.6~2.2×) to breathing_profile.py
+  (midway between ETH 2.0~2.5 and XAU 1.5~2.0; tighter initial SL for fast BNB moves)
+- Add _BNB trend tier table to trend_tier_params.py (step/breath/trail midway ETH↔XAU)
+- Wire BNB into params_for_tier() routing (CANONICAL_BNB → _BNB table)
+- Enable SMART_REENTRY_BNB_ENABLED in config.py (same as ETH/XAU)
+- Add BNB-specific config: HARD_STOP_BUFFER_MULT_BNB, MIN_ORDER_QTY_BNB,
+  TP1/TP2_QTY_PCT_BNB
+- Update smart_reentry.py: CANONICAL_BNB in imports, smart_reentry_enabled_for(),
+  REENTRY_ZONE_ATR (0.4× between ETH 0.5 and XAU 0.3)
+- Update docstrings across: adverse_radar_guard, breathing_profile, breathing_stop,
+  combined_notional, ip_rest_cooldown, position_qty_tolerance, rest_book_cache,
+  symbol_precision (all now document ETH+XAU+BNB)

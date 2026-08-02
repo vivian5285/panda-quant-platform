@@ -1,0 +1,14 @@
+fix(pipeline-stall+tp-state): move ledger advance before _alert(); persist state after TP placement
+
+1. PIPELINE_STALL: _alert() internally calls CommunicationsOfficer.check_phase_stall()
+   which creates a fresh ledger in ENTRY_CONFIRMED state. My previous fix placed
+   the ledger advance AFTER _alert(), so the stall check always saw ENTRY_CONFIRMED
+   and fired PIPELINE_STALL even after successful recovery. Fixed: advance ledger
+   AND save state BEFORE _alert() in both Binance and DeepCoin recover paths.
+
+2. XAU TP=0 on restart: The open flow did not persist state between TP placement
+   (_smart_realign_defenses) and the sentinel loop. A VPS restart/interrupt between
+   those two points left the state file with stale/zero initial_qty and tv_tps,
+   causing restart recovery to compute TP qty=0 and place no TP limits.
+   Fixed: add _save_state() immediately after _smart_realign_defenses() in the
+   open flow (both Binance and DeepCoin supervisors).

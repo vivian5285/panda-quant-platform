@@ -1,0 +1,29 @@
+fix(TP+SL recovery): prevent orphan cancel false positives and -4130 duplicate stop errors
+
+Root cause (XAU scenario):
+1. VPS restarted twice (18:00 + 18:17). After restart, `_defense_order_ids`
+   is stale so the system doesn't know the hard STOP was already placed.
+2. System re-tries placing hard STOP → exchange already has one with
+   `closePosition=true` in the same direction → -4130 rejection.
+3. `consumed_tp_levels` is empty after restart. `tv_tps` may be missing too.
+   `_audit_tp_levels` marks TP levels as "missing" when they were actually
+   already consumed. The remaining "orphan" detection sees unmatched orders
+   as orphans and cancels them — destroying valid TP limits.
+
+Fix 1 — binance_smart_defense.py `_ensure_defenses_on_recover`:
+- Added `skip_orphan_cancel` guard: when ALL non-consumed active levels are
+  "missing" AND orphans exist, skip the orphan cancel. This state means
+  consumed_tp_levels is stale (not yet recovered from state/log), not
+  that the remaining orders are orphaned. Applied to both the outer
+  unconditional cancel and the inner retry loop.
+
+Fix 2 — adverse_radar_guard.py `_place_adverse_stop_slice`:
+- Before placing a `closePosition=true` STOP, do a pre-existence check:
+  scan the live book for an existing STOP with `closePosition=true` in
+  the same direction. If found, log, update `_defense_order_ids`, and
+  skip placement (return True). This prevents -4130 even when local state
+  was lost after VPS restart.
+
+Affected files:
+- backend/app/core/binance_smart_defense.py: orphan cancel guard (2 locations)
+- backend/app/core/adverse_radar_guard.py: pre-existence closePosition check

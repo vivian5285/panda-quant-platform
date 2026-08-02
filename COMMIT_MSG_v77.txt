@@ -1,0 +1,12 @@
+fix(pipeline-stall-v2): advance ledger directly to REPORTED phase on startup recovery
+
+Previous fix only advanced to ORDERS_PLACED which still has a 45s stall threshold.
+Since ORDERS_PLACED+45s > 0 (we restarted ~60s ago), check_phase_stall() still fires.
+Fix: advance directly to REPORTED phase (no stall threshold in PHASE_STALL_SEC) so the
+sentinel's check_phase_stall() never fires PIPELINE_STALL for restart-recovered positions.
+
+Also:
+- Moved ledger advance + _save_state() BEFORE _dt.report_recover_takeover() in DeepCoin
+  (report_recover_takeover internally calls _alert which would trigger stale ledger).
+
+- Binance: already correct (_alert is last, advance is before).

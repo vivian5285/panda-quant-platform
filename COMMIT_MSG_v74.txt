@@ -1,0 +1,5 @@
+fix(eth-tp2-qty): remove if<1.0 floor from TP2 after min safeguard is in place
+
+After round→min fix, min(pct_qty, live_qty) already guarantees qty <= position,
+so the old if<1.0→1.0 floor was both unnecessary and wrong for tiny positions.
+TP2 qty=0.0064→round→0.006→min(0.006, 0.032)=0.006 (was going to 1.0 before).
