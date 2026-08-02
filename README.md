@@ -16,7 +16,7 @@
 **硬止损是底线，雷达是骑士。** TP1/TP2 限价兑现 10%/20%；**TP3（70%）永不挂限价**，全程雷达管理、无价格天花板。ATR **一律用 webhook `atr`（TV）**，VPS 不再独立拉取交易所 ATR。雷达启动=ADX **离散 70%/80%/90%**×(1.35×ATR)（&lt;20→70%早 · 20–30→80% · &gt;30→90%晚；**弱早强晚**）；**激活=手续费保本（fee+tick）**，非 entry±0.5ATR；TP 后只缩止损数量、不改价。重入最多一次。本地挂单标签 + 挂单硬帽≤5 + ETH/XAU 隔离。  
 开仓链路按 **流水线岗位** 交接：信号官 → 准入官 → 仓位稽查 → 执行官（TP 自检≈30%）→ 督察官（VERIFIED）→ 通讯官（**TG**）；账本 `data/supervisor/ledgers/`。暂停/冷却时哨兵**禁止 REST**，优先读账本/缓存。  
 **两次 TV 只有三条路**：①TP1/TP2 止盈（+雷达兑现剩余）②雷达 BE/微赚扫出→更优价再入（≤1 次）③硬止损认输不重入。  
-**开仓失败→自动重试**：市价下单未成交/抛异常 → 等 IP 冷却 → TV 指导价挂限价单(GTC) → 轮询成交；若仍未持仓 → 等 IP 冷却 → 再次市价重试（最多 4 轮，间隔 5/10/20/30s）。**确保先平仓后必有持仓**；4 轮均失败 → `OPEN_RETRY_EXHAUSTED` 钉钉 critical，需人工介入。  
+**开仓失败→自动重试**：市价下单后优先从 Binance order response 确认成交（`executedQty`/`status=FILLED`）；未成交或被拒 → 等 IP 冷却 → TV 指导价挂限价单(GTC) → 轮询成交；若仍未持仓 → 等 IP 冷却 → 再次市价重试（最多 4 轮，间隔 5/10/20/30s）；**Margin 不足提前预检，不浪费重试**；**确保先平仓后必有持仓**；4 轮均失败 → `OPEN_RETRY_EXHAUSTED` 钉钉 critical，需人工介入。  
 验收必须以：交易所空仓零挂单 + 本地/GitHub/VPS **三方 commit 同数字** + 日志/订单 JSON / **TG** 为准。
 
 ### 开发推送与 VPS 部署工作流
@@ -167,7 +167,7 @@ SIGNAL_RECEIVED → PENDING_CLEAR → CLEARED → ENTRY_SUBMITTED
 
 | 文档 | 用途 |
 |------|------|
-| **`docs/SYSTEM_ISSUE_FIX_LOG.md`** | **主入口**：2026-07-26 硬帽/`-1003`/TG 风暴、基线压扁、假 TP3、暂停 REST 等；对齐币安单系 **v16.4.2-incident-harden** |
+| **`docs/SYSTEM_ISSUE_FIX_LOG.md`** | **主入口**：2026-07-26 硬帽/`-1003`/TG 风暴、基线压扁、假 TP3、暂停 REST 等；对齐币安单系 **v16.4.2-incident-harden**；**§19 2026-08-02 开仓重试耗尽 / Margin 预检** |
 | `docs/TP_DUPLICATE_INCIDENT_20260722.md` | 重复限价止盈专项 |
 | `docs/KNOWN_ISSUES.md` | 滚动已知项（非叙事对照） |
 
@@ -220,13 +220,7 @@ TV 入队 → 解析 → ATR=webhook.atr → RISK20×5 算仓 → 市价开
 
 不可读盘口时：**禁止再挂 TP/Stop、禁止 cancel_all、禁止把未知当已保护**。
 
-> **开仓链路新增兜底重试（2026-08-02）：**
-> - 市价开仓失败/未成交 → 等 IP 冷却 → TV 指导价挂限价单(GTC) → 轮询成交
-> - 仍未持仓 → 等 IP 冷却 → 再次市价重试（最多 4 轮，间隔 5/10/20/30s）
-> - ATR 降级时暂停重试（避免带坏 ATR 连续重试）
-> - 4 轮均失败 → `OPEN_RETRY_EXHAUSTED` 钉钉 critical，已平仓，等下一笔 TV 信号
-
-**自查口令（独立于文字汇报）**  
+> **自查口令（独立于文字汇报）**  
 1. GitHub / 本地 / VPS `git rev-parse --short HEAD` 三数字一致。  
 2. 币安：仓位(0) + 当前委托(0) + 条件委托(0)。  
 3. 代码原样：`PLACEABLE_TP_LEVELS={1,2}`；`resolve_open_atr` 恒用 TV atr；`MAX_REENTRY=1`；`HARD_STOP_BUFFER_FIXED=1.15`。  
@@ -315,7 +309,7 @@ rules:
   - pipeline_stall: PHASE_STALL_SEC → critical PIPELINE_STALL; mid-trade ChiefAuditor.recheck_live on TP fill
   - flat_auto_unpause: chief_auditor_fail / open_orders_gt_5 / open_book_dirty / ATR应急 / 方向 / 先平后开失败
   - REST valve: rest_throttle_valve; sentinel_may_rest blocks pause/cool/**budget**; book cache prefers stale
-  - open_retry: market fail → limit at TV price → retry 4× (5/10/20/30s); IP cool-down respected; ATR fallback pauses retry; OPEN_RETRY_SUCCESS / OPEN_RETRY_EXHAUSTED TG events
+  - open_retry: market fill confirmed via order response (executedQty/status=FILLED); limit at TV price → retry 4× (5/10/20/30s); IP cool-down respected; margin pre-check; entry_fill_confirmed in state; OPEN_RETRY_SUCCESS / OPEN_RETRY_EXHAUSTED TG events
   - E2E_FORCE_NOTIONAL_USD=0 in production; wait real TV
   - three-way commit: local = GitHub = VPS
 

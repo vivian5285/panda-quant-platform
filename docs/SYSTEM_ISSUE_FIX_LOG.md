@@ -12,6 +12,7 @@
 |------|------|--------|------|
 | 2026-07-28 | `marathon-radar-fee-be` | 雷达激活=fee+tick保本；ADX **70/80/90 弱早强晚**；取消 0.5ATR/TP1底线；TP只缩量 | 已修 · §17 |
 | 2026-07-28 | `stage0-hard-only` | Stage0 仅硬止损上簿；禁开仓挂休眠雷达；呼吸 tick 一键清休眠 STOP | 已修 · §18 |
+| 2026-08-02 | `retry-exhausted-20260802` | 市价开仓未成交→限价兜底→重试 4 轮仍无持仓→`OPEN_RETRY_EXHAUSTED` | 已修 · §19 |
 | 2026-07-27 | `deepcoin-equity-cashbal-zero` | 深币 cashBal/eq=0 但 avail+frozen有钱 → 算仓0；顺手封 MAX_ADD_TIMES_BY_REGIME | 已修 · §16 |
 | 2026-07-27 | `tv-open-no-skip-no-instant-flat` | TV有信号却跳过/开仓秒平：先平后开失败卡暂停、ATR武装失败误撤仓 | 已修 · §15 |
 | 2026-07-27 | `deepcoin-hedge-sterile-bind` | 深币强制 APP 开平仓双向；绑定探测拒单向；开仓再闸；不自动切模式 | 已修 · §14 |
@@ -602,6 +603,46 @@ DeepCoin 账户可能是**开平仓模式（双向）**或**买卖模式（单�
 - [x] 单测：Stage0 拒挂 / stagnant memory-only / latched+activated。  
 - [ ] 实盘：取消已挂休眠雷达，仅留硬止损；下一笔开仓盘口 STOP=1。  
 - [ ] 本地 = GitHub `main` = VPS HEAD。
+
+---
+
+## §19 · 2026-08-02 · 开仓重试耗尽（OPEN_RETRY_EXHAUSTED · 2026-08-02）
+
+### 现象
+
+- VPS 实盘日志：`[ETHUSDT.P] 市价开仓失败·尝试限价兜底下单` → 限价亦未成交 → 重试循环 → 最终 `OPEN_RETRY_EXHAUSTED` 钉钉 critical。
+- 根因：**市价下单后轮询查仓未确认持仓，但代码未区分"未成交"与"被拒"**，限价重试阶段没有等待足够冷却便继续重试。
+- 等到 IP 冷却期结束后仍因 `Margin is insufficient` 被拒，循环耗尽 4 轮。
+
+### 根因分析
+
+1. **`_place_market_entry_order` / `_open_position`**：市价下单调用后直接返回，未等成交确认。
+2. **`_wait_for_fill_confirmation`**：轮询持仓未立即命中（交易所撮合延迟），判定为"下单失败"，转入限价兜底路径。
+3. **限价重试间隔过短**：`retry_delays` 曾较短，未充分尊重 IP 冷却窗口。
+4. **`Margin is insufficient` 未提前预检**：开仓前未验保证金是否足够支撑开仓数量，导致限价单被拒后仍继续重试。
+5. **`_max_retry_attempts`**（4 轮）耗尽后未产生有持仓的状态，导致系统认为开仓失败而结束。
+
+### 修复（代码锚点）
+
+| 项 | 位置 | 行为 |
+|----|------|------|
+| 市价下单成交追踪 | `_open_position` | 改用 Binance order response 中的 `executedQty` / `status=FILLED` 确认成交，不依赖轮询命中 |
+| 重试冷却间隔 | `_wait_for_fill_confirmation` / `retry_delays` | 第 1 轮：5s；第 2 轮：10s；第 3 轮：20s；第 4 轮：30s；每轮前等待对应冷却 |
+| Margin 预检 | `_open_position` / `tv_entry_sizing` | 开仓前调用 `_check_margin_sufficient`；不足时直接 abort 并告警 |
+| 限价重试兜底 | `_place_tv_entry_order` | 限价挂 TV 指导价（GTC），轮询最多 60s；仍未持仓则等待 IP 冷却后下一次市价重试 |
+| 状态持久化 | `_save_state` / `_load_state` | 新增 `entry_fill_confirmed` 字段；确认成交后才标记为 VERIFIED |
+| 超额持仓检测 | `_force_flat_before_open` | 先平后开前检测现有持仓数量；若超过预期数量（过饱）则 abort 并告警 |
+| 重试循环终点 | `_open_position` | 4 轮均失败 → `OPEN_RETRY_EXHAUSTED`（critical）→ 维持已平仓状态，等下一笔 TV 信号 |
+
+### 复查点
+
+- [ ] 市价开仓后日志含 `order_id` + `executedQty` + `status=FILLED` 确认路径。
+- [ ] 限价重试兜底：日志含 `place_limit_entry_order` + 轮询结果 + `retry_attempt` 计数。
+- [ ] `Margin is insufficient` 提前预检：开仓前已做 check；失败日志含 `MARGIN_INSUFFICIENT`。
+- [ ] `OPEN_RETRY_EXHAUSTED` 触发后：持仓为零、无残留挂单、TG critical 发送。
+- [ ] `entry_fill_confirmed` 字段在 `_save_state` / `_load_state` 中正确序列化/反序列化。
+- [ ] `_force_flat_before_open` 能检测到超额持仓并 abort。
+- [ ] `pytest backend/tests/` 中相关单测（重试逻辑 / margin check / state persistence）全绿。
 
 ---
 
