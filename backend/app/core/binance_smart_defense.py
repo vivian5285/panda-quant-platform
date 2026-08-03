@@ -1732,6 +1732,7 @@ class BinanceSmartDefenseMixin:
                 _radar_tag = radar_tag(
                     getattr(self, "user_id", 0),
                     symbol,
+                    float(sl),
                     exchange=getattr(self, "exchange_id", None),
                 )
                 ok_acq, acq_reason = _radar_reg.try_acquire(

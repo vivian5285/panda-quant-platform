@@ -3973,6 +3973,7 @@ class AdverseRadarMixin:
                 _hard_tag = hard_tag(
                     getattr(self, "user_id", 0),
                     symbol,
+                    float(stop_price or 0),
                     exchange=getattr(self, "exchange_id", None),
                 )
                 ok_acq, acq_reason = _hard_reg.try_acquire(

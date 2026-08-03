@@ -188,11 +188,13 @@ def tp_tag(user_id: Any, symbol: str, label: str, price: float, exchange: str | 
     return f"tp:{ex}:{user_id}:{str(symbol).upper()}:{label}:{px}"
 
 
-def hard_tag(user_id: Any, symbol: str, exchange: str | None = None) -> str:
+def hard_tag(user_id: Any, symbol: str, price: float = 0.0, exchange: str | None = None) -> str:
     ex = str(exchange or "binance").lower().strip() or "binance"
-    return f"hard:{ex}:{user_id}:{str(symbol).upper()}"
+    px = f"{float(price):.4f}".rstrip("0").rstrip(".") if price > 0 else "0"
+    return f"hard:{ex}:{user_id}:{str(symbol).upper()}:{px}"
 
 
-def radar_tag(user_id: Any, symbol: str, exchange: str | None = None) -> str:
+def radar_tag(user_id: Any, symbol: str, price: float = 0.0, exchange: str | None = None) -> str:
     ex = str(exchange or "binance").lower().strip() or "binance"
-    return f"radar:{ex}:{user_id}:{str(symbol).upper()}"
+    px = f"{float(price):.4f}".rstrip("0").rstrip(".") if price > 0 else "0"
+    return f"radar:{ex}:{user_id}:{str(symbol).upper()}:{px}"
