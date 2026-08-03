@@ -42,6 +42,10 @@ from app.core.same_direction_policy import (
     format_reopen_reason,
 )
 from app.core.close_attribution import diagnose_flat_close, format_close_reason
+from app.core.symbol_registry import (
+    DEFAULT_CANONICAL,
+    normalize_canonical_symbol,
+)
 from app.core.symbol_precision import normalize_tv_targets, round_price, round_quantity, PRICE_TICK
 from app.core.position_sizing import read_contract_equity
 from app.core.tv_entry_sizing import (
@@ -207,9 +211,7 @@ class PositionSupervisor(
         on_alert: Optional[Callable] = None,
     ):
         from app.core.symbol_registry import (
-            DEFAULT_CANONICAL,
             label_for_symbol,
-            normalize_canonical_symbol,
             qty_unit_for_symbol,
             supervisor_state_key,
         )
