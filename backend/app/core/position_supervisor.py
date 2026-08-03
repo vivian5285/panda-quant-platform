@@ -1951,16 +1951,24 @@ class PositionSupervisor(
                     "[User %s] force_flat close attempt %s: %s",
                     self.user_id, attempt, e,
                 )
+            # §26 Fix: 用指数退避确认持仓干净（替代简单的 _wait_until_flat）
+            # _confirm_position_clean 内部已实现：API健康检查 + 持仓量检查 + 同名挂单检查
+            # 三重确认全部通过才返回 True，有效防止 IP 限流时盲目重试
             wait_to = 5.0 if attempt > 1 else 8.0
-            if self._wait_until_flat(timeout=wait_to):
+            clean, clean_detail = self._confirm_position_clean(
+                action=action,
+                max_wait_sec=wait_to,
+            )
+            if clean:
                 flat_ok = True
                 break
+            wait_time = clean_detail.get("wait_time", wait_to)
+            self._log(
+                "SIGNAL",
+                f"先平后开·平仓后持仓未净，{wait_time:.1f}s 内确认不干净{clean_detail.get('reason', '')}，重试 ({attempt}/{len(delays)})",
+                {"reason": reason, "attempt": attempt, "clean_detail": clean_detail, "wait_time": wait_time},
+            )
             if attempt < len(delays) and delay > 0:
-                self._log(
-                    "SIGNAL",
-                    f"先平后开·平仓未归零，{delay:g}s 后重试 ({attempt}/{len(delays)})",
-                    {"reason": reason, "attempt": attempt, "last_err": last_err},
-                )
                 time.sleep(delay)
 
         if not flat_ok:
