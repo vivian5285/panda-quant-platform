@@ -2178,6 +2178,128 @@ class PositionSupervisor(
             },
         }
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # §26 Fix: 健壮重试机制 —— 限流时绝不死循环下单
+    # 问题：IP限流时查不到仓位就盲目重试限价单，导致持仓失控
+    # 解决：重试前必须三重确认
+    #   1. API 可用（能正常响应）
+    #   2. 持仓干净（本币种+本方向无持仓）
+    #   3. 无在途订单（无同名开仓挂单）
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def _check_api_healthy(self, retries: int = 2) -> tuple[bool, str]:
+        """检查 API 是否可用（能正常响应，非限流状态）。
+        
+        返回: (is_healthy, reason)
+        """
+        import app.core.rest_throttle_valve as throttle
+        
+        # 先检查限流阀状态
+        try:
+            remaining = throttle.remaining_sec(exchange=self.exchange_id, user_id=self.user_id) or 0
+            if remaining > 5.0:
+                return False, f"限流冷却中，还需 {remaining:.0f}s"
+        except Exception:
+            pass
+        
+        # 轻量级探测：用 get_open_orders (weight=1)
+        for attempt in range(retries):
+            try:
+                _ = self.client.get_open_orders(self.symbol)
+                return True, "ok"
+            except Exception as e:
+                err = str(e)
+                # 限流特征
+                if any(k in err for k in ("429", "-1003", "rate limit", "Rate limit", "Too many requests")):
+                    continue  # 继续重试
+                # 其他错误（如权限、签名失败）说明 API 不可用
+                return False, f"API错误: {err[:50]}"
+        
+        return False, f"API探测{retries}次均限流失败"
+
+    def _confirm_position_clean(
+        self, 
+        action: str,
+        tv_limit_price: float = 0.0,
+        max_wait_sec: float = 30.0,
+    ) -> tuple[bool, dict]:
+        """确认持仓干净：币种+方向+数量均为0，且无同名在途挂单。
+        
+        限流时用指数退避等待，切勿盲等。
+        
+        返回: (is_clean, detail) where detail contains:
+            - live_qty: 实盘持仓量
+            - live_side: 实盘方向
+            - open_orders: 开仓挂单列表
+            - wait_time: 等待时长
+        """
+        side = "BUY" if action == "LONG" else "SELL"
+        detail: dict = {"live_qty": 0.0, "live_side": None, "open_orders": [], "wait_time": 0.0}
+        
+        start = time.time()
+        backoff = [1.0, 2.0, 4.0, 8.0, 15.0]  # 指数退避，最多等待30s
+        
+        for i, delay in enumerate(backoff):
+            elapsed = time.time() - start
+            if elapsed >= max_wait_sec:
+                detail["wait_time"] = elapsed
+                return False, {**detail, "reason": f"等待{max_wait_sec}s超时"}
+            
+            # 每轮先确认 API 可用
+            healthy, reason = self._check_api_healthy(retries=1)
+            if not healthy:
+                self._log("WARN", f"确认持仓干净：API不可用({reason})，等待{delay:.0f}s后重试...")
+                time.sleep(min(delay, max_wait_sec - elapsed))
+                continue
+            
+            # 查询实盘持仓
+            try:
+                pos = self.position_manager.get_position(self.symbol, force_refresh=True)
+                if pos is not None:
+                    detail["live_qty"] = abs(float(pos.get("positionAmt") or pos.get("size") or 0))
+                    raw_amt = float(pos.get("positionAmt") or 0)
+                    detail["live_side"] = "BUY" if raw_amt > 0 else ("SELL" if raw_amt < 0 else None)
+                else:
+                    detail["live_qty"] = 0.0
+                    detail["live_side"] = None
+            except Exception as e:
+                self._log("WARN", f"查询持仓失败: {e}，等待{delay:.0f}s后重试...")
+                time.sleep(min(delay, max_wait_sec - elapsed))
+                continue
+            
+            # 检查同方向开仓挂单
+            try:
+                open_orders = self.client.get_open_orders(self.symbol)
+                same_side_orders = [
+                    o for o in open_orders
+                    if (o.get("side") or "").upper() == side.upper()
+                    and float(o.get("origQty", 0) or 0) > 0
+                    and not o.get("reduceOnly", False)
+                ]
+                detail["open_orders"] = same_side_orders
+            except Exception as e:
+                self._log("WARN", f"查询挂单失败: {e}，等待{delay:.0f}s后重试...")
+                time.sleep(min(delay, max_wait_sec - elapsed))
+                continue
+            
+            # 三重确认判断
+            detail["wait_time"] = time.time() - start
+            
+            # 1. 持仓量必须为0
+            if detail["live_qty"] > 1e-8:
+                return False, {**detail, "reason": f"有持仓 {detail['live_qty']}"}
+            
+            # 2. 方向必须不冲突（平仓后方向相反也算干净）
+            # 3. 无同名开仓挂单
+            if same_side_orders:
+                return False, {**detail, "reason": f"有{len(same_side_orders)}笔同名挂单"}
+            
+            # 全部通过：持仓干净
+            return True, detail
+        
+        detail["wait_time"] = time.time() - start
+        return False, {**detail, "reason": "指数退避重试耗尽"}
+
     def _place_tv_entry_order(self, action: str, qty: float, limit_px: float, *, place_limit_fallback: bool = False) -> dict:
         """Checklist §2A: 市价开仓，禁止回退限价单（2026-08-03 彻底移除 place_limit_fallback）。
 
@@ -2190,6 +2312,11 @@ class PositionSupervisor(
           2. IP cool-down 导致 position 查询失败时，等待而不回退
           3. "Margin is insufficient" 错误立即终止
           4. 服务端订单查询(get_order)优先于内存状态
+        
+        §26 Fix (2026-08-03): 限价回退重试前必须三重确认
+          - API 可用
+          - 持仓干净（无同名持仓+无同名挂单）
+          - 指数退避等待，绝不死循环
         """
         # 恢复重启前的 fill-sent 状态（防止重启后重复开仓）
         self._entry_fills_sent = bool(getattr(self, "_entry_fills_sent", False))
@@ -2381,121 +2508,139 @@ class PositionSupervisor(
                     "retryable": False,
                 }
 
-        if not market_err and pos and float(pos.get("positionAmt", 0)) == 0:
-            self._log("WARN", "市价单未成交且无持仓 → 回退 TV 指导价限价单")
-        elif market_err:
-            self._log("WARN", f"市价单异常: {market_err} → 回退限价单")
-        else:
-            self._log("WARN", "市价单挂出但未确认成交 → 回退限价单")
-
-        # 等 IP 冷却后挂限价单
-        try:
-            from app.core.rest_throttle_valve import remaining_sec, require_rest_or_transient
-            cool = float(remaining_sec(exchange=self.exchange_id, user_id=self.user_id) or 0)
-            if cool > 0:
-                self._log("WARN", f"开仓限价单等待 IP 冷却 {cool:.0f}s")
-                time.sleep(min(cool, 30.0))
-                require_rest_or_transient(
-                    exchange=self.exchange_id, user_id=self.user_id,
-                    op="open_limit_fallback", priority="emergency",
-                )
-        except Exception:
-            pass
-
-        # ── 关键修复 4：发出限价单前先确认无同名开仓挂单，防止叠加 ───────────
-        try:
-            existing_orders = self.client.get_open_orders(self.symbol)
-            same_side_orders = [
-                o for o in existing_orders
-                if (o.get("side") or "").upper() == open_side.upper()
-                and float(o.get("origQty", 0) or 0) > 0
-            ]
-            if same_side_orders:
-                self._log(
-                    "WARN",
-                    f"发现同方向开仓挂单 {len(same_side_orders)} 个，先撤单再挂: {same_side_orders}",
-                )
-                self.client.cancel_all_open_orders(self.symbol)
-                time.sleep(1.0)
-        except Exception as exc:
-            self._log("WARN", f"检查/撤同方向挂单失败: {exc}")
-
-        limit_meta: dict = {
-            "entry_order_style": "limit_fallback",
-            "limit_price": float(limit_px or 0),
-            "qty": float(qty),
-            "market_error": market_err,
-        }
-        try:
-            self.client.place_limit_order(
-                open_side, float(qty), float(limit_px or 0),
-                self.symbol, reduce_only=False, time_in_force="GTC",
+        # §26 Fix: 限价回退前必须三重确认持仓干净（见 _confirm_position_clean）
+        # 旧逻辑的问题：限流时盲目重试限价单，导致持仓失控
+        # 新逻辑：等 API 恢复 → 确认无持仓 → 确认无挂单 → 才发限价单
+        MAX_LIMIT_RETRY = 2  # 最多重试2次，防止死循环
+        
+        for retry_round in range(MAX_LIMIT_RETRY):
+            retry_suffix = f" (重试#{retry_round + 1}/{MAX_LIMIT_RETRY})" if retry_round > 0 else ""
+            
+            self._log("WARN", f"准备限价回退{retry_suffix}: symbol={self.symbol} side={action} qty={qty} @limit={limit_px:.4f}")
+            
+            # ── 第一步：等 API 可用 + 持仓干净 ───────────────────────────────────
+            # 使用指数退避等待，最多30秒
+            clean, clean_detail = self._confirm_position_clean(
+                action=action,
+                tv_limit_price=limit_px,
+                max_wait_sec=30.0,
             )
-            limit_meta["order_placed"] = True
-            self._log("SIGNAL", f"📋 开仓回退限价单已挂: {open_side} {qty} @{limit_px:.4f}")
-        except Exception as exc:
-            limit_meta["order_placed"] = False
-            limit_meta["limit_error"] = str(exc)
-            self._log("ERROR", f"限价回退下单也失败: {exc}")
-            self._entry_fills_sent = False
-            return {**market_meta, **limit_meta, "status": "limit_failed"}
+            
+            if not clean:
+                reason = clean_detail.get("reason", "unknown")
+                self._log(
+                    "ERROR",
+                    f"⛔ 持仓不干净，禁止限价回退下单{retry_suffix}: {reason} "
+                    f"| live_qty={clean_detail.get('live_qty')} | open_orders={len(clean_detail.get('open_orders', []))}",
+                    clean_detail,
+                )
+                # 持仓不干净 → 绝不再下单（防止叠加）
+                self._entry_fills_sent = False
+                return {
+                    **market_meta,
+                    "status": "position_not_clean",
+                    "filled": False,
+                    "limit_fallback": False,
+                    "retryable": False,
+                    "clean_detail": clean_detail,
+                }
+            
+            self._log("SIGNAL", f"✅ 持仓干净确认通过{retry_suffix}: qty={clean_detail.get('live_qty')} open_orders={len(clean_detail.get('open_orders', []))}")
+            
+            # ── 第二步：发出限价单 ────────────────────────────────────────────────
+            limit_meta: dict = {
+                "entry_order_style": "limit_fallback",
+                "limit_price": float(limit_px or 0),
+                "qty": float(qty),
+                "market_error": market_err,
+                "retry_round": retry_round,
+            }
+            try:
+                self.client.place_limit_order(
+                    open_side, float(qty), float(limit_px or 0),
+                    self.symbol, reduce_only=False, time_in_force="GTC",
+                )
+                limit_meta["order_placed"] = True
+                self._log("SIGNAL", f"📋 开仓回退限价单已挂{retry_suffix}: {open_side} {qty} @{limit_px:.4f}")
+            except Exception as exc:
+                limit_meta["order_placed"] = False
+                limit_meta["limit_error"] = str(exc)
+                self._log("ERROR", f"限价回退下单失败{retry_suffix}: {exc}")
+                self._entry_fills_sent = False
+                return {**market_meta, **limit_meta, "status": "limit_failed"}
 
-        # 轮询限价单成交情况
-        OPEN_LIMIT_POLL = (5.0, 10.0, 15.0, 20.0)
-        for i, delay in enumerate(OPEN_LIMIT_POLL, 1):
-            time.sleep(delay)
-            try:
-                pos = self.position_manager.get_position(self.symbol, force_refresh=True)
-                if pos and float(pos.get("positionAmt", 0)) != 0:
-                    self._entry_fills_sent = False
-                    self._log("SIGNAL", f"限价回退开仓成交 @ {limit_px:.4f} (轮询 #{i})")
-                    return {
-                        **market_meta, **limit_meta,
-                        "status": "ok", "filled": True,
-                        "fill_style": "limit_fallback",
-                    }
-            except Exception:
-                pass
-            # 撤掉未成交的限价单
-            try:
-                self.client.cancel_all_open_orders(self.symbol)
-                self._log("WARN", f"限价单 #{i} 未成交已撤，准备改市价")
-            except Exception:
-                pass
-            time.sleep(0.5)
-            # 撤单后再用市价尝试一次
-            if i < len(OPEN_LIMIT_POLL):
+            # ── 第三步：轮询限价单成交情况（每轮最多25秒）────────────────────────
+            OPEN_LIMIT_POLL = (5.0, 10.0, 15.0, 20.0)
+            for i, delay in enumerate(OPEN_LIMIT_POLL, 1):
+                time.sleep(delay)
+                # 每轮先确认 API 可用
+                healthy, _ = self._check_api_healthy(retries=1)
+                if not healthy:
+                    self._log("WARN", f"轮询#{i}时API限流，等待{delay:.0f}s...")
+                    continue
+                
                 try:
-                    retry_resp = self.client.place_market_order(action, qty, self.symbol)
-                    # 检查余额不足
-                    if retry_resp is None and hasattr(self.client, "_last_market_order_error"):
-                        last_err = str(self.client._last_market_order_error or "")
-                        if any(c in last_err for c in MARGIN_INSUFFICIENT_CODES):
-                            self._entry_fills_sent = False
-                            self._log(
-                                "ERROR",
-                                f"补单市价余额不足（Margin is insufficient）— 终止: {last_err}",
-                            )
-                            return {
-                                **market_meta, **limit_meta,
-                                "status": "margin_insufficient",
-                                "filled": False,
-                                "exchange_error": last_err,
-                            }
-                    time.sleep(2.0)
                     pos = self.position_manager.get_position(self.symbol, force_refresh=True)
                     if pos and float(pos.get("positionAmt", 0)) != 0:
                         self._entry_fills_sent = False
-                        self._log("SIGNAL", f"市价补单成交 (轮询 #{i})")
+                        self._log("SIGNAL", f"限价回退开仓成交{retry_suffix} @{limit_px:.4f} (轮询 #{i})")
                         return {
                             **market_meta, **limit_meta,
                             "status": "ok", "filled": True,
-                            "fill_style": "market_after_limit",
+                            "fill_style": "limit_fallback",
                         }
                 except Exception:
                     pass
+                
+                # 未成交 → 撤单 + 再等 + 尝试市价
+                try:
+                    self.client.cancel_all_open_orders(self.symbol)
+                    self._log("WARN", f"限价单 #{i} 未成交已撤{retry_suffix}，准备改市价")
+                except Exception:
+                    pass
+                time.sleep(0.5)
+                
+                # 撤单后再用市价尝试一次（每轮限1次）
+                if i < len(OPEN_LIMIT_POLL):
+                    # 先确认持仓干净再发市价
+                    clean2, _ = self._confirm_position_clean(action=action, max_wait_sec=5.0)
+                    if not clean2:
+                        self._log("WARN", f"市价补单前持仓不干净，跳过{retry_suffix}")
+                        continue
+                    
+                    try:
+                        retry_resp = self.client.place_market_order(action, qty, self.symbol)
+                        # 检查余额不足
+                        if retry_resp is None and hasattr(self.client, "_last_market_order_error"):
+                            last_err = str(self.client._last_market_order_error or "")
+                            if any(c in last_err for c in MARGIN_INSUFFICIENT_CODES):
+                                self._entry_fills_sent = False
+                                self._log("ERROR", f"补单市价余额不足—终止{retry_suffix}: {last_err}")
+                                return {
+                                    **market_meta, **limit_meta,
+                                    "status": "margin_insufficient",
+                                    "filled": False,
+                                    "exchange_error": last_err,
+                                }
+                        time.sleep(2.0)
+                        pos = self.position_manager.get_position(self.symbol, force_refresh=True)
+                        if pos and float(pos.get("positionAmt", 0)) != 0:
+                            self._entry_fills_sent = False
+                            self._log("SIGNAL", f"市价补单成交{retry_suffix} (轮询 #{i})")
+                            return {
+                                **market_meta, **limit_meta,
+                                "status": "ok", "filled": True,
+                                "fill_style": "market_after_limit",
+                            }
+                    except Exception:
+                        pass
+            
+            # 本轮失败 → 若还有重试机会，再等30秒后重试
+            if retry_round < MAX_LIMIT_RETRY - 1:
+                self._log("WARN", f"限价回退第{retry_round + 1}轮失败，30秒后重试...")
+                time.sleep(30.0)
 
-        # 所有尝试均失败
+        # 所有重试轮次均失败
         self._entry_fills_sent = False
         limit_meta["status"] = "all_retry_exhausted"
         return {**market_meta, **limit_meta}
