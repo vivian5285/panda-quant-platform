@@ -979,6 +979,7 @@ class AdverseRadarMixin:
         self.consumed_tp_levels = []
         if hasattr(self, "_tp_fill_tg_levels"):
             self._tp_fill_tg_levels = set()
+        self.tv_tps = [0.0, 0.0, 0.0]  # §25 Fix: 平仓时必须清零，防止跨品种污染残留
         self.current_trade_id = None
         self.trade_opened_at = None
         self.radar_latched = False
