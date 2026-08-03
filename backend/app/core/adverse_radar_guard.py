@@ -2298,6 +2298,27 @@ class AdverseRadarMixin:
             payload.get("tv_tp2", 0),
             payload.get("tv_tp3", 0),
         ])
+
+        # §25 Fix (2026-08-03): UPDATE_TP 增加品种校验，防止跨品种 TP 污染
+        from app.core.symbol_registry import extract_payload_symbol
+        from app.core.position_supervisor import _validate_tp_prices_cross_symbol
+        payload_symbol = extract_payload_symbol(payload, require=False)
+        if payload_symbol and payload_symbol != getattr(self, "canonical_symbol", None):
+            msg = f"UPDATE_TP 忽略：品种不匹配 payload={payload_symbol} self={getattr(self, 'canonical_symbol', None)}"
+            self._log("UPDATE_TP", msg, {"payload_symbol": payload_symbol})
+            return {"status": "skipped", "reason": "symbol_mismatch", "action": "UPDATE_TP", "detail": {"payload_symbol": payload_symbol}}
+        # §25 Fix: UPDATE_TP 增加价格合理性校验
+        entry_for_validate = float(getattr(self, "watched_entry", 0) or 0)
+        validate_result = _validate_tp_prices_cross_symbol(
+            getattr(self, "canonical_symbol", ""),
+            new_tps,
+            entry_price=entry_for_validate,
+            tv_sl=float(getattr(self, "tv_sl", 0) or 0),
+        )
+        if validate_result["suspect"]:
+            msg = f"UPDATE_TP 忽略：新 TP 价格异常 {list(new_tps)} reason={validate_result['reason']}"
+            self._log("UPDATE_TP", msg, validate_result)
+            return {"status": "skipped", "reason": "tp_price_suspect", "action": "UPDATE_TP", "detail": validate_result}
         old_tps = list(getattr(self, "tv_tps", []) or [0.0, 0.0, 0.0])
         theme = resolve_exchange_theme(getattr(self, "exchange_id", "binance"))
         detail: dict[str, Any] = {

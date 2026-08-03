@@ -3557,6 +3557,27 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             meta.update(cap_meta)
             if not ok:
                 return 0, meta
+
+        # §25 Fix (2026-08-03): 硬性持仓上限检查（DeepCoin版，合约数量）
+        # 本金 × 20% × 5倍杠杆 = 100% 名义敞口上限（张数 = 名义敞口 / face_value / price）
+        if qty > 0 and price > 0 and (equity > 0 or self.initial_principal > 0):
+            from app.core.tv_entry_sizing import FIXED_LEVERAGE, FIXED_MARGIN_PCT
+            sizing_base = equity if equity > 0 else self.initial_principal
+            face_value = float(self.face_value or 0.1)
+            cap_notional = sizing_base * float(FIXED_MARGIN_PCT) * float(FIXED_LEVERAGE)
+            max_qty_int = int(cap_notional / (face_value * price))
+            if qty > max_qty_int:
+                self._log(
+                    "WARN",
+                    f"§25 DeepCoin持仓量超上限：计算={qty}张 上限={max_qty_int}张 → 裁剪至上限 "
+                    f"(equity={sizing_base:.2f} margin={FIXED_MARGIN_PCT*100:.0f}% lev={FIXED_LEVERAGE}x "
+                    f"face_value={face_value} price={price})",
+                )
+                qty = max_qty_int
+                meta["position_cap_clamped"] = True
+                meta["original_qty"] = meta.get("final_qty")
+                meta["final_qty"] = max_qty_int
+
         return qty, meta
 
     def _max_add_times(self) -> int:
@@ -3751,13 +3772,17 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             },
         }
 
-    def _place_tv_entry_order(self, action: str, qty: float, limit_px: float, *, place_limit_fallback: bool = True) -> dict:
-        """Checklist §2A: 市价开仓，失败时回退限价单（TV 指导价）。
-        
-        place_limit_fallback=True  时：市价下单失败 → 立即用 TV 指导价挂限价单(GTC) 等待成交。
-        市价单成交 → 直接返回 ok。
-        限价单挂出后轮询最多 4 次(5s/10s/15s/20s)，确认持仓归零则撤单改市价。
-        place_limit_fallback=False 时：只发市价单，不回退。
+    def _place_tv_entry_order(self, action: str, qty: float, limit_px: float, *, place_limit_fallback: bool = False) -> dict:
+        """Checklist §2A: 市价开仓，禁止回退限价单（2026-08-03 彻底移除 place_limit_fallback）。
+
+        ⚠️ 关键修复（Bug #DuplicateOrder20260803）：
+        - 移除了 place_limit_fallback=True 默认值，改为 False
+        - 市价单已发出后无论任何情况都不回退限价单
+        - 重复下单的根源：IP限流查不到持仓就盲目回退限价单
+        - 修复策略：
+          1. 发出市价单后追踪在途订单状态
+          2. IP cool-down 导致 position 查询失败时，等待而不回退
+          3. 服务端订单查询优先于内存状态
         """
         open_side = "buy" if action == "LONG" else "sell"
         pos_side = "long" if action == "LONG" else "short"
@@ -3815,79 +3840,19 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
                 "retryable": False,
             }
 
-        logger.warning("DeepCoin 市价单异常: %s → 回退限价单", market_err)
-
-        # 等 IP 冷却后挂限价单
-        try:
-            from app.core.rest_throttle_valve import remaining_sec, require_rest_or_transient
-            cool = float(remaining_sec(exchange=self.exchange_id, user_id=self.user_id) or 0)
-            if cool > 0:
-                logger.warning("DeepCoin 开仓限价单等待 IP 冷却 %.0fs", cool)
-                time.sleep(min(cool, 30.0))
-                require_rest_or_transient(
-                    exchange=self.exchange_id, user_id=self.user_id,
-                    op="open_limit_fallback", priority="emergency",
-                )
-        except Exception:
-            pass
-
-        limit_meta: dict = {
-            "entry_order_style": "limit_fallback",
-            "limit_price": float(limit_px or 0),
-            "qty": float(qty),
+        # ⚠️ 限价回退已禁用（place_limit_fallback=False），此处不再执行
+        # market_err 时直接返回失败，由调用方处理重试
+        logger.warning(
+            "DeepCoin 市价开仓失败且不接受限价回退: %s | symbol=%s qty=%s",
+            market_err, self.symbol, qty,
+        )
+        return {
+            **market_meta,
+            "status": "market_failed_no_fallback",
+            "filled": False,
             "market_error": market_err,
+            "retryable": True,
         }
-        try:
-            # DeepCoin: place_limit_order(side, qty, price, symbol, reduce_only, timeInForce)
-            self.client.place_limit_order(
-                open_side, float(qty), float(limit_px or 0),
-                self.symbol, reduce_only=False, timeInForce="GTC",
-            )
-            limit_meta["order_placed"] = True
-            logger.info("📋 DeepCoin 开仓回退限价单已挂: %s %s @ %.4f", open_side, qty, limit_px)
-        except Exception as exc:
-            limit_meta["order_placed"] = False
-            limit_meta["limit_error"] = str(exc)
-            logger.error("DeepCoin 限价回退下单也失败: %s", exc)
-            return {**market_meta, **limit_meta, "status": "limit_failed"}
-
-        # 轮询限价单成交情况
-        OPEN_LIMIT_POLL = (5.0, 10.0, 15.0, 20.0)
-        for i, delay in enumerate(OPEN_LIMIT_POLL, 1):
-            time.sleep(delay)
-            try:
-                pos = self._get_active_position()
-                if pos and pos.get("size", 0) > 0:
-                    logger.info("DeepCoin 限价回退开仓成交 @ %.4f (轮询 #%d)", limit_px, i)
-                    return {
-                        **market_meta, **limit_meta,
-                        "status": "ok", "filled": True,
-                        "fill_style": "limit_fallback",
-                    }
-            except Exception:
-                pass
-            # 撤掉未成交的限价单
-            try:
-                self.client.cancel_all_open_orders(self.symbol)
-                logger.warning("DeepCoin 限价单 #%d 未成交已撤，准备改市价", i)
-            except Exception:
-                pass
-            time.sleep(0.5)
-            # 撤单后再用市价尝试一次
-            if i < len(OPEN_LIMIT_POLL):
-                try:
-                    self.client.place_market_order(self.symbol, open_side, pos_side, qty)
-                    time.sleep(2.0)
-                    pos = self._get_active_position()
-                    if pos and pos.get("size", 0) > 0:
-                        logger.info("DeepCoin 市价补单成交 (轮询 #%d)", i)
-                        return {
-                            **market_meta, **limit_meta,
-                            "status": "ok", "filled": True,
-                            "fill_style": "market_after_limit",
-                        }
-                except Exception:
-                    pass
 
         # 所有尝试均失败
         limit_meta["status"] = "all_retry_exhausted"

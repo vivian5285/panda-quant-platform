@@ -771,6 +771,31 @@ class PositionSupervisor(
         blocked = self._block_if_trading_paused(raw_action) if hasattr(self, "_block_if_trading_paused") else None
         if blocked:
             return blocked
+
+        # §25 Fix (2026-08-03): 品种校验 —— 防止跨品种 TV 信号污染
+        # 例如：XAU 的 TP 价格被写入 ETH supervisor，或反之
+        from app.core.symbol_registry import extract_payload_symbol
+        payload_symbol = extract_payload_symbol(payload, require=False)
+        if payload_symbol and payload_symbol != self.canonical_symbol:
+            self._log(
+                "WARN",
+                f"⛔ TV信号品种不匹配: payload={payload_symbol} self={self.canonical_symbol}，忽略信号防止跨品种污染",
+                {"action": raw_action, "payload_symbol": payload_symbol},
+            )
+            self._alert(
+                "warning",
+                "TV_SYMBOL_MISMATCH",
+                "TV信号品种不匹配·已忽略",
+                f"payload={payload_symbol} self={self.canonical_symbol} action={raw_action}",
+                {"payload_symbol": payload_symbol, "canonical_symbol": self.canonical_symbol},
+            )
+            return {
+                "status": "skipped",
+                "reason": "symbol_mismatch",
+                "payload_symbol": payload_symbol,
+                "self_symbol": self.canonical_symbol,
+            }
+
         enrich_note = format_enrich_note(payload)
         self._last_enrich_note = enrich_note
         signal_detail = {
@@ -828,11 +853,28 @@ class PositionSupervisor(
             if not position_open:
                 self.current_atr = tv_atr
         self.tv_price = round_price(payload.get("price", 0))
-        self.tv_tps = normalize_tv_targets([
+        raw_tv_tps = normalize_tv_targets([
             payload.get("tv_tp1", 0),
             payload.get("tv_tp2", 0),
             payload.get("tv_tp3", 0),
         ])
+        # §25 Fix (2026-08-03): tv_tps 赋值时做价格合理性校验，防止跨品种污染
+        # 例如：ETH supervisor 收到了 XAU 的 TP 价格（4081）
+        validate_result = _validate_tp_prices_cross_symbol(
+            self.canonical_symbol,
+            raw_tv_tps,
+            entry_price=self.tv_price,
+            tv_sl=getattr(self, "tv_sl", 0) or 0,
+        )
+        if validate_result["suspect"]:
+            self._log(
+                "WARN",
+                f"§25 TV止盈价格异常: {self.canonical_symbol} | 清洗 raw_tps={list(raw_tv_tps)} → "
+                f"sanitized={validate_result['sanitized_tps']} | reason={validate_result['reason']}",
+            )
+            self.tv_tps = validate_result["sanitized_tps"]
+        else:
+            self.tv_tps = raw_tv_tps
         self.risk_multiplier = float(payload.get("risk_multiplier", 1.0))
         # Admin per-user sizing (injected by dispatcher); sticky until next open payload.
         if payload.get("margin_pct_frac") is not None:
@@ -1271,6 +1313,34 @@ class PositionSupervisor(
             meta.update(cap_meta)
             if not ok:
                 return 0.0, meta
+
+        # §25 Fix (2026-08-03): 硬性持仓上限检查
+        # 本金 × 20% × 5倍杠杆 = 100% 名义敞口（不允许超过）
+        # 先平后开确保 qty 是新仓，cap_target 就是 max allowed
+        if qty > 0 and price > 0 and (equity > 0 or self.initial_principal > 0):
+            from app.core.tv_entry_sizing import FIXED_LEVERAGE, FIXED_MARGIN_PCT
+            sizing_base = equity if equity > 0 else self.initial_principal
+            cap_notional = sizing_base * float(FIXED_MARGIN_PCT) * float(FIXED_LEVERAGE)
+            max_qty = cap_notional / price
+            if qty > max_qty:
+                self._log(
+                    "WARN",
+                    f"§25 持仓量超上限：计算={qty:.4f} 上限={max_qty:.4f} → 裁剪至上限 "
+                    f"(equity={sizing_base:.2f} margin={FIXED_MARGIN_PCT*100:.0f}% lev={FIXED_LEVERAGE}x)",
+                )
+                self._alert(
+                    "warning",
+                    "POSITION_CAP_CLAMP",
+                    "开仓持仓上限裁剪",
+                    f"{self.canonical_symbol} qty {qty:.4f}→{max_qty:.4f} "
+                    f"(cap_notional={cap_notional:.2f}U)",
+                    {"qty": qty, "max_qty": max_qty, "cap_notional": cap_notional},
+                )
+                qty = max_qty
+                meta["position_cap_clamped"] = True
+                meta["original_qty"] = meta.get("final_qty")
+                meta["final_qty"] = max_qty
+
         return qty, meta
     def _max_add_times(self) -> int:
         """妈妈版 pyramiding=1 — 加仓禁用."""
@@ -2108,18 +2178,18 @@ class PositionSupervisor(
             },
         }
 
-    def _place_tv_entry_order(self, action: str, qty: float, limit_px: float, *, place_limit_fallback: bool = True) -> dict:
-        """Checklist §2A: 市价开仓，失败时回退限价单（TV 指导价）。
+    def _place_tv_entry_order(self, action: str, qty: float, limit_px: float, *, place_limit_fallback: bool = False) -> dict:
+        """Checklist §2A: 市价开仓，禁止回退限价单（2026-08-03 彻底移除 place_limit_fallback）。
 
-        修复记录（Bug #MarginInsufficient20260802）：
-        - 市价单返回 resp_id 即表示 Binance 接受订单，不代表成交。
-        - 因 IP cool-down 导致 position 查询返回 stale 时，错误认为"未成交"而回退限价单，
-          导致已在途的市价单成交后，限价单再次叠加开仓，多次叠加耗尽保证金。
+        ⚠️ 关键修复（Bug #DuplicateOrder20260803）：
+        - 移除了 place_limit_fallback=True 默认值，改为 False
+        - 市价单已发出后无论任何情况都不回退限价单
+        - 重复下单的根源：IP限流查不到持仓就盲目回退限价单
         - 修复策略：
-          1. 追踪 _entry_fills_sent 标志：发出市价单后置 True，收到 Binance 确认成交后置 False。
-          2. IP cool-down 导致 position 查询失败时，若 _entry_fills_sent=True 则等待而不回退。
-          3. "Margin is insufficient" 错误立即返回特定 code，不再重试（防止继续耗保证金）。
-          4. 市价单成功后立即 save_state 持久化，防止重启后重复开仓。
+          1. 发出市价单后置 _entry_fills_sent=True，追踪在途订单
+          2. IP cool-down 导致 position 查询失败时，等待而不回退
+          3. "Margin is insufficient" 错误立即终止
+          4. 服务端订单查询(get_order)优先于内存状态
         """
         # 恢复重启前的 fill-sent 状态（防止重启后重复开仓）
         self._entry_fills_sent = bool(getattr(self, "_entry_fills_sent", False))

@@ -356,23 +356,37 @@ class SignalDispatcher:
             if (getattr(s, "canonical_symbol", None) or DEFAULT_CANONICAL) == signal_symbol
         ]
 
-        # Fix (2026-08-02): when no supervisor exists for this symbol (e.g. BNB was never
-        # loaded), still attempt to close positions via ANY compatible supervisor on this IP.
+        # Fix (2026-08-02/03): when no supervisor exists for this symbol (e.g. BNB was never
+        # loaded), still attempt to close positions via compatible supervisors on this IP.
         # BNB TV CLOSE arrived but BNB supervisor hadn't started → DISPATCH_EMPTY → BNB flat.
-        # Now: if CLOSE + no exact match, try all supervisors (they all share one Binance IP
-        # and can reach any BNB position). Log a warning; only use for CLOSE signals.
+        # Now: if CLOSE + no exact match, try supervisors but FILTER OUT obviously wrong ones.
+        # §25 Fix (2026-08-03): CLOSE 降级分发时增加品种过滤，防止跨品种误平仓
         if not supervisors and is_close:
-            supervisors = list(self.pool.get_all())
+            # 过滤出可能处理该 symbol 的 supervisors（排除明显不相关的）
+            # 规则：只有 canonical_symbol 匹配的才算精确匹配，其他全排除
+            all_supervisors = list(self.pool.get_all())
+            # 只用精确匹配的，或者空 symbol 的通用 supervisor
+            fallback = [
+                s for s in all_supervisors
+                if getattr(s, "canonical_symbol", None) == signal_symbol
+                or getattr(s, "canonical_symbol", None) is None
+            ]
+            supervisors = fallback
             if supervisors:
                 logger.warning(
-                    "[DISPATCH_FALLBACK] No supervisor for %s, routing CLOSE via %d generic supervisors",
-                    signal_symbol, len(supervisors),
+                    "[DISPATCH_FALLBACK] No exact supervisor for %s, routing CLOSE via %d filtered supervisors (of %d total)",
+                    signal_symbol, len(supervisors), len(all_supervisors),
                 )
                 notify_system(
                     "warning", "DISPATCH_FALLBACK",
                     "品种无专属Supervisor · CLOSE降级路由",
-                    f"BNB等品种首次信号时Supervisor未就绪，将通过通用Supervisor执行平仓（{len(supervisors)}个）",
-                    {"symbol": signal_symbol, "fallback_count": len(supervisors)},
+                    f"信号品种{ signal_symbol }无专属Supervisor，将通过过滤后的Supervisor执行平仓（%d个）",
+                    {"symbol": signal_symbol, "fallback_count": len(supervisors), "total_count": len(all_supervisors)},
+                )
+            else:
+                logger.warning(
+                    "[DISPATCH_FALLBACK] No supervisor for %s even in fallback — CLOSE will not be executed",
+                    signal_symbol,
                 )
 
         if not supervisors:
