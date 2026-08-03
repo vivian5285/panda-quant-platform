@@ -588,6 +588,9 @@ class BinanceClient:
                 "side": binance_side,
                 "type": "MARKET",
                 "quantity": qty_str,
+                # RESULT: 币安在响应中直接返回 executedQty/avgPrice/status，
+                # 无需再查持仓确认成交 — 根治 IP 限流期间误判"未成交"而重复下单
+                "newOrderRespType": "RESULT",
             }
             if reduce_only:
                 params["reduceOnly"] = "true"
@@ -794,6 +797,19 @@ class BinanceClient:
             logger.error(
                 f"[User {self.user_id}] stop-limit failed: {e} stop={stop_price} limit={limit_price}"
             )
+            return None
+
+    def get_order(self, symbol: str | None, order_id: int) -> dict | None:
+        """查询单个订单状态（weight=1，远低于持仓/挂单列表查询）。
+
+        用于在途开仓单成交确认：IP 冷却期间优先用此接口而非持仓查询。
+        """
+        symbol = self._sym(symbol)
+        self._pace_rest(symbol)
+        try:
+            return self.client.futures_get_order(symbol=symbol, orderId=int(order_id))
+        except Exception as e:
+            logger.warning(f"[User {self.user_id}] get_order {order_id} failed: {e}")
             return None
 
     def cancel_order(self, symbol: str | None, order_id: int) -> bool:

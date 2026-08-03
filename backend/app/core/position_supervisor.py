@@ -222,6 +222,7 @@ class PositionSupervisor(
         self.initial_principal = float(initial_principal or 0)
         # Bug #MarginInsufficient20260802: 防止重启后重复开仓
         self._entry_fills_sent: bool = False
+        self._entry_inflight_order_id = None
         self.position_manager = PositionManager(client)
         self.on_log = on_log or (lambda *a, **k: None)
         self.on_trade_open = on_trade_open or (lambda *a, **k: None)
@@ -494,6 +495,7 @@ class PositionSupervisor(
                     "canonical_symbol": getattr(self, "canonical_symbol", None),
                     # Bug #MarginInsufficient20260802: 重启后防止重复开仓
                     "entry_fills_sent": bool(getattr(self, "_entry_fills_sent", False)),
+                    "entry_inflight_order_id": getattr(self, "_entry_inflight_order_id", None),
                     # TV头寸对账：补挂防重控制
                     "tp_rehang_attempts": int(getattr(self, "_tp_rehang_attempts", 0) or 0),
                     "last_tp_rehang_ts": float(getattr(self, "_last_tp_rehang_ts", 0) or 0),
@@ -543,6 +545,7 @@ class PositionSupervisor(
                     # Bug #MarginInsufficient20260802: 重启后恢复 fill-sent 状态
                     # 若为 True，说明重启前有市价单已发出但未确认，应先查询实盘而非盲目重开
                     self._entry_fills_sent = bool(s.get("entry_fills_sent", False))
+                    self._entry_inflight_order_id = s.get("entry_inflight_order_id")
                     self.initial_qty = float(s.get("initial_qty", 0) or 0)
                     self.base_qty = float(s.get("base_qty", 0) or s.get("initial_qty", 0) or 0)
                     self.add_count = 0
@@ -2120,6 +2123,47 @@ class PositionSupervisor(
         # 恢复重启前的 fill-sent 状态（防止重启后重复开仓）
         self._entry_fills_sent = bool(getattr(self, "_entry_fills_sent", False))
 
+        # ── 在途订单硬闸：上一笔市价单已发出且未确认成交时，绝不再发新单 ──────
+        # 适用所有币种（ETH/XAU/BNB 共用本类）。先确认在途订单结局，再谈下一单。
+        if self._entry_fills_sent:
+            inflight_oid = getattr(self, "_entry_inflight_order_id", None)
+            resolved = False
+            if inflight_oid:
+                try:
+                    od = self.client.get_order(self.symbol, order_id=int(inflight_oid))
+                    st = str((od or {}).get("status") or "").upper()
+                    ex_qty = float((od or {}).get("executedQty") or 0)
+                    if st == "FILLED" or ex_qty > 0:
+                        self._entry_fills_sent = False
+                        self._entry_fill_confirmed = True
+                        self._log("SIGNAL", f"在途市价单确认已成交 oid={inflight_oid} qty={ex_qty}")
+                        return {
+                            "entry_order_style": "market",
+                            "order_id": inflight_oid,
+                            "status": "ok",
+                            "filled": True,
+                            "filled_qty": ex_qty,
+                            "avg_price": float((od or {}).get("avgPrice") or 0),
+                        }
+                    if st in ("CANCELED", "EXPIRED", "REJECTED"):
+                        self._entry_fills_sent = False
+                        resolved = True
+                except Exception:
+                    pass
+            if not resolved and self._entry_fills_sent:
+                self._log(
+                    "ERROR",
+                    f"⛔ 在途市价单未确认成交(oid={inflight_oid})，拒绝再次下单防止叠加超仓",
+                )
+                return {
+                    "entry_order_style": "market",
+                    "order_id": inflight_oid,
+                    "status": "awaiting_fill_confirmation",
+                    "filled": False,
+                    "limit_fallback": False,
+                    "retryable": False,
+                }
+
         open_side = "BUY" if action == "LONG" else "SELL"
         market_meta: dict = {
             "entry_order_style": "market",
@@ -2139,6 +2183,12 @@ class PositionSupervisor(
             market_meta["market_error"] = market_err
             self._log("WARN", f"市价开仓抛出异常: {market_err}，准备回退限价单")
             market_meta["order_id"] = None
+
+        # place_market_order 内部吞异常返回 None：取回真实错误，余额不足检测才能生效
+        if market_resp is None and not market_err:
+            market_err = str(getattr(self.client, "_last_market_order_error", "") or "")
+            if market_err:
+                market_meta["market_error"] = market_err
 
         # ── 关键修复 1：Margin is insufficient 立即终止，不重试 ──────────────────
         MARGIN_INSUFFICIENT_CODES = ("-2019", "Margin is insufficient", "margin is insufficient")
@@ -2160,10 +2210,37 @@ class PositionSupervisor(
         # ── 关键修复 2：追踪 fill-sent 状态 ───────────────────────────────────
         # Binance 返回 resp_id 表示订单已接受（未必成交），置标志
         if market_resp is not None and not market_err:
+            order_id = market_meta.get("order_id")
+            executed_qty = float(
+                market_resp.get("executedQty") if isinstance(market_resp, dict) else 0
+            )
+            avg_price = float(
+                market_resp.get("avgPrice") if isinstance(market_resp, dict) else 0
+            )
+            order_status = str(
+                market_resp.get("status") if isinstance(market_resp, dict) else ""
+            ).upper()
+            # 市价单通常立即成交：若响应已带 executedQty / FILLED，直接确认
+            if executed_qty > 0 or order_status == "FILLED":
+                self._entry_fills_sent = False
+                self._entry_fill_confirmed = True
+                self._entry_inflight_order_id = None
+                self._log(
+                    "SIGNAL",
+                    f"市价单已成交 (order_id={order_id}) qty={executed_qty} avg={avg_price}",
+                )
+                return {
+                    **market_meta,
+                    "status": "ok",
+                    "filled": True,
+                    "filled_qty": executed_qty,
+                    "avg_price": avg_price,
+                }
             self._entry_fills_sent = True
+            self._entry_inflight_order_id = order_id
             self._log(
                 "DEBUG",
-                f"市价单已发出 (order_id={market_meta.get('order_id')})，等待成交确认",
+                f"市价单已发出 (order_id={order_id})，等待成交确认",
             )
             # 立即持久化：防止重启后重复开仓
             if hasattr(self, "_save_state"):
@@ -2192,21 +2269,46 @@ class PositionSupervisor(
             market_meta["status"] = "pending"
             return market_meta
 
-        if self._entry_fills_sent and pos_query_errors > 0:
-            # 市价单已发出但查询失败 = IP cool-down，不回退限价单
-            self._log(
-                "WARN",
-                f"市价单已发出但 position 查询失败(IP cool-down) — 等待冷却后确认，不回退限价单 "
-                f"(qty={qty} symbol={self.symbol} order_id={market_meta.get('order_id')})",
-                {"pos_query_errors": pos_query_errors},
-            )
-            return {
-                **market_meta,
-                "status": "awaiting_fill_confirmation",
-                "filled": False,
-                "limit_fallback": False,
-                "retryable": True,
-            }
+        if self._entry_fills_sent:
+            # 市价单已在途（无论持仓查询失败还是暂时显示为0）——绝不回退限价单。
+            # 优先用单笔订单查询(weight=1)确认结局，避免持仓/挂单列表重查询加剧限流。
+            oid = market_meta.get("order_id")
+            if oid:
+                try:
+                    od = self.client.get_order(self.symbol, order_id=int(oid))
+                    st = str((od or {}).get("status") or "").upper()
+                    ex_qty = float((od or {}).get("executedQty") or 0)
+                    if st == "FILLED" or ex_qty > 0:
+                        self._entry_fills_sent = False
+                        self._entry_fill_confirmed = True
+                        self._entry_inflight_order_id = None
+                        return {
+                            **market_meta,
+                            "status": "ok",
+                            "filled": True,
+                            "filled_qty": ex_qty,
+                            "avg_price": float((od or {}).get("avgPrice") or 0),
+                        }
+                    if st in ("CANCELED", "EXPIRED", "REJECTED"):
+                        self._entry_fills_sent = False
+                        self._entry_inflight_order_id = None
+                        self._log("WARN", f"市价单终态 {st}，允许后续回退限价单")
+                except Exception:
+                    pass
+            if self._entry_fills_sent:
+                self._log(
+                    "WARN",
+                    f"市价单已发出但未确认成交 — 等待确认，不回退限价单 "
+                    f"(qty={qty} symbol={self.symbol} order_id={oid})",
+                    {"pos_query_errors": pos_query_errors},
+                )
+                return {
+                    **market_meta,
+                    "status": "awaiting_fill_confirmation",
+                    "filled": False,
+                    "limit_fallback": False,
+                    "retryable": False,
+                }
 
         if not market_err and pos and float(pos.get("positionAmt", 0)) == 0:
             self._log("WARN", "市价单未成交且无持仓 → 回退 TV 指导价限价单")
@@ -2519,7 +2621,12 @@ class PositionSupervisor(
         # 市价单成交后REST可能滞后，重试查询持仓直到确认
         # 关键修复: IP限流时stale cache导致误判空仓，必须force_refresh绕过
         pos = None
-        retry_delays = (0.5, 1.0, 2.0, 3.0)  # 渐进退避
+        # 限流根治：订单响应已确认成交（RESULT 响应带 executedQty）时，
+        # 直接使用响应数据，跳过持仓轮询（省 4 次 REST 调用）
+        if entry_meta.get("filled") and float(entry_meta.get("filled_qty") or 0) > 0:
+            retry_delays = ()
+        else:
+            retry_delays = (0.5, 1.0, 2.0, 3.0)  # 渐进退避
         last_err = ""
         for attempt, delay in enumerate(retry_delays, start=1):
             if delay > 0:
@@ -2536,6 +2643,20 @@ class PositionSupervisor(
                 continue
             # 查询返回None/空 = 重试
             self._log("WARNING", f"持仓查询重试 {attempt}/{len(retry_delays)} 仍空")
+
+        # 关键修复：position 查询被 IP cool-down 完全阻塞时，直接以 Binance 订单响应的成交数据为准
+        if (not pos or float(pos.get("positionAmt", 0)) == 0) and entry_meta.get("filled"):
+            filled_qty = float(entry_meta.get("filled_qty") or 0)
+            avg_price = float(entry_meta.get("avg_price") or limit_px or 0)
+            if filled_qty > 0:
+                pos = {
+                    "positionAmt": filled_qty * (1 if action == "LONG" else -1),
+                    "entryPrice": avg_price,
+                }
+                self._log(
+                    "SIGNAL",
+                    f"使用订单响应填充持仓（position 查询失败）: qty={filled_qty} @ {avg_price}",
+                )
 
         if pos and float(pos.get("positionAmt", 0)) != 0:
             self.current_side = action
@@ -2920,14 +3041,21 @@ class PositionSupervisor(
 
             # 等待 IP 冷却后轮询持仓确认
             pos = None
-            for poll_delay in (0.5, 1.0, 2.0, 3.0):
-                time.sleep(poll_delay)
-                try:
-                    pos = self.position_manager.get_position(self.symbol, force_refresh=True)
-                    if pos and float(pos.get("positionAmt", 0)) != 0:
-                        break
-                except Exception:
-                    pass
+            # 限流根治：订单响应已带成交数据时，直接使用，跳过持仓轮询
+            if retry_entry.get("filled") and float(retry_entry.get("filled_qty") or 0) > 0:
+                pos = {
+                    "positionAmt": float(retry_entry["filled_qty"]) * (1 if action == "LONG" else -1),
+                    "entryPrice": float(retry_entry.get("avg_price") or limit_px or 0),
+                }
+            else:
+                for poll_delay in (0.5, 1.0, 2.0, 3.0):
+                    time.sleep(poll_delay)
+                    try:
+                        pos = self.position_manager.get_position(self.symbol, force_refresh=True)
+                        if pos and float(pos.get("positionAmt", 0)) != 0:
+                            break
+                    except Exception:
+                        pass
 
             if pos and float(pos.get("positionAmt", 0)) != 0:
                 self._entry_fills_sent = False

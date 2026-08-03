@@ -3767,8 +3767,16 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             "qty": float(qty),
         }
         market_err: str | None = None
+        market_accepted = False
         try:
-            self.client.place_market_order(self.symbol, open_side, pos_side, qty)
+            res = self.client.place_market_order(self.symbol, open_side, pos_side, qty)
+            if res and self.client._is_success(res):
+                market_accepted = True
+                market_meta["order_id"] = (res.get("data") or {}).get("ordId")
+            else:
+                data = (res or {}).get("data") or {}
+                market_err = str(data.get("sMsg") or (res or {}).get("msg") or "market_order_rejected")
+                market_meta["market_error"] = market_err
         except Exception as exc:
             market_err = str(exc)
             logger.warning("DeepCoin 市价开仓抛出异常: %s，准备回退限价单", market_err)
@@ -3776,10 +3784,12 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
         # 立即查仓：市价是否已成交
         pos = None
+        pos_query_ok = False
         for _delay in (0.3, 0.6):
             time.sleep(_delay)
             try:
                 pos = self._get_active_position()
+                pos_query_ok = True
                 if pos and pos.get("size", 0) > 0:
                     return {**market_meta, "status": "ok", "filled": True}
             except Exception:
@@ -3790,12 +3800,22 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
             market_meta["status"] = "pending"
             return market_meta
 
-        if not market_err and pos and pos.get("size", 0) == 0:
-            logger.warning("DeepCoin 市价单未成交且无持仓 → 回退 TV 指导价限价单")
-        elif market_err:
-            logger.warning("DeepCoin 市价单异常: %s → 回退限价单", market_err)
-        else:
-            logger.warning("DeepCoin 市价单挂出但未确认成交 → 回退限价单")
+        # ── 防重复下单硬闸：市价单已被交易所接受但持仓查询失败/未刷新时，
+        # 绝不回退限价单或再发市价单（与币安版同一根因修复）
+        if market_accepted:
+            logger.warning(
+                "DeepCoin 市价单已接受(ordId=%s)但未确认成交(pos_query_ok=%s) — "
+                "等待确认，不回退限价单", market_meta.get("order_id"), pos_query_ok,
+            )
+            return {
+                **market_meta,
+                "status": "awaiting_fill_confirmation",
+                "filled": False,
+                "limit_fallback": False,
+                "retryable": False,
+            }
+
+        logger.warning("DeepCoin 市价单异常: %s → 回退限价单", market_err)
 
         # 等 IP 冷却后挂限价单
         try:
@@ -4018,14 +4038,35 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
         OPEN_RETRY_DELAYS = (5.0, 10.0, 20.0, 30.0)
         pos = self._get_active_position()
         has_pos = pos and pos.get("size", 0) > 0
+        # 市价单已被交易所接受但未确认成交：只等待确认，绝不再发新单
+        entry_awaiting = str((entry_meta or {}).get("status") or "") == "awaiting_fill_confirmation"
 
         for retry_idx, retry_delay in enumerate(OPEN_RETRY_DELAYS, 1):
+            if has_pos:
+                break
             # ── 关键修复 §20：每次重试下单前重新检查持仓，防止手动平仓后继续补挂 ──
+            # 查询异常时 pos_size=-1（未知），未知状态严禁盲目再下单
             try:
                 pos_check = self._get_active_position(force_refresh=True)
                 pos_size = float(pos_check.get("size", 0)) if pos_check else 0.0
             except Exception:
-                pos_size = 0.0
+                pos_size = -1.0
+            if pos_size < 0 or (entry_awaiting and pos_size == 0):
+                # 持仓状态未知 / 在途订单未确认 → 只等待，不下单
+                logger.warning(
+                    "DeepCoin 持仓状态未知或在途订单未确认(第%d轮)，等待 %.0fs 后仅重新查询，不再下单",
+                    retry_idx, retry_delay,
+                )
+                time.sleep(retry_delay)
+                try:
+                    pos = self._get_active_position(force_refresh=True)
+                    if pos and pos.get("size", 0) > 0:
+                        has_pos = True
+                        entry_awaiting = False
+                        break
+                except Exception:
+                    pass
+                continue
             had_confirmed_fill = getattr(self, "initial_qty", 0) > 0 and getattr(self, "trade_opened_at", 0) > 0
             if pos_size == 0 and had_confirmed_fill:
                 # 之前已有持仓，现已消失 → 手动平仓，立即停止
