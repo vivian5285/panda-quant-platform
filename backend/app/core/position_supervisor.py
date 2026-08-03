@@ -2679,6 +2679,8 @@ class PositionSupervisor(
                 except Exception:
                     pass
             self.base_qty = real_qty
+            self.watched_qty = real_qty  # ★ 必须设置！_resolve_adverse_live_qty依赖此值
+            self.watched_entry = entry_price
             if hasattr(self, "_set_open_qty_baseline"):
                 self._set_open_qty_baseline(real_qty, reason="tv_open")
             else:
@@ -3129,6 +3131,8 @@ class PositionSupervisor(
                 self.current_side = action
                 self.trade_opened_at = time.time()
                 self.base_qty = real_qty
+                self.watched_qty = real_qty  # ★ 必须设置！_resolve_adverse_live_qty依赖此值
+                self.watched_entry = entry_price
                 if hasattr(self, "_set_open_qty_baseline"):
                     self._set_open_qty_baseline(real_qty, reason="tv_open_retry")
                 else:
