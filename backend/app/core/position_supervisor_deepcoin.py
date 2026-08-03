@@ -4129,8 +4129,30 @@ class DeepcoinPositionSupervisor(PositionCapGuardMixin, AdverseRadarMixin, Start
 
             # 轮询持仓确认
             time.sleep(2.0)
-            pos = self._get_active_position()
-            has_pos = pos and pos.get("size", 0) > 0
+            try:
+                pos = self._get_active_position(force_refresh=True)
+            except Exception:
+                pos = None
+            if not pos:
+                # ★ 根治重复下单bug：查单失败时停止重试
+                logger.error(
+                    "DeepCoin 重试 #%d 查单失败，无法确认持仓，停止重试防止重复下单 "
+                    "(retry_idx=%d, qty=%s)",
+                    retry_idx, retry_idx, qty,
+                )
+                self._dt.report_system_alert(
+                    "查单失败·停止重试",
+                    f"{self.canonical_symbol} {action} {qty}张 "
+                    f"第 {retry_idx} 轮查单失败，无法确认持仓，停止重试防止重复下单",
+                    severity="critical",
+                )
+                return {
+                    "status": "error",
+                    "reason": "position_query_failed",
+                    "message": "查单失败，无法确认持仓，停止重试防止重复下单",
+                    "retry_idx": retry_idx,
+                }
+            has_pos = pos.get("size", 0) > 0 if pos else False
             if has_pos:
                 logger.info("DeepCoin 重试开仓 #%d 成功", retry_idx)
                 sizing_meta["retry_idx"] = retry_idx

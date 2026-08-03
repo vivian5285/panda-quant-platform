@@ -27,9 +27,14 @@ logger = logging.getLogger(__name__)
 # - Order audit at 120s → ORDER_TTL at least 100s
 # - Algo orders at 120s → ALGO_TTL at least 100s
 # Longer TTLs drastically reduce REST hits while WS handles fills in real-time.
-POS_TTL_SEC = 80.0    # was 60.0 — position snapshot stays valid 80s
-ORDER_TTL_SEC = 100.0  # was 90.0 — open orders snapshot stays valid 100s
-ALGO_TTL_SEC = 100.0   # was 90.0 — algo orders snapshot stays valid 100s
+#
+# ★ 根治限流bug：进一步增加TTL，减少不必要的REST查询
+# - POS_TTL: 80s → 180s（与IP cool-down时间对齐，冷却期间用缓存不查询）
+# - ORDER_TTL: 100s → 200s
+# - ALGO_TTL: 100s → 200s
+POS_TTL_SEC = 180.0    # was 80.0 — position snapshot stays valid 180s
+ORDER_TTL_SEC = 200.0  # was 100.0 — open orders snapshot stays valid 200s
+ALGO_TTL_SEC = 200.0   # was 100.0 — algo orders snapshot stays valid 200s
 
 _lock = threading.RLock()
 # key = f"{exchange}:{user_id}"

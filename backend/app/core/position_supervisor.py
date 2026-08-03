@@ -2967,13 +2967,45 @@ class PositionSupervisor(
                 pass
 
             # ── 关键修复 §20：下单前检查持仓是否存在，防止手动平仓后继续重试补挂 ──
+            pos_check = None
+            query_failed = False
             try:
                 pos_check = self.position_manager.get_position(self.symbol, force_refresh=True)
             except Exception:
-                pos_check = None
+                # 查单失败：记录失败状态
+                query_failed = True
             pos_amt = float(pos_check.get("positionAmt", 0)) if pos_check else 0.0
             had_confirmed_fill = getattr(self, "entry_fill_confirmed", False) or \
                 (getattr(self, "initial_qty", 0) > 0 and getattr(self, "trade_opened_at", 0) > 0)
+
+            # ★ 根治重复下单bug：查单失败时立即停止重试，不再下单
+            if query_failed:
+                self._entry_fills_sent = False
+                self._log("ERROR",
+                    f"⚠️ 重试 #{retry_idx} 下单前查单失败，无法确认持仓状态，"
+                    f"停止重试防止未知状态下重复下单",
+                    {"retry_idx": retry_idx, "action": action, "qty": qty})
+                self._alert(
+                    "critical",
+                    "POSITION_QUERY_FAIL_STOP_RETRY",
+                    "查单失败·停止重试",
+                    f"{getattr(self, 'canonical_symbol', self.symbol)} {action} {qty} {unit} "
+                    f"第 {retry_idx} 轮下单前查单失败，无法确认持仓，停止重试防止重复下单",
+                    {
+                        "retry_idx": retry_idx,
+                        "qty": qty,
+                        "action": action,
+                        "symbol": getattr(self, "canonical_symbol", self.symbol),
+                        "tag": "position_query_fail_stop_retry",
+                    },
+                )
+                return {
+                    "status": "error",
+                    "reason": "position_query_failed",
+                    "message": "下单前查单失败，无法确认持仓，停止重试防止重复下单",
+                    "retry_idx": retry_idx,
+                    "sizing": sizing_meta,
+                }
             if pos_amt == 0 and had_confirmed_fill:
                 # 之前已有持仓（confirmed fill），现在持仓消失 → 手动平仓，立即停止重试
                 self._entry_fills_sent = False
@@ -3042,6 +3074,7 @@ class PositionSupervisor(
 
             # 等待 IP 冷却后轮询持仓确认
             pos = None
+            query_failed = False
             # 限流根治：订单响应已带成交数据时，直接使用，跳过持仓轮询
             if retry_entry.get("filled") and float(retry_entry.get("filled_qty") or 0) > 0:
                 pos = {
@@ -3055,8 +3088,39 @@ class PositionSupervisor(
                         pos = self.position_manager.get_position(self.symbol, force_refresh=True)
                         if pos and float(pos.get("positionAmt", 0)) != 0:
                             break
+                        query_failed = False
                     except Exception:
-                        pass
+                        # 查单失败：记录失败但继续轮询
+                        query_failed = True
+
+                # ★ 根治重复下单bug：任何一轮查单失败，立即停止重试，不再下单
+                if query_failed:
+                    self._entry_fills_sent = False
+                    self._log("ERROR",
+                        f"⚠️ 重试 #{retry_idx} 查询持仓失败，无法确认是否成交，"
+                        f"停止重试防止未知状态下重复下单",
+                        {"retry_idx": retry_idx, "action": action, "qty": qty})
+                    self._alert(
+                        "critical",
+                        "POSITION_QUERY_FAIL_STOP_RETRY",
+                        "查单失败·停止重试",
+                        f"{getattr(self, 'canonical_symbol', self.symbol)} {action} {qty} {unit} "
+                        f"第 {retry_idx} 轮查单失败，无法确认持仓，停止重试防止重复下单",
+                        {
+                            "retry_idx": retry_idx,
+                            "qty": qty,
+                            "action": action,
+                            "symbol": getattr(self, "canonical_symbol", self.symbol),
+                            "tag": "position_query_fail_stop_retry",
+                        },
+                    )
+                    return {
+                        "status": "error",
+                        "reason": "position_query_failed",
+                        "message": "查单失败，无法确认持仓，停止重试防止重复下单",
+                        "retry_idx": retry_idx,
+                        "sizing": sizing_meta,
+                    }
 
             if pos and float(pos.get("positionAmt", 0)) != 0:
                 self._entry_fills_sent = False
