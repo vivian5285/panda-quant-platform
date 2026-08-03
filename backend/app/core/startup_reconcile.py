@@ -261,6 +261,23 @@ def finalize_recovery_tv_params(supervisor, report: dict, recovery: dict | None)
             supervisor.tv_tps = merge_tv_targets(supervisor.tv_tps, derived)
             report.setdefault("warnings", []).append("tv_tps_derived_from_regime")
 
+    # §24 Fix: 即使 merge 后仍校验一次（TV signal source 合并可能引入污染）
+    try:
+        from app.core.position_supervisor import _validate_tp_prices_cross_symbol
+        sym = getattr(supervisor, "canonical_symbol", None) or ""
+        entry_for_check = entry_px or float(getattr(supervisor, "watched_entry", 0) or 0)
+        validate = _validate_tp_prices_cross_symbol(sym, supervisor.tv_tps, entry_price=entry_for_check)
+        if validate["suspect"]:
+            old_tps = list(supervisor.tv_tps)
+            supervisor.tv_tps = validate["sanitized_tps"]
+            report.setdefault("warnings", []).append(f"CROSS_SYMBOL_POLLUED:{validate['reason']}")
+            logger.warning(
+                "[RECOVERY] §24 %s tv_tps污染清洗 %s → %s | %s",
+                sym, old_tps, supervisor.tv_tps, validate["reason"],
+            )
+    except Exception:
+        pass  # 不因校验失败中断恢复
+
     if entry_tv:
         report["latest_entry_tv_action"] = entry_tv.get("action")
     report["tv_tps"] = list(supervisor.tv_tps)

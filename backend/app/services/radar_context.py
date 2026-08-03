@@ -26,6 +26,18 @@ def _safe_regime(raw) -> int:
         return 3
 
 
+def _extract_symbol_from_payload(payload: dict) -> str | None:
+    """Extract canonical symbol from TV webhook payload dict."""
+    for key in ("symbol", "ticker", "pair", "market"):
+        raw = payload.get(key)
+        if raw:
+            from app.core.symbol_registry import normalize_canonical_symbol
+            can = normalize_canonical_symbol(str(raw), default=None)
+            if can:
+                return can
+    return None
+
+
 def _parse_webhook_tv_row(row: WebhookReceiveLog) -> dict:
     try:
         summary = json.loads(row.tv_summary_json or "{}")
@@ -48,6 +60,7 @@ def _parse_webhook_tv_row(row: WebhookReceiveLog) -> dict:
         "entry_type": (summary.get("entry_type") or "").upper() or None,
         "reason": summary.get("reason"),
         "source": "webhook_receive_log",
+        "symbol": _extract_symbol_from_payload(summary),
     }
 
 
@@ -75,10 +88,15 @@ def _parse_dispatch_log_row(row: SignalDispatchLog) -> dict | None:
         "entry_type": (payload.get("entry_type") or "").upper() or None,
         "reason": payload.get("reason"),
         "source": "signal_dispatch_log",
+        "symbol": _extract_symbol_from_payload(payload),
     }
 
 
-def get_latest_tv_entry_signal_for_user(db: Session, user_id: int) -> dict | None:
+def get_latest_tv_entry_signal_for_user(
+    db: Session,
+    user_id: int,
+    symbol: str | None = None,
+) -> dict | None:
     """Latest LONG/SHORT webhook for this user - used when latest overall signal is CLOSE."""
     row = (
         db.query(WebhookReceiveLog)
@@ -97,8 +115,15 @@ def get_latest_tv_entry_signal_for_user(db: Session, user_id: int) -> dict | Non
     )
     if row:
         parsed = _parse_webhook_tv_row(row)
-        parsed["user_id"] = user_id
-        return parsed
+        # §24 Fix: 品种过滤 — 忽略品种不匹配的信号
+        if symbol and parsed.get("symbol") and parsed["symbol"] != symbol:
+            logger.debug(
+                "[RADAR_CTX] §24 symbol mismatch in entry signal: want=%s got=%s, skipping",
+                symbol, parsed["symbol"],
+            )
+        else:
+            parsed["user_id"] = user_id
+            return parsed
 
     dispatch_row = (
         db.query(SignalDispatchLog)
@@ -116,12 +141,23 @@ def get_latest_tv_entry_signal_for_user(db: Session, user_id: int) -> dict | Non
     if dispatch_row:
         parsed = _parse_dispatch_log_row(dispatch_row)
         if parsed:
-            parsed["user_id"] = user_id
-            return parsed
+            # §24 Fix: 品种过滤
+            if symbol and parsed.get("symbol") and parsed["symbol"] != symbol:
+                logger.debug(
+                    "[RADAR_CTX] §24 symbol mismatch in entry dispatch: want=%s got=%s, skipping",
+                    symbol, parsed["symbol"],
+                )
+            else:
+                parsed["user_id"] = user_id
+                return parsed
     return None
 
 
-def get_latest_tv_signal_for_user(db: Session, user_id: int) -> dict | None:
+def get_latest_tv_signal_for_user(
+    db: Session,
+    user_id: int,
+    symbol: str | None = None,
+) -> dict | None:
     """Latest TV webhook actually dispatched to this user (not platform-wide)."""
     row = (
         db.query(WebhookReceiveLog)
@@ -140,8 +176,15 @@ def get_latest_tv_signal_for_user(db: Session, user_id: int) -> dict | None:
     )
     if row:
         parsed = _parse_webhook_tv_row(row)
-        parsed["user_id"] = user_id
-        return parsed
+        # §24 Fix: 品种过滤
+        if symbol and parsed.get("symbol") and parsed["symbol"] != symbol:
+            logger.debug(
+                "[RADAR_CTX] §24 symbol mismatch in user tv: want=%s got=%s, skipping",
+                symbol, parsed["symbol"],
+            )
+        else:
+            parsed["user_id"] = user_id
+            return parsed
 
     dispatch_row = (
         db.query(SignalDispatchLog)
@@ -156,12 +199,22 @@ def get_latest_tv_signal_for_user(db: Session, user_id: int) -> dict | None:
     if dispatch_row:
         parsed = _parse_dispatch_log_row(dispatch_row)
         if parsed:
-            parsed["user_id"] = user_id
-            return parsed
+            # §24 Fix: 品种过滤
+            if symbol and parsed.get("symbol") and parsed["symbol"] != symbol:
+                logger.debug(
+                    "[RADAR_CTX] §24 symbol mismatch in user dispatch: want=%s got=%s, skipping",
+                    symbol, parsed["symbol"],
+                )
+            else:
+                parsed["user_id"] = user_id
+                return parsed
     return None
 
 
-def get_latest_tv_signal(db: Session) -> dict | None:
+def get_latest_tv_signal(
+    db: Session,
+    symbol: str | None = None,
+) -> dict | None:
     """Latest successfully dispatched TradingView webhook (platform-wide fallback)."""
     row = (
         db.query(WebhookReceiveLog)
@@ -175,6 +228,13 @@ def get_latest_tv_signal(db: Session) -> dict | None:
     if not row:
         return None
     parsed = _parse_webhook_tv_row(row)
+    # §24 Fix: 品种过滤（平台级信号更可能跨品种污染）
+    if symbol and parsed.get("symbol") and parsed["symbol"] != symbol:
+        logger.warning(
+            "[RADAR_CTX] §24 platform tv signal symbol mismatch: want=%s got=%s, BLOCKING fallback",
+            symbol, parsed["symbol"],
+        )
+        return None
     parsed["source"] = "platform_wide"
     return parsed
 
@@ -235,12 +295,13 @@ def build_radar_recovery_context(db: Session, user_id: int, symbol: str | None =
     trade = get_open_trade_context(db, user_id, symbol=symbol)
     trade_id = trade["id"] if trade else None
     open_log = get_open_trade_log_detail(db, user_id, trade_id)
-    latest_tv = get_latest_tv_signal_for_user(db, user_id)
+    # §24 Fix: pass symbol so TV signals are filtered by matching canonical symbol
+    latest_tv = get_latest_tv_signal_for_user(db, user_id, symbol=symbol)
     tv_scope = "user"
     if not latest_tv:
-        latest_tv = get_latest_tv_signal(db)
+        latest_tv = get_latest_tv_signal(db, symbol=symbol)
         tv_scope = "platform_fallback" if latest_tv else "none"
-    latest_entry_tv = get_latest_tv_entry_signal_for_user(db, user_id)
+    latest_entry_tv = get_latest_tv_entry_signal_for_user(db, user_id, symbol=symbol)
 
     checks = []
     if tv_scope == "platform_fallback":

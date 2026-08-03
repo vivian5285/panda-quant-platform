@@ -73,6 +73,79 @@ from app.services.trading_alerts import resolve_exchange_theme
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# ══════════════════════════════════════════════════════════════════════
+# §24 Fix: 跨品种价格合理性校验
+# 问题：重启后 state.json 中 tv_tps 被 XAU 数据污染（如 ETH 的 TP1=4081.55）
+# 原因：TV 信号分发时未严格按品种路由，state 加载时无校验
+# 修复：加载 state 时校验 TP/SL 价格是否在本品种合理范围内
+# ══════════════════════════════════════════════════════════════════════
+
+# 每品种的价格参考范围（entry 附近 20% 内的 TP 才算合理）
+# XAU: 3000-5000, ETH: 500-5000, BNB: 200-1000
+_CROSS_SYMBOL_TP_REFERENCE: dict[str, tuple[float, float]] = {
+    "XAUUSDT": (3000.0, 5000.0),   # 宽泛范围，防止极端行情误判
+    "ETHUSDT": (500.0, 5000.0),
+    "BNBUSDT": (100.0, 2000.0),
+}
+
+
+def _cross_symbol_price_range(sym: str) -> tuple[float, float]:
+    can = normalize_canonical_symbol(sym) or "ETHUSDT"
+    return _CROSS_SYMBOL_TP_REFERENCE.get(can, (0.0, 99999.0))
+
+
+def _validate_tp_prices_cross_symbol(sym: str, tv_tps: list, entry_price: float = 0.0, tv_sl: float = 0.0) -> dict:
+    """校验 TP/SL 价格是否在本品种合理范围内。
+
+    如果 TP/SL 价格超出本品种的正常范围（尤其是和 entry 差异巨大），
+    说明可能遭遇了跨品种污染（如 ETH 的 state 里有 XAU 的价格）。
+    返回: {"valid": bool, "suspect": bool, "reason": str, "sanitized_tps": list}
+    """
+    can = normalize_canonical_symbol(sym) or sym
+    low, high = _cross_symbol_price_range(can)
+
+    result = {"valid": True, "suspect": False, "reason": "", "sanitized_tps": list(tv_tps)}
+
+    def _out_of_range(px: float, field: str) -> bool:
+        if px <= 0:
+            return False
+        # 极端超界直接判定
+        if px < low * 0.5 or px > high * 1.5:
+            return True
+        # 与参考范围对比
+        if px < low or px > high:
+            return True
+        # 如果有 entry：TP 必须和 entry 在合理距离内（LONG 时 TP > entry，SHORT 时 TP < entry）
+        if entry_price > 0:
+            # TP 价格离 entry 太远（>20x 的 entry 距离）说明有问题
+            if abs(px - entry_price) > entry_price * 20:
+                return True
+        return False
+
+    suspect_reasons = []
+    sanitized = []
+    for i, px in enumerate(tv_tps):
+        if _out_of_range(px, f"TP{i+1}"):
+            suspect_reasons.append(f"TP{i+1}={px:.2f} 超界[{low:.0f},{high:.0f}]")
+            sanitized.append(0.0)  # 清零，后面会重新推导
+        else:
+            sanitized.append(px)
+
+    if _out_of_range(tv_sl, "TV_SL"):
+        suspect_reasons.append(f"tv_sl={tv_sl:.2f} 超界[{low:.0f},{high:.0f}]")
+
+    if suspect_reasons:
+        result["suspect"] = True
+        result["reason"] = f"跨品种污染嫌疑: {', '.join(suspect_reasons)}"
+        result["sanitized_tps"] = sanitized
+        result["valid"] = False
+        logger.warning(
+            "[CROSS_SYMBOL_VALIDATE] %s 跨品种污染嫌疑: %s",
+            can, result["reason"],
+        )
+
+    return result
 MIN_SL_MOVE = float(PRICE_TICK)  # ETHUSDT tick 0.01 — minimum SL trail step
 TP_RETRY_MAX = 3
 TP_RETRY_DELAY = 0.8  # seconds; multiplied by attempt index
@@ -491,6 +564,27 @@ class PositionSupervisor(
                     self._tv_stop_loss_ref = float(
                         s.get("tv_stop_loss_ref") or s.get("tv_sl", 0) or 0
                     )
+                    # §24 Fix: 加载 state 后校验 TP/SL 价格是否跨品种污染
+                    # ETH state 中出现 XAU 价格（TP1=4081）时，清零并重新推导
+                    entry_for_check = float(s.get("watched_entry", 0) or 0)
+                    validate_result = _validate_tp_prices_cross_symbol(
+                        self.canonical_symbol,
+                        self.tv_tps,
+                        entry_price=entry_for_check,
+                        tv_sl=self.tv_sl,
+                    )
+                    if validate_result["suspect"]:
+                        logger.warning(
+                            "[User %s] §24 state污染检测: %s | 清洗 tv_tps %s → %s | tv_sl=%s",
+                            self.user_id,
+                            self.canonical_symbol,
+                            list(self.tv_tps),
+                            validate_result["sanitized_tps"],
+                            self.tv_sl if validate_result["suspect"] and "tv_sl" in validate_result.get("reason", "") else "(ok)",
+                        )
+                        self.tv_tps = validate_result["sanitized_tps"]
+                        # tv_sl 污染暂时不清零（重启后以 live book 为准），只告警
+                    self._state_cross_symbol_validated = True
                     self._tv_hard_sl_price = float(
                         s.get("frozen_hard_stop_px")
                         or s.get("tv_hard_sl_price")
